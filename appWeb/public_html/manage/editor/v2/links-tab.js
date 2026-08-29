@@ -46,7 +46,7 @@ export function mountLinksTab(container, opts) {
     const addBtn = document.createElement('button');
     addBtn.type = 'button';
     addBtn.className = 'btn btn-sm btn-outline-primary';
-    addBtn.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add link';
+    addBtn.innerHTML = '<i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add link';
 
     container.append(intro, rowsEl, addBtn);
 

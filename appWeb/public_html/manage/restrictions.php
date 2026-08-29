@@ -317,7 +317,7 @@ $csrf = csrfToken();
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-shield-lock me-2"></i>Content Restrictions</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-shield-lock me-2"></i>Content Restrictions</h1>
         <p class="text-secondary small mb-3">
             Set rules that hide specific songs, whole songbooks, or app features from certain people,
             based on their platform, account, organisation, or licence. When two rules clash, the one
@@ -326,7 +326,7 @@ $csrf = csrfToken();
 
         <?php if (!$gatingEnabled): ?>
             <div class="alert alert-warning py-2 mb-3">
-                <i class="bi bi-exclamation-triangle me-1"></i>
+                <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
                 The master switch <code>content_gating_enabled</code> is <strong>OFF</strong>.
                 Rules here are saved but currently have no runtime effect.
                 Flip it in <a href="/manage/configuration#feature-gating" class="alert-link">Configuration &rarr; Feature gating</a>
@@ -376,7 +376,7 @@ $csrf = csrfToken();
                 </div>
                 <div class="col-sm-3 d-grid">
                     <button type="submit" class="btn btn-sm btn-outline-info">
-                        <i class="bi bi-funnel me-1"></i>Apply filter
+                        <i aria-hidden="true" class="bi bi-funnel me-1"></i>Apply filter
                     </button>
                 </div>
             </div>
@@ -389,13 +389,13 @@ $csrf = csrfToken();
                 <table class="table table-sm align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
-                            <th data-sort-key="entity"      data-sort-type="text">Entity</th>
-                            <th data-sort-key="restriction" data-sort-type="text">Restriction</th>
-                            <th data-sort-key="target"      data-sort-type="text">Target</th>
-                            <th class="text-center" data-sort-key="effect"   data-sort-type="text">Effect</th>
-                            <th class="text-center" data-sort-key="priority" data-sort-type="number">Priority</th>
-                            <th data-sort-key="reason" data-sort-type="text">Reason</th>
-                            <th class="text-end">Actions</th>
+                            <th scope="col" data-sort-key="entity"      data-sort-type="text">Entity</th>
+                            <th scope="col" data-sort-key="restriction" data-sort-type="text">Restriction</th>
+                            <th scope="col" data-sort-key="target"      data-sort-type="text">Target</th>
+                            <th scope="col" class="text-center" data-sort-key="effect"   data-sort-type="text">Effect</th>
+                            <th scope="col" class="text-center" data-sort-key="priority" data-sort-type="number">Priority</th>
+                            <th scope="col" data-sort-key="reason" data-sort-type="text">Reason</th>
+                            <th scope="col" class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -460,7 +460,7 @@ $csrf = csrfToken();
         <form method="POST" class="card-admin p-3 mb-4" id="restriction-form">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
-            <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a restriction</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a restriction</h2>
 
             <!-- Hidden canonical fields — populated by JS from whichever
                  picker is visible. The server sees the same names as
@@ -620,7 +620,7 @@ $csrf = csrfToken();
             </div>
 
             <button type="submit" class="btn btn-amber-solid btn-sm mt-2">
-                <i class="bi bi-plus me-1"></i>Add rule
+                <i aria-hidden="true" class="bi bi-plus me-1"></i>Add rule
             </button>
             <p class="text-muted small mt-3 mb-0">
                 <strong>Tips.</strong>

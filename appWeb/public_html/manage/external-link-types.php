@@ -208,7 +208,7 @@ $categoryLabels = [
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
     <div class="container-admin py-4">
-        <h1 class="h4 mb-3"><i class="bi bi-link-45deg me-2"></i>Link Types</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-link-45deg me-2"></i>Link Types</h1>
         <p class="text-secondary small mb-4">
             The list of outside places a song, songbook or person can link to — such as a hymn's page on
             Wikipedia or an artist on a music service. It fills the <strong>Find this … elsewhere</strong>
@@ -235,7 +235,7 @@ $categoryLabels = [
                     <code>tblExternalLinkPatterns</code> (#845) tables aren't both present yet.
                 </p>
                 <a href="/manage/setup-database" class="btn btn-amber btn-sm">
-                    <i class="bi bi-database-gear me-1"></i>Run /manage/setup-database
+                    <i aria-hidden="true" class="bi bi-database-gear me-1"></i>Run /manage/setup-database
                 </a>
             </div>
         <?php else: ?>
@@ -316,7 +316,7 @@ $categoryLabels = [
                                         <?php endif; ?>
                                     </div>
 
-                                    <h3 class="h6 mb-2"><i class="bi bi-link me-2"></i>URL patterns</h3>
+                                    <h3 class="h6 mb-2"><i aria-hidden="true" class="bi bi-link me-2"></i>URL patterns</h3>
                                     <p class="form-text small mt-0 mb-2">
                                         Each row matches a URL by hostname (and optionally path prefix). Lower
                                         priority numbers win, so put more-specific patterns first.
@@ -367,7 +367,7 @@ $categoryLabels = [
                                                         </div>
                                                         <div class="col-md-3 text-end">
                                                             <button type="button" class="btn btn-sm btn-outline-danger" data-action="remove-pattern">
-                                                                <i class="bi bi-x-lg"></i> Remove
+                                                                <i aria-hidden="true" class="bi bi-x-lg"></i> Remove
                                                             </button>
                                                         </div>
                                                     </div>
@@ -378,10 +378,10 @@ $categoryLabels = [
 
                                     <div class="d-flex gap-2 mt-3">
                                         <button type="button" class="btn btn-outline-info btn-sm" data-action="add-pattern" data-type-id="<?= (int)$t['id'] ?>">
-                                            <i class="bi bi-plus-lg me-1"></i>Add pattern
+                                            <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add pattern
                                         </button>
                                         <button type="submit" class="btn btn-amber btn-sm ms-auto">
-                                            <i class="bi bi-save me-1"></i>Save
+                                            <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                                         </button>
                                     </div>
                                 </form>
@@ -425,7 +425,7 @@ $categoryLabels = [
               '</div>' +
               '<div class="row g-2 mt-1">' +
                 '<div class="col-md-9"><input type="text" class="form-control form-control-sm" name="pattern_note[]" placeholder="Optional note" maxlength="255"></div>' +
-                '<div class="col-md-3 text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-action="remove-pattern"><i class="bi bi-x-lg"></i> Remove</button></div>' +
+                '<div class="col-md-3 text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-action="remove-pattern"><i aria-hidden="true" class="bi bi-x-lg"></i> Remove</button></div>' +
               '</div>' +
             '</div>' +
           '</div>';

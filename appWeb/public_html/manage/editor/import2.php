@@ -114,7 +114,7 @@ $formats = [
 <body class="p-3">
     <div class="container-fluid" style="max-width: 760px;">
         <div class="d-flex align-items-center gap-2 mb-3">
-            <h1 class="h4 mb-0"><i class="bi bi-upload me-2"></i>Import songs <span class="badge bg-info">v2</span></h1>
+            <h1 class="h4 mb-0"><i aria-hidden="true" class="bi bi-upload me-2"></i>Import songs <span class="badge bg-info">v2</span></h1>
             <a href="/manage/editor/" class="btn btn-sm btn-outline-secondary ms-auto">Editor</a>
         </div>
 
@@ -150,7 +150,7 @@ $formats = [
                         </div>
                     </div>
                 </div>
-                <button id="imp-go" type="button" class="btn btn-primary btn-sm mt-3"><i class="bi bi-upload me-1"></i>Import</button>
+                <button id="imp-go" type="button" class="btn btn-primary btn-sm mt-3"><i aria-hidden="true" class="bi bi-upload me-1"></i>Import</button>
                 <span id="imp-status" class="text-muted small ms-2"></span>
             </div>
         </div>

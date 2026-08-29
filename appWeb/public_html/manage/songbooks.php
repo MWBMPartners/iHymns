@@ -3076,7 +3076,7 @@ $csrf = csrfToken();
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-book me-2"></i>Songbooks</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-book me-2"></i>Songbooks</h1>
         <p class="text-secondary small mb-4">
             Add, rename, reorder and remove the songbooks people see in filters,
             search and the Song Editor. Each song is tied to its songbook by a
@@ -3106,16 +3106,16 @@ $csrf = csrfToken();
             <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
                 <small class="text-muted me-1">Quick sort:</small>
                 <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="name:asc">
-                    <i class="bi bi-sort-alpha-down me-1"></i>Name A→Z
+                    <i aria-hidden="true" class="bi bi-sort-alpha-down me-1"></i>Name A→Z
                 </button>
                 <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="name:desc">
-                    <i class="bi bi-sort-alpha-up-alt me-1"></i>Name Z→A
+                    <i aria-hidden="true" class="bi bi-sort-alpha-up-alt me-1"></i>Name Z→A
                 </button>
                 <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="abbr:asc">
-                    <i class="bi bi-sort-alpha-down me-1"></i>Abbr A→Z
+                    <i aria-hidden="true" class="bi bi-sort-alpha-down me-1"></i>Abbr A→Z
                 </button>
                 <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="abbr:desc">
-                    <i class="bi bi-sort-alpha-up-alt me-1"></i>Abbr Z→A
+                    <i aria-hidden="true" class="bi bi-sort-alpha-up-alt me-1"></i>Abbr Z→A
                 </button>
                 <small class="text-muted ms-1">— preview applied; hit <em>Save display order</em> to persist.</small>
             </div>
@@ -3124,17 +3124,17 @@ $csrf = csrfToken();
             <table class="table table-sm mb-2 align-middle cp-sortable admin-table-responsive" id="songbook-list-table">
                 <thead>
                     <tr class="text-muted small">
-                        <th data-col-priority="tertiary"  style="width:1.5rem" aria-label="Drag to reorder"></th>
-                        <th data-col-priority="tertiary"  style="width:6rem">Order</th>
-                        <th data-col-priority="primary"   data-sort-key="abbr" data-sort-type="text">Abbr</th>
-                        <th data-col-priority="primary"   data-sort-key="name" data-sort-type="text">Name</th>
-                        <th data-col-priority="secondary" class="text-center" data-sort-key="official" data-sort-type="text" title="Official published hymnal (#502)">Official</th>
-                        <th data-col-priority="primary"   class="text-center" data-sort-key="songs" data-sort-type="number">Songs</th>
-                        <th data-col-priority="secondary" data-sort-key="language" data-sort-type="text" title="IETF BCP 47 language tag — empty means multi-lingual / not specified (#778)">Languages</th>
-                        <th data-col-priority="tertiary"  data-sort-key="parent" data-sort-type="text" title="Canonical parent songbook — translations / editions point upward to their source (#782)">Parent</th>
-                        <th data-col-priority="tertiary"  data-sort-key="colour" data-sort-type="text">Colour</th>
-                        <th data-col-priority="secondary" data-sort-key="status" data-sort-type="text" title="Public visibility — a disabled book is hidden from every public page but stays fully editable here (#1765)">Status</th>
-                        <th data-col-priority="primary"   class="text-end">Actions</th>
+                        <th scope="col" data-col-priority="tertiary"  style="width:1.5rem" aria-label="Drag to reorder"></th>
+                        <th scope="col" data-col-priority="tertiary"  style="width:6rem">Order</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="abbr" data-sort-type="text">Abbr</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="name" data-sort-type="text">Name</th>
+                        <th scope="col" data-col-priority="secondary" class="text-center" data-sort-key="official" data-sort-type="text" title="Official published hymnal (#502)">Official</th>
+                        <th scope="col" data-col-priority="primary"   class="text-center" data-sort-key="songs" data-sort-type="number">Songs</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="language" data-sort-type="text" title="IETF BCP 47 language tag — empty means multi-lingual / not specified (#778)">Languages</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="parent" data-sort-type="text" title="Canonical parent songbook — translations / editions point upward to their source (#782)">Parent</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="colour" data-sort-type="text">Colour</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="status" data-sort-type="text" title="Public visibility — a disabled book is hidden from every public page but stays fully editable here (#1765)">Status</th>
+                        <th scope="col" data-col-priority="primary"   class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -3145,7 +3145,7 @@ $csrf = csrfToken();
                             data-sort-abbr="<?= htmlspecialchars($r['Abbreviation']) ?>">
                             <td data-col-priority="tertiary" class="text-center align-middle">
                                 <span class="songbook-drag-handle" title="Drag to reorder" aria-hidden="true">
-                                    <i class="bi bi-grip-vertical"></i>
+                                    <i aria-hidden="true" class="bi bi-grip-vertical"></i>
                                 </span>
                             </td>
                             <td data-col-priority="tertiary">
@@ -3364,7 +3364,7 @@ $csrf = csrfToken();
                                 <button type="button" class="btn btn-sm btn-outline-info"
                                         onclick="openEditModal(<?= htmlspecialchars((string)$editRowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Edit songbook">
-                                    <i class="bi bi-pencil"></i>
+                                    <i aria-hidden="true" class="bi bi-pencil"></i>
                                 </button>
                                 <!-- #1765 Feature 5 — export this songbook as a MARCXML file. -->
                                 <a class="btn btn-sm btn-outline-secondary"
@@ -3395,7 +3395,7 @@ $csrf = csrfToken();
                                                 ? 'Re-enable — make visible to the public again'
                                                 : 'Disable — hide from every public page (stays editable here)'
                                             ?>">
-                                        <i class="bi bi-<?= $rIsDisabled ? 'eye' : 'eye-slash' ?>"></i>
+                                        <i aria-hidden="true" class="bi bi-<?= $rIsDisabled ? 'eye' : 'eye-slash' ?>"></i>
                                     </button>
                                 </form>
                                 <?php endif; ?>
@@ -3416,7 +3416,7 @@ $csrf = csrfToken();
                                         data-songbook-abbrev="<?= htmlspecialchars($r['Abbreviation'], ENT_QUOTES, 'UTF-8') ?>"
                                         data-songbook-name="<?= htmlspecialchars($r['Name'], ENT_QUOTES, 'UTF-8') ?>"
                                         title="Export every song in this songbook as a JSON bundle (filename: &quot;&lt;Title&gt; (&lt;ABBR&gt;) [Bundle].json&quot;).">
-                                    <i class="bi bi-box-arrow-down"></i>
+                                    <i aria-hidden="true" class="bi bi-box-arrow-down"></i>
                                 </button>
                                 <?php
                                     /* Three states for the delete button (#706):
@@ -3444,18 +3444,18 @@ $csrf = csrfToken();
                                 <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick="openDeleteModal(<?= htmlspecialchars((string)$deleteRowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Delete songbook (no songs reference it)">
-                                    <i class="bi bi-trash"></i>
+                                    <i aria-hidden="true" class="bi bi-trash"></i>
                                 </button>
                                 <?php elseif ($isAdmin): ?>
                                 <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick="openCascadeDeleteModal(<?= htmlspecialchars((string)$cascadeRowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Cascade-delete: songbook + <?= $songCnt ?> song(s) + every reference to them">
-                                    <i class="bi bi-trash"></i>
+                                    <i aria-hidden="true" class="bi bi-trash"></i>
                                 </button>
                                 <?php else: ?>
                                 <button type="button" class="btn btn-sm btn-outline-secondary" disabled
                                         title="<?= $songCnt ?> song(s) still reference this abbreviation — admin/global_admin role required for cascade delete">
-                                    <i class="bi bi-trash"></i>
+                                    <i aria-hidden="true" class="bi bi-trash"></i>
                                 </button>
                                 <?php endif; ?>
                             </td>
@@ -3468,7 +3468,7 @@ $csrf = csrfToken();
             </table>
             <?php if ($rows): ?>
                 <button type="submit" class="btn btn-sm btn-amber-solid">
-                    <i class="bi bi-save me-1"></i>Save display order
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save display order
                 </button>
                 <small class="text-muted ms-2">Lower numbers render first. Any non-negative integer is fine — gaps of 10 between rows give you room to slot in a new book later, but you can use 1, 2, 3, … or anything else (#672).</small>
             <?php endif; ?>
@@ -3479,7 +3479,7 @@ $csrf = csrfToken();
              Two modes: fill (only rows with no colour set) and reassign
              (every row, gated by typed-confirmation). -->
         <div class="card-admin p-3 mb-4">
-            <h2 class="h6 mb-3"><i class="bi bi-palette me-2"></i>Auto-colour songbooks</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-palette me-2"></i>Auto-colour songbooks</h2>
             <p class="small text-muted mb-3">
                 Pick palette colours from the active theme so the catalogue stays visually consistent. Existing curator-typed colours are preserved unless the destructive Reassign mode is used.
             </p>
@@ -3489,7 +3489,7 @@ $csrf = csrfToken();
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="auto_colour_fill">
                     <button type="submit" class="btn btn-amber btn-sm">
-                        <i class="bi bi-droplet-half me-1"></i>Fill missing colours
+                        <i aria-hidden="true" class="bi bi-droplet-half me-1"></i>Fill missing colours
                     </button>
                 </form>
                 <form method="POST" class="d-inline-flex align-items-end gap-2"
@@ -3506,7 +3506,7 @@ $csrf = csrfToken();
                            placeholder="Type: REASSIGN ALL" autocomplete="off"
                            style="max-width: 11rem;">
                     <button type="submit" class="btn btn-outline-danger btn-sm">
-                        <i class="bi bi-shuffle me-1"></i>Reassign all (destructive)
+                        <i aria-hidden="true" class="bi bi-shuffle me-1"></i>Reassign all (destructive)
                     </button>
                 </form>
             </div>
@@ -3528,7 +3528,7 @@ $csrf = csrfToken();
              double-click can't silently rewire a row that already
              pointed at a different parent. -->
         <div class="card-admin p-3 mb-4">
-            <h2 class="h6 mb-2"><i class="bi bi-diagram-3 me-2"></i>Apply family manifest</h2>
+            <h2 class="h6 mb-2"><i aria-hidden="true" class="bi bi-diagram-3 me-2"></i>Apply family manifest</h2>
             <p class="small text-muted mb-3">
                 Upload a JSON file produced by a scraper (e.g. <code>_family-manifest.json</code>
                 from <code>ChristInSong.app.py</code>) to bulk-link vernacular / edition / abridgement
@@ -3566,7 +3566,7 @@ $csrf = csrfToken();
                     </div>
                 </div>
                 <button type="submit" class="btn btn-amber btn-sm mt-3">
-                    <i class="bi bi-eye me-1"></i>Preview / Apply
+                    <i aria-hidden="true" class="bi bi-eye me-1"></i>Preview / Apply
                 </button>
             </form>
 
@@ -3602,11 +3602,11 @@ $csrf = csrfToken();
                 <table class="table table-sm align-middle mb-0">
                     <thead>
                         <tr class="text-muted small">
-                            <th>Child</th>
-                            <th>Parent</th>
-                            <th>Relationship</th>
-                            <th>Action</th>
-                            <th>Note</th>
+                            <th scope="col">Child</th>
+                            <th scope="col">Parent</th>
+                            <th scope="col">Relationship</th>
+                            <th scope="col">Action</th>
+                            <th scope="col">Note</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -3646,7 +3646,7 @@ $csrf = csrfToken();
         <form method="POST" class="card-admin p-3 mb-4">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
-            <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a songbook</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a songbook</h2>
 
             <div class="mb-3">
                 <label class="form-label small" for="create-abbreviation">Abbreviation</label>
@@ -3671,7 +3671,7 @@ $csrf = csrfToken();
             ?>
 
             <button type="submit" class="btn btn-amber-solid btn-sm mt-3">
-                <i class="bi bi-plus me-1"></i>Create songbook
+                <i aria-hidden="true" class="bi bi-plus me-1"></i>Create songbook
             </button>
         </form>
 
@@ -3718,7 +3718,7 @@ $csrf = csrfToken();
                     <input type="hidden" name="id" id="edit-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
                         <h5 class="modal-title">
-                            <i class="bi bi-pencil me-2"></i>Edit songbook — <code id="edit-abbr-label"></code>
+                            <i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit songbook — <code id="edit-abbr-label"></code>
                             <!-- Feature 1 (#1765) — read-only reflection of the current
                                  disable state (populated by openEditModal()); the
                                  actual toggle lives on the list row so the one
@@ -3759,7 +3759,7 @@ $csrf = csrfToken();
                              #22 — the create form has no songs to apply defaults to). */ -->
                         <div class="mb-3 border-top pt-2" role="group" aria-labelledby="edit-default-rights-label">
                             <label class="form-label small text-muted d-block mb-1" id="edit-default-rights-label">
-                                <i class="bi bi-patch-check me-1"></i>Default rights (prefill hint for songs in this book)
+                                <i aria-hidden="true" class="bi bi-patch-check me-1"></i>Default rights (prefill hint for songs in this book)
                             </label>
                             <div class="row g-2">
                                 <div class="col-12 col-md-6">
@@ -3805,7 +3805,7 @@ $csrf = csrfToken();
                         <div class="mb-3 border-top pt-2" id="edit-apply-song-language-block">
                             <details>
                                 <summary class="form-label small text-muted" style="cursor:pointer;">
-                                    <i class="bi bi-translate me-1"></i>Apply this language to all songs in this songbook
+                                    <i aria-hidden="true" class="bi bi-translate me-1"></i>Apply this language to all songs in this songbook
                                 </summary>
                                 <div class="mt-2 small">
                                     <p class="text-muted mb-2">
@@ -3826,7 +3826,7 @@ $csrf = csrfToken();
                                             class="btn btn-sm btn-outline-info"
                                             id="edit-apply-song-language-btn"
                                             disabled>
-                                        <i class="bi bi-arrow-down-circle me-1"></i>
+                                        <i aria-hidden="true" class="bi bi-arrow-down-circle me-1"></i>
                                         <span id="edit-apply-song-language-label">Apply to songs</span>
                                     </button>
                                     <span id="edit-apply-song-language-status"
@@ -4139,7 +4139,7 @@ $csrf = csrfToken();
                     <input type="hidden" name="action" value="delete">
                     <input type="hidden" name="id" id="delete-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title"><i class="bi bi-trash me-2"></i>Delete — <code id="delete-abbr-label"></code></h5>
+                        <h5 class="modal-title"><i aria-hidden="true" class="bi bi-trash me-2"></i>Delete — <code id="delete-abbr-label"></code></h5>
                         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
@@ -4168,7 +4168,7 @@ $csrf = csrfToken();
                     <input type="hidden" name="id" id="cascade-delete-id">
                     <div class="modal-header" style="border-color: var(--ih-border); background: rgba(220,53,69,0.15);">
                         <h5 class="modal-title">
-                            <i class="bi bi-exclamation-triangle-fill me-2 text-danger"></i>
+                            <i aria-hidden="true" class="bi bi-exclamation-triangle-fill me-2 text-danger"></i>
                             Cascade delete — <code id="cascade-delete-abbr-label"></code>
                         </h5>
                         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
@@ -4197,7 +4197,7 @@ $csrf = csrfToken();
                     <div class="modal-footer" style="border-color: var(--ih-border);">
                         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                         <button type="submit" class="btn btn-danger" id="cascade-delete-submit" disabled>
-                            <i class="bi bi-trash me-1"></i>Delete songbook + all songs
+                            <i aria-hidden="true" class="bi bi-trash me-1"></i>Delete songbook + all songs
                         </button>
                     </div>
                 </form>
@@ -5147,7 +5147,7 @@ $csrf = csrfToken();
                     '</div>' +
                     '<button type="button" class="btn btn-sm btn-outline-danger" ' +
                             'data-action="remove-compiler" title="Remove this compiler">' +
-                      '<i class="bi bi-x-lg"></i>' +
+                      '<i aria-hidden="true" class="bi bi-x-lg"></i>' +
                     '</button>' +
                   '</div>' +
                 '</div>';
@@ -5278,7 +5278,7 @@ $csrf = csrfToken();
                     '</div>' +
                     '<button type="button" class="btn btn-sm btn-outline-danger" ' +
                             'data-action="remove-publisher" title="Remove this publisher">' +
-                      '<i class="bi bi-x-lg"></i>' +
+                      '<i aria-hidden="true" class="bi bi-x-lg"></i>' +
                     '</button>' +
                   '</div>' +
                 '</div>';
@@ -5352,7 +5352,7 @@ $csrf = csrfToken();
                     '</div>' +
                     '<button type="button" class="btn btn-sm btn-outline-danger" ' +
                             'data-action="remove-alt-name" title="Remove this alt name">' +
-                      '<i class="bi bi-x-lg"></i>' +
+                      '<i aria-hidden="true" class="bi bi-x-lg"></i>' +
                     '</button>' +
                   '</div>' +
                 '</div>';

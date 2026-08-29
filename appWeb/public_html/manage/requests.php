@@ -264,13 +264,13 @@ try {
             <table class="table table-sm table-hover mb-0 cp-sortable admin-table-responsive">
                 <thead>
                     <tr class="text-muted small">
-                        <th data-sort-key="id"         data-sort-type="number">#</th>
-                        <th data-sort-key="title"      data-sort-type="text">Title</th>
-                        <th data-sort-key="songbook"   data-sort-type="text">Songbook</th>
-                        <th data-sort-key="submitted"  data-sort-type="text">Submitted</th>
-                        <th data-sort-key="by"         data-sort-type="text">By</th>
-                        <th data-sort-key="status"     data-sort-type="text">Status</th>
-                        <th></th>
+                        <th scope="col" data-sort-key="id"         data-sort-type="number">#</th>
+                        <th scope="col" data-sort-key="title"      data-sort-type="text">Title</th>
+                        <th scope="col" data-sort-key="songbook"   data-sort-type="text">Songbook</th>
+                        <th scope="col" data-sort-key="submitted"  data-sort-type="text">Submitted</th>
+                        <th scope="col" data-sort-key="by"         data-sort-type="text">By</th>
+                        <th scope="col" data-sort-key="status"     data-sort-type="text">Status</th>
+                        <th scope="col"></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -375,7 +375,7 @@ try {
                                 <div class="col-12 d-flex gap-2 mt-2">
                                     <button type="submit" class="btn btn-sm btn-amber-solid">Save</button>
                                     <a href="/manage/editor/" class="btn btn-sm btn-outline-primary">
-                                        <i class="bi bi-pencil-square me-1"></i>Open editor
+                                        <i aria-hidden="true" class="bi bi-pencil-square me-1"></i>Open editor
                                     </a>
                                 </div>
                             </form>

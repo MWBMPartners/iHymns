@@ -2138,7 +2138,7 @@ try {
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-2"><i class="bi bi-person-badge me-2"></i>Musicians</h1>
+        <h1 class="h4 mb-2"><i aria-hidden="true" class="bi bi-person-badge me-2"></i>Musicians</h1>
         <p class="text-secondary small mb-3">
             Everyone credited on your songs as a writer, composer, arranger,
             adaptor or translator, plus any names added ahead of time. Use this
@@ -2176,14 +2176,14 @@ try {
                      (bulk_register_unregistered) internally; only the user-facing
                      wording changed so non-technical admins understand it. -->
                 <a href="/manage/musicians-bulk-promote" class="btn btn-sm btn-amber-solid ms-auto">
-                    <i class="bi bi-magic me-1"></i>Review &amp; add (checks for duplicates)
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Review &amp; add (checks for duplicates)
                 </a>
                 <form method="POST" class="d-inline"
                       onsubmit="return confirm('Add all <?= (int)$totalInUseUnregistered ?> credited <?= $totalInUseUnregistered === 1 ? 'person' : 'people' ?> to your Musicians list?\n\nThis adds them straight away, without checking for possible duplicates first. Use &quot;Review &amp; add&quot; instead if you want to check for near-duplicates.');">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="bulk_register_unregistered">
                     <button type="submit" class="btn btn-sm btn-outline-info">
-                        <i class="bi bi-person-plus me-1"></i>Add all <?= number_format($totalInUseUnregistered) ?> now
+                        <i aria-hidden="true" class="bi bi-person-plus me-1"></i>Add all <?= number_format($totalInUseUnregistered) ?> now
                     </button>
                 </form>
             </div>
@@ -2206,7 +2206,7 @@ try {
                     the same person spelled two different ways.
                 </span>
                 <a href="/manage/musician-duplicates" class="btn btn-sm btn-outline-warning ms-auto">
-                    <i class="bi bi-git-compare me-1"></i>Review duplicates
+                    <i aria-hidden="true" class="bi bi-git-compare me-1"></i>Review duplicates
                 </a>
             </div>
         <?php endif; ?>
@@ -2245,7 +2245,7 @@ try {
                 <div class="col-md-5">
                     <label for="mus-search" class="visually-hidden">Search names</label>
                     <div class="input-group input-group-sm">
-                        <span class="input-group-text"><i class="bi bi-search"></i></span>
+                        <span class="input-group-text"><i aria-hidden="true" class="bi bi-search"></i></span>
                         <input type="search" class="form-control" id="mus-search"
                                placeholder="Filter by name, lifespan, notes…" autocomplete="off">
                         <button class="btn btn-outline-secondary" type="button" id="mus-search-clear" title="Clear" aria-label="Clear search">
@@ -2278,7 +2278,7 @@ try {
                 </div>
                 <div class="col-md-1 text-md-end">
                     <button type="button" class="btn btn-amber-solid btn-sm" id="mus-add-btn">
-                        <i class="bi bi-plus-circle me-1"></i>Add person
+                        <i aria-hidden="true" class="bi bi-plus-circle me-1"></i>Add person
                     </button>
                 </div>
             </div>
@@ -2404,9 +2404,9 @@ try {
                                 data-person='<?= htmlspecialchars($personJson, ENT_QUOTES) ?>'>
                                 <td data-col-priority="primary" class="person-name <?= $isSpecial ? 'fst-italic' : '' ?>">
                                     <?php if ($isGroup): ?>
-                                        <i class="bi bi-people-fill text-info me-1" title="Group / band / collective" aria-label="Group"></i>
+                                        <i aria-hidden="true" class="bi bi-people-fill text-info me-1" title="Group / band / collective" aria-label="Group"></i>
                                     <?php elseif ($isSpecial): ?>
-                                        <i class="bi bi-question-circle text-warning me-1" title="Special-case attribution" aria-label="Special case"></i>
+                                        <i aria-hidden="true" class="bi bi-question-circle text-warning me-1" title="Special-case attribution" aria-label="Special case"></i>
                                     <?php endif; ?>
                                     <?= htmlspecialchars($p['name']) ?>
                                     <?php if ($isSpecial): ?>
@@ -2422,8 +2422,8 @@ try {
                                         </div>
                                     <?php endif; ?>
                                     <?php if ($p['notes']): ?>
-                                        <span class="text-secondary small ms-2" title="<?= htmlspecialchars($p['notes']) ?>">
-                                            <i class="bi bi-sticky"></i>
+                                        <span class="text-secondary small ms-2" title="<?= htmlspecialchars($p['notes']) ?>" role="img" aria-label="Has curator notes">
+                                            <i class="bi bi-sticky" aria-hidden="true"></i>
                                         </span>
                                     <?php endif; ?>
                                 </td>
@@ -2445,7 +2445,7 @@ try {
                                     <?php if ($p['link_count'] > 0): ?>
                                         <span class="badge bg-secondary-subtle text-secondary-emphasis badge-icon-count"
                                               title="<?= (int)$p['link_count'] ?> external link(s)">
-                                            <i class="bi bi-link-45deg"></i> <?= (int)$p['link_count'] ?>
+                                            <i aria-hidden="true" class="bi bi-link-45deg"></i> <?= (int)$p['link_count'] ?>
                                         </span>
                                     <?php endif; ?>
                                     <?php if ($p['ipi_count'] > 0): ?>
@@ -2537,7 +2537,7 @@ try {
                     <input type="hidden" name="id" id="mus-delete-id" value="">
                     <div class="modal-header border-secondary">
                         <h5 class="modal-title" id="musDeleteLabel">
-                            <i class="bi bi-trash me-2"></i>Remove from registry
+                            <i aria-hidden="true" class="bi bi-trash me-2"></i>Remove from registry
                         </h5>
                         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
@@ -2548,7 +2548,7 @@ try {
                         </p>
 
                         <div id="mus-delete-in-use" class="d-none alert alert-warning py-2 small mb-3">
-                            <i class="bi bi-exclamation-triangle me-1"></i>
+                            <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
                             This person is still cited by
                             <strong id="mus-delete-usage-count"></strong>
                             song-credit row(s). The song credits stay either way —
@@ -2571,7 +2571,7 @@ try {
                     <div class="modal-footer border-secondary">
                         <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
                         <button type="submit" class="btn btn-danger btn-sm" id="mus-delete-submit">
-                            <i class="bi bi-trash me-1"></i>Remove
+                            <i aria-hidden="true" class="bi bi-trash me-1"></i>Remove
                         </button>
                     </div>
                 </form>
@@ -2589,7 +2589,7 @@ try {
             <div class="modal-content border-secondary">
                 <div class="modal-header border-secondary">
                     <h5 class="modal-title" id="musViewSongsLabel">
-                        <i class="bi bi-music-note-list me-2"></i>
+                        <i aria-hidden="true" class="bi bi-music-note-list me-2"></i>
                         Songs citing <strong id="mus-view-songs-name"></strong>
                     </h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -2629,7 +2629,7 @@ try {
                     <input type="hidden" name="source_name" id="mus-rename-source-name" value="">
                     <div class="modal-header border-secondary">
                         <h5 class="modal-title" id="musRenameLabel">
-                            <i class="bi bi-pencil-square me-2"></i>Rename person
+                            <i aria-hidden="true" class="bi bi-pencil-square me-2"></i>Rename person
                         </h5>
                         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
@@ -2649,7 +2649,7 @@ try {
                     <div class="modal-footer border-secondary">
                         <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
                         <button type="submit" class="btn btn-warning btn-sm">
-                            <i class="bi bi-pencil-square me-1"></i>Rename and cascade
+                            <i aria-hidden="true" class="bi bi-pencil-square me-1"></i>Rename and cascade
                         </button>
                     </div>
                 </form>
@@ -2680,7 +2680,7 @@ try {
                     <input type="hidden" name="target_name" id="mus-merge-target-name-hidden" value="">
                     <div class="modal-header border-secondary">
                         <h5 class="modal-title" id="musMergeLabel">
-                            <i class="bi bi-union me-2"></i>Merge person into another
+                            <i aria-hidden="true" class="bi bi-union me-2"></i>Merge person into another
                         </h5>
                         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
@@ -2802,7 +2802,7 @@ try {
                     <div class="modal-footer border-secondary">
                         <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
                         <button type="submit" class="btn btn-warning btn-sm" id="mus-merge-submit" disabled>
-                            <i class="bi bi-union me-1"></i>Merge
+                            <i aria-hidden="true" class="bi bi-union me-1"></i>Merge
                         </button>
                     </div>
                 </form>
@@ -2820,7 +2820,7 @@ try {
     <div class="offcanvas offcanvas-end" tabindex="-1" id="musDrawer" aria-labelledby="musDrawerLabel" style="width: min(560px, 95vw);">
         <div class="offcanvas-header border-bottom border-secondary">
             <h5 class="offcanvas-title" id="musDrawerLabel">
-                <i class="bi bi-person-badge me-2"></i>
+                <i aria-hidden="true" class="bi bi-person-badge me-2"></i>
                 <span id="mus-drawer-title">Add person</span>
             </h5>
             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Close"></button>
@@ -2980,7 +2980,7 @@ try {
                 <div class="d-flex justify-content-between align-items-center mb-1">
                     <label class="form-label small mb-0" id="mus-links-label">External links</label>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="mus-add-link-btn">
-                        <i class="bi bi-plus me-1"></i>Add link
+                        <i aria-hidden="true" class="bi bi-plus me-1"></i>Add link
                     </button>
                 </div>
                 <div id="mus-links-container" class="d-flex flex-column gap-2"></div>
@@ -2992,7 +2992,7 @@ try {
                 <div class="d-flex justify-content-between align-items-center mb-1">
                     <label class="form-label small mb-0" id="mus-ipi-label">IPI Name Numbers</label>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="mus-add-ipi-btn">
-                        <i class="bi bi-plus me-1"></i>Add IPI
+                        <i aria-hidden="true" class="bi bi-plus me-1"></i>Add IPI
                     </button>
                 </div>
                 <div id="mus-ipi-container" class="d-flex flex-column gap-2"></div>
@@ -3012,7 +3012,7 @@ try {
                 <div class="d-flex justify-content-between align-items-center mb-1">
                     <label class="form-label small mb-0" id="mus-isni-label">ISNI</label>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="mus-add-isni-btn">
-                        <i class="bi bi-plus me-1"></i>Add ISNI
+                        <i aria-hidden="true" class="bi bi-plus me-1"></i>Add ISNI
                     </button>
                 </div>
                 <div id="mus-isni-container" class="d-flex flex-column gap-2"></div>
@@ -3029,7 +3029,7 @@ try {
                 <div class="d-flex justify-content-between align-items-center mb-1">
                     <label class="form-label small mb-0" id="mus-otherid-label">Other identifiers</label>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="mus-add-otherid-btn">
-                        <i class="bi bi-plus me-1"></i>Add identifier
+                        <i aria-hidden="true" class="bi bi-plus me-1"></i>Add identifier
                     </button>
                 </div>
                 <div id="mus-otherid-container" class="d-flex flex-column gap-2"></div>
@@ -3048,7 +3048,7 @@ try {
                 <div class="d-flex justify-content-between align-items-center mb-1">
                     <label class="form-label small mb-0" id="mus-aliases-label">AKA / Aliases</label>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="mus-add-alias-btn">
-                        <i class="bi bi-plus me-1"></i>Add alias
+                        <i aria-hidden="true" class="bi bi-plus me-1"></i>Add alias
                     </button>
                 </div>
                 <div id="mus-aliases-container" class="d-flex flex-column gap-2"></div>
@@ -3082,7 +3082,7 @@ try {
                            autocomplete="off" aria-label="Search for a person to add as a member" placeholder="Type a registered person's name…">
                     <datalist id="mus-member-datalist"></datalist>
                     <button type="button" class="btn btn-outline-secondary" id="mus-add-member-btn">
-                        <i class="bi bi-plus me-1"></i>Add
+                        <i aria-hidden="true" class="bi bi-plus me-1"></i>Add
                     </button>
                 </div>
                 <?php if ($relationColsExist['RelationType']): ?>
@@ -3137,7 +3137,7 @@ try {
                                autocomplete="off" aria-label="Search for a person to add as a portrayer" placeholder="Type a registered person's name…">
                         <datalist id="mus-portrayedby-datalist"></datalist>
                         <button type="button" class="btn btn-outline-secondary" id="mus-add-portrayedby-btn">
-                            <i class="bi bi-plus me-1"></i>Add
+                            <i aria-hidden="true" class="bi bi-plus me-1"></i>Add
                         </button>
                     </div>
                     <div class="row g-2 mt-1">
@@ -3185,7 +3185,7 @@ try {
             <div class="d-flex justify-content-end gap-2 mt-auto pt-3 border-top border-secondary">
                 <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="offcanvas">Cancel</button>
                 <button type="submit" class="btn btn-amber-solid btn-sm">
-                    <i class="bi bi-save me-1"></i>Save
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                 </button>
             </div>
         </form>
@@ -5217,12 +5217,12 @@ try {
                     notInUseEl.classList.add('d-none');
                     usageCnt.textContent = usage.toLocaleString();
                     submitBtn.disabled = true;
-                    submitBtn.innerHTML = '<i class="bi bi-trash me-1"></i>Force remove';
+                    submitBtn.innerHTML = '<i aria-hidden="true" class="bi bi-trash me-1"></i>Force remove';
                 } else {
                     inUseEl.classList.add('d-none');
                     notInUseEl.classList.remove('d-none');
                     submitBtn.disabled = false;
-                    submitBtn.innerHTML = '<i class="bi bi-trash me-1"></i>Remove';
+                    submitBtn.innerHTML = '<i aria-hidden="true" class="bi bi-trash me-1"></i>Remove';
                 }
                 modal.show();
             });

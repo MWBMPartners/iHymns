@@ -540,7 +540,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
         <div>
             <h1 class="h3 mb-1">
-                <i class="bi bi-bell me-2"></i>Notifications
+                <i aria-hidden="true" class="bi bi-bell me-2"></i>Notifications
                 <?= entitlementLockChipHtml('manage_notifications') ?>
             </h1>
             <p class="text-secondary small mb-0">
@@ -552,18 +552,18 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </p>
         </div>
         <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#notify-compose-modal">
-            <i class="bi bi-pencil-square me-1"></i> Compose
+            <i aria-hidden="true" class="bi bi-pencil-square me-1"></i> Compose
         </button>
     </div>
 
     <?php if ($flashSuccess !== ''): ?>
         <div class="alert alert-success">
-            <i class="bi bi-check-circle me-1"></i><?= htmlspecialchars($flashSuccess) ?>
+            <i aria-hidden="true" class="bi bi-check-circle me-1"></i><?= htmlspecialchars($flashSuccess) ?>
         </div>
     <?php endif; ?>
     <?php if ($flashError !== ''): ?>
         <div class="alert alert-danger">
-            <i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($flashError) ?>
+            <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($flashError) ?>
         </div>
     <?php endif; ?>
 
@@ -617,7 +617,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </div>
                     <div class="col-md-6">
                         <button type="submit" class="btn btn-sm btn-primary">
-                            <i class="bi bi-key me-1"></i>Generate VAPID keypair
+                            <i aria-hidden="true" class="bi bi-key me-1"></i>Generate VAPID keypair
                         </button>
                     </div>
                 </form>
@@ -659,7 +659,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                             </div>
                             <div class="col-sm-4 d-flex align-items-end">
                                 <button type="submit" class="btn btn-sm btn-primary w-100">
-                                    <i class="bi bi-send me-1"></i>Send push
+                                    <i aria-hidden="true" class="bi bi-send me-1"></i>Send push
                                 </button>
                             </div>
                         </form>
@@ -674,7 +674,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                             <input type="hidden" name="action" value="push_test">
                             <button type="submit" class="btn btn-sm btn-outline-info w-100">
-                                <i class="bi bi-bell me-1"></i>Send a test to my devices
+                                <i aria-hidden="true" class="bi bi-bell me-1"></i>Send a test to my devices
                             </button>
                         </form>
                         <p class="text-secondary small mb-2">
@@ -768,12 +768,12 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <table class="table table-dark table-sm table-hover mb-0 cp-sortable admin-table-responsive">
                 <thead>
                     <tr>
-                        <th data-sort-key="when"      data-sort-type="text">When</th>
-                        <th data-sort-key="recipient" data-sort-type="text">Recipient</th>
-                        <th data-sort-key="type"      data-sort-type="text">Type</th>
-                        <th data-sort-key="title"     data-sort-type="text">Title / Body</th>
-                        <th class="text-center" data-sort-key="read" data-sort-type="text">Read</th>
-                        <th></th>
+                        <th scope="col" data-sort-key="when"      data-sort-type="text">When</th>
+                        <th scope="col" data-sort-key="recipient" data-sort-type="text">Recipient</th>
+                        <th scope="col" data-sort-key="type"      data-sort-type="text">Type</th>
+                        <th scope="col" data-sort-key="title"     data-sort-type="text">Title / Body</th>
+                        <th scope="col" class="text-center" data-sort-key="read" data-sort-type="text">Read</th>
+                        <th scope="col"></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -801,15 +801,15 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                     </div>
                                     <?php if (!empty($n['ActionUrl'])): ?>
                                         <a class="small" href="<?= htmlspecialchars((string)$n['ActionUrl']) ?>" target="_blank" rel="noopener">
-                                            <i class="bi bi-box-arrow-up-right me-1"></i><?= htmlspecialchars((string)$n['ActionUrl']) ?>
+                                            <i aria-hidden="true" class="bi bi-box-arrow-up-right me-1"></i><?= htmlspecialchars((string)$n['ActionUrl']) ?>
                                         </a>
                                     <?php endif; ?>
                                 </td>
                                 <td class="text-center">
                                     <?php if ((int)$n['IsRead'] === 1): ?>
-                                        <i class="bi bi-check-circle-fill text-success" title="Read"></i>
+                                        <i aria-hidden="true" class="bi bi-check-circle-fill text-success" title="Read"></i>
                                     <?php else: ?>
-                                        <i class="bi bi-circle text-warning" title="Unread"></i>
+                                        <i aria-hidden="true" class="bi bi-circle text-warning" title="Unread"></i>
                                     <?php endif; ?>
                                 </td>
                                 <td class="text-end">
@@ -861,7 +861,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="modal-header">
                     <h5 class="modal-title" id="notify-compose-label">
-                        <i class="bi bi-pencil-square me-2"></i>Compose notification
+                        <i aria-hidden="true" class="bi bi-pencil-square me-2"></i>Compose notification
                     </h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
@@ -946,7 +946,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <div class="modal-footer">
                     <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-send me-1"></i>Send notification
+                        <i aria-hidden="true" class="bi bi-send me-1"></i>Send notification
                     </button>
                 </div>
             </form>

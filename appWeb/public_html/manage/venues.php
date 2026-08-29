@@ -326,7 +326,7 @@ function venuesUrl(array $overrides = []): string
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-2"><i class="bi bi-geo-alt me-2"></i>Venues &amp; Service Times</h1>
+        <h1 class="h4 mb-2"><i aria-hidden="true" class="bi bi-geo-alt me-2"></i>Venues &amp; Service Times</h1>
         <p class="text-secondary small mb-4" style="max-width: 60ch;">
             Tell iHymns <strong>where</strong> your organisation meets and <strong>when</strong>.
             This is the foundation for <em>Service Mode</em> (letting a congregation follow the
@@ -335,22 +335,22 @@ function venuesUrl(array $overrides = []): string
         </p>
 
         <?php if ($success): ?>
-            <div class="alert alert-success py-2"><i class="bi bi-check-circle me-1"></i><?= htmlspecialchars($success) ?></div>
+            <div class="alert alert-success py-2"><i aria-hidden="true" class="bi bi-check-circle me-1"></i><?= htmlspecialchars($success) ?></div>
         <?php endif; ?>
         <?php if ($error): ?>
-            <div class="alert alert-danger py-2"><i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?></div>
+            <div class="alert alert-danger py-2"><i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?></div>
         <?php endif; ?>
 
         <?php if (!$schemaReady): ?>
             <div class="card border-warning">
                 <div class="card-body">
-                    <h2 class="h6 text-warning-emphasis"><i class="bi bi-database-exclamation me-1"></i>Schema not yet migrated</h2>
+                    <h2 class="h6 text-warning-emphasis"><i aria-hidden="true" class="bi bi-database-exclamation me-1"></i>Schema not yet migrated</h2>
                     <p class="small mb-2">
                         The <code>tblOrgVenues</code> / <code>tblOrgServiceSchedules</code> tables don't
                         exist on this environment yet. Migrations aren't applied automatically on deploy.
                     </p>
                     <a class="btn btn-sm btn-amber-solid" href="/manage/setup-database">
-                        <i class="bi bi-database-gear me-1"></i>Open Database Setup → run “Org Venues &amp; Service Schedules”
+                        <i aria-hidden="true" class="bi bi-database-gear me-1"></i>Open Database Setup → run “Org Venues &amp; Service Schedules”
                     </a>
                 </div>
             </div>
@@ -377,9 +377,9 @@ function venuesUrl(array $overrides = []): string
         <!-- ============================ VENUES ============================ -->
         <div class="card mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span class="fw-semibold"><i class="bi bi-building me-1"></i>Venues</span>
+                <span class="fw-semibold"><i aria-hidden="true" class="bi bi-building me-1"></i>Venues</span>
                 <a class="btn btn-sm btn-amber-solid" href="<?= htmlspecialchars(venuesUrl(['edit_venue' => 'new', 'venue' => null])) ?>#venue-form">
-                    <i class="bi bi-plus-lg me-1"></i>Add venue
+                    <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add venue
                 </a>
             </div>
             <div class="card-body p-0">
@@ -390,11 +390,11 @@ function venuesUrl(array $overrides = []): string
                     <table class="table admin-table-responsive cp-sortable align-middle mb-0">
                         <thead>
                             <tr>
-                                <th data-col-priority="primary" data-sort-key="venue" data-sort-type="text">Venue</th>
-                                <th data-col-priority="secondary" data-sort-key="location" data-sort-type="text">Location</th>
-                                <th data-col-priority="tertiary" data-sort-key="tz" data-sort-type="text">Timezone</th>
-                                <th data-col-priority="tertiary" data-sort-key="status" data-sort-type="text">Status</th>
-                                <th data-col-priority="primary" class="text-end">Actions</th>
+                                <th scope="col" data-col-priority="primary" data-sort-key="venue" data-sort-type="text">Venue</th>
+                                <th scope="col" data-col-priority="secondary" data-sort-key="location" data-sort-type="text">Location</th>
+                                <th scope="col" data-col-priority="tertiary" data-sort-key="tz" data-sort-type="text">Timezone</th>
+                                <th scope="col" data-col-priority="tertiary" data-sort-key="status" data-sort-type="text">Status</th>
+                                <th scope="col" data-col-priority="primary" class="text-end">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -411,8 +411,8 @@ function venuesUrl(array $overrides = []): string
                                 <td data-col-priority="secondary" data-sort-value="<?= htmlspecialchars(implode(', ', $loc), ENT_QUOTES) ?>">
                                     <span class="small"><?= $loc ? htmlspecialchars(implode(', ', $loc)) : '<span class="text-secondary">—</span>' ?></span>
                                     <?php if ($hasCoords): ?>
-                                        <span class="badge text-bg-light ms-1" title="Map pin set (convenience geofence<?= $v['RadiusMetres'] !== null ? ', radius ' . (int)$v['RadiusMetres'] . ' m' : '' ?>)">
-                                            <i class="bi bi-pin-map"></i>
+                                        <span class="badge text-bg-light ms-1" title="Map pin set (convenience geofence<?= $v['RadiusMetres'] !== null ? ', radius ' . (int)$v['RadiusMetres'] . ' m' : '' ?>)" role="img" aria-label="Map pin set">
+                                            <i class="bi bi-pin-map" aria-hidden="true"></i>
                                         </span>
                                     <?php endif; ?>
                                 </td>
@@ -426,7 +426,7 @@ function venuesUrl(array $overrides = []): string
                                 </td>
                                 <td data-col-priority="primary" class="text-end text-nowrap">
                                     <a class="btn btn-sm btn-outline-primary" href="<?= htmlspecialchars(venuesUrl(['venue' => (int)$v['Id'], 'edit_venue' => null, 'edit_schedule' => null])) ?>#schedules" title="Manage service times">
-                                        <i class="bi bi-clock-history"></i><span class="d-none d-md-inline ms-1">Service times</span>
+                                        <i aria-hidden="true" class="bi bi-clock-history"></i><span class="d-none d-md-inline ms-1">Service times</span>
                                     </a>
                                     <a class="btn btn-sm btn-outline-secondary" href="<?= htmlspecialchars(venuesUrl(['edit_venue' => (int)$v['Id'], 'venue' => null])) ?>#venue-form" title="Edit venue"
                                        aria-label="Edit venue <?= htmlspecialchars($v['Name'], ENT_QUOTES) ?>">
@@ -456,7 +456,7 @@ function venuesUrl(array $overrides = []): string
             <?php $ev = $editVenue ?? []; $isEditV = !empty($ev); ?>
             <div class="card mb-4" id="venue-form">
                 <div class="card-header fw-semibold">
-                    <i class="bi bi-<?= $isEditV ? 'pencil' : 'plus-lg' ?> me-1"></i><?= $isEditV ? 'Edit venue' : 'Add a venue' ?>
+                    <i aria-hidden="true" class="bi bi-<?= $isEditV ? 'pencil' : 'plus-lg' ?> me-1"></i><?= $isEditV ? 'Edit venue' : 'Add a venue' ?>
                 </div>
                 <div class="card-body">
                     <form method="post" action="/manage/venues" class="row g-3">
@@ -532,7 +532,7 @@ function venuesUrl(array $overrides = []): string
                         </div>
 
                         <div class="col-12 d-flex gap-2">
-                            <button type="submit" class="btn btn-amber-solid"><i class="bi bi-check-lg me-1"></i><?= $isEditV ? 'Save venue' : 'Add venue' ?></button>
+                            <button type="submit" class="btn btn-amber-solid"><i aria-hidden="true" class="bi bi-check-lg me-1"></i><?= $isEditV ? 'Save venue' : 'Add venue' ?></button>
                             <a class="btn btn-outline-secondary" href="<?= htmlspecialchars(venuesUrl(['edit_venue' => null])) ?>">Cancel</a>
                         </div>
                     </form>
@@ -544,9 +544,9 @@ function venuesUrl(array $overrides = []): string
         <?php if ($selectedVenueRow !== null): ?>
             <div class="card mb-4" id="schedules">
                 <div class="card-header d-flex justify-content-between align-items-center">
-                    <span class="fw-semibold"><i class="bi bi-calendar-week me-1"></i>Service times — <?= htmlspecialchars($selectedVenueRow['Name']) ?></span>
+                    <span class="fw-semibold"><i aria-hidden="true" class="bi bi-calendar-week me-1"></i>Service times — <?= htmlspecialchars($selectedVenueRow['Name']) ?></span>
                     <a class="btn btn-sm btn-amber-solid" href="<?= htmlspecialchars(venuesUrl(['edit_schedule' => 'new'])) ?>#schedule-form">
-                        <i class="bi bi-plus-lg me-1"></i>Add service time
+                        <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add service time
                     </a>
                 </div>
                 <div class="card-body p-0">
@@ -557,11 +557,11 @@ function venuesUrl(array $overrides = []): string
                         <table class="table admin-table-responsive cp-sortable align-middle mb-0">
                             <thead>
                                 <tr>
-                                    <th data-col-priority="primary" data-sort-key="service" data-sort-type="text">Service</th>
-                                    <th data-col-priority="primary" data-sort-key="when" data-sort-type="text">When</th>
-                                    <th data-col-priority="secondary" data-sort-key="next" data-sort-type="date">Next dates</th>
-                                    <th data-col-priority="tertiary" data-sort-key="status" data-sort-type="text">Status</th>
-                                    <th data-col-priority="primary" class="text-end">Actions</th>
+                                    <th scope="col" data-col-priority="primary" data-sort-key="service" data-sort-type="text">Service</th>
+                                    <th scope="col" data-col-priority="primary" data-sort-key="when" data-sort-type="text">When</th>
+                                    <th scope="col" data-col-priority="secondary" data-sort-key="next" data-sort-type="date">Next dates</th>
+                                    <th scope="col" data-col-priority="tertiary" data-sort-key="status" data-sort-type="text">Status</th>
+                                    <th scope="col" data-col-priority="primary" class="text-end">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -608,7 +608,7 @@ function venuesUrl(array $overrides = []): string
                 <?php $es = $editSchedule ?? []; $isEditS = !empty($es); $esKind = $es['RecurrenceKind'] ?? 'weekly'; ?>
                 <div class="card mb-4" id="schedule-form">
                     <div class="card-header fw-semibold">
-                        <i class="bi bi-<?= $isEditS ? 'pencil' : 'plus-lg' ?> me-1"></i><?= $isEditS ? 'Edit service time' : 'Add a service time' ?>
+                        <i aria-hidden="true" class="bi bi-<?= $isEditS ? 'pencil' : 'plus-lg' ?> me-1"></i><?= $isEditS ? 'Edit service time' : 'Add a service time' ?>
                     </div>
                     <div class="card-body">
                         <form method="post" action="/manage/venues" class="row g-3" id="sched-form-el">
@@ -699,7 +699,7 @@ function venuesUrl(array $overrides = []): string
                             </div>
 
                             <div class="col-12 d-flex gap-2">
-                                <button type="submit" class="btn btn-amber-solid"><i class="bi bi-check-lg me-1"></i><?= $isEditS ? 'Save service time' : 'Add service time' ?></button>
+                                <button type="submit" class="btn btn-amber-solid"><i aria-hidden="true" class="bi bi-check-lg me-1"></i><?= $isEditS ? 'Save service time' : 'Add service time' ?></button>
                                 <a class="btn btn-outline-secondary" href="<?= htmlspecialchars(venuesUrl(['edit_schedule' => null])) ?>">Cancel</a>
                             </div>
                         </form>

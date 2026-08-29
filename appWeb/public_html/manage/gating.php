@@ -145,7 +145,7 @@ $gatingDecisions = [
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-shield-shaded me-2"></i>Content Access</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-shield-shaded me-2"></i>Content Access</h1>
         <p class="text-secondary small mb-4">
             One place to see everything that controls who can view and download your songs,
             and to check whether it is safe to switch content locking on. While the master
@@ -170,7 +170,7 @@ $gatingDecisions = [
                     </span>
                 </div>
                 <a href="/manage/configuration#gating" class="btn btn-outline-warning btn-sm ms-auto">
-                    <i class="bi bi-sliders me-1"></i>Change the switch (Configuration)
+                    <i aria-hidden="true" class="bi bi-sliders me-1"></i>Change the switch (Configuration)
                 </a>
             </div>
             <?php if (!$gatingEnabled): ?>
@@ -180,7 +180,7 @@ $gatingDecisions = [
                 </p>
             <?php else: ?>
                 <p class="small text-warning mb-0 mt-2">
-                    <i class="bi bi-exclamation-triangle me-1"></i>Enforcement is LIVE — restriction rows,
+                    <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>Enforcement is LIVE — restriction rows,
                     tier caps and licence conferral are now applied to every reader.
                 </p>
             <?php endif; ?>
@@ -191,7 +191,7 @@ $gatingDecisions = [
             <h2 class="h6 mb-3">Activation readiness</h2>
             <ul class="list-group list-group-flush">
                 <li class="list-group-item bg-transparent d-flex align-items-start gap-2">
-                    <i class="bi <?= $schemaReady ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger' ?>"></i>
+                    <i aria-hidden="true" class="bi <?= $schemaReady ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger' ?>"></i>
                     <div>
                         <strong>Gating schema present</strong>
                         <div class="small text-secondary">The five family tables exist on this environment
@@ -199,7 +199,7 @@ $gatingDecisions = [
                     </div>
                 </li>
                 <li class="list-group-item bg-transparent d-flex align-items-start gap-2">
-                    <i class="bi <?= $tierCapsReady ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger' ?>"></i>
+                    <i aria-hidden="true" class="bi <?= $tierCapsReady ? 'bi-check-circle-fill text-success' : 'bi-x-circle-fill text-danger' ?>"></i>
                     <div>
                         <strong>Tier-capabilities registry column</strong>
                         <div class="small text-secondary"><code>tblAccessTiers.Capabilities</code> (the JSON cap store, rule #28)
@@ -207,7 +207,7 @@ $gatingDecisions = [
                     </div>
                 </li>
                 <li class="list-group-item bg-transparent d-flex align-items-start gap-2">
-                    <i class="bi bi-shield-check text-info"></i>
+                    <i aria-hidden="true" class="bi bi-shield-check text-info"></i>
                     <div>
                         <strong>Byte-identical no-op proven on this env</strong>
                         <div class="small text-secondary">Capture the OFF baseline and re-run Verify on
@@ -216,7 +216,7 @@ $gatingDecisions = [
                     </div>
                 </li>
                 <li class="list-group-item bg-transparent d-flex align-items-start gap-2">
-                    <i class="bi bi-person-check text-warning"></i>
+                    <i aria-hidden="true" class="bi bi-person-check text-warning"></i>
                     <div>
                         <strong>Owner decisions resolved (#1772–#1777)</strong>
                         <div class="small text-secondary">Six judgement calls the code cannot make. Confirm each on its issue
@@ -240,7 +240,7 @@ $gatingDecisions = [
                     <div class="col-md-6">
                         <div class="border border-secondary rounded p-2 h-100 <?= $canSee ? '' : 'opacity-50' ?>">
                             <div class="d-flex align-items-center gap-2">
-                                <i class="bi <?= htmlspecialchars($icon, ENT_QUOTES, 'UTF-8') ?>"></i>
+                                <i aria-hidden="true" class="bi <?= htmlspecialchars($icon, ENT_QUOTES, 'UTF-8') ?>"></i>
                                 <?php if ($canSee): ?>
                                     <a href="<?= htmlspecialchars($route, ENT_QUOTES, 'UTF-8') ?>" class="link-light fw-semibold"><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?></a>
                                 <?php else: ?>

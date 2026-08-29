@@ -382,7 +382,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-terminal me-2"></i>Database Query Tool</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-terminal me-2"></i>Database Query Tool</h1>
         <p class="text-secondary small mb-3">
             Run read-only look-ups against the live database to investigate a
             problem — a way to see exactly what is stored right now. Nothing

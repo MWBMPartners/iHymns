@@ -648,7 +648,7 @@ $csrf = csrfToken();
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-building me-2"></i>Organisations</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-building me-2"></i>Organisations</h1>
         <p class="text-secondary small mb-4">
             Add and edit organisations (churches and groups), manage who belongs to each one,
             and keep their licence details up to date.
@@ -668,13 +668,13 @@ $csrf = csrfToken();
                 <table class="table table-sm mb-0 align-middle cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
-                            <th data-sort-key="name"    data-sort-type="text">Name</th>
-                            <th data-sort-key="slug"    data-sort-type="text">Slug</th>
-                            <th data-sort-key="parent"  data-sort-type="text">Parent</th>
-                            <th data-sort-key="licence" data-sort-type="text">Licence</th>
-                            <th class="text-center" data-sort-key="active"  data-sort-type="text">Active</th>
-                            <th class="text-center" data-sort-key="members" data-sort-type="number">Members</th>
-                            <th class="text-end">Actions</th>
+                            <th scope="col" data-sort-key="name"    data-sort-type="text">Name</th>
+                            <th scope="col" data-sort-key="slug"    data-sort-type="text">Slug</th>
+                            <th scope="col" data-sort-key="parent"  data-sort-type="text">Parent</th>
+                            <th scope="col" data-sort-key="licence" data-sort-type="text">Licence</th>
+                            <th scope="col" class="text-center" data-sort-key="active"  data-sort-type="text">Active</th>
+                            <th scope="col" class="text-center" data-sort-key="members" data-sort-type="number">Members</th>
+                            <th scope="col" class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -696,7 +696,7 @@ $csrf = csrfToken();
                                     <?php endif; ?>
                                 </td>
                                 <td class="text-center" data-sort-value="<?= (int)$o['IsActive'] ?>">
-                                    <?= (int)$o['IsActive'] ? '<i class="bi bi-check-circle text-success"></i>' : '<i class="bi bi-x-circle text-muted"></i>' ?>
+                                    <?= (int)$o['IsActive'] ? '<i aria-hidden="true" class="bi bi-check-circle text-success"></i>' : '<i aria-hidden="true" class="bi bi-x-circle text-muted"></i>' ?>
                                 </td>
                                 <td class="text-center"><?= (int)$o['MemberCount'] ?></td>
                                 <td class="text-end">
@@ -729,7 +729,7 @@ $csrf = csrfToken();
             <form method="POST" class="card-admin p-3 mb-4">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action" value="create">
-                <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add an organisation</h2>
+                <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add an organisation</h2>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-5">
                         <label class="form-label small" for="create-org-name">Name</label>
@@ -797,7 +797,7 @@ $csrf = csrfToken();
                     </div>
                 </div>
                 <button type="submit" class="btn btn-amber-solid btn-sm mt-2">
-                    <i class="bi bi-plus me-1"></i>Create organisation
+                    <i aria-hidden="true" class="bi bi-plus me-1"></i>Create organisation
                 </button>
             </form>
 
@@ -805,7 +805,7 @@ $csrf = csrfToken();
 
             <div class="mb-3">
                 <a href="/manage/organisations" class="btn btn-sm btn-outline-secondary">
-                    <i class="bi bi-arrow-left me-1"></i>Back to organisation list
+                    <i aria-hidden="true" class="bi bi-arrow-left me-1"></i>Back to organisation list
                 </a>
             </div>
 
@@ -813,7 +813,7 @@ $csrf = csrfToken();
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action" value="update">
                 <input type="hidden" name="id" value="<?= (int)$editOrg['Id'] ?>">
-                <h2 class="h6 mb-3"><i class="bi bi-sliders me-2"></i>Settings — <?= htmlspecialchars($editOrg['Name']) ?></h2>
+                <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-sliders me-2"></i>Settings — <?= htmlspecialchars($editOrg['Name']) ?></h2>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-5">
                         <label class="form-label small" for="edit-org-name">Name</label>
@@ -961,7 +961,7 @@ $csrf = csrfToken();
                 <?php endif; ?>
 
                 <button type="submit" class="btn btn-amber-solid btn-sm mt-2">
-                    <i class="bi bi-save me-1"></i>Save settings
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save settings
                 </button>
             </form>
 
@@ -976,12 +976,12 @@ $csrf = csrfToken();
                  member self-service editor on /manage/my-organisations. -->
             <?php if ($multiLicenceTableExists && $canEditOrgLicences && !empty($editLicencesFull)): ?>
             <div class="card-admin p-3 mb-3">
-                <h3 class="h6 mb-2"><i class="bi bi-award me-2"></i>Licence details</h3>
+                <h3 class="h6 mb-2"><i aria-hidden="true" class="bi bi-award me-2"></i>Licence details</h3>
                 <p class="text-muted small mb-2">Edit the number, expiry, active state and notes for each licence the organisation holds. Add or remove licence <em>types</em> with the “Additional licences” checkboxes in Settings above.</p>
                 <div class="table-responsive">
                     <table class="table table-sm table-dark mb-0 small align-middle admin-table-responsive">
                         <thead><tr>
-                            <th>Type</th><th>Number</th><th>Expires</th><th>Active</th><th>Notes</th><th class="text-end"></th>
+                            <th scope="col">Type</th><th scope="col">Number</th><th scope="col">Expires</th><th scope="col">Active</th><th scope="col">Notes</th><th scope="col" class="text-end"></th>
                         </tr></thead>
                         <tbody>
                         <?php foreach ($editLicencesFull as $l): ?>
@@ -1039,7 +1039,7 @@ $csrf = csrfToken();
                 $orgBrandColourVal = (string)($editOrg['BrandColor'] ?? '');
             ?>
             <div class="card-admin p-3 mb-3">
-                <h3 class="h6 mb-2"><i class="bi bi-palette me-2"></i>Brand colour</h3>
+                <h3 class="h6 mb-2"><i aria-hidden="true" class="bi bi-palette me-2"></i>Brand colour</h3>
                 <form method="POST" class="row g-2 align-items-end small">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="brand_save">
@@ -1059,7 +1059,7 @@ $csrf = csrfToken();
                     </div>
                     <div class="col-md-auto">
                         <button type="submit" class="btn btn-sm btn-amber-solid">
-                            <i class="bi bi-save me-1"></i>Save
+                            <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                         </button>
                     </div>
                 </form>
@@ -1085,17 +1085,17 @@ $csrf = csrfToken();
             <div class="row g-3">
                 <div class="col-md-7">
                     <div class="card-admin p-3 h-100">
-                        <h2 class="h6 mb-3"><i class="bi bi-people me-2"></i>Members (<?= count($editMembers) ?>)</h2>
+                        <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-people me-2"></i>Members (<?= count($editMembers) ?>)</h2>
                         <?php if (!$editMembers): ?>
                             <p class="text-muted small mb-0">No members yet.</p>
                         <?php else: ?>
                             <table class="table table-sm align-middle mb-0 cp-sortable admin-table-responsive">
                                 <thead>
                                     <tr class="text-muted small">
-                                        <th data-sort-key="user" data-sort-type="text">User</th>
-                                        <th data-sort-key="role" data-sort-type="text">Role</th>
-                                        <th data-sort-key="joined" data-sort-type="text">Joined</th>
-                                        <th class="text-end"></th>
+                                        <th scope="col" data-sort-key="user" data-sort-type="text">User</th>
+                                        <th scope="col" data-sort-key="role" data-sort-type="text">Role</th>
+                                        <th scope="col" data-sort-key="joined" data-sort-type="text">Joined</th>
+                                        <th scope="col" class="text-end"></th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1138,7 +1138,7 @@ $csrf = csrfToken();
                 </div>
                 <div class="col-md-5">
                     <div class="card-admin p-3 h-100">
-                        <h2 class="h6 mb-3"><i class="bi bi-person-plus me-2"></i>Add a member</h2>
+                        <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-person-plus me-2"></i>Add a member</h2>
                         <?php if (!$candidates): ?>
                             <p class="text-muted small mb-0">Every active user is already a member.</p>
                         <?php else: ?>

@@ -429,7 +429,7 @@ if ($hasSchema) {
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
     <div class="container-admin py-4">
-        <h1 class="h4 mb-3"><i class="bi bi-music-note-beamed me-2"></i>Tunes</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-music-note-beamed me-2"></i>Tunes</h1>
         <p class="text-secondary small mb-4">
             A <strong>Tune</strong> is the melody a hymn is sung to — like HYFRYDOL or OLD HUNDREDTH —
             kept as its own entry, separate from the lyrics that use it. Adding a tune's meter,
@@ -454,7 +454,7 @@ if ($hasSchema) {
                     The <code>tblTunes</code> table hasn't been created on this database yet (#1090).
                 </p>
                 <a href="/manage/setup-database" class="btn btn-amber btn-sm">
-                    <i class="bi bi-database-gear me-1"></i>Run /manage/setup-database
+                    <i aria-hidden="true" class="bi bi-database-gear me-1"></i>Run /manage/setup-database
                 </a>
             </div>
         <?php else: ?>
@@ -472,21 +472,21 @@ if ($hasSchema) {
         <!-- Tunes list -->
         <div class="card-admin p-3 mb-4">
             <div class="d-flex justify-content-between align-items-center mb-3">
-                <h2 class="h6 mb-0"><i class="bi bi-list-ul me-2"></i>Existing tunes</h2>
+                <h2 class="h6 mb-0"><i aria-hidden="true" class="bi bi-list-ul me-2"></i>Existing tunes</h2>
                 <button type="button" class="btn btn-outline-warning btn-sm" data-bs-toggle="modal" data-bs-target="#tuneMergeModal">
-                    <i class="bi bi-shuffle me-1"></i>Merge tunes
+                    <i aria-hidden="true" class="bi bi-shuffle me-1"></i>Merge tunes
                 </button>
             </div>
             <table class="table table-sm align-middle cp-sortable mb-0 admin-table-responsive">
                 <thead>
                     <tr class="text-muted small">
-                        <th data-col-priority="primary"   data-sort-key="name"    data-sort-type="text">Name</th>
-                        <th data-col-priority="secondary" data-sort-key="meter"   data-sort-type="text">Meter</th>
-                        <th data-col-priority="primary"   data-sort-key="songs"   data-sort-type="number" class="text-center">Songs</th>
-                        <th data-col-priority="tertiary"  data-sort-key="aliases" data-sort-type="number" class="text-center">Aliases</th>
-                        <th data-col-priority="tertiary"  data-sort-key="credits" data-sort-type="number" class="text-center">Credits</th>
-                        <th data-col-priority="tertiary"  data-sort-key="links"   data-sort-type="number" class="text-center">Links</th>
-                        <th data-col-priority="primary"   class="text-end">Actions</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="name"    data-sort-type="text">Name</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="meter"   data-sort-type="text">Meter</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="songs"   data-sort-type="number" class="text-center">Songs</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="aliases" data-sort-type="number" class="text-center">Aliases</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="credits" data-sort-type="number" class="text-center">Credits</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="links"   data-sort-type="number" class="text-center">Links</th>
+                        <th scope="col" data-col-priority="primary"   class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -539,12 +539,12 @@ if ($hasSchema) {
                                 <button type="button" class="btn btn-sm btn-outline-info"
                                         onclick="openTuneEditModal(<?= htmlspecialchars((string)$rowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Edit tune + aliases + credits + links">
-                                    <i class="bi bi-pencil"></i>
+                                    <i aria-hidden="true" class="bi bi-pencil"></i>
                                 </button>
                                 <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick="openTuneDeleteModal(<?= htmlspecialchars((string)$deleteJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Delete tune (songs/works keep their free-text TuneName)">
-                                    <i class="bi bi-trash"></i>
+                                    <i aria-hidden="true" class="bi bi-trash"></i>
                                 </button>
                             </td>
                         </tr>
@@ -560,7 +560,7 @@ if ($hasSchema) {
         <form method="POST" class="card-admin p-3 mb-4">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
-            <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a tune</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a tune</h2>
             <div class="row g-2">
                 <div class="col-sm-5">
                     <label class="form-label small" for="create-tune-name">Name</label>
@@ -630,7 +630,7 @@ if ($hasSchema) {
                 </div>
             </div>
             <button type="submit" class="btn btn-amber btn-sm mt-3">
-                <i class="bi bi-plus me-1"></i>Create tune
+                <i aria-hidden="true" class="bi bi-plus me-1"></i>Create tune
             </button>
             <p class="form-text small mt-2 mb-0">
                 Add aliases, credits and external links via the <em>Edit</em> button after creating.
@@ -647,7 +647,7 @@ if ($hasSchema) {
                         <input type="hidden" name="id" id="edit-tune-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
                             <h5 class="modal-title">
-                                <i class="bi bi-pencil me-2"></i>Edit tune — <span id="edit-tune-name-label"></span>
+                                <i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit tune — <span id="edit-tune-name-label"></span>
                             </h5>
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
@@ -709,7 +709,7 @@ if ($hasSchema) {
 
                             <?php if ($gates['hasAliases']): ?>
                             <hr>
-                            <h6 class="mb-2"><i class="bi bi-tags me-2"></i>Aliases</h6>
+                            <h6 class="mb-2"><i aria-hidden="true" class="bi bi-tags me-2"></i>Aliases</h6>
                             <p class="form-text small mt-0 mb-2">
                                 Alternate spellings this tune is known by — each one resolves
                                 <code>/tune/&lt;alias-slug&gt;</code> to this same tune.
@@ -718,13 +718,13 @@ if ($hasSchema) {
                                 <!-- populated by openTuneEditModal -->
                             </div>
                             <button type="button" class="btn btn-outline-info btn-sm mb-3" id="edit-tune-alias-add-btn">
-                                <i class="bi bi-plus-lg me-1"></i>Add alias
+                                <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add alias
                             </button>
                             <?php endif; ?>
 
                             <?php if ($gates['hasCredits']): ?>
                             <hr>
-                            <h6 class="mb-2"><i class="bi bi-pen me-2"></i>Credits</h6>
+                            <h6 class="mb-2"><i aria-hidden="true" class="bi bi-pen me-2"></i>Credits</h6>
                             <p class="form-text small mt-0 mb-2">
                                 Composer / arranger / harmoniser / source, in curator-chosen display order.
                             </p>
@@ -732,7 +732,7 @@ if ($hasSchema) {
                                 <!-- populated by openTuneEditModal -->
                             </div>
                             <button type="button" class="btn btn-outline-info btn-sm mb-3" id="edit-tune-credit-add-btn">
-                                <i class="bi bi-plus-lg me-1"></i>Add credit
+                                <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add credit
                             </button>
                             <?php endif; ?>
 
@@ -767,7 +767,7 @@ if ($hasSchema) {
                         <input type="hidden" name="id" id="delete-tune-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
                             <h5 class="modal-title">
-                                <i class="bi bi-trash me-2"></i>Delete tune — <span id="delete-tune-name-label"></span>
+                                <i aria-hidden="true" class="bi bi-trash me-2"></i>Delete tune — <span id="delete-tune-name-label"></span>
                             </h5>
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
@@ -828,7 +828,7 @@ if ($hasSchema) {
                                 </select>
                             </div>
                             <div class="alert alert-warning small mb-0">
-                                <i class="bi bi-exclamation-triangle me-1"></i>
+                                <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
                                 Merging is irreversible. Make sure the Source genuinely duplicates the Target.
                             </div>
                         </div>

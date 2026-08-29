@@ -280,7 +280,7 @@ if ($driverKeysReady && $venues) {
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
     <div class="container-admin py-4">
-        <h1 class="h4 mb-2"><i class="bi bi-projector me-2"></i>Projector Screen</h1>
+        <h1 class="h4 mb-2"><i aria-hidden="true" class="bi bi-projector me-2"></i>Projector Screen</h1>
         <p class="text-secondary small mb-4" style="max-width: 62ch;">
             Start a live service and project a join code your congregation enters in iHymns to follow along.
             Open this on the screen the congregation can see. The code rotates automatically.
@@ -288,9 +288,9 @@ if ($driverKeysReady && $venues) {
 
         <?php if (!$schemaReady): ?>
             <div class="card border-warning"><div class="card-body">
-                <h2 class="h6 text-warning-emphasis"><i class="bi bi-database-exclamation me-1"></i>Service Mode not migrated yet</h2>
+                <h2 class="h6 text-warning-emphasis"><i aria-hidden="true" class="bi bi-database-exclamation me-1"></i>Service Mode not migrated yet</h2>
                 <p class="small mb-2">The Service Mode tables don't exist on this environment yet (migrations aren't auto-applied).</p>
-                <a class="btn btn-sm btn-amber-solid" href="/manage/setup-database"><i class="bi bi-database-gear me-1"></i>Run “Service Mode sessions” in Database Setup</a>
+                <a class="btn btn-sm btn-amber-solid" href="/manage/setup-database"><i aria-hidden="true" class="bi bi-database-gear me-1"></i>Run “Service Mode sessions” in Database Setup</a>
             </div></div>
         <?php elseif (!$venues): ?>
             <div class="alert alert-info">No venues to run yet. Add a venue + service times under <a href="/manage/venues">Venues</a> first.</div>
@@ -320,7 +320,7 @@ if ($driverKeysReady && $venues) {
                             Show your organisation's logo on the projection
                         </label>
                     </div>
-                    <button type="button" id="svc-start-btn" class="btn btn-amber-solid"><i class="bi bi-play-fill me-1"></i>Start &amp; project</button>
+                    <button type="button" id="svc-start-btn" class="btn btn-amber-solid"><i aria-hidden="true" class="bi bi-play-fill me-1"></i>Start &amp; project</button>
                     <div id="svc-start-error" class="text-danger small mt-2" role="alert"></div>
                 </div>
             </div>
@@ -336,7 +336,7 @@ if ($driverKeysReady && $venues) {
         <?php if ($schemaReady): ?>
         <div class="card mt-4" style="max-width: 720px;">
             <div class="card-body">
-                <h2 class="h6 mb-2"><i class="bi bi-key me-2"></i>Presentation-app control</h2>
+                <h2 class="h6 mb-2"><i aria-hidden="true" class="bi bi-key me-2"></i>Presentation-app control</h2>
                 <p class="small text-secondary mb-3">
                     Mint a durable key so an external presentation app can drive this organisation's
                     live session — advance the song and section — without a person clicking here.
@@ -344,7 +344,7 @@ if ($driverKeysReady && $venues) {
                 </p>
                 <?php if (!$driverKeysReady): ?>
                     <div class="alert alert-warning small mb-0">
-                        <i class="bi bi-database-exclamation me-1"></i>Not migrated yet on this environment.
+                        <i aria-hidden="true" class="bi bi-database-exclamation me-1"></i>Not migrated yet on this environment.
                         <a href="/manage/setup-database">Run “Live Follow: capable Quick sessions” in Database Setup</a>.
                     </div>
                 <?php elseif (!$driverKeyOrgs): ?>
@@ -367,8 +367,8 @@ if ($driverKeysReady && $venues) {
                             <table class="table table-sm align-middle mb-0">
                                 <thead>
                                     <tr class="text-secondary small">
-                                        <th>Label</th><th>Prefix</th><th>Venue</th><th>Protocol</th>
-                                        <th>Last used</th><th class="text-end">Actions</th>
+                                        <th scope="col">Label</th><th scope="col">Prefix</th><th scope="col">Venue</th><th scope="col">Protocol</th>
+                                        <th scope="col">Last used</th><th scope="col" class="text-end">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody id="dk-list-body">
@@ -399,7 +399,7 @@ if ($driverKeysReady && $venues) {
                             </select>
                         </div>
                         <div class="col-sm-2">
-                            <button type="submit" class="btn btn-sm btn-amber-solid w-100"><i class="bi bi-key me-1"></i>Mint</button>
+                            <button type="submit" class="btn btn-sm btn-amber-solid w-100"><i aria-hidden="true" class="bi bi-key me-1"></i>Mint</button>
                         </div>
                     </form>
                     <div id="dk-mint-result" class="small mt-2"></div>
@@ -411,7 +411,7 @@ if ($driverKeysReady && $venues) {
 
     <!-- Full-bleed projection overlay -->
     <div id="svc-projection" role="dialog" aria-label="Service join code">
-        <button type="button" id="svc-end-btn" class="btn btn-outline-light btn-sm"><i class="bi bi-x-lg me-1"></i>End service</button>
+        <button type="button" id="svc-end-btn" class="btn btn-outline-light btn-sm"><i aria-hidden="true" class="bi bi-x-lg me-1"></i>End service</button>
         <!-- #1840 §6.2 — org corner bug. alt="" + aria-hidden: purely decorative
              signage, mirrors the QR's own accessibility posture above. Hidden by
              default (d-none) until a src is set AND loads successfully — never a
@@ -438,7 +438,7 @@ if ($driverKeysReady && $venues) {
              the projection laptop. Mounts the shared ServiceBroadcaster. -->
         <div id="svc-op-console">
             <div class="svc-op-head">
-                <span class="svc-op-title"><i class="bi bi-music-note-list me-1"></i>Drive songs</span>
+                <span class="svc-op-title"><i aria-hidden="true" class="bi bi-music-note-list me-1"></i>Drive songs</span>
                 <!-- #1425 — the numeric session id, for typing into the iHymns
                      app (TV Remote → Congregant Mirror, PR-14) so the LAN TV
                      state also mirrors to this Service session. Set on start;

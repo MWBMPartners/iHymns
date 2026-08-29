@@ -169,12 +169,12 @@ $csrf = csrfToken();
         <?php if ($captchaHealthBanner !== null): ?>
             <div class="alert <?= $captchaHealthBanner['status'] === 'misconfig' ? 'alert-danger' : 'alert-warning' ?> alert-dismissible fade show" role="alert">
                 <?php if ($captchaHealthBanner['status'] === 'misconfig'): ?>
-                    <i class="bi bi-key me-1"></i>
+                    <i aria-hidden="true" class="bi bi-key me-1"></i>
                     <strong>The bot-protection provider is rejecting our secret key.</strong>
                     This is a settings mistake, not an outage &mdash; waiting will not fix it. Guarded forms are
                     currently letting people through on the ordinary rate limits so nobody is locked out.
                 <?php else: ?>
-                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
                     <strong>The bot-protection provider is not answering this server.</strong>
                     <?php if ($captchaHealthBanner['open']): ?>
                         Guarded forms are temporarily letting people through on the ordinary rate limits, so
@@ -189,7 +189,7 @@ $csrf = csrfToken();
             </div>
         <?php endif; ?>
 
-        <h1 class="h4 mb-1"><i class="bi bi-speedometer2 me-2"></i>Admin Portal</h1>
+        <h1 class="h4 mb-1"><i aria-hidden="true" class="bi bi-speedometer2 me-2"></i>Admin Portal</h1>
         <p class="text-secondary small mb-4">
             Welcome back, <strong><?= htmlspecialchars($currentUser['display_name'] ?? $currentUser['username'] ?? 'admin') ?></strong>.
             Quick snapshot of the app + shortcuts to every admin surface.
@@ -256,7 +256,7 @@ $csrf = csrfToken();
         <!-- Users by Role -->
         <?php if (hasRole($currentUser['role'], 'admin')): ?>
         <div class="card-admin p-3 mb-4">
-            <h2 class="h6 mb-3"><i class="bi bi-shield-check me-2"></i>Users by Role</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-shield-check me-2"></i>Users by Role</h2>
             <div class="row g-2">
                 <?php foreach (allRoles() as $role): ?>
                 <div class="col-6 col-md-3">
@@ -383,7 +383,7 @@ $csrf = csrfToken();
                                 $tierCls   = $tier === 'global_admin' ? 'lock-chip-global-admin' : 'lock-chip-admin';
                                 $tierLabel = $tier === 'global_admin' ? 'Requires Global Admin' : 'Requires Admin';
                         ?>
-                            <i class="bi bi-lock-fill lock-chip lock-chip-corner <?= $tierCls ?>"
+                            <i aria-hidden="true" class="bi bi-lock-fill lock-chip lock-chip-corner <?= $tierCls ?>"
                                aria-label="<?= htmlspecialchars($tierLabel, ENT_QUOTES, 'UTF-8') ?>"
                                title="<?= htmlspecialchars($tierLabel, ENT_QUOTES, 'UTF-8') ?>"></i>
                         <?php endif; ?>
@@ -401,18 +401,18 @@ $csrf = csrfToken();
         <?php if (hasRole($currentUser['role'], 'admin')): ?>
         <div class="card-admin p-3 mb-4">
             <div class="d-flex align-items-center justify-content-between mb-3">
-                <h2 class="h6 mb-0"><i class="bi bi-clock-history me-2"></i>Recent Users</h2>
+                <h2 class="h6 mb-0"><i aria-hidden="true" class="bi bi-clock-history me-2"></i>Recent Users</h2>
                 <a href="/manage/users" class="btn btn-sm btn-outline-secondary">View All</a>
             </div>
             <div class="table-responsive">
                 <table class="table table-sm table-borderless mb-0">
                     <thead>
                         <tr class="text-muted small">
-                            <th>Username</th>
-                            <th>Display Name</th>
-                            <th>Role</th>
-                            <th>Status</th>
-                            <th>Created</th>
+                            <th scope="col">Username</th>
+                            <th scope="col">Display Name</th>
+                            <th scope="col">Role</th>
+                            <th scope="col">Status</th>
+                            <th scope="col">Created</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -446,7 +446,7 @@ $csrf = csrfToken();
         <?php if (($currentUser['role'] ?? '') === 'global_admin'): ?>
         <div class="card-admin p-3">
             <h2 class="h6 mb-3 d-flex align-items-center gap-2">
-                <i class="bi bi-info-circle"></i>
+                <i aria-hidden="true" class="bi bi-info-circle"></i>
                 System Info
                 <!-- Audience cue (#641) — global_admin gating is enforced
                      by the surrounding `if`; the badge makes it
@@ -467,7 +467,7 @@ $csrf = csrfToken();
         </div>
         <?php else: ?>
         <div class="card-admin p-3">
-            <h2 class="h6 mb-3"><i class="bi bi-person-badge me-2"></i>Your session</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-person-badge me-2"></i>Your session</h2>
             <table class="table table-sm table-borderless mb-0 small">
                 <tr><td class="text-muted" style="width:40%">Your Role</td><td><?= htmlspecialchars(roleLabel($currentUser['role'])) ?></td></tr>
                 <tr><td class="text-muted">Your Username</td><td><code><?= htmlspecialchars($currentUser['username']) ?></code></td></tr>

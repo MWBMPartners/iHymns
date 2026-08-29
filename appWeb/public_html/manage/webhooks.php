@@ -226,9 +226,9 @@ function _webhookRenderSubscriptionForm(array $families, ?array $editRow, string
       <div class="card-body">
         <h2 class="h5 mb-3">
           <?php if ($isEdit): ?>
-            <i class="bi bi-pencil-square me-2"></i>Edit subscription &mdash; <?= htmlspecialchars($label, ENT_QUOTES) ?>
+            <i aria-hidden="true" class="bi bi-pencil-square me-2"></i>Edit subscription &mdash; <?= htmlspecialchars($label, ENT_QUOTES) ?>
           <?php else: ?>
-            <i class="bi bi-plus-lg me-2"></i>New subscription
+            <i aria-hidden="true" class="bi bi-plus-lg me-2"></i>New subscription
           <?php endif; ?>
         </h2>
         <form method="post" action="/manage/webhooks">
@@ -517,7 +517,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
 <main class="container-fluid py-4">
     <div class="mb-3">
-        <h1 class="h3 mb-1"><i class="bi bi-broadcast me-2"></i>Webhooks</h1>
+        <h1 class="h3 mb-1"><i aria-hidden="true" class="bi bi-broadcast me-2"></i>Webhooks</h1>
         <p class="text-secondary small mb-0">
             Register a partner's URL to receive signed HTTP callbacks when
             catalogue, sharing or live events happen — a song changes, a
@@ -537,7 +537,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     <?php if ($revealSecret !== null): ?>
         <div class="alert alert-warning" role="alert">
-            <i class="bi bi-exclamation-triangle me-1"></i>
+            <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
             <strong>Copy this secret now — it will not be shown again.</strong>
             <div class="input-group mt-2">
                 <input type="text" class="form-control font-monospace" id="whSecretValue" readonly
@@ -556,7 +556,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     <?php if (!webhooksEnabled()): ?>
         <div class="alert alert-info" role="alert">
-            <i class="bi bi-info-circle me-1"></i>
+            <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
             Webhooks are dormant on this channel — subscriptions can be configured
             but nothing is delivered until an admin enables the channel on
             <a href="/manage/configuration">/manage/configuration</a>.
@@ -566,7 +566,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <?php if (!$schemaReady): ?>
         <div class="card border-warning">
             <div class="card-body">
-                <h2 class="h5 text-warning-emphasis"><i class="bi bi-exclamation-triangle me-2"></i>Webhook tables not migrated</h2>
+                <h2 class="h5 text-warning-emphasis"><i aria-hidden="true" class="bi bi-exclamation-triangle me-2"></i>Webhook tables not migrated</h2>
                 <p class="mb-0">
                     This environment hasn't run the webhook schema migration yet, so
                     there is nothing to show or manage here. Run it on
@@ -584,13 +584,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <table class="table table-sm align-middle admin-table-responsive cp-sortable">
                 <thead>
                     <tr>
-                        <th data-col-priority="primary" data-sort-key="label" data-sort-type="text">Label</th>
-                        <th data-col-priority="primary" data-sort-key="target" data-sort-type="text">Target</th>
-                        <th data-col-priority="secondary" data-sort-key="events" data-sort-type="text">Events</th>
-                        <th data-col-priority="primary" data-sort-key="status" data-sort-type="text">Status</th>
-                        <th data-col-priority="secondary" data-sort-key="failures" data-sort-type="number">Consecutive failures</th>
-                        <th data-col-priority="tertiary" data-sort-key="lastsuccess" data-sort-type="date">Last success</th>
-                        <th data-col-priority="primary" class="text-end">Actions</th>
+                        <th scope="col" data-col-priority="primary" data-sort-key="label" data-sort-type="text">Label</th>
+                        <th scope="col" data-col-priority="primary" data-sort-key="target" data-sort-type="text">Target</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="events" data-sort-type="text">Events</th>
+                        <th scope="col" data-col-priority="primary" data-sort-key="status" data-sort-type="text">Status</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="failures" data-sort-type="number">Consecutive failures</th>
+                        <th scope="col" data-col-priority="tertiary" data-sort-key="lastsuccess" data-sort-type="date">Last success</th>
+                        <th scope="col" data-col-priority="primary" class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -685,15 +685,15 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <table class="table table-sm align-middle admin-table-responsive cp-sortable">
                 <thead>
                     <tr>
-                        <th data-col-priority="primary" data-sort-key="event" data-sort-type="text">Event type</th>
-                        <th data-col-priority="secondary" data-sort-key="sub" data-sort-type="text">Subscription</th>
-                        <th data-col-priority="primary" data-sort-key="status" data-sort-type="text">Status</th>
-                        <th data-col-priority="secondary" data-sort-key="http" data-sort-type="number">HTTP code</th>
-                        <th data-col-priority="secondary" data-sort-key="attempts" data-sort-type="number">Attempts</th>
-                        <th data-col-priority="tertiary" data-sort-key="next" data-sort-type="date">Next attempt</th>
-                        <th data-col-priority="tertiary" data-sort-key="last" data-sort-type="date">Last attempt</th>
-                        <th data-col-priority="tertiary">Details</th>
-                        <th data-col-priority="primary" class="text-end">Actions</th>
+                        <th scope="col" data-col-priority="primary" data-sort-key="event" data-sort-type="text">Event type</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="sub" data-sort-type="text">Subscription</th>
+                        <th scope="col" data-col-priority="primary" data-sort-key="status" data-sort-type="text">Status</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="http" data-sort-type="number">HTTP code</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="attempts" data-sort-type="number">Attempts</th>
+                        <th scope="col" data-col-priority="tertiary" data-sort-key="next" data-sort-type="date">Next attempt</th>
+                        <th scope="col" data-col-priority="tertiary" data-sort-key="last" data-sort-type="date">Last attempt</th>
+                        <th scope="col" data-col-priority="tertiary">Details</th>
+                        <th scope="col" data-col-priority="primary" class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -749,10 +749,10 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <table class="table table-sm align-middle admin-table-responsive cp-sortable">
                 <thead>
                     <tr>
-                        <th data-col-priority="primary" data-sort-key="type" data-sort-type="text">Type</th>
-                        <th data-col-priority="secondary" data-sort-key="entity" data-sort-type="text">Entity</th>
-                        <th data-col-priority="tertiary" data-sort-key="source" data-sort-type="text">Source</th>
-                        <th data-col-priority="tertiary" data-sort-key="when" data-sort-type="date">Occurred</th>
+                        <th scope="col" data-col-priority="primary" data-sort-key="type" data-sort-type="text">Type</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="entity" data-sort-type="text">Entity</th>
+                        <th scope="col" data-col-priority="tertiary" data-sort-key="source" data-sort-type="text">Source</th>
+                        <th scope="col" data-col-priority="tertiary" data-sort-key="when" data-sort-type="date">Occurred</th>
                     </tr>
                 </thead>
                 <tbody>

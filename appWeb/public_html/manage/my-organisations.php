@@ -627,7 +627,7 @@ $csrf = csrfToken();
 
 <div class="container-admin py-4">
     <h1 class="h4 mb-3">
-        <i class="bi bi-building me-2"></i>My Organisations
+        <i aria-hidden="true" class="bi bi-building me-2"></i>My Organisations
     </h1>
     <p class="text-muted small">
         The organisations you help run as an admin or owner. Here you can add or remove members, change each member's role, and keep their licence details up to date. System administrators see every organisation because they can manage any of them.
@@ -639,7 +639,7 @@ $csrf = csrfToken();
              live_follow_extend action the leader's own host bar uses. -->
         <div class="card-admin p-3 mb-3">
             <h2 class="h5 mb-2">
-                <i class="bi bi-broadcast-pin me-2"></i>Members&rsquo; live sessions
+                <i aria-hidden="true" class="bi bi-broadcast-pin me-2"></i>Members&rsquo; live sessions
             </h2>
             <p class="text-muted small">
                 Active &ldquo;Go Live&rdquo; sessions led by someone in one of your organisations.
@@ -650,12 +650,12 @@ $csrf = csrfToken();
                 <table class="table table-sm table-dark mb-0 small align-middle">
                     <thead>
                         <tr>
-                            <th>Leader</th>
-                            <th>Code</th>
-                            <th>Idle timeout</th>
-                            <th>Last seen</th>
-                            <th>Started</th>
-                            <th></th>
+                            <th scope="col">Leader</th>
+                            <th scope="col">Code</th>
+                            <th scope="col">Idle timeout</th>
+                            <th scope="col">Last seen</th>
+                            <th scope="col">Started</th>
+                            <th scope="col"></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -680,7 +680,7 @@ $csrf = csrfToken();
                                         </select>
                                         <button type="button" class="btn btn-sm btn-outline-secondary live-session-extend-btn"
                                                 data-code="<?= htmlspecialchars((string)$ls['SessionCode']) ?>">
-                                            <i class="bi bi-clock-history me-1"></i>Extend
+                                            <i aria-hidden="true" class="bi bi-clock-history me-1"></i>Extend
                                         </button>
                                     </div>
                                 </td>
@@ -730,7 +730,7 @@ $csrf = csrfToken();
                     <?php if ($systemAdmin): ?>
                         <a href="/manage/organisations?edit=<?= $orgId ?>"
                            class="btn btn-sm btn-outline-secondary">
-                            <i class="bi bi-pencil me-1"></i>System edit
+                            <i aria-hidden="true" class="bi bi-pencil me-1"></i>System edit
                         </a>
                     <?php endif; ?>
                 </div>
@@ -746,11 +746,11 @@ $csrf = csrfToken();
                     <div class="table-responsive">
                         <table class="table table-sm table-dark mb-2 small align-middle cp-sortable admin-table-responsive">
                             <thead><tr>
-                                <th data-sort-key="username" data-sort-type="text">Username</th>
-                                <th data-sort-key="displayname" data-sort-type="text">Display Name</th>
-                                <th data-sort-key="sysrole" data-sort-type="text">System role</th>
-                                <th data-sort-key="orgrole" data-sort-type="text">Org role</th>
-                                <th class="text-end">Actions</th>
+                                <th scope="col" data-sort-key="username" data-sort-type="text">Username</th>
+                                <th scope="col" data-sort-key="displayname" data-sort-type="text">Display Name</th>
+                                <th scope="col" data-sort-key="sysrole" data-sort-type="text">System role</th>
+                                <th scope="col" data-sort-key="orgrole" data-sort-type="text">Org role</th>
+                                <th scope="col" class="text-end">Actions</th>
                             </tr></thead>
                             <tbody>
                             <?php foreach ($orgMembers[$orgId] as $m): ?>
@@ -815,7 +815,7 @@ $csrf = csrfToken();
                     </div>
                     <div class="col-md-auto">
                         <button type="submit" class="btn btn-sm btn-amber-solid">
-                            <i class="bi bi-plus-circle me-1"></i>Add member
+                            <i aria-hidden="true" class="bi bi-plus-circle me-1"></i>Add member
                         </button>
                     </div>
                 </form>
@@ -832,8 +832,8 @@ $csrf = csrfToken();
                                      render time (four data cells serve six header cells), so the
                                      module's positional cell-index lookup cannot address them
                                      individually (#1786 sweep). -->
-                                <th data-sort-key="type" data-sort-type="text">Type</th><th>Number</th><th>Expires</th><th>Active</th><th>Notes</th>
-                                <th class="text-end">Actions</th>
+                                <th scope="col" data-sort-key="type" data-sort-type="text">Type</th><th scope="col">Number</th><th scope="col">Expires</th><th scope="col">Active</th><th scope="col">Notes</th>
+                                <th scope="col" class="text-end">Actions</th>
                             </tr></thead>
                             <tbody>
                             <?php foreach ($orgLicences[$orgId] as $l): ?>
@@ -938,7 +938,7 @@ $csrf = csrfToken();
                     </div>
                     <div class="col-md-auto">
                         <button type="submit" class="btn btn-sm btn-amber-solid">
-                            <i class="bi bi-plus-circle me-1"></i>Add licence
+                            <i aria-hidden="true" class="bi bi-plus-circle me-1"></i>Add licence
                         </button>
                     </div>
                 </form>
@@ -966,7 +966,7 @@ $csrf = csrfToken();
                     </div>
                     <div class="col-md-auto">
                         <button type="submit" class="btn btn-sm btn-amber-solid">
-                            <i class="bi bi-save me-1"></i>Save
+                            <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                         </button>
                     </div>
                     <div class="col-12">
@@ -1005,7 +1005,7 @@ $csrf = csrfToken();
                     </div>
                     <div class="col-md-auto">
                         <button type="submit" class="btn btn-sm btn-amber-solid">
-                            <i class="bi bi-save me-1"></i>Save
+                            <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                         </button>
                     </div>
                     <div class="col-12">
@@ -1047,7 +1047,7 @@ $csrf = csrfToken();
                     </div>
                     <div class="col-md-auto">
                         <button type="submit" class="btn btn-sm btn-amber-solid">
-                            <i class="bi bi-save me-1"></i>Save
+                            <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                         </button>
                     </div>
                 </form>

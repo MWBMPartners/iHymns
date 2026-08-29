@@ -2283,7 +2283,7 @@ if ($action !== '') {
              any migration executed, so the schema is untouched. -->
         <div class="alert alert-danger mt-3" role="alert">
             <h5 class="alert-heading mb-2">
-                <i class="bi bi-shield-exclamation me-1"></i>
+                <i aria-hidden="true" class="bi bi-shield-exclamation me-1"></i>
                 Aborted — automatic pre-migration backup did not complete
             </h5>
             <p class="mb-0">
@@ -2303,7 +2303,7 @@ if ($action !== '') {
              the run completed and the failure data was available). -->
         <div class="alert alert-danger mt-3" role="alert">
             <h5 class="alert-heading mb-2">
-                <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                <i aria-hidden="true" class="bi bi-exclamation-triangle-fill me-1"></i>
                 Bulk run failed at step:
                 <code><?= htmlspecialchars((string)$bulkFirstFailStep) ?></code>
             </h5>
@@ -3132,7 +3132,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                                  of this page. No DB connection needed, so it stays enabled
                                  even when credentials are unset. -->
                             <label class="form-label small text-secondary mb-1" for="backup-download-file">
-                                <i class="bi bi-download me-1"></i>Download a backup (to archive off-site):
+                                <i aria-hidden="true" class="bi bi-download me-1"></i>Download a backup (to archive off-site):
                             </label>
                             <form action="" method="post" class="d-flex gap-2 flex-wrap mb-3">
                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
@@ -3148,7 +3148,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             </form>
 
                             <label class="form-label small text-secondary mb-1" for="backup-restore-file">
-                                <i class="bi bi-arrow-counterclockwise me-1"></i>Restore the database from a backup:
+                                <i aria-hidden="true" class="bi bi-arrow-counterclockwise me-1"></i>Restore the database from a backup:
                             </label>
                             <form action="" method="get" class="d-flex gap-2 flex-wrap mb-2">
                                 <input type="hidden" name="action" value="restore">
@@ -3170,7 +3170,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                                 </button>
                             </form>
                             <p class="text-muted small mb-2">
-                                <i class="bi bi-info-circle me-1"></i>
+                                <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
                                 Restore always takes a pre-restore snapshot first. Data INSERTs
                                 are transactional — a failure rolls data back automatically.
                             </p>
@@ -3185,7 +3185,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                                  client-side speed bump only, matching the Restore form's own
                                  onclick convention just above; the real gates are server-side. -->
                             <label class="form-label small text-secondary mb-1" for="backup-delete-file">
-                                <i class="bi bi-trash me-1"></i>Delete a backup (permanent — cannot be undone):
+                                <i aria-hidden="true" class="bi bi-trash me-1"></i>Delete a backup (permanent — cannot be undone):
                             </label>
                             <form action="" method="post" class="d-flex gap-2 flex-wrap mb-2">
                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
@@ -3198,11 +3198,11 @@ if ($hasCredentials && defined('DB_HOST')) {
                                 </select>
                                 <button type="submit" class="btn btn-sm btn-outline-danger"
                                         onclick="return prompt('Type DELETE (all caps) to permanently remove the selected backup file. This CANNOT be undone.') === 'DELETE'">
-                                    <i class="bi bi-trash me-1"></i>Delete
+                                    <i aria-hidden="true" class="bi bi-trash me-1"></i>Delete
                                 </button>
                             </form>
                             <p class="text-muted small mb-0">
-                                <i class="bi bi-shield-check me-1"></i>
+                                <i aria-hidden="true" class="bi bi-shield-check me-1"></i>
                                 At least one backup always stays on disk — the last remaining
                                 file can't be deleted here.
                             </p>
@@ -3472,13 +3472,13 @@ if ($hasCredentials && defined('DB_HOST')) {
                             <table class="table table-dark table-sm mb-0">
                                 <thead>
                                     <tr>
-                                        <th>Docroot</th>
-                                        <th>Present</th>
-                                        <th>Fresh</th>
-                                        <th>Active keyid</th>
-                                        <th>All keyids</th>
-                                        <th>Fingerprint</th>
-                                        <th>Last seen</th>
+                                        <th scope="col">Docroot</th>
+                                        <th scope="col">Present</th>
+                                        <th scope="col">Fresh</th>
+                                        <th scope="col">Active keyid</th>
+                                        <th scope="col">All keyids</th>
+                                        <th scope="col">Fingerprint</th>
+                                        <th scope="col">Last seen</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -3764,7 +3764,7 @@ if ($hasCredentials && defined('DB_HOST')) {
             <?php else: ?>
                 <div class="table-responsive">
                     <table class="table table-dark table-sm table-striped table-hover">
-                        <thead><tr><th>Table</th><th class="text-end">Rows</th></tr></thead>
+                        <thead><tr><th scope="col">Table</th><th scope="col" class="text-end">Rows</th></tr></thead>
                         <tbody>
                         <?php foreach ($dbTables as $t): ?>
                             <tr>

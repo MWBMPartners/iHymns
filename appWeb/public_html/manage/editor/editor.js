@@ -1193,7 +1193,7 @@ function renderComponents(song) {
         var chordsToggle = document.createElement('button');
         chordsToggle.type = 'button';
         chordsToggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
-        chordsToggle.innerHTML = '<i class="bi bi-music-note-beamed me-1"></i>Chords';
+        chordsToggle.innerHTML = '<i class="bi bi-music-note-beamed me-1" aria-hidden="true"></i>Chords';
         var chordsBox = document.createElement('div');
         chordsBox.className = 'mt-1';
         chordsBox.style.display = hasChords ? '' : 'none';
@@ -1450,7 +1450,7 @@ function buildEnrichmentPanel(song, comp) {
     var toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
-    toggle.innerHTML = '<i class="bi bi-card-text me-1"></i>Per-line language, translations &amp; annotations';
+    toggle.innerHTML = '<i class="bi bi-card-text me-1" aria-hidden="true"></i>Per-line language, translations &amp; annotations';
     var box = document.createElement('div');
     box.className = 'mt-1';
     box.style.display = 'none';
@@ -2793,7 +2793,7 @@ function bindTagSearchInput() {
             var createItem = document.createElement('button');
             createItem.type = 'button';
             createItem.className = 'list-group-item list-group-item-action d-flex align-items-center gap-2';
-            createItem.innerHTML = '<i class="bi bi-plus-circle"></i> Create new tag: <strong>' +
+            createItem.innerHTML = '<i class="bi bi-plus-circle" aria-hidden="true"></i> Create new tag: <strong>' +
                 escapeHtmlSafe(q) + '</strong>';
             createItem.addEventListener('click', function () {
                 var song = findSongById(currentSongId);
@@ -2966,7 +2966,8 @@ function renderTranslations(song) {
         removeBtn.type = 'button';
         removeBtn.className = 'btn btn-sm btn-outline-danger';
         removeBtn.title = 'Remove translation link';
-        removeBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
+        removeBtn.setAttribute('aria-label', 'Remove translation link');
+        removeBtn.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
 
         row.appendChild(badge);
         row.appendChild(info);
@@ -3327,7 +3328,8 @@ function renderSongLinks(song) {
                 removeBtn.type = 'button';
                 removeBtn.className = 'btn btn-sm btn-outline-danger';
                 removeBtn.title = 'Unlink this counterpart';
-                removeBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
+                removeBtn.setAttribute('aria-label', 'Unlink this counterpart');
+                removeBtn.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
                 removeBtn.addEventListener('click', function () {
                     removeSongLink(song.id, ln.songId);
                 });
@@ -3481,7 +3483,8 @@ function renderSongLinkSuggestions(song) {
                 linkBtn.type = 'button';
                 linkBtn.className = 'btn btn-sm btn-outline-success';
                 linkBtn.title = 'Link as the same hymn';
-                linkBtn.innerHTML = '<i class="bi bi-link-45deg"></i>';
+                linkBtn.setAttribute('aria-label', 'Link as the same hymn');
+                linkBtn.innerHTML = '<i class="bi bi-link-45deg" aria-hidden="true"></i>';
                 linkBtn.addEventListener('click', function () {
                     // #1855: extensionless — see addSongLink() above; a
                     // literal .php URL here would 301 and silently strip
@@ -3514,7 +3517,8 @@ function renderSongLinkSuggestions(song) {
                 dismissBtn.type = 'button';
                 dismissBtn.className = 'btn btn-sm btn-outline-secondary';
                 dismissBtn.title = 'Dismiss — different hymns';
-                dismissBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
+                dismissBtn.setAttribute('aria-label', 'Dismiss — different hymns');
+                dismissBtn.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
                 dismissBtn.addEventListener('click', function () {
                     // #1855: extensionless — see addSongLink() above; a
                     // literal .php URL here would 301 and silently strip
@@ -6682,8 +6686,8 @@ function openHistoryModal(songId) {
     var titleEl = document.getElementById('history-modal-title');
     if (!listEl || !detailEl) return;
 
-    if (titleEl) titleEl.innerHTML = '<i class="bi bi-clock-history me-2"></i>Revision history — ' + escapeHtml(songId);
-    listEl.innerHTML = '<div class="text-center p-3"><i class="bi bi-hourglass-split me-1"></i>Loading…</div>';
+    if (titleEl) titleEl.innerHTML = '<i class="bi bi-clock-history me-2" aria-hidden="true"></i>Revision history — ' + escapeHtml(songId);
+    listEl.innerHTML = '<div class="text-center p-3"><i class="bi bi-hourglass-split me-1" aria-hidden="true"></i>Loading…</div>';
     detailEl.innerHTML = '';
 
     var modalEl = document.getElementById('history-modal');

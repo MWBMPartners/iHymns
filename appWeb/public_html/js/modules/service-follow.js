@@ -389,7 +389,7 @@ export class ServiceFollow {
         }
         bar.innerHTML = '';
         const label = document.createElement('span');
-        label.innerHTML = '<i class="bi bi-broadcast-pin me-1"></i>Following the service live ';
+        label.innerHTML = '<i class="bi bi-broadcast-pin me-1" aria-hidden="true"></i>Following the service live ';
         const leave = document.createElement('button');
         leave.type = 'button';
         leave.className = 'btn btn-sm btn-light ms-2';

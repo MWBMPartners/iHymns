@@ -206,8 +206,9 @@ function iconBtn(icon, title, disabled, onClick) {
     b.type = 'button';
     b.className = 'btn btn-sm btn-outline-secondary arr-btn';
     b.title = title;
+    b.setAttribute('aria-label', title);
     b.disabled = !!disabled;
-    b.innerHTML = '<i class="bi ' + icon + '"></i>';
+    b.innerHTML = '<i class="bi ' + icon + '" aria-hidden="true"></i>';
     b.addEventListener('click', onClick);
     return b;
 }

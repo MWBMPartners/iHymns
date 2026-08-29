@@ -719,10 +719,10 @@ try {
 
     <div class="container-admin py-4">
         <div class="d-flex align-items-center justify-content-between mb-3">
-            <h1 class="h4 mb-0"><i class="bi bi-activity me-2"></i>Activity Log</h1>
+            <h1 class="h4 mb-0"><i aria-hidden="true" class="bi bi-activity me-2"></i>Activity Log</h1>
             <a class="btn btn-sm btn-outline-secondary"
                href="?<?= htmlspecialchars($buildQuery(['export' => 'csv']), ENT_QUOTES, 'UTF-8') ?>">
-                <i class="bi bi-download me-1"></i>Export CSV
+                <i aria-hidden="true" class="bi bi-download me-1"></i>Export CSV
             </a>
         </div>
         <p class="text-secondary small mb-4">
@@ -734,7 +734,7 @@ try {
             usually call for a long history.
         </p>
         <p class="text-secondary small mb-4">
-            <i class="bi bi-info-circle me-1"></i>All three environments
+            <i aria-hidden="true" class="bi bi-info-circle me-1"></i>All three environments
             (alpha&nbsp;·&nbsp;beta&nbsp;·&nbsp;production) share one database, so this log
             spans them all — use the <strong>Env</strong> column / filter to tell them apart.
             The <strong>When</strong> column shows your <strong>local</strong> time
@@ -816,12 +816,12 @@ try {
             </div>
             <div class="col-md-2 d-flex align-items-end">
                 <button class="btn btn-amber btn-sm w-100" type="submit">
-                    <i class="bi bi-funnel me-1"></i>Apply
+                    <i aria-hidden="true" class="bi bi-funnel me-1"></i>Apply
                 </button>
             </div>
             <div class="col-md-2 d-flex align-items-end">
                 <a class="btn btn-outline-secondary btn-sm w-100" href="/manage/activity-log">
-                    <i class="bi bi-x-circle me-1"></i>Reset
+                    <i aria-hidden="true" class="bi bi-x-circle me-1"></i>Reset
                 </a>
             </div>
         </form>
@@ -860,15 +860,15 @@ try {
                                      If the script doesn't run (CSP block, ancient browser),
                                      the cells stay UTC and the header keeps its initial
                                      "(UTC)" suffix. (#723) */ ?>
-                            <th style="width: 11rem;" id="activity-when-header" data-sort-key="when"   data-sort-type="text">When (UTC)</th>
-                            <?php if ($hasObsCols): ?><th style="width: 5rem;" data-sort-key="env" data-sort-type="text">Env</th><?php endif; ?>
-                            <th style="width: 10rem;" data-sort-key="user"   data-sort-type="text">User</th>
-                            <th data-sort-key="action" data-sort-type="text">Action</th>
-                            <th data-sort-key="entity" data-sort-type="text">Entity</th>
-                            <?php if ($hasObsCols): ?><th data-sort-key="path" data-sort-type="text">Path</th><?php endif; ?>
-                            <th style="width: 5rem;"  data-sort-key="result" data-sort-type="text">Result</th>
-                            <th style="width: 9rem;"  data-sort-key="ip"     data-sort-type="text">IP</th>
-                            <th style="width: 5rem;"  data-sort-key="req"    data-sort-type="text">Req</th>
+                            <th scope="col" style="width: 11rem;" id="activity-when-header" data-sort-key="when"   data-sort-type="text">When (UTC)</th>
+                            <?php if ($hasObsCols): ?><th scope="col" style="width: 5rem;" data-sort-key="env" data-sort-type="text">Env</th><?php endif; ?>
+                            <th scope="col" style="width: 10rem;" data-sort-key="user"   data-sort-type="text">User</th>
+                            <th scope="col" data-sort-key="action" data-sort-type="text">Action</th>
+                            <th scope="col" data-sort-key="entity" data-sort-type="text">Entity</th>
+                            <?php if ($hasObsCols): ?><th scope="col" data-sort-key="path" data-sort-type="text">Path</th><?php endif; ?>
+                            <th scope="col" style="width: 5rem;"  data-sort-key="result" data-sort-type="text">Result</th>
+                            <th scope="col" style="width: 9rem;"  data-sort-key="ip"     data-sort-type="text">IP</th>
+                            <th scope="col" style="width: 5rem;"  data-sort-key="req"    data-sort-type="text">Req</th>
                         </tr>
                     </thead>
                     <tbody data-activity-rows>
@@ -908,7 +908,7 @@ try {
                      gesture an IntersectionObserver can't detect. */ ?>
             <div class="mt-2" data-activity-loadmore-wrap hidden>
                 <button type="button" class="btn btn-sm btn-outline-secondary" data-activity-loadmore>
-                    <i class="bi bi-arrow-down-circle me-1"></i>Load more
+                    <i aria-hidden="true" class="bi bi-arrow-down-circle me-1"></i>Load more
                 </button>
             </div>
             <div data-activity-sentinel aria-hidden="true"></div>

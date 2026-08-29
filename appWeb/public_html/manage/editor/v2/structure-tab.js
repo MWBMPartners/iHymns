@@ -446,7 +446,7 @@ export function mountStructureTab(container, opts) {
         const workToggle = document.createElement('button');
         workToggle.type = 'button';
         workToggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
-        workToggle.innerHTML = '<i class="bi bi-link-45deg me-1"></i>Source work';
+        workToggle.innerHTML = '<i class="bi bi-link-45deg me-1" aria-hidden="true"></i>Source work';
 
         const workBox = document.createElement('div');
         workBox.className = 'mt-1 d-flex align-items-center gap-2';
@@ -556,7 +556,7 @@ export function mountStructureTab(container, opts) {
         const chordsToggle = document.createElement('button');
         chordsToggle.type = 'button';
         chordsToggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
-        chordsToggle.innerHTML = '<i class="bi bi-music-note-beamed me-1"></i>Chords';
+        chordsToggle.innerHTML = '<i class="bi bi-music-note-beamed me-1" aria-hidden="true"></i>Chords';
         const chordsBox = document.createElement('div');
         chordsBox.className = 'mt-1';
         chordsBox.style.display = hasChords ? '' : 'none';
@@ -613,8 +613,9 @@ export function mountStructureTab(container, opts) {
         b.type = 'button';
         b.className = 'btn btn-outline-secondary';
         b.title = title;
+        b.setAttribute('aria-label', title);
         b.disabled = !!disabled;
-        b.innerHTML = '<i class="bi ' + icon + '"></i>';
+        b.innerHTML = '<i class="bi ' + icon + '" aria-hidden="true"></i>';
         b.addEventListener('click', onClick);
         return b;
     }
@@ -687,7 +688,7 @@ export function mountStructureTab(container, opts) {
         const addBtn = document.createElement('button');
         addBtn.type = 'button';
         addBtn.className = 'btn btn-sm btn-outline-primary';
-        addBtn.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add section';
+        addBtn.innerHTML = '<i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add section';
         addBtn.addEventListener('click', addComponent);
         container.appendChild(addBtn);
     }

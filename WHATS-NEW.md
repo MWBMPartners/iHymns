@@ -36,8 +36,9 @@ with none of the behind-the-scenes technical detail.
   work makes the app and the admin area clearer for people who use a screen
   reader or navigate by keyboard: buttons and form fields now announce what they
   do, collapsible sections open from the keyboard, a "skip to main content" link
-  jumps past the menus, and text and badges have stronger colour contrast so
-  they're easier to read.
+  jumps past the menus, admin tables read out their column headings, decorative
+  icons no longer clutter the reading order, and text and badges have stronger
+  colour contrast so they're easier to read.
 - **Make links stand out** — A new accessibility setting under Settings →
   Appearance lets you turn on stronger, higher-contrast colouring for the links
   in song details and descriptions, so they're easier to pick out from the words

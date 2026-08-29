@@ -241,14 +241,14 @@ try {
     <!-- Top songs -->
     <div class="card-admin p-3 mb-4">
         <div class="d-flex align-items-center justify-content-between mb-3">
-            <h2 class="h6 mb-0"><i class="bi bi-fire me-2"></i>Top songs</h2>
+            <h2 class="h6 mb-0"><i aria-hidden="true" class="bi bi-fire me-2"></i>Top songs</h2>
             <a class="btn btn-sm btn-outline-secondary" href="?range=<?= (int)$range ?>&export=top_songs">CSV</a>
         </div>
         <?php if (!$topSongs): ?>
             <p class="text-muted small mb-0">No song views in this period yet.</p>
         <?php else: ?>
             <table class="table table-sm table-hover mb-0">
-                <thead><tr><th>Song</th><th>Songbook</th><th class="text-end">Views</th></tr></thead>
+                <thead><tr><th scope="col">Song</th><th scope="col">Songbook</th><th scope="col" class="text-end">Views</th></tr></thead>
                 <tbody>
                 <?php foreach ($topSongs as $s):
                     $num = $s['Number'] ?? null;
@@ -268,7 +268,7 @@ try {
     <!-- Top search queries -->
     <div class="card-admin p-3 mb-4">
         <div class="d-flex align-items-center justify-content-between mb-3">
-            <h2 class="h6 mb-0"><i class="bi bi-search me-2"></i>Top search queries</h2>
+            <h2 class="h6 mb-0"><i aria-hidden="true" class="bi bi-search me-2"></i>Top search queries</h2>
             <a class="btn btn-sm btn-outline-secondary" href="?range=<?= (int)$range ?>&export=searches">CSV</a>
         </div>
         <?php
@@ -306,7 +306,7 @@ try {
             <p class="text-muted small mb-0">No search activity yet (or the tblSearchQueries table hasn't been created — re-run install).</p>
         <?php else: ?>
             <table class="table table-sm table-hover mb-0">
-                <thead><tr><th>Query</th><th class="text-end">Hits</th></tr></thead>
+                <thead><tr><th scope="col">Query</th><th scope="col" class="text-end">Hits</th></tr></thead>
                 <tbody>
                 <?php foreach ($topSearches as $s): ?>
                     <tr>
@@ -322,7 +322,7 @@ try {
     <!-- Zero-result queries -->
     <?php if ($zeroResults): ?>
     <div class="card-admin p-3 mb-4 border-warning">
-        <h2 class="h6 mb-3"><i class="bi bi-question-circle me-2"></i>Zero-result queries — candidates for tagging or new songs</h2>
+        <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-question-circle me-2"></i>Zero-result queries — candidates for tagging or new songs</h2>
         <ul class="list-unstyled mb-0 small">
             <?php foreach ($zeroResults as $z): ?>
                 <li><code><?= htmlspecialchars($z['Query']) ?></code> <span class="text-muted">× <?= (int)$z['hits'] ?></span></li>
@@ -334,14 +334,14 @@ try {
     <!-- Top songbooks -->
     <div class="card-admin p-3 mb-4">
         <div class="d-flex align-items-center justify-content-between mb-3">
-            <h2 class="h6 mb-0"><i class="bi bi-book me-2"></i>Songbook opens</h2>
+            <h2 class="h6 mb-0"><i aria-hidden="true" class="bi bi-book me-2"></i>Songbook opens</h2>
             <a class="btn btn-sm btn-outline-secondary" href="?range=<?= (int)$range ?>&export=top_books">CSV</a>
         </div>
         <?php if (!$topBooks): ?>
             <p class="text-muted small mb-0">No data yet.</p>
         <?php else: ?>
             <table class="table table-sm table-hover mb-0">
-                <thead><tr><th>Songbook</th><th class="text-end">Views</th></tr></thead>
+                <thead><tr><th scope="col">Songbook</th><th scope="col" class="text-end">Views</th></tr></thead>
                 <tbody>
                 <?php foreach ($topBooks as $b): ?>
                     <tr>

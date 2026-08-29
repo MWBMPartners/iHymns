@@ -531,7 +531,7 @@ if ($hasSchema && !empty($catalogues)) {
                 <?php endif; ?>
                 <div class="col-12">
                     <button type="submit" class="btn btn-sm btn-info">
-                        <i class="bi bi-plus me-1"></i>Create catalogue
+                        <i aria-hidden="true" class="bi bi-plus me-1"></i>Create catalogue
                     </button>
                 </div>
             </form>
@@ -565,12 +565,12 @@ if ($hasSchema && !empty($catalogues)) {
                 <div class="table-responsive">
                     <table class="table table-sm table-dark mb-0 small align-middle cp-sortable admin-table-responsive">
                         <thead><tr>
-                            <th data-sort-key="title" data-sort-type="text">Title</th>
-                            <th data-sort-key="slug" data-sort-type="text">Slug</th>
-                            <th data-sort-key="visibility" data-sort-type="text">Visibility</th>
-                            <th class="text-end" data-sort-key="songs" data-sort-type="number">Songs</th>
-                            <th data-sort-key="description" data-sort-type="text">Description</th>
-                            <th class="text-end">Actions</th>
+                            <th scope="col" data-sort-key="title" data-sort-type="text">Title</th>
+                            <th scope="col" data-sort-key="slug" data-sort-type="text">Slug</th>
+                            <th scope="col" data-sort-key="visibility" data-sort-type="text">Visibility</th>
+                            <th scope="col" class="text-end" data-sort-key="songs" data-sort-type="number">Songs</th>
+                            <th scope="col" data-sort-key="description" data-sort-type="text">Description</th>
+                            <th scope="col" class="text-end">Actions</th>
                         </tr></thead>
                         <tbody>
                         <?php foreach ($catalogues as $c): ?>
@@ -685,7 +685,7 @@ if ($hasSchema && !empty($catalogues)) {
                                         <?php endif; ?>
                                         <div class="col-md-3 text-end">
                                             <button type="submit" class="btn btn-sm btn-info">
-                                                <i class="bi bi-check2 me-1"></i>Save changes
+                                                <i aria-hidden="true" class="bi bi-check2 me-1"></i>Save changes
                                             </button>
                                         </div>
                                     </form>
@@ -695,7 +695,7 @@ if ($hasSchema && !empty($catalogues)) {
                             <?php $members = $membersByCatalogueId[(int)$c['Id']] ?? []; ?>
                             <tr class="collapse" id="cat-members-<?= (int)$c['Id'] ?>">
                                 <td colspan="6" class="bg-body-secondary">
-                                    <h3 class="h6 mb-2"><i class="bi bi-music-note-list me-1"></i>Members of "<?= htmlspecialchars($c['Title']) ?>"</h3>
+                                    <h3 class="h6 mb-2"><i aria-hidden="true" class="bi bi-music-note-list me-1"></i>Members of "<?= htmlspecialchars($c['Title']) ?>"</h3>
                                     <?php if (empty($members)): ?>
                                         <p class="text-muted small mb-2">No songs in this collection yet — use the form below to add some.</p>
                                     <?php else: ?>
@@ -747,7 +747,7 @@ if ($hasSchema && !empty($catalogues)) {
                                         </div>
                                         <div class="col-md-2">
                                             <button type="submit" class="btn btn-sm btn-info">
-                                                <i class="bi bi-plus me-1"></i>Add
+                                                <i aria-hidden="true" class="bi bi-plus me-1"></i>Add
                                             </button>
                                         </div>
                                     </form>

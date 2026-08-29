@@ -4,13 +4,28 @@ declare(strict_types=1);
 
 /**
  * iHymns — Static WCAG 2.2 AA guards from the #1150/#1151 accessibility
- * sweep.
+ * sweep, extended by the #1990 M2 (table header scope) + M8 (icon
+ * aria-hidden / icon-only control naming) sweep.
  *
- * ELI5: three cheap, purely-textual checks over the actual page templates
- * that catch a screen-reader user landing on an invisible control, a
- * screen reader losing track of which element an id refers to, or an
- * image with nothing to say about itself. None of these need a browser —
- * they are facts about the HTML source, derivable from the tree.
+ * ELI5: cheap, purely-textual checks over the actual page templates that
+ * catch a screen-reader user landing on an invisible control, a screen
+ * reader losing track of which element an id refers to, a table column
+ * with no announced header, a decorative icon a screen reader tries to
+ * read out loud, or an icon-only button/link with nothing to say about
+ * itself. None of these need a browser — they are facts about the HTML
+ * source, derivable from the tree.
+ *
+ * #1990 additions (M2/M8):
+ *   (M2) a11yThMissingScope() — every `<th>` in the admin + public tree
+ *        must carry a `scope="…"` attribute (PRESENCE only; col-vs-row is
+ *        a review call, not machine-decidable from source text alone).
+ *   (M8) a11yIconAccessibility() — (a) every Bootstrap-Icons `<i class="bi
+ *        …">` must be `aria-hidden="true"` OR properly named via
+ *        `role="img"` + `aria-label="…"`; (b) every `<button>`/`<a>` whose
+ *        entire content is one or more bi-icons and whitespace (no visible
+ *        text, no PHP-echoed text) must carry an accessible name — an
+ *        `aria-label`/`aria-labelledby`/`title` on the opening tag, or a
+ *        `.visually-hidden` span inside.
  *
  * WHAT IT ASSERTS
  *
@@ -208,6 +223,156 @@ function a11yHeadingRoleButtonWithoutTabindex(string $src): array
 }
 
 /**
+ * @return int[] 1-based line numbers of every `<th …>` (a11y audit M2,
+ * #1990) missing a `scope="…"` attribute. PHP blocks are neutralised to
+ * same-count newlines FIRST (the same trap a11yImagesMissingAlt() /
+ * a11yBareGenericAriaLabel() already document) so a `title="<?= $hint ?>"`
+ * inside the tag can never truncate the `[^>]*` match at the embedded
+ * `?>` and produce a false negative two attributes later. Tag-local — a
+ * loop-generated, conditionally-rendered, string-`echo`'d, empty, or
+ * multi-line `<th>` is each still caught, and a tag can never be
+ * double-reported. Enforces PRESENCE only: whether the value should be
+ * "col" or "row" is a review judgement (row headers are the first cell of
+ * a data row, not a `<thead>` column label), not something a text scanner
+ * can decide.
+ */
+function a11yThMissingScope(string $src): array
+{
+    $lines = [];
+    // Same PHP-block-neutralisation as a11yImagesMissingAlt() — replace each
+    // PHP short-echo/tag block with only its own newlines so an embedded
+    // close tag inside an attribute value can't truncate the <th …> match early.
+    $src = preg_replace_callback('~<\?(?:php|=)?[\s\S]*?\?>~', static function (array $mm): string {
+        return str_repeat("\n", substr_count($mm[0], "\n"));
+    }, $src) ?? $src;
+    if (preg_match_all('~<th\b[^>]*>~i', $src, $m, PREG_OFFSET_CAPTURE) !== false) {
+        foreach ($m[0] as [$tag, $offset]) {
+            if (!preg_match('~\bscope\s*=~i', $tag)) {
+                $lines[] = substr_count(substr($src, 0, $offset), "\n") + 1;
+            }
+        }
+    }
+    return $lines;
+}
+
+/**
+ * Bootstrap-Icons class token test shared by both halves of
+ * a11yIconAccessibility() below: true when `$classAttrValue` (the raw
+ * text between the quotes of a `class="…"` attribute — may still contain
+ * a literal, un-evaluated `<?= … ?>` short-echo for a dynamic SUFFIX, e.g.
+ * `class="bi <?= $bannerIcon ?> mt-1"`) contains the literal `bi` token
+ * that Bootstrap Icons always pairs with a `bi-<glyph>` class. A class
+ * built ENTIRELY from a PHP variable with no literal "bi" text at all
+ * (`class="<?= $t['iconClass'] ?>"`) cannot be proven to be a Bootstrap
+ * icon from the source text alone and is deliberately NOT matched — a
+ * text scanner cannot evaluate PHP to find out what the variable holds.
+ */
+function a11yIsBiIconClass(string $classAttrValue): bool
+{
+    return preg_match('~(?:^|\s)bi(?:$|[\s-])~', $classAttrValue) === 1;
+}
+
+/**
+ * @return array{icons: int[], controls: int[]} the M8 remainder (a11y
+ * audit #1990) over `$src` (already comment-stripped):
+ *
+ *   'icons'    — every `<i class="bi …">` that is neither `aria-hidden=
+ *                "true"` nor already named via `role="…"` + `aria-label=
+ *                "…"` together (the Step 1a pattern this same sweep put
+ *                on musicians.php's sticky-note badge and venues.php's
+ *                map-pin badge — ARIA 1.2 prohibits naming a bare `<i>`
+ *                without a role, so `role` alone or `aria-label` alone is
+ *                still wrong, mirroring a11yBareGenericAriaLabel() above).
+ *   'controls' — every `<button>`/`<a>` whose ENTIRE content, once every
+ *                tag is stripped, is blank AND that blank content
+ *                contains at least one real `bi-` icon (never a totally
+ *                empty `<button id="…"></button>` a script populates
+ *                later — that is a different, legitimate pattern, not an
+ *                icon standing in for a name) but carries no `aria-label`/
+ *                `aria-labelledby`/`title` on the opening tag and no
+ *                `.visually-hidden` span inside.
+ *
+ * Classification order (the "distinguish classes" rule from the #1990
+ * plan): a PHP echo (`<?=`/`<?php`) anywhere in the element's ORIGINAL
+ * (non-neutralised) span means the control's name comes from rendered
+ * text at runtime — decorative-beside-text, skip rule (b) entirely, only
+ * rule (a) (on any icon inside) still applies. Only once that's ruled out
+ * does a real, literal, non-whitespace text node win it visible-text
+ * naming and skip rule (b) too. Only a control with NEITHER wins the
+ * "icon-only, name required" classification.
+ *
+ * Implementation note: `$src` is first neutralised into `$neutral`, a
+ * SAME-LENGTH copy with every PHP block's non-newline bytes replaced by a
+ * single space (never removed) — this keeps every byte OFFSET identical
+ * between `$src` and `$neutral`, so (1) tag/element boundaries can be
+ * found in `$neutral` without a stray `?>` truncating a match, while (2)
+ * the ORIGINAL bytes at that same offset range in `$src` can still be
+ * inspected afterwards to detect a PHP echo the neutralised copy erased
+ * on purpose. Line numbers are counted against `$neutral`, which has the
+ * exact same newline positions as `$src` (only non-newline bytes moved).
+ *
+ * The inner-content capture is bounded to ~600 chars and guarded with a
+ * negative lookahead against a nested `<button`/`</button`/`<a`/`</a` so
+ * a single regex pass can never straddle two sibling controls or run away
+ * across a whole page on an unclosed tag.
+ */
+function a11yIconAccessibility(string $src): array
+{
+    $neutral = preg_replace_callback('~<\?(?:php|=)?[\s\S]*?\?>~', static function (array $mm): string {
+        return (string) preg_replace('~[^\n]~', ' ', $mm[0]);
+    }, $src) ?? $src;
+
+    $iconLines = [];
+    if (preg_match_all('~<i\b[^>]*>~i', $neutral, $m, PREG_OFFSET_CAPTURE) !== false) {
+        foreach ($m[0] as [$tag, $offset]) {
+            if (!preg_match('~class\s*=\s*"([^"]*)"~i', $tag, $cm) || !a11yIsBiIconClass($cm[1])) {
+                continue; // not a Bootstrap-Icons glyph — out of scope
+            }
+            $hidden = preg_match('~\baria-hidden\s*=~i', $tag) === 1;
+            $named  = preg_match('~\brole\s*=~i', $tag) === 1 && preg_match('~\baria-label\s*=~i', $tag) === 1;
+            if (!$hidden && !$named) {
+                $iconLines[] = substr_count(substr($neutral, 0, $offset), "\n") + 1;
+            }
+        }
+    }
+
+    $controlLines = [];
+    $pattern = '~<(button|a)\b([^>]*)>((?:(?!</?(?:button|a)\b)[\s\S]){0,600}?)</\1>~i';
+    if (preg_match_all($pattern, $neutral, $m, PREG_OFFSET_CAPTURE) !== false) {
+        foreach ($m[0] as $idx => [$whole, $offset]) {
+            $attrs = $m[2][$idx][0];
+            $inner = $m[3][$idx][0];
+            $origSlice = substr($src, $offset, strlen($whole));
+            if (str_contains($origSlice, '<?=') || str_contains($origSlice, '<?php')) {
+                continue; // decorative-beside-text: a PHP echo stands in for a name at runtime
+            }
+            if (trim((string) preg_replace('~<[^>]*>~', '', $inner)) !== '') {
+                continue; // real visible text names the control
+            }
+            $hasBiIcon = false;
+            if (preg_match_all('~<i\b[^>]*>~i', $inner, $im) !== false) {
+                foreach ($im[0] as $iconTag) {
+                    if (preg_match('~class\s*=\s*"([^"]*)"~i', $iconTag, $icm) && a11yIsBiIconClass($icm[1])) {
+                        $hasBiIcon = true;
+                        break;
+                    }
+                }
+            }
+            if (!$hasBiIcon) {
+                continue; // no bi-icon inside — a script-populated empty placeholder, not this check's concern
+            }
+            $named = preg_match('~\b(?:aria-label|aria-labelledby|title)\s*=~i', $attrs) === 1
+                || preg_match('~class\s*=\s*"[^"]*\bvisually-hidden\b[^"]*"~i', $inner) === 1;
+            if (!$named) {
+                $controlLines[] = substr_count(substr($neutral, 0, $offset), "\n") + 1;
+            }
+        }
+    }
+
+    return ['icons' => $iconLines, 'controls' => $controlLines];
+}
+
+/**
  * True when `$src` (already comment-stripped) both emits the "Skip to main
  * content" link targeting `#main-content` AND opens a `<main id="main-
  * content">` landmark — the two-part M7 fix. Both live in the same file
@@ -337,6 +502,144 @@ $h2ButtonOkFixture = '<h2 role="button" tabindex="0" data-bs-toggle="collapse">T
 if (a11yHeadingRoleButtonWithoutTabindex($h2ButtonOkFixture) !== []) {
     $selfTestFailures[] = 'a11yHeadingRoleButtonWithoutTabindex() false-flagged a heading WITH tabindex, or a '
         . 'non-heading <a role="button"> (a real focusable element — correct usage elsewhere in this codebase).';
+}
+
+// M2 — a11yThMissingScope() must flag a scopeless <th>, accept one with
+// scope="col", and — the neutraliser proof — still flag a scopeless <th>
+// whose OTHER attribute is a PHP short-echo (a naive [^>]* would truncate
+// at the embedded close tag and never see the missing scope=).
+$thFixture = '<th>Plain</th><th scope="col">Fine</th>'
+    . '<th title="' . $phpOpen . ' $hint ' . $phpClose . '">Scopeless</th>';
+$thLines = a11yThMissingScope($thFixture);
+if ($thLines !== [1, 1]) {
+    // both scopeless <th> sit on fixture line 1 (no newlines in the fixture) —
+    // expect exactly two flags, not one (which would mean the neutraliser
+    // either ate the whole tag or the PHP-attribute case was missed).
+    $selfTestFailures[] = 'a11yThMissingScope() did not flag both the plain scopeless <th> and the PHP-in-'
+        . 'attribute scopeless <th> (and only those two) — got: ' . implode(',', $thLines);
+}
+
+// M8(a) — a11yIconAccessibility()['icons'] must flag a bare bi-icon, accept
+// aria-hidden="true", accept role="img"+aria-label together, and — the
+// neutraliser proof — still flag a dynamic-SUFFIX bi-icon class (a literal
+// "bi" followed by a PHP short-echo suffix) with no aria-hidden.
+$iconBareFixture = '<i class="bi bi-x"></i>';
+if (a11yIconAccessibility($iconBareFixture)['icons'] !== [1]) {
+    $selfTestFailures[] = 'a11yIconAccessibility() did not flag a bare <i class="bi bi-x"> with no aria-hidden.';
+}
+$iconHiddenFixture = '<i class="bi bi-x" aria-hidden="true"></i>';
+if (a11yIconAccessibility($iconHiddenFixture)['icons'] !== []) {
+    $selfTestFailures[] = 'a11yIconAccessibility() false-flagged an <i> that already has aria-hidden="true".';
+}
+$iconNamedFixture = '<i class="bi bi-x" role="img" aria-label="Canonical"></i>';
+if (a11yIconAccessibility($iconNamedFixture)['icons'] !== []) {
+    $selfTestFailures[] = 'a11yIconAccessibility() false-flagged an <i> already named via role="img"+aria-label.';
+}
+$iconDynamicFixture = '<i class="bi ' . $phpOpen . ' $c ' . $phpClose . '"></i>';
+if (a11yIconAccessibility($iconDynamicFixture)['icons'] !== [1]) {
+    $selfTestFailures[] = 'a11yIconAccessibility() mishandled a dynamic-suffix bi-icon class '
+        . '(class="bi <?= $c ?>") with no aria-hidden — the neutraliser regressed.';
+}
+
+// M8(b) — a11yIconAccessibility()['controls'] must flag an icon-only
+// <button>, accept aria-label, accept title (the codebase's own accepted
+// weak-but-valid convention), NOT flag icon+visible-text (false-positive
+// tripwire), NOT flag icon+PHP-echoed text (PHP-as-text, decorative-
+// beside-text classification), and accept a .visually-hidden span inside.
+$ctrlIconOnlyFixture = '<button type="button"><i class="bi bi-x"></i></button>';
+if (a11yIconAccessibility($ctrlIconOnlyFixture)['controls'] !== [1]) {
+    $selfTestFailures[] = 'a11yIconAccessibility() did not flag an icon-only <button> with no accessible name.';
+}
+$ctrlAriaLabelFixture = '<button type="button" aria-label="Remove"><i class="bi bi-x"></i></button>';
+if (a11yIconAccessibility($ctrlAriaLabelFixture)['controls'] !== []) {
+    $selfTestFailures[] = 'a11yIconAccessibility() false-flagged an icon-only <button> that has aria-label.';
+}
+$ctrlTitleFixture = '<button type="button" title="Remove"><i class="bi bi-x"></i></button>';
+if (a11yIconAccessibility($ctrlTitleFixture)['controls'] !== []) {
+    $selfTestFailures[] = 'a11yIconAccessibility() false-flagged an icon-only <button> that has title (the '
+        . 'codebase\'s own accepted weak-but-valid naming convention).';
+}
+$ctrlIconTextFixture = '<button type="button"><i class="bi bi-x"></i> Add</button>';
+if (a11yIconAccessibility($ctrlIconTextFixture)['controls'] !== []) {
+    $selfTestFailures[] = 'a11yIconAccessibility() false-flagged an icon+VISIBLE-TEXT <button> ("Add") as '
+        . 'icon-only — the false-positive tripwire fired.';
+}
+$ctrlIconPhpTextFixture = '<button type="button"><i class="bi bi-x"></i>' . $phpOpen . ' $label ' . $phpClose . '</button>';
+if (a11yIconAccessibility($ctrlIconPhpTextFixture)['controls'] !== []) {
+    $selfTestFailures[] = 'a11yIconAccessibility() false-flagged an icon+PHP-ECHOED-text <button> as icon-only '
+        . '— a PHP echo block stands in for text at runtime (decorative-beside-text), not a violation.';
+}
+$ctrlVisuallyHiddenFixture = '<button type="button"><i class="bi bi-x"></i><span class="visually-hidden">Remove</span></button>';
+if (a11yIconAccessibility($ctrlVisuallyHiddenFixture)['controls'] !== []) {
+    $selfTestFailures[] = 'a11yIconAccessibility() false-flagged an icon-only <button> that has a '
+        . '.visually-hidden span inside.';
+}
+// A totally empty <button id="…"></button> (no icon at all — script-populated
+// later, e.g. settings.php's push-toggle-btn) must NEVER be flagged — this is
+// a different, legitimate pattern, not an icon standing in for a name.
+$ctrlEmptyNoIconFixture = '<button type="button" id="js-fill-me"></button>';
+if (a11yIconAccessibility($ctrlEmptyNoIconFixture)['controls'] !== []) {
+    $selfTestFailures[] = 'a11yIconAccessibility() false-flagged a totally empty <button> with NO icon inside '
+        . '(a legitimate script-populated-later placeholder) — the has-a-bi-icon precondition regressed.';
+}
+
+/* -----------------------------------------------------------------------
+ * LIVE MUTATION PROOF (rule #34) — the fixture strings above prove the
+ * scanners CAN fail, but only against hand-typed text. Take two REAL,
+ * currently-clean spots in the actual tree, break each in memory ONLY
+ * (never written back to disk), and confirm the scanner goes red on the
+ * mutated copy while staying clean on the untouched original — proof the
+ * guard can catch a regression in the real files, not just a fixture.
+ * ------------------------------------------------------------------- */
+$a11yLiveRoot = dirname(__DIR__, 2) . '/appWeb/public_html';
+
+$languagesPath = $a11yLiveRoot . '/manage/languages.php';
+if (!is_file($languagesPath)) {
+    $selfTestFailures[] = 'live-mutation proof: manage/languages.php not found.';
+} else {
+    $languagesSrc = a11yStripComments((string) file_get_contents($languagesPath));
+    $scopeAnchor = '<th scope="col" data-col-priority="primary">Tag</th>';
+    if (!str_contains($languagesSrc, $scopeAnchor)) {
+        $selfTestFailures[] = 'live-mutation proof: the expected scope="col" anchor is no longer present in '
+            . 'manage/languages.php ("' . $scopeAnchor . '") — the file changed shape and this proof needs a new anchor.';
+    } else {
+        if (a11yThMissingScope($languagesSrc) !== []) {
+            $selfTestFailures[] = 'a11yThMissingScope() flagged manage/languages.php AS-IS (unmutated) — false '
+                . 'positive on real, already-correct source.';
+        }
+        $languagesMutated = preg_replace('~<th scope="col" data-col-priority="primary">Tag</th>~',
+            '<th data-col-priority="primary">Tag</th>', $languagesSrc, 1);
+        if (a11yThMissingScope($languagesMutated) === []) {
+            $selfTestFailures[] = 'a11yThMissingScope() did NOT go red when a real scope="col" was deleted from '
+                . 'manage/languages.php IN MEMORY — the guard cannot be trusted against the real tree.';
+        }
+    }
+}
+
+$groupsPath = $a11yLiveRoot . '/manage/groups.php';
+if (!is_file($groupsPath)) {
+    $selfTestFailures[] = 'live-mutation proof: manage/groups.php not found.';
+} else {
+    $groupsSrc = a11yStripComments((string) file_get_contents($groupsPath));
+    // The "Add selected user" button — icon-only, named ONLY via aria-label
+    // (no title fallback), so deleting the aria-label makes it genuinely
+    // unnamed rather than merely losing a redundant second name.
+    $labelAnchor = 'aria-label="Add selected user to this group"';
+    if (!str_contains($groupsSrc, $labelAnchor)) {
+        $selfTestFailures[] = 'live-mutation proof: the expected aria-label anchor is no longer present in '
+            . 'manage/groups.php ("' . $labelAnchor . '") — the file changed shape and this proof needs a new anchor.';
+    } else {
+        if (a11yIconAccessibility($groupsSrc)['controls'] !== []) {
+            $selfTestFailures[] = 'a11yIconAccessibility() flagged manage/groups.php AS-IS (unmutated) — false '
+                . 'positive on real, already-correct source.';
+        }
+        $groupsMutated = str_replace($labelAnchor, '', $groupsSrc);
+        if (a11yIconAccessibility($groupsMutated)['controls'] === []) {
+            $selfTestFailures[] = 'a11yIconAccessibility() did NOT go red when a real aria-label was deleted from '
+                . 'manage/groups.php\'s "Add selected user" button IN MEMORY — the guard cannot be trusted '
+                . 'against the real tree.';
+        }
+    }
 }
 
 if ($selfTestFailures) {
@@ -505,18 +808,92 @@ foreach ($publicScanTargets as $file) {
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * Assertion 7 (M2 + M8 remainder, #1990) — every <th> across the admin AND
+ * public tree carries scope=, and every bi-icon / icon-only button-or-link
+ * across that SAME wider tree is perceivable/nameable. Deliberately a
+ * BROADER glob than $targets above (this adds manage/includes/*.php,
+ * manage/includes/partials/*.php and manage/editor/*.php, since #1990's own
+ * mechanical sweep reached those directories too via `find manage -name
+ * "*.php"` — narrower than this glob would silently stop enforcing the
+ * result there) — includes/pages and includes/partials are shared with
+ * $targets so this "locks" the public help table (manage/help.php's admin
+ * help doc is already inside $targets via manage/*.php) rather than
+ * re-scanning it under a different rule.
+ * ------------------------------------------------------------------------- */
+$m2m8Targets = [];
+foreach ([
+    $public . '/manage',
+    $public . '/manage/includes',
+    $public . '/manage/includes/partials',
+    $public . '/manage/editor',
+    $public . '/includes/pages',
+    $public . '/includes/partials',
+] as $dir) {
+    if (!is_dir($dir)) { continue; }
+    foreach (glob($dir . '/*.php') ?: [] as $f) {
+        $m2m8Targets[] = $f;
+    }
+}
+$m2m8Targets = array_values(array_unique($m2m8Targets));
+sort($m2m8Targets);
+
+if (!$m2m8Targets) {
+    $failures[] = 'no target .php files found for the M2/M8 <th>-scope + icon-accessibility scan — the tree '
+        . 'moved and this guard\'s glob needs updating.';
+}
+
+foreach ($m2m8Targets as $file) {
+    $rel = substr($file, strlen($public) + 1);
+    $src = a11yStripComments((string) file_get_contents($file));
+
+    foreach (a11yThMissingScope($src) as $line) {
+        $failures[] = sprintf(
+            '%s:%d — <th> with no scope="…" attribute (M2, #1990). Add scope="col" for a column header or '
+            . 'scope="row" for the first cell of a data row — a screen reader cannot otherwise associate this '
+            . 'header with the cells it labels.',
+            $rel,
+            $line
+        );
+    }
+
+    $iconIssues = a11yIconAccessibility($src);
+    foreach ($iconIssues['icons'] as $line) {
+        $failures[] = sprintf(
+            '%s:%d — a Bootstrap-Icons <i class="bi …"> is neither aria-hidden="true" nor named via '
+            . 'role="img"+aria-label (M8, #1990). A screen reader otherwise tries to read the icon glyph itself '
+            . 'out loud — add aria-hidden="true" if it is purely decorative, or role="img" + a real aria-label '
+            . 'if it carries meaning on its own (musicians.php\'s "Has curator notes" badge is the reference).',
+            $rel,
+            $line
+        );
+    }
+    foreach ($iconIssues['controls'] as $line) {
+        $failures[] = sprintf(
+            '%s:%d — a <button>/<a> whose entire content is one or more bi-icons (no visible text) carries no '
+            . 'accessible name (M8, #1990). Add aria-label/title on the opening tag, or a '
+            . '<span class="visually-hidden">…</span> inside — otherwise a screen reader announces only '
+            . '"button"/"link" with no indication of what it does.',
+            $rel,
+            $line
+        );
+    }
+}
+
 /* ------------------------------------------------------------------------- */
 if ($failures) {
-    fwrite(STDERR, "FAIL: static WCAG 2.1/2.2 AA checks (#1150/#1151, a11y audit 2026-08-28 M1/M7/M8):\n\n");
+    fwrite(STDERR, "FAIL: static WCAG 2.1/2.2 AA checks (#1150/#1151, a11y audit 2026-08-28 M1/M7/M8, #1990 M2/M8):\n\n");
     foreach ($failures as $f) { fwrite(STDERR, "  - {$f}\n"); }
     exit(1);
 }
 
 printf(
     "PASS: %d template(s) scanned under includes/pages, includes/partials and manage/ (ids/alt/heading-"
-    . "role-button), %d public-surface file(s) scanned for bare aria-label (M8), admin skip-link + <main> "
-    . "landmark wired (M7), home.php's card-layout-handle stays perceivable.\n",
+    . "role-button), %d public-surface file(s) scanned for bare aria-label (M8), %d file(s) scanned for <th> "
+    . "scope + icon accessibility (M2/M8, #1990), admin skip-link + <main> landmark wired (M7), home.php's "
+    . "card-layout-handle stays perceivable.\n",
     count($targets),
-    count($publicScanTargets)
+    count($publicScanTargets),
+    count($m2m8Targets)
 );
 exit(0);

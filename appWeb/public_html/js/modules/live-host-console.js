@@ -97,7 +97,7 @@ export class LiveHostConsole {
         const head = document.createElement('div');
         head.className = 'd-flex justify-content-between align-items-center mb-2';
         const title = document.createElement('strong');
-        title.innerHTML = '<i class="bi bi-sliders me-1"></i>Drive your live session';
+        title.innerHTML = '<i class="bi bi-sliders me-1" aria-hidden="true"></i>Drive your live session';
         const closeBtn = document.createElement('button');
         closeBtn.type = 'button';
         closeBtn.className = 'btn btn-sm btn-outline-secondary';

@@ -289,9 +289,9 @@ $isGlobalAdmin = ($currentUser['role'] ?? '') === 'global_admin';
                     <table class="table table-sm ent-grid mb-0 cp-sortable">
                         <thead>
                             <tr class="text-muted small">
-                                <th data-sort-key="capability" data-sort-type="text">Capability</th>
+                                <th scope="col" data-sort-key="capability" data-sort-type="text">Capability</th>
                                 <?php foreach ($ROLES as $r): ?>
-                                    <th class="role-col"><?= htmlspecialchars(roleLabel($r)) ?></th>
+                                    <th scope="col" class="role-col"><?= htmlspecialchars(roleLabel($r)) ?></th>
                                 <?php endforeach; ?>
                             </tr>
                         </thead>
@@ -332,7 +332,7 @@ $isGlobalAdmin = ($currentUser['role'] ?? '') === 'global_admin';
 
         <div class="d-flex gap-2 mt-3">
             <button type="submit" class="btn btn-amber-solid">
-                <i class="bi bi-save me-1"></i>Save Mapping
+                <i aria-hidden="true" class="bi bi-save me-1"></i>Save Mapping
             </button>
             <a href="?reset=1" class="btn btn-outline-secondary"
                onclick="return confirm('Clear admin overrides and restore defaults?')">

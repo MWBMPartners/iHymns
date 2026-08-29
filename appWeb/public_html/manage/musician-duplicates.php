@@ -422,7 +422,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <main class="container-fluid py-4">
     <div class="mb-3 d-flex flex-wrap justify-content-between align-items-start gap-2">
         <div>
-            <h1 class="h3 mb-1"><i class="bi bi-people-fill me-2"></i>Find Duplicate Musicians</h1>
+            <h1 class="h3 mb-1"><i aria-hidden="true" class="bi bi-people-fill me-2"></i>Find Duplicate Musicians</h1>
             <p class="text-secondary small mb-0" style="max-width:60rem;">
                 Two entries in your Musicians list that are probably the same person — either the
                 <strong>exact same name</strong> give or take an invisible difference (a curly apostrophe,
@@ -437,10 +437,10 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <div class="d-flex flex-wrap gap-2">
             <a href="?<?= http_build_query(array_filter(['threshold' => $threshold !== MUSDUP_DEFAULT_THRESHOLD ? $threshold : null, 'min_uses' => $minUses ?: null, 'q' => $searchQ ?: null, 'show' => $showDismissed ? null : 'dismissed'])) ?>"
                class="btn btn-sm btn-outline-secondary">
-                <i class="bi bi-<?= $showDismissed ? 'eye' : 'eye-slash' ?> me-1"></i><?= $showDismissed ? 'Back to active' : 'Show dismissed' ?>
+                <i aria-hidden="true" class="bi bi-<?= $showDismissed ? 'eye' : 'eye-slash' ?> me-1"></i><?= $showDismissed ? 'Back to active' : 'Show dismissed' ?>
             </a>
             <button type="button" class="btn btn-sm btn-outline-primary" id="mdup-legend-btn" aria-keyshortcuts="?" title="Keyboard shortcuts (?)">
-                <i class="bi bi-keyboard me-1"></i>Shortcuts
+                <i aria-hidden="true" class="bi bi-keyboard me-1"></i>Shortcuts
             </button>
         </div>
     </div>
@@ -456,7 +456,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     <?php if ($scanError !== null): ?>
         <div class="alert alert-danger" role="alert">
-            <i class="bi bi-exclamation-octagon me-1"></i>
+            <i aria-hidden="true" class="bi bi-exclamation-octagon me-1"></i>
             <strong>Duplicate detection couldn't run.</strong>
             This usually means a database migration hasn't been applied on this environment yet. Open
             <a href="/manage/setup-database" class="alert-link">Setup&nbsp;Database</a>, apply any pending
@@ -467,7 +467,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     <?php if (!$dismissedTableReady): ?>
         <div class="alert alert-warning py-2 small">
-            <i class="bi bi-exclamation-triangle me-1"></i>
+            <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
             The duplicate-review dismissals table hasn't been migrated on this install yet — the scan below
             still works, but Dismiss/Undismiss are unavailable until you
             <a href="/manage/setup-database" class="alert-link">run the migration</a>.
@@ -512,18 +512,18 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                        class="form-control form-control-sm">
             </div>
             <div class="col-sm-2">
-                <button type="submit" class="btn btn-secondary btn-sm w-100"><i class="bi bi-funnel me-1"></i>Apply</button>
+                <button type="submit" class="btn btn-secondary btn-sm w-100"><i aria-hidden="true" class="bi bi-funnel me-1"></i>Apply</button>
             </div>
         </div>
     </form>
 
     <?php if ($showDismissed): ?>
-        <h2 class="h5 mt-3"><i class="bi bi-eye-slash me-1"></i>Dismissed (<?= count($byteCards) + count($fuzzyRows) ?>)</h2>
+        <h2 class="h5 mt-3"><i aria-hidden="true" class="bi bi-eye-slash me-1"></i>Dismissed (<?= count($byteCards) + count($fuzzyRows) ?>)</h2>
         <?php if (!$byteCards && !$fuzzyRows): ?>
             <div class="alert alert-secondary">Nothing has been dismissed yet.</div>
         <?php endif; ?>
     <?php elseif (!$byteCards && !$fuzzyRows): ?>
-        <div class="alert alert-success"><i class="bi bi-check-circle me-1"></i>No probable duplicates detected.</div>
+        <div class="alert alert-success"><i aria-hidden="true" class="bi bi-check-circle me-1"></i>No probable duplicates detected.</div>
     <?php endif; ?>
 
     <?php
@@ -545,12 +545,12 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             : '<span class="badge bg-danger">100% · high</span>';
         echo $variantBadge($c['variant']);
         if ($conflict) {
-            echo '<span class="text-warning-emphasis small"><i class="bi bi-exclamation-triangle me-1"></i>Recorded lifespans disagree — merge is guarded.</span>';
+            echo '<span class="text-warning-emphasis small"><i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>Recorded lifespans disagree — merge is guarded.</span>';
         }
         echo '</div>';
 
         echo '<table class="table table-sm mb-2"><thead><tr>'
-           . '<th style="width:2.5rem;">Keep</th><th style="width:2.5rem;">Pick</th><th>Person</th></tr></thead><tbody>';
+           . '<th scope="col" style="width:2.5rem;">Keep</th><th scope="col" style="width:2.5rem;">Pick</th><th scope="col">Person</th></tr></thead><tbody>';
         $first = true;
         foreach ($members as $m) {
             $isSuggested = isset($c['suggestedSurvivor'])
@@ -570,17 +570,17 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         if ($conflict) {
             echo '<span class="small text-secondary">Type MERGE to enable:</span>'
                . '<input type="text" class="form-control form-control-sm mdup-confirm-input" style="max-width:9rem" autocomplete="off" spellcheck="false" aria-label="Type MERGE to confirm">'
-               . '<button type="button" class="btn btn-sm btn-outline-danger mdup-merge-btn" data-force="1" disabled><i class="bi bi-union me-1"></i>Merge</button>';
+               . '<button type="button" class="btn btn-sm btn-outline-danger mdup-merge-btn" data-force="1" disabled><i aria-hidden="true" class="bi bi-union me-1"></i>Merge</button>';
         } else {
-            echo '<button type="button" class="btn btn-sm btn-outline-danger mdup-merge-btn"><i class="bi bi-union me-1"></i>Merge picked into kept</button>';
+            echo '<button type="button" class="btn btn-sm btn-outline-danger mdup-merge-btn"><i aria-hidden="true" class="bi bi-union me-1"></i>Merge picked into kept</button>';
         }
         echo '<button type="button" class="btn btn-sm btn-outline-secondary mdup-dismiss-btn ms-auto" title="Not the same person">'
-           . '<i class="bi bi-x-lg me-1"></i>Not the same person</button>';
+           . '<i aria-hidden="true" class="bi bi-x-lg me-1"></i>Not the same person</button>';
         echo '</div>';
         echo '</div></div>';
     };
     if ($byteCards) {
-        echo '<h2 class="h5 mt-4"><i class="bi bi-fonts me-1"></i>Same name, different bytes (' . count($byteCards) . ')</h2>';
+        echo '<h2 class="h5 mt-4"><i aria-hidden="true" class="bi bi-fonts me-1"></i>Same name, different bytes (' . count($byteCards) . ')</h2>';
         echo '<p class="text-secondary small mb-2">Byte-identical spellings, or a curated alias link — high confidence, one-click merge.</p>';
         foreach ($byteCards as $c) { $renderCard($c); }
     }
@@ -589,18 +589,18 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
      * §2 — Similar names, sortable table.
      * ------------------------------------------------------------- */
     if ($fuzzyRows): ?>
-        <h2 class="h5 mt-4"><i class="bi bi-search me-1"></i>Similar names (<?= count($fuzzyRows) ?>)</h2>
+        <h2 class="h5 mt-4"><i aria-hidden="true" class="bi bi-search me-1"></i>Similar names (<?= count($fuzzyRows) ?>)</h2>
         <p class="text-secondary small mb-2">Genuinely different spellings that scored above the fuzzy threshold — review before merging.</p>
         <div class="card-admin p-0">
             <div class="table-responsive">
             <table class="table table-sm table-hover align-middle mb-0 cp-sortable admin-table-responsive" data-default-sort-key="score" data-default-sort-dir="desc">
                 <thead>
                     <tr class="text-muted small">
-                        <th data-col-priority="primary" data-sort-key="score" data-sort-type="number">Score</th>
-                        <th data-col-priority="primary" data-sort-key="a" data-sort-type="text">Name A</th>
-                        <th data-col-priority="primary" data-sort-key="b" data-sort-type="text">Name B</th>
-                        <th data-col-priority="tertiary" data-sort-key="signal" data-sort-type="text">Signal</th>
-                        <th data-col-priority="primary" style="min-width:16rem;">Actions</th>
+                        <th scope="col" data-col-priority="primary" data-sort-key="score" data-sort-type="number">Score</th>
+                        <th scope="col" data-col-priority="primary" data-sort-key="a" data-sort-type="text">Name A</th>
+                        <th scope="col" data-col-priority="primary" data-sort-key="b" data-sort-type="text">Name B</th>
+                        <th scope="col" data-col-priority="tertiary" data-sort-key="signal" data-sort-type="text">Signal</th>
+                        <th scope="col" data-col-priority="primary" style="min-width:16rem;">Actions</th>
                     </tr>
                 </thead>
                 <tbody>

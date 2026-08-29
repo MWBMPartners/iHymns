@@ -486,7 +486,7 @@ if ($hasSchema) {
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-collection me-2"></i>Songbook Series</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-collection me-2"></i>Songbook Series</h1>
         <p class="text-secondary small mb-4">
             Group songbooks that belong together but have no single main book to
             point to — like Songs of Fellowship volumes 1/2/3/4, or themed
@@ -513,22 +513,22 @@ if ($hasSchema) {
                     tables haven't been created on this database yet (#782 phase A schema).
                 </p>
                 <a href="/manage/setup-database" class="btn btn-amber btn-sm">
-                    <i class="bi bi-database-gear me-1"></i>Run /manage/setup-database
+                    <i aria-hidden="true" class="bi bi-database-gear me-1"></i>Run /manage/setup-database
                 </a>
             </div>
         <?php else: ?>
 
         <!-- Series list -->
         <div class="card-admin p-3 mb-4">
-            <h2 class="h6 mb-3"><i class="bi bi-list-ul me-2"></i>Existing series</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-list-ul me-2"></i>Existing series</h2>
             <table class="table table-sm align-middle cp-sortable mb-0 admin-table-responsive">
                 <thead>
                     <tr class="text-muted small">
-                        <th data-col-priority="primary"   data-sort-key="name" data-sort-type="text">Name</th>
-                        <th data-col-priority="secondary" data-sort-key="slug" data-sort-type="text">Slug</th>
-                        <th data-col-priority="primary"   data-sort-key="members" data-sort-type="number" class="text-center">Members</th>
-                        <th data-col-priority="tertiary"  data-sort-key="description" data-sort-type="text">Description</th>
-                        <th data-col-priority="primary"   class="text-end">Actions</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="name" data-sort-type="text">Name</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="slug" data-sort-type="text">Slug</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="members" data-sort-type="number" class="text-center">Members</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="description" data-sort-type="text">Description</th>
+                        <th scope="col" data-col-priority="primary"   class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -568,7 +568,7 @@ if ($hasSchema) {
                                 <button type="button" class="btn btn-sm btn-outline-info"
                                         onclick="openSeriesEditModal(<?= htmlspecialchars((string)$rowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Edit series + members">
-                                    <i class="bi bi-pencil"></i>
+                                    <i aria-hidden="true" class="bi bi-pencil"></i>
                                 </button>
                                 <!-- #1765 Feature 5 — export this series as a MARCXML file. -->
                                 <a class="btn btn-sm btn-outline-secondary"
@@ -580,7 +580,7 @@ if ($hasSchema) {
                                 <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick="openSeriesDeleteModal(<?= htmlspecialchars((string)$deleteJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Delete series (memberships cascade)">
-                                    <i class="bi bi-trash"></i>
+                                    <i aria-hidden="true" class="bi bi-trash"></i>
                                 </button>
                             </td>
                         </tr>
@@ -596,7 +596,7 @@ if ($hasSchema) {
         <form method="POST" class="card-admin p-3 mb-4">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
-            <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a series</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a series</h2>
             <div class="row g-2">
                 <div class="col-sm-4">
                     <label class="form-label small" for="create-name">Name</label>
@@ -648,7 +648,7 @@ if ($hasSchema) {
             ?>
             <?php endif; ?>
             <button type="submit" class="btn btn-amber btn-sm mt-3">
-                <i class="bi bi-plus me-1"></i>Create series
+                <i aria-hidden="true" class="bi bi-plus me-1"></i>Create series
             </button>
         </form>
 
@@ -685,7 +685,7 @@ if ($hasSchema) {
                         <input type="hidden" name="id" id="edit-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
                             <h5 class="modal-title">
-                                <i class="bi bi-pencil me-2"></i>Edit series — <span id="edit-title-label"></span>
+                                <i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit series — <span id="edit-title-label"></span>
                             </h5>
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
@@ -738,7 +738,7 @@ if ($hasSchema) {
 
                             <hr>
 
-                            <h6 class="mb-2"><i class="bi bi-collection me-2"></i>Members</h6>
+                            <h6 class="mb-2"><i aria-hidden="true" class="bi bi-collection me-2"></i>Members</h6>
                             <p class="form-text small mt-0 mb-2">
                                 Each row is a member songbook. Sort-order controls display order
                                 within the series (10-spaced steps suggested — leaves room to slot
@@ -748,10 +748,10 @@ if ($hasSchema) {
                             <table class="table table-sm align-middle mb-2" id="edit-members-table">
                                 <thead>
                                     <tr class="text-muted small">
-                                        <th style="width:6rem">Sort</th>
-                                        <th style="width:6rem">Abbr</th>
-                                        <th>Name</th>
-                                        <th class="text-end" style="width:3rem"></th>
+                                        <th scope="col" style="width:6rem">Sort</th>
+                                        <th scope="col" style="width:6rem">Abbr</th>
+                                        <th scope="col">Name</th>
+                                        <th scope="col" class="text-end" style="width:3rem"></th>
                                     </tr>
                                 </thead>
                                 <tbody id="edit-members-tbody">
@@ -777,7 +777,7 @@ if ($hasSchema) {
                                     <datalist id="edit-add-datalist"></datalist>
                                 </div>
                                 <button type="button" class="btn btn-outline-info btn-sm" id="edit-add-btn">
-                                    <i class="bi bi-plus-lg me-1"></i>Add
+                                    <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add
                                 </button>
                             </div>
                         </div>
@@ -800,7 +800,7 @@ if ($hasSchema) {
                         <input type="hidden" name="id" id="delete-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
                             <h5 class="modal-title">
-                                <i class="bi bi-trash me-2"></i>Delete series — <span id="delete-name-label"></span>
+                                <i aria-hidden="true" class="bi bi-trash me-2"></i>Delete series — <span id="delete-name-label"></span>
                             </h5>
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
@@ -878,7 +878,7 @@ if ($hasSchema) {
                   + '<td class="text-end">'
                   + '  <button type="button" class="btn btn-sm btn-outline-danger"'
                   + '          title="Remove from series" data-remove-member="' + id + '">'
-                  + '    <i class="bi bi-x-lg"></i>'
+                  + '    <i aria-hidden="true" class="bi bi-x-lg"></i>'
                   + '  </button>'
                   + '</td>';
                 tbody.appendChild(tr);

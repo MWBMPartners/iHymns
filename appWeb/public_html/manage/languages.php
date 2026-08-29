@@ -450,7 +450,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h1 class="h3 mb-1">
-                <i class="bi bi-translate me-2"></i>Languages
+                <i aria-hidden="true" class="bi bi-translate me-2"></i>Languages
             </h1>
             <p class="text-secondary small mb-0">
                 The list of languages iHymns knows about. These power the language picker and the
@@ -462,15 +462,15 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <div class="d-flex gap-2">
             <?php if ($view === 'unknown'): ?>
                 <a href="/manage/languages" class="btn btn-outline-light">
-                    <i class="bi bi-arrow-left me-1"></i>Back to language list
+                    <i aria-hidden="true" class="bi bi-arrow-left me-1"></i>Back to language list
                 </a>
             <?php else: ?>
                 <a href="/manage/languages?view=unknown" class="btn btn-outline-warning">
-                    <i class="bi bi-exclamation-triangle me-1"></i>Unknown tags
+                    <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>Unknown tags
                 </a>
             <?php endif; ?>
             <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#languageModal" data-mode="create">
-                <i class="bi bi-plus-lg me-1"></i>Add language
+                <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add language
             </button>
         </div>
     </div>
@@ -481,7 +481,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          =========================== -->
     <div class="card bg-body-tertiary border-warning mb-4" id="unknown-tags-panel">
         <div class="card-header">
-            <h2 class="h5 mb-0"><i class="bi bi-exclamation-triangle me-2"></i>Unknown language tags</h2>
+            <h2 class="h5 mb-0"><i aria-hidden="true" class="bi bi-exclamation-triangle me-2"></i>Unknown language tags</h2>
         </div>
         <div class="card-body">
             <p class="text-secondary small mb-3">
@@ -493,7 +493,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </p>
             <?php if (empty($unknownRows)): ?>
                 <div class="alert alert-success mb-0" role="status">
-                    <i class="bi bi-check-circle me-1"></i>No unknown, malformed, or retired language tags found in the catalogue.
+                    <i aria-hidden="true" class="bi bi-check-circle me-1"></i>No unknown, malformed, or retired language tags found in the catalogue.
                 </div>
             <?php else: ?>
             <div class="table-responsive">
@@ -528,15 +528,15 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                             <td class="text-end">
                                 <?php if ($class === 'inactive'): ?>
                                     <a class="btn btn-sm btn-outline-info" href="/manage/languages?q=<?= urlencode($primarySubtag) ?>">
-                                        <i class="bi bi-toggle-on me-1"></i>Find &amp; activate
+                                        <i aria-hidden="true" class="bi bi-toggle-on me-1"></i>Find &amp; activate
                                     </a>
                                 <?php else: ?>
                                     <a class="btn btn-sm btn-outline-secondary unk-add-registry-btn"
                                        href="/manage/languages?prefill_code=<?= urlencode($primarySubtag) ?>" data-bs-toggle="modal" data-bs-target="#languageModal" data-mode="create" data-prefill-code="<?= htmlspecialchars($primarySubtag, ENT_QUOTES, 'UTF-8') ?>">
-                                        <i class="bi bi-plus-lg me-1"></i>Add to registry
+                                        <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add to registry
                                     </a>
                                     <button type="button" class="btn btn-sm btn-outline-warning unk-remap-btn">
-                                        <i class="bi bi-arrow-left-right me-1"></i>Remap
+                                        <i aria-hidden="true" class="bi bi-arrow-left-right me-1"></i>Remap
                                     </button>
                                 <?php endif; ?>
                             </td>
@@ -554,7 +554,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                         <input type="text" class="form-control form-control-sm unk-confirm" id="unk-confirm-<?= htmlspecialchars($rowIdSuffix, ENT_QUOTES, 'UTF-8') ?>" placeholder="<?= (int)$total ?>" style="max-width:8rem" autocomplete="off">
                                     </div>
                                     <button type="button" class="btn btn-sm btn-warning unk-remap-submit" disabled>
-                                        <i class="bi bi-arrow-left-right me-1"></i>Remap now
+                                        <i aria-hidden="true" class="bi bi-arrow-left-right me-1"></i>Remap now
                                     </button>
                                     <span class="small text-secondary unk-remap-status"></span>
                                 </div>
@@ -645,7 +645,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         </div>
         <div class="col-md-2 d-flex align-items-end">
             <button type="submit" class="btn btn-secondary btn-sm w-100">
-                <i class="bi bi-funnel me-1"></i>Filter
+                <i aria-hidden="true" class="bi bi-funnel me-1"></i>Filter
             </button>
         </div>
     </form>
@@ -705,12 +705,12 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                 data-td="<?= htmlspecialchars($r['TextDirection'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-scope="<?= htmlspecialchars($r['Scope'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-active="<?= (int)$r['IsActive'] ?>">
-                            <i class="bi bi-pencil"></i>
+                            <i aria-hidden="true" class="bi bi-pencil"></i>
                         </button>
                         <button type="button" class="btn btn-sm btn-outline-danger lang-delete-btn"
                                 data-code="<?= htmlspecialchars($r['Code'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-name="<?= htmlspecialchars($r['Name'], ENT_QUOTES, 'UTF-8') ?>">
-                            <i class="bi bi-trash"></i>
+                            <i aria-hidden="true" class="bi bi-trash"></i>
                         </button>
                     </td>
                 </tr>

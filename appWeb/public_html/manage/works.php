@@ -868,7 +868,7 @@ if ($hasSchema) {
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
     <div class="container-admin py-4">
-        <h1 class="h4 mb-3"><i class="bi bi-diagram-3 me-2"></i>Works</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-diagram-3 me-2"></i>Works</h1>
         <p class="text-secondary small mb-4">
             A <strong>Work</strong> groups songs that are really the same underlying composition —
             the same hymn or tune appearing across different songbooks, arrangements or translations.
@@ -894,24 +894,24 @@ if ($hasSchema) {
                     <code>tblWorkExternalLinks</code> tables haven't been created on this database yet (#840).
                 </p>
                 <a href="/manage/setup-database" class="btn btn-amber btn-sm">
-                    <i class="bi bi-database-gear me-1"></i>Run /manage/setup-database
+                    <i aria-hidden="true" class="bi bi-database-gear me-1"></i>Run /manage/setup-database
                 </a>
             </div>
         <?php else: ?>
 
         <!-- Works list -->
         <div class="card-admin p-3 mb-4">
-            <h2 class="h6 mb-3"><i class="bi bi-list-ul me-2"></i>Existing works</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-list-ul me-2"></i>Existing works</h2>
             <table class="table table-sm align-middle cp-sortable mb-0 admin-table-responsive">
                 <thead>
                     <tr class="text-muted small">
-                        <th data-col-priority="primary"   data-sort-key="title"     data-sort-type="text">Title</th>
-                        <th data-col-priority="secondary" data-sort-key="iswc"      data-sort-type="text">ISWC</th>
-                        <th data-col-priority="primary"   data-sort-key="members"   data-sort-type="number" class="text-center">Members</th>
-                        <th data-col-priority="tertiary"  data-sort-key="children"  data-sort-type="number" class="text-center">Children</th>
-                        <th data-col-priority="tertiary"  data-sort-key="medley"    data-sort-type="number" class="text-center">Medley</th>
-                        <th data-col-priority="tertiary"  data-sort-key="parent"    data-sort-type="text">Parent</th>
-                        <th data-col-priority="primary"   class="text-end">Actions</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="title"     data-sort-type="text">Title</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="iswc"      data-sort-type="text">ISWC</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="members"   data-sort-type="number" class="text-center">Members</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="children"  data-sort-type="number" class="text-center">Children</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="medley"    data-sort-type="number" class="text-center">Medley</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="parent"    data-sort-type="text">Parent</th>
+                        <th scope="col" data-col-priority="primary"   class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1012,12 +1012,12 @@ if ($hasSchema) {
                                 <button type="button" class="btn btn-sm btn-outline-info"
                                         onclick="openWorkEditModal(<?= htmlspecialchars((string)$rowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Edit work + members + links">
-                                    <i class="bi bi-pencil"></i>
+                                    <i aria-hidden="true" class="bi bi-pencil"></i>
                                 </button>
                                 <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick="openWorkDeleteModal(<?= htmlspecialchars((string)$deleteJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Delete work (memberships + links cascade; child works orphan)">
-                                    <i class="bi bi-trash"></i>
+                                    <i aria-hidden="true" class="bi bi-trash"></i>
                                 </button>
                             </td>
                         </tr>
@@ -1033,7 +1033,7 @@ if ($hasSchema) {
         <form method="POST" class="card-admin p-3 mb-4">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
-            <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a work</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a work</h2>
             <div class="row g-2">
                 <div class="col-sm-5">
                     <label class="form-label small" for="create-title">Title</label>
@@ -1179,7 +1179,7 @@ if ($hasSchema) {
                 </div>
             </div>
             <button type="submit" class="btn btn-amber btn-sm mt-3">
-                <i class="bi bi-plus me-1"></i>Create work
+                <i aria-hidden="true" class="bi bi-plus me-1"></i>Create work
             </button>
             <p class="form-text small mt-2 mb-0">
                 Add member songs + external links via the <em>Edit</em> button after creating.
@@ -1196,7 +1196,7 @@ if ($hasSchema) {
                         <input type="hidden" name="id" id="edit-work-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
                             <h5 class="modal-title">
-                                <i class="bi bi-pencil me-2"></i>Edit work — <span id="edit-work-title-label"></span>
+                                <i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit work — <span id="edit-work-title-label"></span>
                             </h5>
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>
@@ -1314,7 +1314,7 @@ if ($hasSchema) {
 
                             <hr>
 
-                            <h6 class="mb-2"><i class="bi bi-music-note-list me-2"></i>Member songs</h6>
+                            <h6 class="mb-2"><i aria-hidden="true" class="bi bi-music-note-list me-2"></i>Member songs</h6>
                             <p class="form-text small mt-0 mb-2">
                                 Each row is a song that's a version of this work. Mark one as
                                 <em>canonical</em> (typically the most-cited / earliest published).
@@ -1325,11 +1325,11 @@ if ($hasSchema) {
                             <table class="table table-sm align-middle mb-2">
                                 <thead>
                                     <tr class="text-muted small">
-                                        <th style="width:6rem">Sort</th>
-                                        <th style="width:5rem" class="text-center">Canon</th>
-                                        <th>Song</th>
-                                        <th>Note</th>
-                                        <th class="text-end" style="width:3rem"></th>
+                                        <th scope="col" style="width:6rem">Sort</th>
+                                        <th scope="col" style="width:5rem" class="text-center">Canon</th>
+                                        <th scope="col">Song</th>
+                                        <th scope="col">Note</th>
+                                        <th scope="col" class="text-end" style="width:3rem"></th>
                                     </tr>
                                 </thead>
                                 <tbody id="edit-work-members-tbody">
@@ -1365,7 +1365,7 @@ if ($hasSchema) {
                                      OTHER WHOLE WORKS this one is stitched
                                      together FROM (a medley), each keeping its
                                      own separate identity, members and page. -->
-                            <h6 class="mb-2"><i class="bi bi-collection-play me-2"></i>Constituent works (medley)</h6>
+                            <h6 class="mb-2"><i aria-hidden="true" class="bi bi-collection-play me-2"></i>Constituent works (medley)</h6>
                             <p class="form-text small mt-0 mb-2">
                                 Use this when this Work is a <strong>medley</strong> stitched together from other,
                                 separately-identified works (e.g. a "Christmas Medley" containing "Joy to the World"
@@ -1378,10 +1378,10 @@ if ($hasSchema) {
                             <table class="table table-sm align-middle mb-2">
                                 <thead>
                                     <tr class="text-muted small">
-                                        <th style="width:6rem">Sort</th>
-                                        <th>Work</th>
-                                        <th>Note</th>
-                                        <th class="text-end" style="width:3rem"></th>
+                                        <th scope="col" style="width:6rem">Sort</th>
+                                        <th scope="col">Work</th>
+                                        <th scope="col">Note</th>
+                                        <th scope="col" class="text-end" style="width:3rem"></th>
                                     </tr>
                                 </thead>
                                 <tbody id="edit-work-constituents-tbody">
@@ -1431,7 +1431,7 @@ if ($hasSchema) {
                         <input type="hidden" name="id" id="delete-work-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
                             <h5 class="modal-title">
-                                <i class="bi bi-trash me-2"></i>Delete work — <span id="delete-work-name-label"></span>
+                                <i aria-hidden="true" class="bi bi-trash me-2"></i>Delete work — <span id="delete-work-name-label"></span>
                             </h5>
                             <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                         </div>

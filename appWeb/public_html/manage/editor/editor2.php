@@ -233,26 +233,26 @@ $pdSuggestForJs = [
     <nav class="navbar navbar-editor d-flex align-items-center">
         <a class="navbar-brand d-flex align-items-center gap-2" href="/manage/"
            title="Back to Admin Dashboard">
-            <i class="bi bi-music-note-beamed"></i>
+            <i aria-hidden="true" class="bi bi-music-note-beamed"></i>
             <span class="navbar-brand-text">iHymns Song Editor</span>
         </a>
         <div class="d-flex align-items-center gap-2 me-auto ms-2">
             <a href="/manage/" class="btn btn-sm btn-outline-secondary" title="Back to Admin Dashboard">
-                <i class="bi bi-speedometer2 me-1"></i>Dashboard
+                <i aria-hidden="true" class="bi bi-speedometer2 me-1"></i>Dashboard
             </a>
             <a href="/" class="btn btn-sm btn-outline-secondary" title="Back to the iHymns app home">
-                <i class="bi bi-house me-1"></i>Home
+                <i aria-hidden="true" class="bi bi-house me-1"></i>Home
             </a>
         </div>
         <div class="d-flex align-items-center gap-2">
             <?php if (hasRole((string)($u['role'] ?? ''), 'admin')): ?>
             <a href="/manage/users" class="btn btn-sm btn-outline-secondary me-1" title="User management">
-                <i class="bi bi-people me-1"></i>Users
+                <i aria-hidden="true" class="bi bi-people me-1"></i>Users
             </a>
             <?php endif; ?>
             <span class="text-muted small d-none d-md-inline me-1"><?= htmlspecialchars((string)($u['display_name'] ?? $u['username'] ?? '')) ?></span>
             <a href="/manage/logout" class="btn btn-sm btn-outline-secondary" title="Sign out">
-                <i class="bi bi-box-arrow-right me-1"></i>Logout
+                <i aria-hidden="true" class="bi bi-box-arrow-right me-1"></i>Logout
             </a>
         </div>
     </nav>
@@ -288,7 +288,7 @@ $pdSuggestForJs = [
                          OPEN it — only to close it programmatically, see the boot
                          script's hideSidebarPanel() below). */ ?>
                 <button type="button" class="btn btn-sm btn-outline-secondary d-lg-none" data-bs-toggle="offcanvas" data-bs-target="#v2-sidebar-panel" aria-controls="v2-sidebar-panel"><i class="bi bi-list" aria-hidden="true"></i><span class="ms-1">Songs</span></button>
-                <h1 class="h5 mb-0"><i class="bi bi-music-note-list me-2"></i>Song Editor <span class="badge bg-info">v2</span></h1>
+                <h1 class="h5 mb-0"><i aria-hidden="true" class="bi bi-music-note-list me-2"></i>Song Editor <span class="badge bg-info">v2</span></h1>
                 <div class="ms-auto d-flex gap-2 flex-wrap">
                     <?php /* #1846 — manual Save: flushes every tab's pending DEBOUNCED
                              writes early + confirms once they've settled. Autosave keeps
@@ -297,17 +297,17 @@ $pdSuggestForJs = [
                              loaded, and is enabled in loadSong() alongside the Duplicate
                              button reveal a few lines below. */ ?>
                     <button id="v2-save-btn" type="button" class="btn btn-sm btn-outline-success" disabled><i class="bi bi-check2-all me-1" aria-hidden="true"></i>Save</button>
-                    <button id="v2-new-btn" type="button" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg me-1"></i>New</button>
+                    <button id="v2-new-btn" type="button" class="btn btn-sm btn-primary"><i aria-hidden="true" class="bi bi-plus-lg me-1"></i>New</button>
                     <!-- #1783 — Duplicate the open song as a starting point for a new
                          songbook. Hidden until a song is loaded (shown in loadSong). -->
-                    <button id="v2-duplicate-btn" type="button" class="btn btn-sm btn-outline-primary d-none" title="Duplicate this song as a starting point for a new songbook"><i class="bi bi-files me-1"></i>Duplicate</button>
-                    <a href="/manage/editor/import2.php" class="btn btn-sm btn-outline-secondary"><i class="bi bi-upload me-1"></i>Import</a>
-                    <button id="v2-reflow-btn" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-text-paragraph me-1"></i>Reflow</button>
+                    <button id="v2-duplicate-btn" type="button" class="btn btn-sm btn-outline-primary d-none" title="Duplicate this song as a starting point for a new songbook"><i aria-hidden="true" class="bi bi-files me-1"></i>Duplicate</button>
+                    <a href="/manage/editor/import2.php" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-upload me-1"></i>Import</a>
+                    <button id="v2-reflow-btn" type="button" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-text-paragraph me-1"></i>Reflow</button>
                     <div class="dropdown">
-                        <button id="v2-export-btn" type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-download me-1"></i>Export</button>
+                        <button id="v2-export-btn" type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false"><i aria-hidden="true" class="bi bi-download me-1"></i>Export</button>
                         <ul class="dropdown-menu dropdown-menu-end" id="v2-export-menu"></ul>
                     </div>
-                    <button id="v2-delete-btn" type="button" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</button>
+                    <button id="v2-delete-btn" type="button" class="btn btn-sm btn-outline-danger"><i aria-hidden="true" class="bi bi-trash me-1"></i>Delete</button>
                     <?php /* #1601 — MUST carry ?legacy=1: /manage/editor/ now redirects
                              here, so a bare link would bounce straight back and read as
                              a broken button. */ ?>
@@ -319,16 +319,16 @@ $pdSuggestForJs = [
             <!-- Bulk-actions bar (shown when songs are selected in the sidebar's Select mode) -->
             <div id="v2-bulk-bar" class="alert alert-info py-2 px-3 d-none d-flex align-items-center gap-2 flex-wrap">
                 <span id="v2-bulk-count" class="small fw-semibold"></span>
-                <button id="v2-bulk-verify" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-check2-circle me-1"></i>Mark verified</button>
-                <button id="v2-bulk-tag" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-tag me-1"></i>Add tag…</button>
-                <button id="v2-bulk-untag" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-tag-fill me-1"></i>Remove tag…</button>
+                <button id="v2-bulk-verify" type="button" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-check2-circle me-1"></i>Mark verified</button>
+                <button id="v2-bulk-tag" type="button" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-tag me-1"></i>Add tag…</button>
+                <button id="v2-bulk-untag" type="button" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-tag-fill me-1"></i>Remove tag…</button>
                 <!-- #1628 item 3 — the two remaining v1 bulk actions v2 was
                      missing (move to a different songbook, delete) + a bulk
                      Export so a curator can pull a format bundle for exactly
                      the songs they've selected. -->
-                <button id="v2-bulk-move" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left-right me-1"></i>Move…</button>
-                <button id="v2-bulk-export" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-download me-1"></i>Export…</button>
-                <button id="v2-bulk-delete" type="button" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete…</button>
+                <button id="v2-bulk-move" type="button" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-arrow-left-right me-1"></i>Move…</button>
+                <button id="v2-bulk-export" type="button" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-download me-1"></i>Export…</button>
+                <button id="v2-bulk-delete" type="button" class="btn btn-sm btn-outline-danger"><i aria-hidden="true" class="bi bi-trash me-1"></i>Delete…</button>
                 <button id="v2-bulk-clear" type="button" class="btn btn-sm btn-outline-secondary ms-auto">Clear</button>
             </div>
 
@@ -336,14 +336,14 @@ $pdSuggestForJs = [
                      wrapped to 3 rows on a phone-width nav-tabs before this;
                      now they're one horizontally-scrollable row instead. */ ?>
             <ul class="nav nav-tabs mb-3 flex-nowrap overflow-x-auto" role="tablist">
-                <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-structure" type="button"><i class="bi bi-list-ol me-1"></i>Structure</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-metadata" type="button"><i class="bi bi-info-circle me-1"></i>Metadata</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-credits" type="button"><i class="bi bi-people me-1"></i>Credits</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-links" type="button"><i class="bi bi-link-45deg me-1"></i>Links</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-tags" type="button"><i class="bi bi-tags me-1"></i>Tags</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-media" type="button"><i class="bi bi-collection-play me-1"></i>Media</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-preview" type="button"><i class="bi bi-eye me-1"></i>Preview</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-revisions" type="button"><i class="bi bi-clock-history me-1"></i>Revisions</button></li>
+                <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-structure" type="button"><i aria-hidden="true" class="bi bi-list-ol me-1"></i>Structure</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-metadata" type="button"><i aria-hidden="true" class="bi bi-info-circle me-1"></i>Metadata</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-credits" type="button"><i aria-hidden="true" class="bi bi-people me-1"></i>Credits</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-links" type="button"><i aria-hidden="true" class="bi bi-link-45deg me-1"></i>Links</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-tags" type="button"><i aria-hidden="true" class="bi bi-tags me-1"></i>Tags</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-media" type="button"><i aria-hidden="true" class="bi bi-collection-play me-1"></i>Media</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-preview" type="button"><i aria-hidden="true" class="bi bi-eye me-1"></i>Preview</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-revisions" type="button"><i aria-hidden="true" class="bi bi-clock-history me-1"></i>Revisions</button></li>
             </ul>
             <div class="tab-content">
                 <div class="tab-pane fade show active" id="pane-structure"><div id="v2-structure"></div><div id="v2-arrangement" class="mt-3"></div></div>
@@ -363,7 +363,7 @@ $pdSuggestForJs = [
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2 class="modal-title h6"><i class="bi bi-plus-lg me-1"></i>New song</h2>
+                    <h2 class="modal-title h6"><i aria-hidden="true" class="bi bi-plus-lg me-1"></i>New song</h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -391,7 +391,7 @@ $pdSuggestForJs = [
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2 class="modal-title h6"><i class="bi bi-arrow-left-right me-1"></i>Move songs to a different songbook</h2>
+                    <h2 class="modal-title h6"><i aria-hidden="true" class="bi bi-arrow-left-right me-1"></i>Move songs to a different songbook</h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -419,7 +419,7 @@ $pdSuggestForJs = [
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2 class="modal-title h6"><i class="bi bi-download me-1"></i>Export selected songs</h2>
+                    <h2 class="modal-title h6"><i aria-hidden="true" class="bi bi-download me-1"></i>Export selected songs</h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">

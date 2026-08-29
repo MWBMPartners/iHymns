@@ -301,7 +301,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <main class="container-fluid py-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
-            <h1 class="h3 mb-1"><i class="bi bi-key me-2"></i>API Keys</h1>
+            <h1 class="h3 mb-1"><i aria-hidden="true" class="bi bi-key me-2"></i>API Keys</h1>
             <p class="text-secondary small mb-0">
                 Keys that let trusted outside services (for example MeedyaDL)
                 connect to iHymns automatically, without anyone signing in —
@@ -312,11 +312,11 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         </div>
         <?php if ($canManage): ?>
         <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#keyModal">
-            <i class="bi bi-plus-lg me-1"></i>Mint key
+            <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Mint key
         </button>
         <?php elseif ($canRequest): ?>
         <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#requestModal">
-            <i class="bi bi-send me-1"></i>Request a key
+            <i aria-hidden="true" class="bi bi-send me-1"></i>Request a key
         </button>
         <?php endif; ?>
     </div>
@@ -327,15 +327,15 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <table class="table table-sm align-middle admin-table-responsive cp-sortable">
             <thead>
                 <tr>
-                    <th data-col-priority="primary" data-sort-key="label" data-sort-type="text">Label</th>
-                    <th data-col-priority="secondary" data-sort-key="prefix" data-sort-type="text">Prefix</th>
-                    <th data-col-priority="secondary" data-sort-key="scope" data-sort-type="text">Scope</th>
-                    <th data-col-priority="primary" data-sort-key="status" data-sort-type="text">Status</th>
-                    <th data-col-priority="secondary" data-sort-key="usage" data-sort-type="number">Usage today</th>
-                    <th data-col-priority="secondary" data-sort-key="limits" data-sort-type="number">Limits (min&nbsp;&middot;&nbsp;day)</th>
-                    <th data-col-priority="tertiary" data-sort-key="lastused" data-sort-type="date">Last used</th>
-                    <th data-col-priority="tertiary" data-sort-key="created" data-sort-type="date">Created</th>
-                    <th data-col-priority="primary" class="text-end">Actions</th>
+                    <th scope="col" data-col-priority="primary" data-sort-key="label" data-sort-type="text">Label</th>
+                    <th scope="col" data-col-priority="secondary" data-sort-key="prefix" data-sort-type="text">Prefix</th>
+                    <th scope="col" data-col-priority="secondary" data-sort-key="scope" data-sort-type="text">Scope</th>
+                    <th scope="col" data-col-priority="primary" data-sort-key="status" data-sort-type="text">Status</th>
+                    <th scope="col" data-col-priority="secondary" data-sort-key="usage" data-sort-type="number">Usage today</th>
+                    <th scope="col" data-col-priority="secondary" data-sort-key="limits" data-sort-type="number">Limits (min&nbsp;&middot;&nbsp;day)</th>
+                    <th scope="col" data-col-priority="tertiary" data-sort-key="lastused" data-sort-type="date">Last used</th>
+                    <th scope="col" data-col-priority="tertiary" data-sort-key="created" data-sort-type="date">Created</th>
+                    <th scope="col" data-col-priority="primary" class="text-end">Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -388,16 +388,16 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     <?php if ($canManage && !empty($pendingRequests)): ?>
     <section class="mt-4">
-        <h2 class="h5 mb-2"><i class="bi bi-inbox me-2"></i>Pending key requests <span class="badge bg-warning text-dark"><?= count($pendingRequests) ?></span></h2>
+        <h2 class="h5 mb-2"><i aria-hidden="true" class="bi bi-inbox me-2"></i>Pending key requests <span class="badge bg-warning text-dark"><?= count($pendingRequests) ?></span></h2>
         <div class="table-responsive">
             <table class="table table-sm align-middle cp-sortable admin-table-responsive">
                 <thead><tr>
-                    <th data-sort-key="requester" data-sort-type="text">Requester</th>
-                    <th data-sort-key="label" data-sort-type="text">Label</th>
-                    <th data-sort-key="scope" data-sort-type="text">Scope</th>
-                    <th data-sort-key="justification" data-sort-type="text">Justification</th>
-                    <th data-sort-key="requested" data-sort-type="date">Requested</th>
-                    <th class="text-end">Review</th>
+                    <th scope="col" data-sort-key="requester" data-sort-type="text">Requester</th>
+                    <th scope="col" data-sort-key="label" data-sort-type="text">Label</th>
+                    <th scope="col" data-sort-key="scope" data-sort-type="text">Scope</th>
+                    <th scope="col" data-sort-key="justification" data-sort-type="text">Justification</th>
+                    <th scope="col" data-sort-key="requested" data-sort-type="date">Requested</th>
+                    <th scope="col" class="text-end">Review</th>
                 </tr></thead>
                 <tbody>
                 <?php foreach ($pendingRequests as $rq): ?>
@@ -419,12 +419,12 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <p class="small text-secondary">Approving mints the key with the requested scope and shows the raw value <strong>once</strong> — copy it and pass it to the requester securely.</p>
     </section>
     <?php elseif ($canManage && $apiKeyRequestsTable): ?>
-    <p class="text-secondary small mt-4"><i class="bi bi-inbox me-1"></i>No pending key requests.</p>
+    <p class="text-secondary small mt-4"><i aria-hidden="true" class="bi bi-inbox me-1"></i>No pending key requests.</p>
     <?php endif; ?>
 
     <?php if ($canRequest): ?>
     <section class="mt-4">
-        <h2 class="h5 mb-2"><i class="bi bi-send me-2"></i>My key requests</h2>
+        <h2 class="h5 mb-2"><i aria-hidden="true" class="bi bi-send me-2"></i>My key requests</h2>
         <?php if (!$apiKeyRequestsTable): ?>
             <p class="text-secondary small">Self-serve requests aren't available yet — a global admin needs to run the migration.</p>
         <?php elseif (empty($myRequests)): ?>
@@ -433,11 +433,11 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <div class="table-responsive">
                 <table class="table table-sm align-middle cp-sortable admin-table-responsive">
                     <thead><tr>
-                        <th data-sort-key="label" data-sort-type="text">Label</th>
-                        <th data-sort-key="scope" data-sort-type="text">Scope</th>
-                        <th data-sort-key="status" data-sort-type="text">Status</th>
-                        <th data-sort-key="note" data-sort-type="text">Note</th>
-                        <th data-sort-key="requested" data-sort-type="date">Requested</th>
+                        <th scope="col" data-sort-key="label" data-sort-type="text">Label</th>
+                        <th scope="col" data-sort-key="scope" data-sort-type="text">Scope</th>
+                        <th scope="col" data-sort-key="status" data-sort-type="text">Status</th>
+                        <th scope="col" data-sort-key="note" data-sort-type="text">Note</th>
+                        <th scope="col" data-sort-key="requested" data-sort-type="date">Requested</th>
                     </tr></thead>
                     <tbody>
                     <?php foreach ($myRequests as $rq):
@@ -467,13 +467,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="modal-content">
       <form id="keyForm">
         <div class="modal-header">
-          <h5 class="modal-title"><i class="bi bi-key me-2"></i>Mint API key</h5>
+          <h5 class="modal-title"><i aria-hidden="true" class="bi bi-key me-2"></i>Mint API key</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
           <div id="keyResult" class="d-none">
             <div class="alert alert-warning">
-              <i class="bi bi-exclamation-triangle me-1"></i>
+              <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
               <strong>Copy this key now — it is shown only once</strong> and cannot be retrieved later.
             </div>
             <div class="input-group mb-2">
@@ -515,7 +515,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="modal-content">
       <form id="limitsForm">
         <div class="modal-header">
-          <h5 class="modal-title"><i class="bi bi-speedometer2 me-2"></i>Rate limits &mdash; <span id="limitsLabel"></span></h5>
+          <h5 class="modal-title"><i aria-hidden="true" class="bi bi-speedometer2 me-2"></i>Rate limits &mdash; <span id="limitsLabel"></span></h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
@@ -547,7 +547,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="modal-content">
       <form id="requestForm">
         <div class="modal-header">
-          <h5 class="modal-title"><i class="bi bi-send me-2"></i>Request an API key</h5>
+          <h5 class="modal-title"><i aria-hidden="true" class="bi bi-send me-2"></i>Request an API key</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">

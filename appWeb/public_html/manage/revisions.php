@@ -213,7 +213,7 @@ try {
     </div>
 
     <p class="small text-muted mt-3 mb-0">
-        <i class="bi bi-info-circle me-1"></i>
+        <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
         This table shows the 200 most recent matching rows. Full diffs and
         the restore action live in the editor's History modal (click
         <strong>Open in editor</strong> on any row).

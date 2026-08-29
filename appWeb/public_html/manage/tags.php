@@ -333,7 +333,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h1 class="h3 mb-1">
-                <i class="bi bi-tags me-2"></i>Tags &amp; Themes
+                <i aria-hidden="true" class="bi bi-tags me-2"></i>Tags &amp; Themes
                 <?= entitlementLockChipHtml('manage_tags') ?>
             </h1>
             <p class="text-secondary small mb-0">
@@ -346,10 +346,10 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         </div>
         <div class="d-flex gap-2">
             <button class="btn btn-outline-warning" data-bs-toggle="modal" data-bs-target="#mergeModal">
-                <i class="bi bi-shuffle me-1"></i>Merge tags
+                <i aria-hidden="true" class="bi bi-shuffle me-1"></i>Merge tags
             </button>
             <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#tagModal" data-mode="create">
-                <i class="bi bi-plus-lg me-1"></i>Add tag
+                <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add tag
             </button>
         </div>
     </div>
@@ -360,7 +360,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                    value="<?= htmlspecialchars($qFilter, ENT_QUOTES, 'UTF-8') ?>"
                    placeholder="Search by name or slug">
         </div>
-        <div class="col-md-2"><button class="btn btn-secondary btn-sm w-100"><i class="bi bi-funnel me-1"></i>Filter</button></div>
+        <div class="col-md-2"><button class="btn btn-secondary btn-sm w-100"><i aria-hidden="true" class="bi bi-funnel me-1"></i>Filter</button></div>
     </form>
 
     <p class="small text-secondary mb-2">
@@ -370,7 +370,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <?php if (!empty($canonSuggestions)): ?>
     <div class="card mb-3 border-info">
         <div class="card-body py-2">
-            <h2 class="h6 mb-1"><i class="bi bi-magic me-1"></i>Canonicalisation suggestions (<?= count($canonSuggestions) ?>)</h2>
+            <h2 class="h6 mb-1"><i aria-hidden="true" class="bi bi-magic me-1"></i>Canonicalisation suggestions (<?= count($canonSuggestions) ?>)</h2>
             <p class="small text-secondary mb-2">
                 Curator tags whose spelling closely matches a
                 <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle">standard</span>
@@ -381,11 +381,11 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <table class="table table-sm align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead>
                         <tr>
-                            <th data-sort-key="variant" data-sort-type="text">Variant tag</th>
-                            <th class="text-end" data-sort-key="uses" data-sort-type="number">Songs</th><th></th>
-                            <th data-sort-key="standard" data-sort-type="text">Standard theme</th>
-                            <th data-sort-key="match" data-sort-type="number">Match</th>
-                            <th class="text-end">Action</th>
+                            <th scope="col" data-sort-key="variant" data-sort-type="text">Variant tag</th>
+                            <th scope="col" class="text-end" data-sort-key="uses" data-sort-type="number">Songs</th><th scope="col"></th>
+                            <th scope="col" data-sort-key="standard" data-sort-type="text">Standard theme</th>
+                            <th scope="col" data-sort-key="match" data-sort-type="number">Match</th>
+                            <th scope="col" class="text-end">Action</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -402,7 +402,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                         data-target="<?= (int)$s['stdId'] ?>"
                                         data-source-name="<?= htmlspecialchars($s['curName'], ENT_QUOTES, 'UTF-8') ?>"
                                         data-target-name="<?= htmlspecialchars($s['stdName'], ENT_QUOTES, 'UTF-8') ?>">
-                                    <i class="bi bi-arrow-down-up me-1"></i>Fold into standard
+                                    <i aria-hidden="true" class="bi bi-arrow-down-up me-1"></i>Fold into standard
                                 </button>
                             </td>
                         </tr>
@@ -418,11 +418,11 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <table class="table table-dark table-striped table-hover align-middle cp-sortable admin-table-responsive">
             <thead>
                 <tr>
-                    <th data-sort-key="name" data-sort-type="text">Name</th>
-                    <th data-sort-key="slug" data-sort-type="text">Slug</th>
-                    <th data-sort-key="description" data-sort-type="text">Description</th>
-                    <th class="text-end" data-sort-key="songs" data-sort-type="number">Songs</th>
-                    <th class="text-end">Actions</th>
+                    <th scope="col" data-sort-key="name" data-sort-type="text">Name</th>
+                    <th scope="col" data-sort-key="slug" data-sort-type="text">Slug</th>
+                    <th scope="col" data-sort-key="description" data-sort-type="text">Description</th>
+                    <th scope="col" class="text-end" data-sort-key="songs" data-sort-type="number">Songs</th>
+                    <th scope="col" class="text-end">Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -437,7 +437,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                   title="Standard CCLI / OpenLyrics theme (#1152)">standard</span>
                         <?php endif; ?>
                         <?php $pid = (int)($r['ParentId'] ?? 0); if ($pid > 0 && isset($tagNameById[$pid])): ?>
-                            <div class="small text-muted"><i class="bi bi-diagram-2 me-1"></i>under <?= htmlspecialchars($tagNameById[$pid], ENT_QUOTES, 'UTF-8') ?></div>
+                            <div class="small text-muted"><i aria-hidden="true" class="bi bi-diagram-2 me-1"></i>under <?= htmlspecialchars($tagNameById[$pid], ENT_QUOTES, 'UTF-8') ?></div>
                         <?php endif; ?>
                     </td>
                     <td><code><?= htmlspecialchars($r['Slug'], ENT_QUOTES, 'UTF-8') ?></code></td>
@@ -453,13 +453,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                 data-id="<?= (int)$r['Id'] ?>"
                                 data-name="<?= htmlspecialchars($r['Name'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-description="<?= htmlspecialchars($r['Description'], ENT_QUOTES, 'UTF-8') ?>">
-                            <i class="bi bi-pencil"></i>
+                            <i aria-hidden="true" class="bi bi-pencil"></i>
                         </button>
                         <button class="btn btn-sm btn-outline-danger tag-delete-btn"
                                 data-id="<?= (int)$r['Id'] ?>"
                                 data-name="<?= htmlspecialchars($r['Name'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-uses="<?= (int)$r['UseCount'] ?>">
-                            <i class="bi bi-trash"></i>
+                            <i aria-hidden="true" class="bi bi-trash"></i>
                         </button>
                     </td>
                 </tr>
@@ -552,7 +552,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </select>
                 </div>
                 <div class="alert alert-warning small mb-0">
-                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
                     Merging is irreversible. Make sure the Source genuinely duplicates the Target.
                 </div>
             </div>

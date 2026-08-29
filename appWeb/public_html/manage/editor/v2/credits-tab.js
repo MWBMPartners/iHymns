@@ -444,7 +444,7 @@ export function mountCreditsTab(container, opts) {
                 del.className = 'btn btn-outline-danger';
                 del.title = 'Remove';
                 del.setAttribute('aria-label', 'Remove');
-                del.innerHTML = '<i class="bi bi-x-lg"></i>';
+                del.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
                 del.addEventListener('click', () => removeCredit(role, credit));
                 group.appendChild(del);
                 els.del = del;
@@ -472,7 +472,7 @@ export function mountCreditsTab(container, opts) {
             const add = document.createElement('button');
             add.type = 'button';
             add.className = 'btn btn-sm btn-outline-primary';
-            add.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add ' + label.replace(/s$/, '');
+            add.innerHTML = '<i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add ' + label.replace(/s$/, '');
             add.addEventListener('click', () => addCredit(role));
             body.appendChild(add);
 

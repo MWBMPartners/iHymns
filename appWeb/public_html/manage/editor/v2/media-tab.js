@@ -222,8 +222,9 @@ export function mountMediaTab(container, opts) {
         b.type = 'button';
         b.className = 'btn btn-outline-secondary';
         b.title = title;
+        b.setAttribute('aria-label', title);
         b.disabled = !!disabled;
-        b.innerHTML = '<i class="bi ' + icon + '"></i>';
+        b.innerHTML = '<i class="bi ' + icon + '" aria-hidden="true"></i>';
         b.addEventListener('click', onClick);
         return b;
     }
@@ -297,7 +298,7 @@ export function mountMediaTab(container, opts) {
 
         const h = document.createElement('h3');
         h.className = 'h6 d-flex align-items-center gap-2';
-        h.innerHTML = '<i class="bi ' + m.icon + '"></i>';
+        h.innerHTML = '<i class="bi ' + m.icon + '" aria-hidden="true"></i>';
         const hLabel = document.createElement('span');
         hLabel.textContent = m.label;
         h.appendChild(hLabel);
@@ -318,7 +319,7 @@ export function mountMediaTab(container, opts) {
                 const pubAll = document.createElement('button');
                 pubAll.type = 'button';
                 pubAll.className = 'btn btn-sm btn-outline-success mb-2';
-                pubAll.innerHTML = '<i class="bi bi-eye"></i> ';
+                pubAll.innerHTML = '<i class="bi bi-eye" aria-hidden="true"></i> ';
                 pubAll.appendChild(document.createTextNode('Publish all ' + adminCount));
                 pubAll.addEventListener('click', () => publishAll(kind));
                 block.appendChild(pubAll);
@@ -342,7 +343,7 @@ export function mountMediaTab(container, opts) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'btn btn-sm btn-outline-primary';
-        btn.innerHTML = '<i class="bi bi-upload me-1"></i>Upload';
+        btn.innerHTML = '<i class="bi bi-upload me-1" aria-hidden="true"></i>Upload';
         const statusEl = document.createElement('span');
         statusEl.className = 'text-muted small';
         btn.addEventListener('click', () => upload(kind, fileInput, annoInput, statusEl));

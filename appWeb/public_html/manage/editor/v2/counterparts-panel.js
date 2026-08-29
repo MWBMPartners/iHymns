@@ -151,6 +151,7 @@ export function mountCounterpartsPanel(container, opts) {
             removeBtn.type = 'button';
             removeBtn.className = 'btn btn-sm btn-outline-danger';
             removeBtn.title = 'Unlink this counterpart';
+            removeBtn.setAttribute('aria-label', 'Unlink this counterpart');
             removeBtn.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
             removeBtn.addEventListener('click', () => removeLink(ln.songId));
 
@@ -190,6 +191,7 @@ export function mountCounterpartsPanel(container, opts) {
             linkBtn.type = 'button';
             linkBtn.className = 'btn btn-sm btn-outline-success';
             linkBtn.title = 'Link as the same hymn';
+            linkBtn.setAttribute('aria-label', 'Link as the same hymn');
             linkBtn.innerHTML = '<i class="bi bi-link-45deg" aria-hidden="true"></i>';
             linkBtn.addEventListener('click', () => linkFromSuggestion(other.songId));
 
@@ -197,6 +199,7 @@ export function mountCounterpartsPanel(container, opts) {
             dismissBtn.type = 'button';
             dismissBtn.className = 'btn btn-sm btn-outline-secondary';
             dismissBtn.title = 'Dismiss — different hymns';
+            dismissBtn.setAttribute('aria-label', 'Dismiss — different hymns');
             dismissBtn.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
             dismissBtn.addEventListener('click', () => dismissSuggestion(other.songId));
 

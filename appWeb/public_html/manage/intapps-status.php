@@ -119,7 +119,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-broadcast-pin me-2"></i>Connected Apps</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-broadcast-pin me-2"></i>Connected Apps</h1>
         <p class="text-secondary small mb-4">
             Shows whether iHymns is linked to the outside app service and its
             latest status. This page only displays information — you set up and
@@ -129,7 +129,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
         <?php if (!$configured): ?>
             <div class="alert alert-secondary d-flex align-items-start gap-2 py-2 mb-4">
-                <i class="bi bi-info-circle mt-1"></i>
+                <i aria-hidden="true" class="bi bi-info-circle mt-1"></i>
                 <div>
                     <strong>Dormant — awaiting gateway registration (#1726).</strong>
                     No credentials are saved yet, so the integration performs zero HTTP calls
@@ -142,7 +142,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </div>
         <?php elseif (!$hasChannels): ?>
             <div class="alert alert-secondary d-flex align-items-start gap-2 py-2 mb-4">
-                <i class="bi bi-info-circle mt-1"></i>
+                <i aria-hidden="true" class="bi bi-info-circle mt-1"></i>
                 <div>
                     <strong>Dormant — credentials are set, but no channel is enabled.</strong>
                     Add <code><?= htmlspecialchars($currentChannel, ENT_QUOTES, 'UTF-8') ?></code>
@@ -153,7 +153,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </div>
         <?php elseif (!$resolvedOn): ?>
             <div class="alert alert-warning d-flex align-items-start gap-2 py-2 mb-4">
-                <i class="bi bi-exclamation-triangle mt-1"></i>
+                <i aria-hidden="true" class="bi bi-exclamation-triangle mt-1"></i>
                 <div>
                     <strong>Enabled-channels lists a channel, but the credential set is still
                     incomplete.</strong> The integration behaves EXACTLY as if it were
@@ -164,7 +164,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </div>
         <?php else: ?>
             <div class="alert alert-success d-flex align-items-start gap-2 py-2 mb-4">
-                <i class="bi bi-check-circle mt-1"></i>
+                <i aria-hidden="true" class="bi bi-check-circle mt-1"></i>
                 <div>
                     <strong>Active</strong> on channel
                     <code><?= htmlspecialchars($currentChannel, ENT_QUOTES, 'UTF-8') ?></code>.
@@ -196,7 +196,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
         <div class="card bg-body-tertiary border-secondary mb-4">
             <div class="card-header d-flex align-items-center justify-content-between">
-                <h2 class="h6 mb-0"><i class="bi bi-clock-history me-1"></i>Scope: features</h2>
+                <h2 class="h6 mb-0"><i aria-hidden="true" class="bi bi-clock-history me-1"></i>Scope: features</h2>
                 <?php if ($featuresRow !== null): ?>
                     <span class="badge <?= $isStale ? 'bg-warning text-dark' : 'bg-success' ?>">
                         <?= $isStale ? 'stale' : 'fresh' ?>
@@ -216,7 +216,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         <table class="table table-sm align-middle mb-3">
                             <tbody>
                                 <tr>
-                                    <th class="text-secondary" style="width:220px;">Last fetched</th>
+                                    <th class="text-secondary" style="width:220px;" scope="row">Last fetched</th>
                                     <td>
                                         <?= $featuresRow['fetchedAt'] !== null ? htmlspecialchars($featuresRow['fetchedAt'], ENT_QUOTES, 'UTF-8') . ' UTC' : '<span class="text-secondary">never (cold)</span>' ?>
                                         <?php if ($ageSeconds !== null): ?>
@@ -225,19 +225,19 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                     </td>
                                 </tr>
                                 <tr>
-                                    <th class="text-secondary">Last attempted</th>
+                                    <th class="text-secondary" scope="row">Last attempted</th>
                                     <td><?= $featuresRow['attemptedAt'] !== null ? htmlspecialchars((string)$featuresRow['attemptedAt'], ENT_QUOTES, 'UTF-8') . ' UTC' : '<span class="text-secondary">never</span>' ?></td>
                                 </tr>
                                 <tr>
-                                    <th class="text-secondary">Last HTTP status</th>
+                                    <th class="text-secondary" scope="row">Last HTTP status</th>
                                     <td><?= $featuresRow['lastHttpStatus'] !== null ? (int)$featuresRow['lastHttpStatus'] : '<span class="text-secondary">—</span>' ?></td>
                                 </tr>
                                 <tr>
-                                    <th class="text-secondary">Last error code</th>
+                                    <th class="text-secondary" scope="row">Last error code</th>
                                     <td><?= $featuresRow['lastErrorCode'] !== null ? '<code>' . htmlspecialchars((string)$featuresRow['lastErrorCode'], ENT_QUOTES, 'UTF-8') . '</code>' : '<span class="text-secondary">none</span>' ?></td>
                                 </tr>
                                 <tr>
-                                    <th class="text-secondary">Consecutive failures</th>
+                                    <th class="text-secondary" scope="row">Consecutive failures</th>
                                     <td><?= (int)$featuresRow['consecutiveFailures'] ?></td>
                                 </tr>
                             </tbody>
@@ -252,9 +252,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                             <table class="table table-sm admin-table-responsive mb-0">
                                 <thead>
                                     <tr class="text-muted small">
-                                        <th data-col-priority="primary">Feature key</th>
-                                        <th data-col-priority="primary">Enabled</th>
-                                        <th data-col-priority="secondary">Label</th>
+                                        <th scope="col" data-col-priority="primary">Feature key</th>
+                                        <th scope="col" data-col-priority="primary">Enabled</th>
+                                        <th scope="col" data-col-priority="secondary">Label</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -281,14 +281,14 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                     <input type="hidden" name="action" value="test_connection">
                     <button type="submit" class="btn btn-outline-info btn-sm">
-                        <i class="bi bi-wifi me-1"></i>Test connection
+                        <i aria-hidden="true" class="bi bi-wifi me-1"></i>Test connection
                     </button>
                 </form>
                 <form method="post" class="d-inline">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                     <input type="hidden" name="action" value="refresh_now">
                     <button type="submit" class="btn btn-outline-secondary btn-sm">
-                        <i class="bi bi-arrow-clockwise me-1"></i>Refresh now
+                        <i aria-hidden="true" class="bi bi-arrow-clockwise me-1"></i>Refresh now
                     </button>
                 </form>
             </div>

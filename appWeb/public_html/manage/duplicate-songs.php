@@ -801,7 +801,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <main class="container-fluid py-4">
     <div class="mb-3 d-flex flex-wrap justify-content-between align-items-start gap-2">
         <div>
-            <h1 class="h3 mb-1"><i class="bi bi-git-compare me-2"></i>Find Duplicates</h1>
+            <h1 class="h3 mb-1"><i aria-hidden="true" class="bi bi-git-compare me-2"></i>Find Duplicates</h1>
             <p class="text-secondary small mb-0" style="max-width:60rem;">
                 Songs that might be the same are grouped here, matched on their title, first line and
                 writers, plus any shared music-industry code. <strong>Link</strong> the same hymn when it
@@ -815,19 +815,19 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <?php if ($canMerge): ?>
             <button type="button" class="btn btn-sm btn-outline-success dup-autolink-btn"
                     title="Link cross-book songs that share an exact ISWC / CCLI / ISRC code as counterparts. Respects dismissals and existing links; never merges.">
-                <i class="bi bi-magic me-1"></i>Auto-link by shared ID
+                <i aria-hidden="true" class="bi bi-magic me-1"></i>Auto-link by shared ID
             </button>
             <?php endif; ?>
             <button type="button" class="btn btn-sm btn-outline-primary dup-rebuild-btn"
                     title="Re-run the fuzzy similarity engine across the whole catalogue">
-                <i class="bi bi-arrow-clockwise me-1"></i>Rebuild suggestions
+                <i aria-hidden="true" class="bi bi-arrow-clockwise me-1"></i>Rebuild suggestions
             </button>
         </div>
     </div>
 
     <?php if ($detectError !== null): ?>
         <div class="alert alert-danger" role="alert">
-            <i class="bi bi-exclamation-octagon me-1"></i>
+            <i aria-hidden="true" class="bi bi-exclamation-octagon me-1"></i>
             <strong>Duplicate detection couldn't run.</strong>
             This usually means a database migration for this feature hasn't been applied on this
             environment yet. Open <a href="/manage/setup-database" class="alert-link">Setup&nbsp;Database</a>,
@@ -835,7 +835,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <div class="small text-muted mt-2">Detail: <code><?= htmlspecialchars($detectError, ENT_QUOTES) ?></code></div>
         </div>
     <?php elseif ($totalClusters === 0): ?>
-        <div class="alert alert-success"><i class="bi bi-check-circle me-1"></i>No potential duplicates or counterparts detected.</div>
+        <div class="alert alert-success"><i aria-hidden="true" class="bi bi-check-circle me-1"></i>No potential duplicates or counterparts detected.</div>
     <?php endif; ?>
 
     <?php
@@ -856,19 +856,19 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         echo '<span class="small">' . $signalChips($best, $cl['signals']) . '</span>';
         if ($isOfficialSection) {
             echo '<span class="text-warning-emphasis small ms-auto">'
-               . '<i class="bi bi-exclamation-triangle me-1"></i>Same title within one published hymnal — '
+               . '<i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>Same title within one published hymnal — '
                . 'likely <strong>different hymns</strong>. Review before merging.</span>';
         }
         echo '</div>';
 
         echo '<form class="dup-form">';
         echo '<table class="table table-sm mb-2 admin-table-responsive"><thead><tr>';
-        if ($canMerge) { echo '<th title="Survivor (the song to keep on merge)">Keep</th>'; }
-        echo '<th title="Include in the action">Pick</th>';
-        echo '<th data-col-priority="primary">Song</th>';
-        echo '<th data-col-priority="secondary">Verified</th>';
-        echo '<th data-col-priority="tertiary">Lyrics</th>';
-        echo '<th data-col-priority="secondary">Codes</th>';
+        if ($canMerge) { echo '<th scope="col" title="Survivor (the song to keep on merge)">Keep</th>'; }
+        echo '<th scope="col" title="Include in the action">Pick</th>';
+        echo '<th scope="col" data-col-priority="primary">Song</th>';
+        echo '<th scope="col" data-col-priority="secondary">Verified</th>';
+        echo '<th scope="col" data-col-priority="tertiary">Lyrics</th>';
+        echo '<th scope="col" data-col-priority="secondary">Codes</th>';
         echo '</tr></thead><tbody>';
 
         $first = true;
@@ -910,7 +910,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                    . ' <button type="button" class="btn btn-sm btn-outline-secondary dup-unlink-btn py-0 px-1" '
                    . 'data-song-id="' . htmlspecialchars($sid, ENT_QUOTES) . '" '
                    . 'title="Remove this song from counterpart group #' . $existingGroup . ' so it can join a different one">'
-                   . '<i class="bi bi-x-circle"></i> Unlink</button>';
+                   . '<i aria-hidden="true" class="bi bi-x-circle"></i> Unlink</button>';
             }
             echo '</td>';
             echo '<td data-col-priority="secondary">' . ((int)$s['Verified'] === 1 ? '<span class="badge bg-success">verified</span>' : '<span class="badge bg-warning text-dark">unverified</span>') . '</td>';
@@ -934,12 +934,12 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         if ($section === 'cross') {
             echo '<button type="button" class="btn btn-sm btn-outline-success dup-link-btn" '
                . 'title="Link the ticked songs as cross-book counterparts (tblSongLinks)">'
-               . '<i class="bi bi-link-45deg me-1"></i>Link picked as counterparts</button>';
+               . '<i aria-hidden="true" class="bi bi-link-45deg me-1"></i>Link picked as counterparts</button>';
         }
 
         if ($canMerge && !$isOfficialSection) {
             echo '<button type="button" class="btn btn-sm btn-outline-danger dup-merge-btn">'
-               . '<i class="bi bi-union me-1"></i>Merge picked into kept</button>';
+               . '<i aria-hidden="true" class="bi bi-union me-1"></i>Merge picked into kept</button>';
         } elseif ($canMerge && $isOfficialSection) {
             /* Guarded merge (#1218): type the kept song-id to arm the button;
                the request then carries force=1 to clear the server block. */
@@ -947,12 +947,12 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             echo '<input type="text" class="form-control form-control-sm dup-confirm-input" style="max-width:11rem" '
                . 'placeholder="e.g. ' . htmlspecialchars((string)$members[0], ENT_QUOTES) . '" autocomplete="off" spellcheck="false" aria-label="Type the kept song id to confirm merge">';
             echo '<button type="button" class="btn btn-sm btn-outline-danger dup-merge-btn" data-force="1" disabled>'
-               . '<i class="bi bi-union me-1"></i>Merge picked into kept</button>';
+               . '<i aria-hidden="true" class="bi bi-union me-1"></i>Merge picked into kept</button>';
         }
 
         echo '<button type="button" class="btn btn-sm btn-outline-secondary dup-dismiss-btn ms-auto" '
            . 'title="Mark reviewed — not the same hymn; stop surfacing this group">'
-           . '<i class="bi bi-x-lg me-1"></i>Dismiss</button>';
+           . '<i aria-hidden="true" class="bi bi-x-lg me-1"></i>Dismiss</button>';
 
         echo '</div>';
 
@@ -961,19 +961,19 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     /* §1 — Cross-book counterparts. */
     if (!empty($sectioned['cross'])) {
-        echo '<h2 class="h5 mt-4"><i class="bi bi-link-45deg me-1"></i>Cross-book counterparts (' . count($sectioned['cross']) . ')</h2>';
+        echo '<h2 class="h5 mt-4"><i aria-hidden="true" class="bi bi-link-45deg me-1"></i>Cross-book counterparts (' . count($sectioned['cross']) . ')</h2>';
         echo '<p class="text-secondary small mb-2">The same hymn appearing in different songbooks — usually you want to <strong>Link</strong> these, not merge.</p>';
         foreach ($sectioned['cross'] as $cl) { $renderCluster($cl, 'cross'); }
     }
     /* §2 — Same title, one official songbook. */
     if (!empty($sectioned['official'])) {
-        echo '<h2 class="h5 mt-4"><i class="bi bi-exclamation-triangle me-1"></i>Same title, one official songbook (' . count($sectioned['official']) . ')</h2>';
+        echo '<h2 class="h5 mt-4"><i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>Same title, one official songbook (' . count($sectioned['official']) . ')</h2>';
         echo '<p class="text-secondary small mb-2">A published hymnal rarely lists one song twice — these are almost certainly <strong>different hymns sharing a title</strong>. Listed for review; merge is guarded.</p>';
         foreach ($sectioned['official'] as $cl) { $renderCluster($cl, 'official'); }
     }
     /* §3 — Same title, non-official collection. */
     if (!empty($sectioned['other'])) {
-        echo '<h2 class="h5 mt-4"><i class="bi bi-collection me-1"></i>Same title, one collection (' . count($sectioned['other']) . ')</h2>';
+        echo '<h2 class="h5 mt-4"><i aria-hidden="true" class="bi bi-collection me-1"></i>Same title, one collection (' . count($sectioned['other']) . ')</h2>';
         echo '<p class="text-secondary small mb-2">Same title within an unstructured collection (Misc / curated grouping) — often a genuine import duplicate.</p>';
         foreach ($sectioned['other'] as $cl) { $renderCluster($cl, 'other'); }
     }
@@ -1101,7 +1101,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     if (rb) {
         rb.addEventListener('click', function () {
             var orig = rb.innerHTML;
-            rb.disabled = true; rb.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Rebuilding…';
+            rb.disabled = true; rb.innerHTML = '<i aria-hidden="true" class="bi bi-arrow-clockwise me-1"></i>Rebuilding…';
             postAction({ action: 'rebuild' }).then(function (j) {
                 toast('Rebuilt: ' + (j.message || 'done') + '. Reloading…', true);
                 setTimeout(function () { location.reload(); }, 900);
@@ -1115,7 +1115,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         al.addEventListener('click', function () {
             if (!confirm('Auto-link all cross-book songs that share an exact ISWC / CCLI / ISRC code as counterparts? This creates link groups (reversible). Dismissed pairs, same-songbook collisions and existing links are respected; nothing is merged.')) { return; }
             var orig = al.innerHTML;
-            al.disabled = true; al.innerHTML = '<i class="bi bi-magic me-1"></i>Linking…';
+            al.disabled = true; al.innerHTML = '<i aria-hidden="true" class="bi bi-magic me-1"></i>Linking…';
             postAction({ action: 'auto_link' }).then(function (j) {
                 var msg = 'Auto-linked ' + (j.songsLinked || 0) + ' song(s) into ' + (j.groupsCreated || 0) + ' new group(s)';
                 if (j.joined) { msg += ', ' + j.joined + ' joined existing'; }

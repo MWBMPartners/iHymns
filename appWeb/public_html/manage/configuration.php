@@ -1360,7 +1360,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="d-flex justify-content-between align-items-start mb-3">
         <div>
             <h1 class="h3 mb-1">
-                <i class="bi bi-sliders me-2"></i>Settings
+                <i aria-hidden="true" class="bi bi-sliders me-2"></i>Settings
                 <?= entitlementLockChipHtml('manage_configuration') ?>
             </h1>
             <p class="text-secondary small mb-0">
@@ -1374,17 +1374,17 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     <?php if ($saveSuccess !== ''): ?>
         <div class="alert alert-success">
-            <i class="bi bi-check-circle me-1"></i><?= htmlspecialchars($saveSuccess, ENT_QUOTES, 'UTF-8') ?>
+            <i aria-hidden="true" class="bi bi-check-circle me-1"></i><?= htmlspecialchars($saveSuccess, ENT_QUOTES, 'UTF-8') ?>
         </div>
     <?php endif; ?>
     <?php if ($saveError !== ''): ?>
         <div class="alert alert-danger">
-            <i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($saveError, ENT_QUOTES, 'UTF-8') ?>
+            <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($saveError, ENT_QUOTES, 'UTF-8') ?>
         </div>
     <?php endif; ?>
     <?php if ($saveWarning !== ''): /* #1304 — non-blocking SSRF heads-up; host value escaped here */ ?>
         <div class="alert alert-warning">
-            <i class="bi bi-shield-exclamation me-1"></i><?= htmlspecialchars($saveWarning, ENT_QUOTES, 'UTF-8') ?>
+            <i aria-hidden="true" class="bi bi-shield-exclamation me-1"></i><?= htmlspecialchars($saveWarning, ENT_QUOTES, 'UTF-8') ?>
         </div>
     <?php endif; ?>
 
@@ -1394,7 +1394,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-cone-striped me-2"></i>System maintenance
+                <i aria-hidden="true" class="bi bi-cone-striped me-2"></i>System maintenance
                 <span class="badge bg-secondary ms-1 text-uppercase"><?= htmlspecialchars($envCurrent, ENT_QUOTES, 'UTF-8') ?></span>
             </h2>
             <span class="badge <?= $maintenanceOn ? 'bg-danger' : 'bg-success' ?>">
@@ -1409,7 +1409,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 their cached offline experience and see a maintenance banner.
             </p>
             <p class="small text-secondary mb-3">
-                <i class="bi bi-hdd-network me-1"></i><strong>Per-environment.</strong>
+                <i aria-hidden="true" class="bi bi-hdd-network me-1"></i><strong>Per-environment.</strong>
                 The three environments share one database, but each has its own flag —
                 this toggles <strong><?= htmlspecialchars($envCurrent, ENT_QUOTES, 'UTF-8') ?></strong>
                 only. Manage another environment from <em>its own</em> <code>/manage</code>.
@@ -1458,7 +1458,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </label>
                 </div>
                 <button type="submit" class="btn btn-primary">
-                    <i class="bi bi-save me-1"></i>Save maintenance settings
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save maintenance settings
                 </button>
             </form>
         </div>
@@ -1470,7 +1470,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4" id="feature-gating">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-shield-lock me-2"></i>Feature gating
+                <i aria-hidden="true" class="bi bi-shield-lock me-2"></i>Feature gating
             </h2>
             <span class="badge <?= ($contentGatingEnabledVal && $featureGatingRulesEnabledVal) ? 'bg-success' : 'bg-secondary' ?>">
                 <?= $contentGatingEnabledVal
@@ -1491,7 +1491,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <a href="/manage/gating-noop-verify" class="alert-link">No-Op Verifier</a>).
             </p>
             <p class="small text-secondary mb-3">
-                <i class="bi bi-info-circle me-1"></i>
+                <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
                 Also see <a href="/manage/restrictions" class="alert-link">Content Restrictions</a>
                 (per-song/songbook/feature rules — inert while content gating is off) and
                 <a href="/manage/tiers" class="alert-link">Access Tiers</a> (per-tier capability values).
@@ -1520,7 +1520,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </label>
                 </div>
                 <button type="submit" class="btn btn-primary">
-                    <i class="bi bi-save me-1"></i>Save feature-gating flags
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save feature-gating flags
                 </button>
             </form>
         </div>
@@ -1532,7 +1532,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-pencil-square me-2"></i>Song Editor
+                <i aria-hidden="true" class="bi bi-pencil-square me-2"></i>Song Editor
             </h2>
             <span class="badge <?= $editorV2DefaultVal ? 'bg-success' : 'bg-warning text-dark' ?>">
                 <?= $editorV2DefaultVal ? 'New editor (v2)' : 'Legacy editor' ?>
@@ -1563,7 +1563,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </label>
                 </div>
                 <button type="submit" class="btn btn-primary">
-                    <i class="bi bi-save me-1"></i>Save editor setting
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save editor setting
                 </button>
             </form>
         </div>
@@ -1575,7 +1575,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-broadcast-pin me-2"></i>IntAppsAPI Gateway
+                <i aria-hidden="true" class="bi bi-broadcast-pin me-2"></i>IntAppsAPI Gateway
             </h2>
             <span class="badge <?= $intappsResolvedEnabled ? 'bg-success' : 'bg-secondary' ?>">
                 <?= $intappsResolvedEnabled ? 'Active' : 'Dormant' ?>
@@ -1593,7 +1593,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </p>
             <?php if (!$intappsAppUuidVal && !$intappsApiKeySet && !$intappsHmacSecretSet): ?>
                 <p class="small text-body-secondary border-start border-secondary border-3 ps-2 mb-3">
-                    <i class="bi bi-info-circle me-1"></i><strong>Dormant — awaiting gateway
+                    <i aria-hidden="true" class="bi bi-info-circle me-1"></i><strong>Dormant — awaiting gateway
                     registration (#1726).</strong> Nothing below is an error; it is the expected
                     state until the owner-only gateway-registration prerequisite closes and
                     real credentials are pasted here.
@@ -1650,7 +1650,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save IntAppsAPI settings
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save IntAppsAPI settings
                     </button>
                 </div>
             </form>
@@ -1663,7 +1663,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-qr-code me-2"></i>CueRCode QR Generator
+                <i aria-hidden="true" class="bi bi-qr-code me-2"></i>CueRCode QR Generator
             </h2>
             <span class="badge <?= $cuercodeConfigured ? 'bg-success' : 'bg-secondary' ?>">
                 <?= $cuercodeConfigured ? 'Active' : 'Dormant' ?>
@@ -1679,7 +1679,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </p>
             <?php if (!$cuercodeApiKeySet): ?>
                 <p class="small text-body-secondary border-start border-secondary border-3 ps-2 mb-3">
-                    <i class="bi bi-info-circle me-1"></i><strong>Dormant — awaiting an API key.</strong>
+                    <i aria-hidden="true" class="bi bi-info-circle me-1"></i><strong>Dormant — awaiting an API key.</strong>
                     Generate a key in the CueRCode admin panel and paste it below; QR codes light up the
                     moment it is saved.
                 </p>
@@ -1705,7 +1705,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save CueRCode settings
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save CueRCode settings
                     </button>
                 </div>
             </form>
@@ -1721,7 +1721,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4" id="captcha">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-shield-check me-2"></i>CAPTCHA (bot protection)
+                <i aria-hidden="true" class="bi bi-shield-check me-2"></i>CAPTCHA (bot protection)
             </h2>
             <span class="badge <?= $captchaConfiguredNow ? 'bg-success' : 'bg-secondary' ?>">
                 <?= $captchaConfiguredNow ? 'Active' : 'Dormant' ?>
@@ -1736,7 +1736,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </p>
             <?php if (!$captchaConfiguredNow): ?>
                 <p class="small text-body-secondary border-start border-secondary border-3 ps-2 mb-3">
-                    <i class="bi bi-info-circle me-1"></i><strong>Dormant.</strong>
+                    <i aria-hidden="true" class="bi bi-info-circle me-1"></i><strong>Dormant.</strong>
                     Pick a provider, paste its site key + secret key (create an account with the provider
                     first), then tick the forms to guard. The challenge goes live the moment all three are set.
                 </p>
@@ -1767,7 +1767,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 ?>
                 <div class="border-start border-3 <?= $captchaHealthStatusV === 'up' ? 'border-success' : 'border-warning' ?> ps-2 mb-3">
                     <p class="small mb-1">
-                        <span class="badge <?= $hsBadgeClass ?>"><i class="bi <?= $hsIcon ?> me-1"></i><?= htmlspecialchars($hsBadgeText, ENT_QUOTES, 'UTF-8') ?></span>
+                        <span class="badge <?= $hsBadgeClass ?>"><i aria-hidden="true" class="bi <?= $hsIcon ?> me-1"></i><?= htmlspecialchars($hsBadgeText, ENT_QUOTES, 'UTF-8') ?></span>
                         <?php if ($captchaWindowOpen): ?>
                             <span class="badge bg-warning text-dark ms-1">Grace window OPEN</span>
                         <?php endif; ?>
@@ -1804,7 +1804,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         <?php endif; ?>
                     </p>
                     <p class="small text-secondary mb-2">
-                        <i class="bi bi-info-circle me-1"></i>This answers &ldquo;can <em>this server</em> reach the
+                        <i aria-hidden="true" class="bi bi-info-circle me-1"></i>This answers &ldquo;can <em>this server</em> reach the
                         provider?&rdquo; If the provider is up for us but blocked for some visitors (an ad-blocker, a
                         corporate filter, a regional outage), the status stays healthy and those visitors are still
                         refused &mdash; the &ldquo;widget would not load&rdquo; count above is the only sign of it.
@@ -1813,7 +1813,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                         <input type="hidden" name="action" value="captcha_probe">
                         <button type="submit" class="btn btn-sm btn-outline-secondary">
-                            <i class="bi bi-arrow-repeat me-1"></i>Check provider now
+                            <i aria-hidden="true" class="bi bi-arrow-repeat me-1"></i>Check provider now
                         </button>
                     </form>
                 </div>
@@ -1894,7 +1894,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save CAPTCHA settings
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save CAPTCHA settings
                     </button>
                 </div>
             </form>
@@ -1937,10 +1937,10 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-broadcast me-2"></i>Partner webhooks
+                <i aria-hidden="true" class="bi bi-broadcast me-2"></i>Partner webhooks
             </h2>
             <a href="/manage/webhooks" class="btn btn-sm btn-outline-light">
-                <i class="bi bi-list-ul me-1"></i>Manage subscriptions
+                <i aria-hidden="true" class="bi bi-list-ul me-1"></i>Manage subscriptions
             </a>
         </div>
         <div class="card-body">
@@ -2010,7 +2010,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </div>
                 </div>
                 <button type="submit" class="btn btn-primary">
-                    <i class="bi bi-save me-1"></i>Save webhook settings
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save webhook settings
                 </button>
             </form>
             <hr class="border-secondary">
@@ -2040,10 +2040,10 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-translate me-2"></i>Language registry refresh
+                <i aria-hidden="true" class="bi bi-translate me-2"></i>Language registry refresh
             </h2>
             <a href="/manage/languages" class="btn btn-sm btn-outline-light">
-                <i class="bi bi-list-ul me-1"></i>Manage languages
+                <i aria-hidden="true" class="bi bi-list-ul me-1"></i>Manage languages
             </a>
         </div>
         <div class="card-body">
@@ -2099,7 +2099,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </div>
                 </div>
                 <button type="submit" class="btn btn-primary">
-                    <i class="bi bi-save me-1"></i>Save
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                 </button>
             </form>
         </div>
@@ -2111,7 +2111,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-broadcast-pin me-2"></i>Live Follow
+                <i aria-hidden="true" class="bi bi-broadcast-pin me-2"></i>Live Follow
             </h2>
         </div>
         <div class="card-body">
@@ -2142,7 +2142,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                     </button>
                 </div>
             </form>
@@ -2155,7 +2155,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-shield-check me-2"></i>Public-domain suggestion
+                <i aria-hidden="true" class="bi bi-shield-check me-2"></i>Public-domain suggestion
             </h2>
         </div>
         <div class="card-body">
@@ -2183,7 +2183,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                     </button>
                 </div>
             </form>
@@ -2196,7 +2196,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-apple me-2"></i>Apple native app
+                <i aria-hidden="true" class="bi bi-apple me-2"></i>Apple native app
             </h2>
             <span class="badge <?= $appleTeamId === '' ? 'bg-secondary' : 'bg-success' ?>">
                 <?= $appleTeamId === '' ? 'Team ID not set (AASA uses placeholder)' : 'Team ID set' ?>
@@ -2213,7 +2213,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 Links won't resolve until a real value is saved here.
             </p>
             <p class="small text-warning-emphasis border-start border-warning border-3 ps-2 mb-3">
-                <i class="bi bi-exclamation-triangle me-1"></i><strong>This field and the
+                <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i><strong>This field and the
                 <code>APPLE_TEAM_ID</code> GitHub secret are two independent copies that must be
                 identical — neither overrides the other.</strong> They are read by <em>different</em>
                 systems: the GitHub secret signs the app <strong>at build time</strong> (baked into
@@ -2240,7 +2240,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12">
                     <h3 class="h6 mb-1">
-                        <i class="bi bi-key me-1"></i>Sign in with Apple (#1402)
+                        <i aria-hidden="true" class="bi bi-key me-1"></i>Sign in with Apple (#1402)
                         <span class="badge <?= $appleSiwaKeyId === '' ? 'bg-secondary' : 'bg-success' ?> ms-1" style="font-size: 0.65rem;">
                             <?= $appleSiwaKeyId === '' ? 'Key ID not set' : 'Key ID set' ?>
                         </span>
@@ -2291,7 +2291,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12">
                     <h3 class="h6 mb-1">
-                        <i class="bi bi-globe me-1"></i>Sign in with Apple — Web (#1470)
+                        <i aria-hidden="true" class="bi bi-globe me-1"></i>Sign in with Apple — Web (#1470)
                         <span class="badge <?= $appleSiwaServicesId === '' ? 'bg-secondary' : 'bg-success' ?> ms-1" style="font-size: 0.65rem;">
                             <?= $appleSiwaServicesId === '' ? 'Services ID not set' : 'Services ID set' ?>
                         </span>
@@ -2342,7 +2342,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12">
                     <h3 class="h6 mb-1">
-                        <i class="bi bi-bell me-1"></i>APNs Auth Key — Live Activities (#1429)
+                        <i aria-hidden="true" class="bi bi-bell me-1"></i>APNs Auth Key — Live Activities (#1429)
                         <span class="badge <?= $appleApnsKeyId === '' ? 'bg-secondary' : 'bg-success' ?> ms-1" style="font-size: 0.65rem;">
                             <?= $appleApnsKeyId === '' ? 'Key ID not set' : 'Key ID set' ?>
                         </span>
@@ -2392,7 +2392,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save Apple settings
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save Apple settings
                     </button>
                 </div>
             </form>
@@ -2406,7 +2406,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-phone me-2"></i>Native app stores
+                <i aria-hidden="true" class="bi bi-phone me-2"></i>Native app stores
             </h2>
             <span class="badge <?= $nativeAppsAnySet ? 'bg-success' : 'bg-secondary' ?>">
                 <?= $nativeAppsAnySet ? 'Configured' : 'Not configured — PWA install prompt only' ?>
@@ -2433,7 +2433,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12 col-lg-4">
                     <label for="native_app_ios" class="form-label">
-                        <i class="bi bi-apple me-1"></i>Apple App Store
+                        <i aria-hidden="true" class="bi bi-apple me-1"></i>Apple App Store
                     </label>
                     <input type="text" name="native_app_ios" id="native_app_ios" class="form-control"
                            placeholder="https://apps.apple.com/app/id1234567890 or 1234567890"
@@ -2446,7 +2446,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12 col-lg-4">
                     <label for="native_app_android" class="form-label">
-                        <i class="bi bi-google-play me-1"></i>Google Play
+                        <i aria-hidden="true" class="bi bi-google-play me-1"></i>Google Play
                     </label>
                     <input type="text" name="native_app_android" id="native_app_android" class="form-control"
                            placeholder="https://play.google.com/store/apps/details?id=ltd.mwbmpartners.ihymns or ltd.mwbmpartners.ihymns"
@@ -2456,7 +2456,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12 col-lg-4">
                     <label for="native_app_amazon" class="form-label">
-                        <i class="bi bi-amazon me-1"></i>Amazon Appstore
+                        <i aria-hidden="true" class="bi bi-amazon me-1"></i>Amazon Appstore
                     </label>
                     <input type="text" name="native_app_amazon" id="native_app_amazon" class="form-control"
                            placeholder="https://www.amazon.com/dp/B0XXXXXXXX or B0XXXXXXXX"
@@ -2466,7 +2466,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save native app settings
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save native app settings
                     </button>
                 </div>
             </form>
@@ -2479,7 +2479,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-envelope-at me-2"></i>Email service
+                <i aria-hidden="true" class="bi bi-envelope-at me-2"></i>Email service
             </h2>
             <span class="badge <?= $currentService === 'none' ? 'bg-secondary' : 'bg-success' ?>">
                 <?= $currentService === 'none' ? 'Not configured' : 'Configured: ' . htmlspecialchars($currentService, ENT_QUOTES, 'UTF-8') ?>
@@ -2567,7 +2567,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <!-- SMTP-specific: custom SMTP, OR the office365/gmail providers when method=SMTP-AUTH (#1309/#1311) -->
                 <div class="email-fields" data-provider-show="smtp,office365,gmail" data-auth-show="smtp">
                     <hr class="text-secondary">
-                    <h3 class="h6 mb-3"><i class="bi bi-server me-1"></i>SMTP server</h3>
+                    <h3 class="h6 mb-3"><i aria-hidden="true" class="bi bi-server me-1"></i>SMTP server</h3>
 
                     <!-- feature C — provider preset. Pre-fills host / port /
                          encryption client-side from $SMTP_PRESETS (see the
@@ -2654,7 +2654,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <div class="row g-3 mb-3">
                         <div class="col-12">
                             <div class="form-text mb-1">
-                                <i class="bi bi-person-badge me-1"></i><strong>Send on behalf of a different mailbox (optional).</strong>
+                                <i aria-hidden="true" class="bi bi-person-badge me-1"></i><strong>Send on behalf of a different mailbox (optional).</strong>
                                 Leave blank to send as the username above. To send as a shared / delegate
                                 mailbox, the username must be granted <em>Send As</em> on it in your provider's
                                 admin console (see the setup guide below).
@@ -2680,7 +2680,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <!-- #1311 — Microsoft Graph (OAuth2 app-only); M365 + method=OAuth2 API -->
                 <div class="email-fields" data-provider-show="office365" data-auth-show="oauth2">
                     <hr class="text-secondary">
-                    <h3 class="h6 mb-3"><i class="bi bi-microsoft me-1"></i>Microsoft Graph (OAuth2)</h3>
+                    <h3 class="h6 mb-3"><i aria-hidden="true" class="bi bi-microsoft me-1"></i>Microsoft Graph (OAuth2)</h3>
                     <div class="row g-3 mb-3">
                         <div class="col-md-6">
                             <label for="email_graph_tenant_id" class="form-label">Azure tenant ID</label>
@@ -2719,7 +2719,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <!-- #1311 — Gmail API (OAuth2 service-account + domain-wide delegation); Google + method=OAuth2 API -->
                 <div class="email-fields" data-provider-show="gmail" data-auth-show="oauth2">
                     <hr class="text-secondary">
-                    <h3 class="h6 mb-3"><i class="bi bi-google me-1"></i>Gmail API (OAuth2 service account)</h3>
+                    <h3 class="h6 mb-3"><i aria-hidden="true" class="bi bi-google me-1"></i>Gmail API (OAuth2 service account)</h3>
                     <div class="row g-3 mb-3">
                         <div class="col-md-6">
                             <label for="email_gmail_sender" class="form-label">Sender mailbox (impersonated)</label>
@@ -2746,7 +2746,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <!-- SendGrid -->
                 <div class="email-fields" data-provider-show="sendgrid">
                     <hr class="text-secondary">
-                    <h3 class="h6 mb-3"><i class="bi bi-cloud me-1"></i>SendGrid</h3>
+                    <h3 class="h6 mb-3"><i aria-hidden="true" class="bi bi-cloud me-1"></i>SendGrid</h3>
                     <div class="mb-3">
                         <label for="email_sendgrid_api_key" class="form-label">
                             API key
@@ -2763,7 +2763,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <!-- Mailgun -->
                 <div class="email-fields" data-provider-show="mailgun">
                     <hr class="text-secondary">
-                    <h3 class="h6 mb-3"><i class="bi bi-cloud me-1"></i>Mailgun</h3>
+                    <h3 class="h6 mb-3"><i aria-hidden="true" class="bi bi-cloud me-1"></i>Mailgun</h3>
                     <div class="row g-3 mb-3">
                         <div class="col-md-6">
                             <label for="email_mailgun_domain" class="form-label">Sending domain</label>
@@ -2789,7 +2789,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <!-- AWS SES -->
                 <div class="email-fields" data-provider-show="ses">
                     <hr class="text-secondary">
-                    <h3 class="h6 mb-3"><i class="bi bi-cloud me-1"></i>AWS SES</h3>
+                    <h3 class="h6 mb-3"><i aria-hidden="true" class="bi bi-cloud me-1"></i>AWS SES</h3>
                     <div class="row g-3 mb-3">
                         <div class="col-md-4">
                             <label for="email_ses_region" class="form-label">Region</label>
@@ -2825,18 +2825,18 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="d-flex gap-2">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save email configuration
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save email configuration
                     </button>
                     <button type="submit" name="action" value="test_email" class="btn btn-outline-info"
                             <?= $currentService === 'none' ? 'disabled title="Configure a provider first"' : '' ?>>
-                        <i class="bi bi-send me-1"></i>Send test email
+                        <i aria-hidden="true" class="bi bi-send me-1"></i>Send test email
                     </button>
                 </div>
             </form>
 
             <?php if ($testResult !== null): ?>
                 <div class="alert <?= $testResult['ok'] ? 'alert-success' : 'alert-warning' ?> mt-3 mb-0">
-                    <i class="bi bi-<?= $testResult['ok'] ? 'check-circle' : 'info-circle' ?> me-1"></i>
+                    <i aria-hidden="true" class="bi bi-<?= $testResult['ok'] ? 'check-circle' : 'info-circle' ?> me-1"></i>
                     <?= htmlspecialchars($testResult['message'], ENT_QUOTES, 'UTF-8') ?>
                 </div>
             <?php endif; ?>
@@ -2849,7 +2849,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header">
             <h2 class="h5 mb-0">
-                <i class="bi bi-book me-2"></i>Step-by-step provider setup
+                <i aria-hidden="true" class="bi bi-book me-2"></i>Step-by-step provider setup
             </h2>
         </div>
         <div class="card-body">
@@ -2859,7 +2859,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-graph">
-                            <i class="bi bi-microsoft me-2"></i>OAuth2 — Microsoft 365 via Graph (recommended; no SMTP)
+                            <i aria-hidden="true" class="bi bi-microsoft me-2"></i>OAuth2 — Microsoft 365 via Graph (recommended; no SMTP)
                         </button>
                     </h3>
                     <div id="instr-graph" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -2882,7 +2882,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-gmail-api">
-                            <i class="bi bi-google me-2"></i>OAuth2 — Google Workspace via Gmail API (recommended; no SMTP)
+                            <i aria-hidden="true" class="bi bi-google me-2"></i>OAuth2 — Google Workspace via Gmail API (recommended; no SMTP)
                         </button>
                     </h3>
                     <div id="instr-gmail-api" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -2905,7 +2905,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-m365">
-                            <i class="bi bi-microsoft me-2"></i>SMTP — Microsoft 365 (recommended)
+                            <i aria-hidden="true" class="bi bi-microsoft me-2"></i>SMTP — Microsoft 365 (recommended)
                         </button>
                     </h3>
                     <div id="instr-m365" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -2942,7 +2942,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-gws">
-                            <i class="bi bi-google me-2"></i>SMTP — Google Workspace / Gmail
+                            <i aria-hidden="true" class="bi bi-google me-2"></i>SMTP — Google Workspace / Gmail
                         </button>
                     </h3>
                     <div id="instr-gws" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -2980,7 +2980,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-smtp">
-                            <i class="bi bi-server me-2"></i>SMTP — any other provider (custom)
+                            <i aria-hidden="true" class="bi bi-server me-2"></i>SMTP — any other provider (custom)
                         </button>
                     </h3>
                     <div id="instr-smtp" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -2998,7 +2998,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                             <p class="text-secondary mb-2"><strong>Tip:</strong> if Send test fails with <em>auth_failed</em>,
                                the username / password is wrong or the provider hasn't enabled SMTP AUTH. <em>mail_from_rejected</em>
                                / <em>relay denied</em> means the From / Send-as address isn't authorised for that login.</p>
-                            <p class="text-info mb-0"><i class="bi bi-info-circle me-1"></i><strong>Future direction:</strong>
+                            <p class="text-info mb-0"><i aria-hidden="true" class="bi bi-info-circle me-1"></i><strong>Future direction:</strong>
                                this uses SMTP AUTH with an app password + delegate today. OAuth2 sign-in (and the planned
                                <em>MailerMatt</em> delivery service) is the eventual path — not built yet; SMTP AUTH is the
                                supported mechanism for now.</p>
@@ -3011,7 +3011,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-sendgrid">
-                            <i class="bi bi-cloud me-2"></i>SendGrid — API key
+                            <i aria-hidden="true" class="bi bi-cloud me-2"></i>SendGrid — API key
                         </button>
                     </h3>
                     <div id="instr-sendgrid" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -3033,7 +3033,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-mailgun">
-                            <i class="bi bi-cloud me-2"></i>Mailgun — API key + verified domain
+                            <i aria-hidden="true" class="bi bi-cloud me-2"></i>Mailgun — API key + verified domain
                         </button>
                     </h3>
                     <div id="instr-mailgun" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -3055,7 +3055,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-ses">
-                            <i class="bi bi-cloud me-2"></i>AWS SES — IAM user + verified identity
+                            <i aria-hidden="true" class="bi bi-cloud me-2"></i>AWS SES — IAM user + verified identity
                         </button>
                     </h3>
                     <div id="instr-ses" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
