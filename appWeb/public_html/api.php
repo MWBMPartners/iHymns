@@ -16459,19 +16459,26 @@ if ($action !== null) {
                manage_organisations defaults to ['admin','global_admin'] —
                the admitted set is unchanged today; a future revocation via
                /manage/entitlements now reaches this endpoint too.
-               NOTE (not part of this swap — flagged, not fixed): the page's
-               `update` case ALSO has a FINER field-level gate,
-               `manage_org_licences`, that PRESERVES (not rejects) the
-               licence_type/licence_number/additional_licences fields when
-               the caller lacks it (organisations.php ~L213/~L284). This API
-               action writes those same fields unconditionally regardless of
-               manage_org_licences — a pre-existing gap this behaviour-
-               neutral sweep does not close (doing so would change live
-               behaviour, not just the gate). See the F2 sweep report. */
+               FINER field-level gate (#1986, now CLOSED — see the
+               $canEditOrgLicences guard below): the page's `update` case
+               ALSO gates the licence_type/licence_number/additional_licences
+               fields on `manage_org_licences`, PRESERVING (not rejecting)
+               them when the caller lacks it (organisations.php ~L213/~L284).
+               This action previously wrote those fields unconditionally — a
+               caller with manage_organisations but NOT manage_org_licences
+               could change licences the page forbids them. Fixed below to
+               mirror the page exactly. */
             if (!$authUser || !userHasEntitlement('manage_organisations', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
+            /* #1986 field-level parity — resolve the finer licence permission
+               once, up front (userHasEntitlement needs only the role). When a
+               caller may NOT edit licences the submitted licence_type is not
+               even validated (it will be discarded in favour of the stored
+               value below), matching the page, which never rejects a
+               description-only edit over a licence field the caller can't set. */
+            $canEditOrgLicences = userHasEntitlement('manage_org_licences', $authUser['Role'] ?? null);
 
             $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
             $id          = (int)($body['id'] ?? 0);
@@ -16500,8 +16507,11 @@ if ($action !== null) {
                 require_once __DIR__ . '/includes/org_licence_admin.php';
 
                 /* #1969 — validate the primary type against the registry
-                   (allowing the `none` sentinel). */
-                if (!orgLicenceValidateType($db, $licenceType, true)) {
+                   (allowing the `none` sentinel). #1986 — only when the caller
+                   may edit licences; otherwise the submitted type is ignored
+                   entirely (preserved from the stored row below), so validating
+                   it would spuriously 400 a legitimate description-only edit. */
+                if ($canEditOrgLicences && !orgLicenceValidateType($db, $licenceType, true)) {
                     sendJson(['error' => 'Unknown licence type.'], 400);
                     break;
                 }
@@ -16529,6 +16539,15 @@ if ($action !== null) {
                     break;
                 }
 
+                /* #1986 field-level parity — a caller without manage_org_licences
+                   keeps whatever licence the org already holds (PRESERVE, never
+                   reject and never blank), exactly as organisations.php ~L213
+                   does. The before-row read just above supplies the values. */
+                if (!$canEditOrgLicences) {
+                    $licenceType = (string)($beforeOrg['LicenceType']   ?? 'none');
+                    $licenceNum  = (string)($beforeOrg['LicenceNumber'] ?? '');
+                }
+
                 $parentOrNull = $parent ?: null;
                 $stmt = $db->prepare(
                     'UPDATE tblOrganisations
@@ -16550,9 +16569,16 @@ if ($action !== null) {
                    ones), with the primary folded in. This replaces the old
                    DELETE-all + re-INSERT that wiped an org's licence metadata on
                    every save, and it validates each type against the registry
-                   (so `mrl`/`custom` now work). No-ops on an un-migrated install. */
-                $picked = array_map('strval', (array)($body['additional_licences'] ?? []));
-                orgLicenceSyncSet($db, $id, $picked, $licenceType, $licenceNum);
+                   (so `mrl`/`custom` now work). No-ops on an un-migrated install.
+                   #1986 — only when the caller may edit licences; a curator with
+                   manage_organisations but not manage_org_licences must not be
+                   able to change the licence set at all (the primary fields are
+                   already preserved for them above), matching organisations.php
+                   ~L284 which likewise skips the sync for such a caller. */
+                if ($canEditOrgLicences) {
+                    $picked = array_map('strval', (array)($body['additional_licences'] ?? []));
+                    orgLicenceSyncSet($db, $id, $picked, $licenceType, $licenceNum);
+                }
 
                 $afterOrg = [
                     'Name' => $name, 'Slug' => $slug,

@@ -379,15 +379,20 @@ ok('manage/organisations.php really does gate the page on manage_organisations',
     strpos($organisationsPageSrc, "userHasEntitlement('manage_organisations'") !== false);
 /* manage/organisations.php's `update` case ALSO has a finer field-level
    gate (`manage_org_licences`) that PRESERVES (not rejects) just the
-   licence sub-fields for a caller without it — confirming the nuance the
-   in-code comment on admin_organisation_update documents as a known,
-   deliberately-unfixed gap (this guard proves the page reality the
-   comment describes, not that the API replicates the field-level
-   preserve behaviour — it does not, by design of this behaviour-neutral
-   sweep). */
-ok('manage/organisations.php\'s `update` case really does carry a finer manage_org_licences check alongside the page-level manage_organisations gate (the documented, deliberately-unreplicated nuance)',
+   licence sub-fields for a caller without it. #1986 CLOSED the matching
+   API gap: admin_organisation_update now replicates the preserve exactly,
+   so a caller with manage_organisations but NOT manage_org_licences can no
+   longer change licences through the API that the page forbids them. These
+   two assertions prove BOTH sides — the page reality and the API parity —
+   so a future edit that drops either goes red. */
+ok('manage/organisations.php\'s `update` case really does carry a finer manage_org_licences check alongside the page-level manage_organisations gate',
     strpos($organisationsPageSrc, "userHasEntitlement('manage_org_licences'") !== false
     && strpos($organisationsPageSrc, '$canEditOrgLicences') !== false);
+ok('api.php admin_organisation_update now replicates the field-level manage_org_licences preserve (resolves $canEditOrgLicences and, when false, restores LicenceType/LicenceNumber from the stored row and skips orgLicenceSyncSet) — the #1986 parity fix',
+    strpos($apiSrc, "userHasEntitlement('manage_org_licences'") !== false
+    && strpos($apiSrc, '$canEditOrgLicences') !== false
+    && preg_match('/if\s*\(\s*!\$canEditOrgLicences\s*\)\s*\{\s*\$licenceType\s*=/', $apiSrc) === 1
+    && preg_match('/if\s*\(\s*\$canEditOrgLicences\s*\)\s*\{[^}]*orgLicenceSyncSet/s', $apiSrc) === 1);
 
 /* ---- 5. EQUIVALENCE — the default map for each entitlement key really is
    EXACTLY ['admin', 'global_admin'] today, parsed from the live
