@@ -100,6 +100,18 @@ export const STORAGE_SETLISTS_DELETED    = 'ihymns_setlists_deleted';
 /* Accessibility — Colour Vision Deficiency mode (#319) */
 export const STORAGE_CVD_MODE           = 'ihymns_cvd_mode';
 
+/* Accessibility — opt-in "accessible links" display mode (#1984, S1). Value
+   'on' | absent (default off — see rule #18: prose links have NO at-rest
+   colour/underline cue by default, which the owner deliberately reversed
+   #951/#952 for). When 'on', the global `<a>` (app.css Section 2.5) and
+   `.song-meta-link` gain an at-rest accent COLOUR (WCAG 1.4.1 "Use of
+   Colour") without reintroducing the banned underline/border. Mirrors
+   STORAGE_CVD_MODE exactly: independent of theme, read directly by
+   applyTheme() (not routed through Settings.get()/set()'s `ihymns_`-prefix
+   derivation) so admin-theme-init.php's synchronous mirror can read the
+   SAME literal key with no prefix mismatch. */
+export const STORAGE_LINK_EMPHASIS      = 'ihymns_link_emphasis';
+
 /* Offline downloads — whether to also cache MIDI audio when bulk-saving songs.
    CANONICAL key, value '1' | '0'. */
 export const STORAGE_OFFLINE_INCLUDE_AUDIO = 'ihymns_offline_include_audio';

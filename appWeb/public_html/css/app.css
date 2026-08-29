@@ -68,6 +68,13 @@
     --accent-end: #8b5cf6;      /* Violet 500 */
     --accent-solid: #6366f1;
 
+    /* Accessible-links opt-in colour cue (#1984, S1) — see the dark-theme
+       override below for why this is its OWN token rather than every
+       consumer just reusing --accent-solid directly. Light theme: plain
+       --accent-solid (#6366f1) already clears 3.28:1 against --text-primary
+       (#1e293b), so no divergence is needed here. */
+    --link-emphasis-color: var(--accent-solid);
+
     /* Surfaces */
     --surface-bg: #f8fafc;          /* Slate 50 */
     --surface-card: #ffffff;
@@ -158,6 +165,21 @@
     --accent-start: #818cf8;
     --accent-end: #a78bfa;
     --accent-solid: #818cf8;
+
+    /* Accessible-links opt-in colour cue (#1984, S1) — deliberately NOT
+       var(--accent-solid) here. --accent-solid in THIS theme (#818cf8,
+       Indigo 400 — brightened on purpose for legibility against the dark
+       surface) only clears 2.72:1 against --text-primary (#f1f5f9), below
+       the 3:1 floor WCAG 1.4.1's "use of colour" technique (G183) requires
+       when colour is the ONLY differentiator (rule #18: no underline/border
+       at rest). The LIGHT theme's more saturated Indigo 500 (#6366f1)
+       clears 4.08:1 against the SAME near-white text while still reading
+       clearly as an accent against dark surfaces (3.28–4.00:1 vs
+       --surface-card / --surface-bg) — verified via WCAG relative-luminance
+       maths, not eyeballed. Literal hex (not var(--accent-solid)) is
+       intentional: this token exists precisely because the two must differ.
+       See css/app.css Section 2.5 + .song-meta-link for the consumers. */
+    --link-emphasis-color: #6366f1;
 
     /* Surfaces */
     --surface-bg: #0f172a;          /* Slate 900 */
@@ -469,6 +491,38 @@ a:visited {
 a.link-bare,
 a.link-bare:hover {
     border-bottom: none;
+}
+
+/* -----------------------------------------------------------------------
+   ACCESSIBLE LINKS — opt-in at-rest colour cue (#1984, S1)
+
+   OFF by default (attribute absent): the understated no-at-rest-cue
+   default above is untouched, exactly as rule #18 requires. When the user
+   opts in via Settings → Appearance → "Emphasise Links" (settings.js sets
+   `<html data-ihymns-linkcue="on">`, mirroring the CVD mode attribute — see
+   js/constants.js STORAGE_LINK_EMPHASIS + manage/includes/admin-theme-
+   init.php), naked `<a>` tags gain an at-rest ACCENT COLOUR — still NO
+   underline/border — satisfying WCAG 1.4.1 "Use of Colour" (technique
+   G183: ≥3:1 contrast against adjacent body text when colour is the only
+   differentiator). --link-emphasis-color is verified ≥3:1 against
+   --text-primary in BOTH themes (light 3.28:1, dark 4.08:1 — see the two
+   theme blocks above for the maths); it is NOT simply --accent-solid
+   because that token's dark-theme value fails this specific check.
+
+   :where() wraps the attribute selector so it contributes ZERO
+   specificity, keeping this rule at the exact same (0,0,1) specificity as
+   the bare `a { color: inherit }` rule above it — Bootstrap component
+   classes (`.btn`, `.nav-link`, `.dropdown-item`, …) still win by
+   specificity and are correctly UNAFFECTED, same "naked <a> only" scope
+   documented at the top of this section.
+
+   Does not fight [data-ihymns-theme="high-contrast"]'s forced underline
+   (a different property, and that mode already provides its own colour
+   cue via its own --accent-solid) — the two opt-ins layer harmlessly if
+   both happen to be on at once.
+   ----------------------------------------------------------------------- */
+:where([data-ihymns-linkcue="on"]) a {
+    color: var(--link-emphasis-color, var(--accent-solid));
 }
 
 /* ==========================================================================
@@ -3079,6 +3133,16 @@ body.reduce-motion .related-songs-chevron {
     outline: 2px solid var(--accent-solid, var(--bs-primary));
     outline-offset: 2px;
     border-radius: 2px;
+}
+
+/* Accessible links opt-in (#1984, S1) — see Section 2.5's full doc-comment
+   for the mechanism + contrast maths; this is the SAME at-rest cue applied
+   to catalogue prose links tagged with the explicit class instead of a
+   naked <a>. :where() keeps this at .song-meta-link's own (0,1,0)
+   specificity, matching the base rule above (source order — this comes
+   after it — decides the tie), so :hover/:focus-visible above still win. */
+:where([data-ihymns-linkcue="on"]) .song-meta-link {
+    color: var(--link-emphasis-color, var(--accent-solid));
 }
 
 /* =========================================================================

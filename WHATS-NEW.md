@@ -38,6 +38,10 @@ with none of the behind-the-scenes technical detail.
   do, collapsible sections open from the keyboard, a "skip to main content" link
   jumps past the menus, and text and badges have stronger colour contrast so
   they're easier to read.
+- **Make links stand out** — A new accessibility setting under Settings →
+  Appearance lets you turn on stronger, higher-contrast colouring for the links
+  in song details and descriptions, so they're easier to pick out from the words
+  around them. It's off by default and remembered on your device.
 
 ## 1.0.0 — 24 August 2026
 

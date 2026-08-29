@@ -564,6 +564,24 @@ declare(strict_types=1);
                 </small>
             </div>
 
+            <!-- Accessible links — opt-in at-rest colour cue (#1984, S1) -->
+            <div class="mb-3">
+                <div class="form-check form-switch">
+                    <input class="form-check-input"
+                           type="checkbox"
+                           id="setting-link-emphasis"
+                           role="switch"
+                           aria-label="Emphasise links with an accent colour">
+                    <label class="form-check-label" for="setting-link-emphasis">
+                        <strong>Emphasise Links</strong>
+                        <small class="text-muted d-block">
+                            Show links in an accent colour so they stand out from ordinary text.
+                            Off by default; links are otherwise identified by a colour shift on hover.
+                        </small>
+                    </label>
+                </div>
+            </div>
+
             <!-- Default songbook (#96) -->
             <div class="mb-3">
                 <label for="setting-default-songbook" class="form-label fw-semibold">

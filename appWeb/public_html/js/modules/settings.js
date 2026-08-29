@@ -20,6 +20,7 @@ import {
     STORAGE_NUMPAD_LIVE_SEARCH,
     STORAGE_ANALYTICS_CONSENT,
     STORAGE_CVD_MODE,
+    STORAGE_LINK_EMPHASIS,
     STORAGE_OFFLINE_INCLUDE_AUDIO,
     STORAGE_LIVE_IDLE_TIMEOUT_MINS,
     CACHE_SONGS_SAVED,
@@ -64,6 +65,7 @@ const SYNC_PREF_KEYS = Object.freeze([
     'ihymns_search_lyrics',
     'ihymns_display',
     STORAGE_CVD_MODE,
+    STORAGE_LINK_EMPHASIS,
     'ihymns_keyboardShortcuts',
     /* #1770 §4.7 — unprefixed on purpose; see the constant's own doc-comment
        in constants.js for why it must NOT gain the ihymns_ prefix. */
@@ -723,6 +725,14 @@ export class Settings {
             html.removeAttribute('data-ihymns-cvd');
         }
 
+        /* Apply accessible-links opt-in colour cue (#1984, S1) — independent
+           of theme, same shape as the CVD block above. */
+        if (localStorage.getItem(STORAGE_LINK_EMPHASIS) === 'on') {
+            html.setAttribute('data-ihymns-linkcue', 'on');
+        } else {
+            html.removeAttribute('data-ihymns-linkcue');
+        }
+
         /* Update theme-color meta tags */
         const themeColor = bsTheme === 'dark' ? '#1e1b4b' : '#4f46e5';
         document.querySelectorAll('meta[name="theme-color"]').forEach(meta => {
@@ -964,6 +974,27 @@ export class Settings {
                     document.documentElement.removeAttribute('data-ihymns-cvd');
                 }
                 this._maybePushSync(STORAGE_CVD_MODE);
+            });
+        }
+
+        /* Accessible links — opt-in at-rest colour cue (#1984, S1). Mirrors
+           the CVD toggle immediately above: a direct localStorage read/write
+           + live <html> attribute application, not routed through
+           get()/set()'s `ihymns_`-prefix derivation, so the raw exported key
+           stays identical to the one admin-theme-init.php's synchronous
+           mirror reads. */
+        const linkEmphasisToggle = document.getElementById('setting-link-emphasis');
+        if (linkEmphasisToggle) {
+            linkEmphasisToggle.checked = localStorage.getItem(STORAGE_LINK_EMPHASIS) === 'on';
+            linkEmphasisToggle.addEventListener('change', () => {
+                if (linkEmphasisToggle.checked) {
+                    localStorage.setItem(STORAGE_LINK_EMPHASIS, 'on');
+                    document.documentElement.setAttribute('data-ihymns-linkcue', 'on');
+                } else {
+                    localStorage.removeItem(STORAGE_LINK_EMPHASIS);
+                    document.documentElement.removeAttribute('data-ihymns-linkcue');
+                }
+                this._maybePushSync(STORAGE_LINK_EMPHASIS);
             });
         }
 
