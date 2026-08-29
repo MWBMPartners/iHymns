@@ -203,3 +203,100 @@ function analyticsIngestValidateTimestamp(mixed $raw): ?string
 
     return $dt->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s');
 }
+
+/* =============================================================================
+ * ADMIN DASHBOARD READS — /manage/analytics "Top songs" / "Top books" panels
+ * (API-coverage Batch 5, A14, `.claude/api-coverage-2026-08-28.md` §4.3/§9)
+ * =============================================================================
+ *
+ * A SEPARATE concern from the anonymous event-ingestion validation above —
+ * these two functions are the ADMIN-ONLY historical view-count reads
+ * `manage/analytics.php`'s CSV export always ran, extracted here (rule #22)
+ * so `api.php`'s new `admin_analytics_top` action can offer a native admin
+ * client the SAME unfiltered, all-time-eligible read instead of a second
+ * copy of the SQL. Grouped into this file per the API-coverage plan's own
+ * "Core: includes/analytics_ingest.php read queries" placement — both
+ * halves of this file are about `tblSongHistory`-adjacent analytics, just
+ * on opposite ends: write-path validation above, admin read-path below.
+ *
+ * DELIBERATELY NOT the same data as the public `popular_songs` action
+ * (api.php): `popular_songs` filters through `songVisibleSql()` +
+ * `songServableSql()` (a hidden/soft-deleted song or a disabled songbook's
+ * song must never appear in a public recommendation) and applies the
+ * caller's language filter — an admin historical report must NOT apply
+ * either filter, because a book being disabled or a song being soft-deleted
+ * TODAY must not erase what genuinely happened in the view history
+ * (`@deleted-visible`/`@disabled-visible`, mirrored from the page's own
+ * doc-block). `analyticsTopBooks()` also has no `popular_songs` counterpart
+ * at all — that action returns per-SONG rows, never a songbook-level
+ * rollup. So this is NOT the "fully redundant, skip it" case the plan
+ * flagged as a possibility.
+ */
+
+/**
+ * iHymns — the N most-viewed songs since `$since`, UNFILTERED (admin
+ * historical report — see the section doc-block above for why this must
+ * NOT apply the public visibility/servability filters `popular_songs`
+ * does). Byte-identical extraction of `manage/analytics.php`'s former
+ * `case 'top_songs'` CSV-export query.
+ *
+ * @param string $since `Y-m-d H:i:s` — rows with `ViewedAt >= $since`.
+ * @return list<array{0:string,1:?string,2:?string,3:?int,4:int}> numeric
+ *         rows in column order [SongId, Title, SongbookAbbr, Number, Views]
+ *         — the SAME shape `fetch_row()` produced at the original call
+ *         site, so a caller can `ihymns_fputcsv($fp, $row)` each one
+ *         unchanged.
+ */
+function analyticsTopSongs(\mysqli $db, string $since): array
+{
+    /* @deleted-visible: historical analytics (#1694) — a view that
+       happened, happened; the tblSongs join only labels/groups it.
+       Hiding a soft-deleted song here would misstate real usage.
+       @disabled-visible: admin reporting (#1765) — counts/stats over all
+       books; a book being disabled today must not erase its past view
+       history from this admin-only report. */
+    $stmt = $db->prepare(
+        'SELECT h.SongId, s.Title, s.SongbookAbbr, s.Number, COUNT(*) AS views
+           FROM tblSongHistory h
+           LEFT JOIN tblSongs s ON s.SongId = h.SongId
+          WHERE h.ViewedAt >= ?
+          GROUP BY h.SongId
+          ORDER BY views DESC'
+    );
+    $stmt->bind_param('s', $since);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_NUM);
+    $stmt->close();
+    return $rows;
+}
+
+/**
+ * iHymns — total views per songbook since `$since`, UNFILTERED (see the
+ * section doc-block above). Byte-identical extraction of
+ * `manage/analytics.php`'s former `case 'top_books'` CSV-export query. Has
+ * no equivalent anywhere else in the API surface — `popular_songs` returns
+ * per-song rows only, never a book-level rollup.
+ *
+ * @return list<array{0:string,1:int}> numeric rows [SongbookAbbr, Views].
+ */
+function analyticsTopBooks(\mysqli $db, string $since): array
+{
+    /* @deleted-visible: historical analytics (#1694) — same reasoning as
+       analyticsTopSongs() above: a view that happened, happened.
+       @disabled-visible: admin reporting (#1765) — same reasoning as
+       analyticsTopSongs() above: a book being disabled today must not
+       erase its past view history from this admin-only report. */
+    $stmt = $db->prepare(
+        'SELECT s.SongbookAbbr, COUNT(*) AS views
+           FROM tblSongHistory h
+           JOIN tblSongs s ON s.SongId = h.SongId
+          WHERE h.ViewedAt >= ?
+          GROUP BY s.SongbookAbbr
+          ORDER BY views DESC'
+    );
+    $stmt->bind_param('s', $since);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_NUM);
+    $stmt->close();
+    return $rows;
+}

@@ -224,43 +224,25 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
     /* -------- dismiss (whole cluster — one or more pairs among the given ids) -------- */
     if ($action === 'dismiss') {
-        if (!musicianDuplicatesDismissedTableExists($db)) {
-            http_response_code(409);
-            echo json_encode(['error' => "The duplicate-review dismissals table hasn't been migrated on this install yet. Run it from Setup Database."]);
-            exit;
-        }
-        $ids = array_values(array_unique(array_filter(
-            array_map('intval', explode(',', (string)($_POST['ids'] ?? ''))),
-            static fn(int $v): bool => $v > 0
-        )));
-        if (count($ids) < 2) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Need at least two people to dismiss as a group.']);
-            exit;
-        }
-        $reasonIn = trim((string)($_POST['reason'] ?? ''));
-        $reason   = $reasonIn !== '' ? mb_substr($reasonIn, 0, 255) : 'reviewed: not the same person';
-
+        /* #1969 API-coverage Batch 5 — the 409-when-unmigrated gate + the
+           canonical-order INSERT loop now live in the ONE shared core
+           (includes/musician_duplicates.php, musicianDuplicatesDismissCluster()),
+           reused verbatim by api.php's admin_musician_duplicate_dismiss. */
         try {
             $by = (int)($currentUser['id'] ?? 0) ?: null;
-            $ins = $db->prepare(
-                'INSERT INTO tblMusicianDuplicatesDismissed (MusicianIdA, MusicianIdB, DismissedBy, Reason)
-                 VALUES (?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE DismissedBy = VALUES(DismissedBy),
-                                         Reason = VALUES(Reason),
-                                         DismissedAt = CURRENT_TIMESTAMP'
+            $result = musicianDuplicatesDismissCluster(
+                $db,
+                explode(',', (string)($_POST['ids'] ?? '')),
+                $by,
+                (string)($_POST['reason'] ?? '')
             );
-            $n = count($ids);
-            for ($i = 0; $i < $n; $i++) {
-                for ($j = $i + 1; $j < $n; $j++) {
-                    [$a, $b] = $ids[$i] < $ids[$j] ? [$ids[$i], $ids[$j]] : [$ids[$j], $ids[$i]];
-                    $ins->bind_param('iiis', $a, $b, $by, $reason);
-                    $ins->execute();
-                }
+            if (!$result['ok']) {
+                http_response_code($result['status']);
+                echo json_encode(['error' => $result['error']]);
+                exit;
             }
-            $ins->close();
 
-            $logDupe('dupe_dismiss', (string)$ids[0], ['ids' => $ids, 'reason' => $reason]);
+            $logDupe('dupe_dismiss', (string)$result['ids'][0], ['ids' => $result['ids'], 'reason' => $result['reason']]);
             echo json_encode(['success' => true]);
             exit;
         } catch (\Throwable $e) {
@@ -273,28 +255,23 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
     /* -------- undismiss (one specific pair — the ?show=dismissed view) -------- */
     if ($action === 'undismiss') {
-        if (!musicianDuplicatesDismissedTableExists($db)) {
-            http_response_code(409);
-            echo json_encode(['error' => "The duplicate-review dismissals table hasn't been migrated on this install yet."]);
-            exit;
-        }
-        $idA = (int)($_POST['id_a'] ?? 0);
-        $idB = (int)($_POST['id_b'] ?? 0);
-        if ($idA <= 0 || $idB <= 0 || $idA === $idB) {
-            http_response_code(400);
-            echo json_encode(['error' => 'id_a and id_b are required and must differ.']);
-            exit;
-        }
-        [$lo, $hi] = $idA < $idB ? [$idA, $idB] : [$idB, $idA];
+        /* #1969 API-coverage Batch 5 — the ONE shared core
+           (musicianDuplicatesUndismissPair()), reused verbatim by api.php's
+           admin_musician_duplicate_undismiss. */
         try {
-            $del = $db->prepare('DELETE FROM tblMusicianDuplicatesDismissed WHERE MusicianIdA = ? AND MusicianIdB = ?');
-            $del->bind_param('ii', $lo, $hi);
-            $del->execute();
-            $deleted = $del->affected_rows;
-            $del->close();
+            $result = musicianDuplicatesUndismissPair(
+                $db,
+                (int)($_POST['id_a'] ?? 0),
+                (int)($_POST['id_b'] ?? 0)
+            );
+            if (!$result['ok']) {
+                http_response_code($result['status']);
+                echo json_encode(['error' => $result['error']]);
+                exit;
+            }
 
-            $logDupe('dupe_undismiss', (string)$lo, ['id_a' => $lo, 'id_b' => $hi]);
-            echo json_encode(['success' => true, 'deleted' => $deleted]);
+            $logDupe('dupe_undismiss', (string)$result['idA'], ['id_a' => $result['idA'], 'id_b' => $result['idB']]);
+            echo json_encode(['success' => true, 'deleted' => $result['deleted']]);
             exit;
         } catch (\Throwable $e) {
             error_log('[musician-duplicates undismiss] ' . $e->getMessage());

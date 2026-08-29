@@ -224,6 +224,42 @@ function readStripped(string $path): string
  *
  * @return string|null null if the block header wasn't found at all.
  */
+/**
+ * Slice ONE top-level `function $fnName(...) { ... }` definition's body out
+ * of $src — from the `function` keyword's own occurrence up to its
+ * matching closing brace (simple depth counter over `{`/`}` in the
+ * COMMENT-STRIPPED source text, so a same-named mention inside a comment
+ * can never masquerade as the function). Mirrors
+ * `tests/php/test-api-coverage-batch4bii.php`'s `phpFunctionBody()` —
+ * the SAME shape, kept local rather than promoted to a shared lib per
+ * that file's own precedent.
+ *
+ * @return string|null null when no such function is defined in $src.
+ */
+function extractFunctionBody(string $src, string $fnName): ?string
+{
+    if (!preg_match('/\bfunction\s+' . preg_quote($fnName, '/') . '\s*\(/', $src, $m, PREG_OFFSET_CAPTURE)) {
+        return null;
+    }
+    $searchFrom = $m[0][1];
+    $braceStart = strpos($src, '{', $searchFrom);
+    if ($braceStart === false) { return null; }
+
+    $depth = 0;
+    $len = strlen($src);
+    for ($i = $braceStart; $i < $len; $i++) {
+        $ch = $src[$i];
+        if ($ch === '{') { $depth++; }
+        elseif ($ch === '}') {
+            $depth--;
+            if ($depth === 0) {
+                return substr($src, $searchFrom, $i - $searchFrom + 1);
+            }
+        }
+    }
+    return null; // unbalanced — treat as "could not isolate"
+}
+
 function extractActionBlock(string $stripped, string $actionName): ?string
 {
     $headerPattern = "/if \(\\\$action === '" . preg_quote($actionName, '/') . "'\)/";
@@ -376,11 +412,41 @@ if ($unlinkBlock !== null) {
         strpos($unlinkBlock, 'manage_duplicate_songs') === false && strpos($unlinkBlock, '$canMerge') === false,
         'unlink should be edit_songs-only (same as link/dismiss), not require the destructive-merge entitlement'
     );
+    /* #1969 API-coverage Batch 5 (A10) re-pointed the unlink block onto
+       the shared per-song core includes/song_link_admin.php's
+       songLinkRemove() — the SAME function manage/editor/api2.php's
+       song_link_remove case and api.php's new admin_song_unlink action
+       also call (rule #22: one remove implementation, not three), so the
+       block itself no longer names tblSongLinks directly. Proven in TWO
+       steps so a same-named decoy core cannot satisfy this check: (1) the
+       unlink block calls songLinkRemove(, and (2) THAT function's own
+       body (opened fresh from song_link_admin.php, isolated by
+       extractFunctionBody()) genuinely operates on tblSongLinks. */
     check(
-        'duplicate-songs.php unlink action deletes from tblSongLinks',
-        strpos($unlinkBlock, 'tblSongLinks') !== false,
-        'expected the unlink block to operate on tblSongLinks'
+        'duplicate-songs.php unlink action delegates to songLinkRemove( (includes/song_link_admin.php, the shared per-song core, #1969)',
+        strpos($unlinkBlock, 'songLinkRemove(') !== false,
+        'expected the unlink block to call songLinkRemove( rather than re-forking the DELETE'
     );
+    check(
+        "duplicate-songs.php unlink action has NO leftover raw \"DELETE FROM tblSongLinks\" (genuinely re-pointed at the shared core, not calling it alongside the old SQL)",
+        strpos($unlinkBlock, 'DELETE FROM tblSongLinks') === false,
+        'found a leftover raw DELETE — the core extraction left dead/duplicate SQL behind'
+    );
+
+    $songLinkAdminPhp = readStripped($webRoot . '/includes/song_link_admin.php');
+    $songLinkRemoveBody = extractFunctionBody($songLinkAdminPhp, 'songLinkRemove');
+    check(
+        'includes/song_link_admin.php defines function songLinkRemove(',
+        $songLinkRemoveBody !== null,
+        'extractFunctionBody() could not isolate songLinkRemove() — has it moved or been renamed?'
+    );
+    if ($songLinkRemoveBody !== null) {
+        check(
+            "songLinkRemove()'s OWN body genuinely operates on tblSongLinks — not just a same-named decoy (the two-step proof this check exists for)",
+            strpos($songLinkRemoveBody, 'tblSongLinks') !== false,
+            'expected songLinkRemove() to reference tblSongLinks somewhere in its own body'
+        );
+    }
 }
 
 /* ======================================================================
@@ -474,6 +540,40 @@ check(
         return strpos($stripped, 'bulk_import_status') === false
             && strpos($stripped, "'&quot;'") !== false; /* the real string after the regex must survive */
     })()
+);
+
+/* ======================================================================
+ * Self-test: extractFunctionBody() (#1969) must isolate ONE named
+ * function's body and not bleed into a neighbour — same mutation-testing
+ * obligation (rule #34) as the stripComments() self-tests above.
+ * ====================================================================== */
+echo "\nSelf-test — extractFunctionBody() correctness:\n";
+
+$fnFixtureSrc = <<<'PHP'
+<?php
+function decoyFunction(string $x): string
+{
+    return trim($x);
+}
+
+function realWriter(string $raw): array
+{
+    return ['tbl' => 'tblSongLinks'];
+}
+PHP;
+$decoyBody = extractFunctionBody($fnFixtureSrc, 'decoyFunction');
+$realBody  = extractFunctionBody($fnFixtureSrc, 'realWriter');
+check(
+    'extractFunctionBody() FAILS-HIGH self-test: a marker genuinely present inside realWriter() is found',
+    $realBody !== null && strpos($realBody, 'tblSongLinks') !== false
+);
+check(
+    "extractFunctionBody() FAILS-LOW self-test: decoyFunction()'s isolated body does NOT wrongly contain a marker that only exists in the NEIGHBOURING realWriter() — the slice does not bleed across function boundaries",
+    $decoyBody !== null && strpos($decoyBody, 'tblSongLinks') === false
+);
+check(
+    'extractFunctionBody() FAILS-LOW self-test: a non-existent function name returns null, not a body',
+    extractFunctionBody($fnFixtureSrc, 'doesNotExistFunction') === null
 );
 
 echo "\n" . ($failures === 0 ? 'All assertions passed.' : "{$failures} assertion(s) FAILED.") . "\n";

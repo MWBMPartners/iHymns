@@ -14018,6 +14018,540 @@ paths:
           description: Health summary per songbook
 
   # ===========================================================================
+  # API-COVERAGE BATCH 5 — curator workflows (#1969)
+  # .claude/api-coverage-2026-08-28.md §4.3/§9 A10/A11/A13/A14/A15/A16.
+  # Every gate below matches the sibling manage/*.php page's OWN gate; every
+  # write delegates to a shared includes/*.php core the sibling page was
+  # re-pointed onto in the same commit (rule #22).
+  # ===========================================================================
+
+  /api.php?action=admin_song_merge:
+    post:
+      operationId: adminSongMerge
+      tags: [Admin — Duplicate Songs]
+      summary: Merge a duplicate song into its survivor (irreversible)
+      description: |
+        Mirrors `/manage/duplicate-songs`'s `merge` action. Re-points every
+        FK table + the external-ID store from the duplicate to the
+        survivor, forwards permalinks, then deletes the duplicate row.
+        `force: true` is required to merge two songs that sit in the SAME
+        *official* songbook (#1218 §2) — without it the request is refused
+        with `409` (almost certainly two distinct hymns sharing a title).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_song_merge] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [survivor_id, duplicate_id]
+              properties:
+                survivor_id:  { type: string, description: The SongId that survives. }
+                duplicate_id: { type: string, description: The SongId that is merged away and deleted. }
+                force:        { type: boolean, default: false, description: "Required to override the #1218 same-official-songbook guard." }
+      responses:
+        "200":
+          description: Merge complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:          { type: boolean, example: true }
+                  survivorId:  { type: string }
+                  mergedFrom:  { type: string }
+        "400":
+          description: Missing/self/nonexistent ids
+        "403":
+          description: The manage_duplicate_songs entitlement is required
+        "409":
+          description: Same-official-songbook pair — retry with `force:true` if certain
+
+  /api.php?action=admin_song_link:
+    post:
+      operationId: adminSongLink
+      tags: [Admin — Duplicate Songs]
+      summary: Link two or more songs as cross-book counterparts (cluster-batch)
+      description: |
+        Mirrors `/manage/duplicate-songs`'s `link` action. Links every id
+        in `song_ids` to the first id, pairwise, via the shared per-song
+        core `includes/song_link_admin.php`'s `songLinkAdd()` — a
+        behavioural mirror of `manage/editor/api2.php`'s `song_link_add`
+        (that file was out of scope for the batch that added this
+        endpoint). A pair already split across two DIFFERENT counterpart
+        groups stops the batch with a `409` — ids linked before that point
+        stay linked (`linked` in the error body lists them).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_song_link] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [song_ids]
+              properties:
+                song_ids: { type: array, minItems: 2, items: { type: string }, description: "SongIds to link (or a comma-separated string)." }
+                note:     { type: string, description: Optional note on the group. }
+      responses:
+        "200":
+          description: Linked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  groupId: { type: integer }
+                  members: { type: array, items: { type: string } }
+        "400":
+          description: Fewer than two song_ids provided
+        "403":
+          description: The edit_songs entitlement is required
+        "404":
+          description: One or both songs were not found
+        "409":
+          description: Songs already split across different counterpart groups
+
+  /api.php?action=admin_song_unlink:
+    post:
+      operationId: adminSongUnlink
+      tags: [Admin — Duplicate Songs]
+      summary: Remove one or more songs from their counterpart group (cluster-batch)
+      description: |
+        Mirrors `/manage/duplicate-songs`'s `unlink` action. Each id is
+        removed from its OWN group independently via the shared per-song
+        core `includes/song_link_admin.php`'s `songLinkRemove()` — the
+        SAME function that page's own `unlink` action calls, and a
+        behavioural mirror of `manage/editor/api2.php`'s `song_link_remove`
+        (that file was out of scope for the batch that added this
+        endpoint). An id that is already unlinked is a no-op
+        (`deleted: 0` for that id), never an error.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_song_unlink] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                song_ids: { type: array, items: { type: string }, description: "SongIds to unlink (or a comma-separated string)." }
+                song_id:  { type: string, description: Convenience single-id form. }
+      responses:
+        "200":
+          description: Unlink result, per id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  deleted: { type: object, additionalProperties: { type: integer }, description: "SongId => rows deleted (0 or 1)." }
+        "400":
+          description: No song_ids provided
+        "403":
+          description: The edit_songs entitlement is required
+
+  /api.php?action=admin_song_suggestions_rebuild:
+    post:
+      operationId: adminSongSuggestionsRebuild
+      tags: [Admin — Duplicate Songs]
+      summary: Re-run the fuzzy duplicate-suggestion builder
+      description: |
+        Mirrors `/manage/duplicate-songs`'s `rebuild` action. Re-scores the
+        whole catalogue into `tblSongLinkSuggestions` via
+        `includes/tools/build-song-link-suggestions.php`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_song_suggestions_rebuild] }
+      responses:
+        "200":
+          description: Rebuild complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  message: { type: string }
+        "403":
+          description: The edit_songs entitlement is required
+
+  /api.php?action=admin_song_auto_link:
+    post:
+      operationId: adminSongAutoLink
+      tags: [Admin — Duplicate Songs]
+      summary: Bulk-link cross-book songs sharing a hard identifier (ISWC/CCLI/ISRC)
+      description: |
+        Mirrors `/manage/duplicate-songs`'s `auto_link` action
+        (`includes/tools/auto-link-hard-id-counterparts.php`). A shared
+        ISWC/CCLI/ISRC across different songbooks is treated as a certain
+        same-hymn signal.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_song_auto_link] }
+      responses:
+        "200":
+          description: Auto-link complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "403":
+          description: The manage_duplicate_songs entitlement is required
+
+  /api.php?action=admin_song_restore:
+    post:
+      operationId: adminSongRestore
+      tags: [Admin — Deleted Songs]
+      summary: Restore a soft-deleted song
+      description: |
+        Mirrors `/manage/deleted-songs`'s `restore` action
+        (`includes/song_soft_delete.php`'s `songRestore()`). A soft delete
+        writes nothing else, so restore is the single UPDATE that clears
+        the five soft-delete columns.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_song_restore] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [song_id]
+              properties:
+                song_id: { type: string }
+      responses:
+        "200":
+          description: Restored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean, example: true }
+                  songId: { type: string }
+        "400":
+          description: song_id required
+        "403":
+          description: The delete_songs entitlement is required
+        "404":
+          description: Song not found / not currently deleted
+        "409":
+          description: Soft-delete not migrated on this install
+
+  /api.php?action=admin_song_purge:
+    post:
+      operationId: adminSongPurge
+      tags: [Admin — Deleted Songs]
+      summary: Permanently destroy a soft-deleted song (irreversible)
+      description: |
+        Mirrors `/manage/deleted-songs`'s `purge` action
+        (`includes/song_soft_delete.php`'s `songPurge()`). Reachable ONLY
+        from the already-deleted state — nothing purges a live song.
+        `confirm` MUST equal `song_id` exactly (case-insensitive), the
+        #1218-style type-to-confirm ceremony re-enforced server-side.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_song_purge] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [song_id, confirm]
+              properties:
+                song_id:      { type: string }
+                confirm:      { type: string, description: Must equal song_id (case-insensitive). }
+                redirect_to:  { type: string, description: "Optional SongId the old permalink should now redirect to; blank leaves a tombstone." }
+      responses:
+        "200":
+          description: Purged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:          { type: boolean, example: true }
+                  songId:      { type: string }
+                  deleted:     { type: integer }
+                  redirectTo:  { type: string, nullable: true }
+        "400":
+          description: Missing or mismatched confirm
+        "403":
+          description: The purge_songs entitlement is required
+        "404":
+          description: Song not found / not currently deleted
+        "409":
+          description: Soft-delete not migrated on this install
+
+  /api.php?action=admin_musician_duplicate_dismiss:
+    post:
+      operationId: adminMusicianDuplicateDismiss
+      tags: [Admin — Musicians]
+      summary: Dismiss a musician-duplicate cluster as "not the same person"
+      description: |
+        Mirrors `/manage/musician-duplicates`'s `dismiss` action
+        (`includes/musician_duplicates.php`). Writes every unordered pair
+        among `ids` into `tblMusicianDuplicatesDismissed` (canonical
+        `MusicianIdA < MusicianIdB` order). `admin_musician_merge` already
+        exists for the destructive merge — never re-added here.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_musician_duplicate_dismiss] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids:    { type: array, minItems: 2, items: { type: integer }, description: "tblMusicians.Id values (or a comma-separated string)." }
+                reason: { type: string, maxLength: 255 }
+      responses:
+        "200":
+          description: Dismissed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean, example: true }
+                  ids:    { type: array, items: { type: integer } }
+                  reason: { type: string }
+        "400":
+          description: Fewer than two ids provided
+        "403":
+          description: The manage_musicians entitlement is required
+        "409":
+          description: Dismissals table not migrated on this install
+
+  /api.php?action=admin_musician_duplicate_undismiss:
+    post:
+      operationId: adminMusicianDuplicateUndismiss
+      tags: [Admin — Musicians]
+      summary: Undo a musician-duplicate dismissal for one pair
+      description: |
+        Mirrors `/manage/musician-duplicates`'s `?show=dismissed` `undismiss`
+        action (`includes/musician_duplicates.php`).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_musician_duplicate_undismiss] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id_a, id_b]
+              properties:
+                id_a: { type: integer }
+                id_b: { type: integer }
+      responses:
+        "200":
+          description: Undismissed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  deleted: { type: integer }
+        "400":
+          description: id_a/id_b missing or equal
+        "403":
+          description: The manage_musicians entitlement is required
+        "409":
+          description: Dismissals table not migrated on this install
+
+  /api.php?action=admin_analytics_top:
+    get:
+      operationId: adminAnalyticsTop
+      tags: [Admin — Analytics]
+      summary: Top-viewed songs + songbooks (unfiltered historical report)
+      description: |
+        Mirrors `/manage/analytics`'s `top_songs`/`top_books` CSV-export
+        panels (`includes/analytics_ingest.php`'s `analyticsTopSongs()` /
+        `analyticsTopBooks()`). Deliberately UNFILTERED by visibility or
+        language — a soft-deleted song or a disabled songbook's past view
+        history is still real history — unlike the public `popular_songs`
+        action, which filters both and has no songbook-level rollup at all.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_analytics_top] }
+        - name: range
+          in: query
+          required: false
+          schema: { type: integer, enum: [7, 30, 90], default: 30 }
+      responses:
+        "200":
+          description: Top songs + top songbooks by view count since `range` days ago
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  range: { type: integer }
+                  songs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        songId:   { type: string }
+                        title:    { type: string, nullable: true }
+                        songbook: { type: string, nullable: true }
+                        number:   { type: integer, nullable: true }
+                        views:    { type: integer }
+                  books:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        songbook: { type: string }
+                        views:    { type: integer }
+        "403":
+          description: The view_analytics entitlement is required
+
+  /api.php?action=admin_data_health_fix:
+    post:
+      operationId: adminDataHealthFix
+      tags: [Admin — Diagnostics]
+      summary: Apply a data-health fix (disconnect legacy fallbacks)
+      description: |
+        Mirrors `/manage/data-health`'s `disconnect_fallbacks` POST
+        (`includes/data_health_admin.php`). Renames (never deletes) each
+        present legacy source — the `songs.json` file, the legacy shared-
+        setlist directory, the legacy SQLite database — by appending
+        `.disabled`. Reversible by hand. `op` is an app-level allow-list;
+        today only `disconnect_fallbacks` is recognised.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_data_health_fix] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [op]
+              properties:
+                op: { type: string, enum: [disconnect_fallbacks] }
+      responses:
+        "200":
+          description: Fix applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  op:      { type: string }
+                  renamed: { type: array, items: { type: string } }
+                  skipped: { type: array, items: { type: string } }
+                  failed:  { type: array, items: { type: string } }
+        "400":
+          description: Unknown op
+        "403":
+          description: The drop_legacy_tables entitlement is required
+
+  /api.php?action=admin_ip_geolocate:
+    post:
+      operationId: adminIpGeolocate
+      tags: [Admin]
+      summary: Resolve + cache country codes for a batch of IPs
+      description: |
+        Mirrors `/manage/activity-log`'s `?action=geo` AJAX endpoint
+        (`includes/activity_log_geo.php`). Resolves each IP (cache ->
+        MaxMind -> API chain, `ihymnsGeoLookup()`, #1208) and snapshots the
+        result onto matching `tblActivityLog` rows that don't have a
+        country yet, so the next view needs no lookup. Capped at 25 IPs
+        per call (external free-API rate limits).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_ip_geolocate] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ips]
+              properties:
+                ips: { type: array, maxItems: 25, items: { type: string }, description: "IPs to resolve (or a comma-separated string)." }
+      responses:
+        "200":
+          description: Resolved country codes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:        { type: boolean, example: true }
+                  countries: { type: object, additionalProperties: { type: string }, description: "IP => ISO-3166-1 alpha-2 code, only for IPs that resolved." }
+        "403":
+          description: The view_activity_log entitlement is required
+        "503":
+          description: Activity-log observability columns not migrated on this install
+
+  # ===========================================================================
   # PAGES  (HTML renderers for SPA page-fragment hydration)
   #
   # All ten pre-existing entries below were documented pre-#1472 as

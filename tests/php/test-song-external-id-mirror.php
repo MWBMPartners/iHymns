@@ -907,36 +907,47 @@ foreach ($extIdMutationSites as $relNorm) {
     }
 }
 
-/* ---- 10. Merge specifics (#1755): duplicate-songs.php's merge handler
-   repoints the duplicate's tblSongExternalIds rows to the survivor (gated —
-   an ungated touch would STRICT-throw on an un-migrated install, rule #9),
-   DEMOTES the duplicate's own marker row so the survivor can never end up
-   with two, and re-projects the survivor's column afterwards. Dynamic SQL
-   the derived sweep above already caught structurally (duplicate-songs.php
-   IS one of the mutation sites in assertion 9) — this asserts the SPECIFIC
-   shape within the merge action's own slice, which a bare "references the
-   sync somewhere in the file" check cannot. ---- */
-$dupFile = $repoRoot . '/appWeb/public_html/manage/duplicate-songs.php';
-if (!is_readable($dupFile)) {
-    fwrite(STDERR, "FATAL: could not read manage/duplicate-songs.php at {$dupFile}\n");
+/* ---- 10. Merge specifics (#1755): the merge core repoints the
+   duplicate's tblSongExternalIds rows to the survivor (gated — an ungated
+   touch would STRICT-throw on an un-migrated install, rule #9), DEMOTES
+   the duplicate's own marker row so the survivor can never end up with
+   two, and re-projects the survivor's column afterwards. Dynamic SQL the
+   derived sweep above already caught structurally (includes/
+   duplicate_song_admin.php IS one of the mutation sites in assertion 9)
+   — this asserts the SPECIFIC shape within the merge function's own
+   slice, which a bare "references the sync somewhere in the file" check
+   cannot.
+
+   #1969 API-coverage Batch 5 (A10) relocated the merge transaction out of
+   manage/duplicate-songs.php's `case 'merge'` into the shared core
+   duplicateSongMergeExecute() (includes/duplicate_song_admin.php, reused
+   verbatim by api.php's admin_song_merge, rule #22) — so this assertion
+   now slices THAT function (seimSliceFunction(), the same top-level
+   function-body slicer assertion 2 etc. already trust) rather than the
+   page's `if ($action === 'merge')` block, which is now just a thin
+   verdict-relay around the core and would legitimately no longer contain
+   any of these literals. ---- */
+$dupCoreFile = $repoRoot . '/appWeb/public_html/includes/duplicate_song_admin.php';
+if (!is_readable($dupCoreFile)) {
+    fwrite(STDERR, "FATAL: could not read includes/duplicate_song_admin.php at {$dupCoreFile}\n");
     exit(1);
 }
-$dupSrc = seimStripComments((string)file_get_contents($dupFile));
-$mergeSlice = seimSliceActionBlock($dupSrc, 'merge');
+$dupCoreSrc = seimStripComments((string)file_get_contents($dupCoreFile));
+$mergeSlice = seimSliceFunction($dupCoreSrc, 'duplicateSongMergeExecute');
 if ($mergeSlice === '') {
-    $failures[] = "Could not locate the if (\$action === 'merge') block in manage/duplicate-songs.php";
+    $failures[] = "Could not locate function duplicateSongMergeExecute() in includes/duplicate_song_admin.php";
 } else {
     if (strpos($mergeSlice, 'songExternalIdsTableExists(') === false) {
-        $failures[] = "manage/duplicate-songs.php's merge handler touches tblSongExternalIds without an existence gate (songExternalIdsTableExists()) — an un-migrated install would STRICT-throw (rule #9)";
+        $failures[] = "duplicateSongMergeExecute() touches tblSongExternalIds without an existence gate (songExternalIdsTableExists()) — an un-migrated install would STRICT-throw (rule #9)";
     }
     if (!preg_match('/UPDATE\s+IGNORE\s+tblSongExternalIds\b/i', $mergeSlice)) {
-        $failures[] = "manage/duplicate-songs.php's merge handler does not repoint tblSongExternalIds rows via an UPDATE IGNORE — the duplicate's store rows would be lost to the ON DELETE CASCADE (#1755)";
+        $failures[] = "duplicateSongMergeExecute() does not repoint tblSongExternalIds rows via an UPDATE IGNORE — the duplicate's store rows would be lost to the ON DELETE CASCADE (#1755)";
     }
     if (!preg_match('/SourceRef\s*=\s*IF\s*\(\s*IdType\s*=\s*\'isrc\'/', $mergeSlice)) {
-        $failures[] = "manage/duplicate-songs.php's merge handler does not DEMOTE the duplicate's own isrc marker row (SourceRef = IF(IdType = 'isrc' ... NULL ...)) — the survivor could end up with two marker rows (§2.1 anomaly)";
+        $failures[] = "duplicateSongMergeExecute() does not DEMOTE the duplicate's own isrc marker row (SourceRef = IF(IdType = 'isrc' ... NULL ...)) — the survivor could end up with two marker rows (§2.1 anomaly)";
     }
     if (strpos($mergeSlice, 'songExternalIdSyncIsrcDenorm(') === false) {
-        $failures[] = "manage/duplicate-songs.php's merge handler never calls songExternalIdSyncIsrcDenorm() on the survivor — the store's post-merge primary ISRC would never reach tblSongs.Isrc";
+        $failures[] = "duplicateSongMergeExecute() never calls songExternalIdSyncIsrcDenorm() on the survivor — the store's post-merge primary ISRC would never reach tblSongs.Isrc";
     }
 }
 

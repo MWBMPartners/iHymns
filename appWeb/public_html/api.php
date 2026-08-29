@@ -21181,6 +21181,567 @@ if ($action !== null) {
             break;
         }
 
+        /* =================================================================
+         * API-COVERAGE BATCH 5 — curator workflows (#1969, plan
+         * `.claude/api-coverage-2026-08-28.md` §4.3/§9 A10/A11/A13/A14/A15/A16)
+         *
+         * Every gate below is the SAME entitlement the sibling manage/*.php
+         * page gates on (read from the page first, per the task's own
+         * instruction) — never a looser/tighter substitute. Every write
+         * delegates to a shared includes/*.php core the sibling page was
+         * re-pointed onto in this same batch (rule #22) — no forked SQL.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * A10 — Duplicate & counterpart songs (mirrors manage/duplicate-songs.php)
+         * Gates: merge/rebuild/auto_link = manage_duplicate_songs (the
+         * page's destructive/bulk-write gate); link/unlink =
+         * edit_songs (the page's curator gate). #1218's same-official-
+         * songbook force-guard is preserved EXACTLY inside
+         * duplicateSongMergeExecute() — never re-implemented or weakened
+         * here.
+         * ----------------------------------------------------------------- */
+
+        /* POST body: { survivor_id, duplicate_id, force?: bool }
+           force=1 is the #1218 §2 type-to-confirm escape hatch for a
+           same-official-songbook pair — the confirm ceremony itself lives
+           client-side; the server only re-checks the boolean + re-derives
+           the guard from the LIVE songbook rows, exactly as the page does. */
+        case 'admin_song_merge': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_duplicate_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_duplicate_songs entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'duplicate_song_admin.php';
+
+            $survivor  = (string)($body['survivor_id']  ?? '');
+            $duplicate = (string)($body['duplicate_id'] ?? '');
+            $force     = !empty($body['force']);
+            $userId    = (int)($authUser['Id'] ?? 0) ?: null;
+
+            try {
+                $verdict = duplicateSongMergeExecute($db, $survivor, $duplicate, $force, $userId);
+                if (!$verdict['ok']) {
+                    sendJson(['error' => $verdict['error']], $verdict['status']);
+                    break;
+                }
+                logActivity('api.admin.song.merge', 'song', $verdict['survivorId'], [
+                    'merged_from' => $verdict['mergedFrom'],
+                    'tables'      => $verdict['tables'],
+                ]);
+                sendJson(['ok' => true, 'survivorId' => $verdict['survivorId'], 'mergedFrom' => $verdict['mergedFrom']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.merge', 'song', $duplicate, $e);
+                error_log('[admin_song_merge] ' . $e->getMessage());
+                sendJson(['error' => 'Merge failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { song_ids: [SongId, ...] (>= 2), note?: string }
+           Cluster-batch: links every id to the FIRST id in the list,
+           pairwise, via the shared per-song core includes/song_link_
+           admin.php's songLinkAdd() — a behavioural MIRROR of api2.php's
+           song_link_add (api2.php itself was out of scope for this batch
+           and keeps its own copy; see song_link_admin.php's doc-block) —
+           never a forked bulk algorithm within THIS batch's own scope
+           (rule #22). A pair that is already in two DIFFERENT counterpart
+           groups stops the batch with that pair's own 409 (status is the
+           contract, rule #35); every id linked before the failure stays
+           linked — a partial batch is reported, not silently rolled back,
+           since each pairwise link is its own already-committed
+           transaction. */
+        case 'admin_song_link': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_songs entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_link_admin.php';
+
+            $ids = $body['song_ids'] ?? [];
+            if (is_string($ids)) { $ids = explode(',', $ids); }
+            $ids = array_values(array_unique(array_filter(
+                array_map(static fn($v): string => trim((string)$v), (array)$ids),
+                static fn(string $v): bool => $v !== ''
+            )));
+            $note = trim((string)($body['note'] ?? ''));
+            if (count($ids) < 2) {
+                sendJson(['error' => 'Provide at least two song_ids to link.'], 400);
+                break;
+            }
+
+            try {
+                $userId  = (int)($authUser['Id'] ?? 0) ?: null;
+                $groupId = null;
+                $results = [];
+                $failure = null;
+                $n = count($ids);
+                for ($i = 1; $i < $n; $i++) {
+                    $r = songLinkAdd($db, $ids[0], $ids[$i], $note, $userId);
+                    if (!$r['ok']) {
+                        $failure = $r + ['songId' => $ids[$i]];
+                        break;
+                    }
+                    $groupId = $r['groupId'];
+                    $results[] = ['songId' => $ids[$i]] + array_diff_key($r, ['ok' => 1]);
+                }
+                if ($failure !== null) {
+                    sendJson(['error' => $failure['error'], 'song_id' => $failure['songId'], 'linked' => $results], $failure['status']);
+                    break;
+                }
+                logActivity('api.admin.song.link', 'song', $ids[0], ['groupId' => $groupId, 'members' => $ids]);
+                sendJson(['ok' => true, 'groupId' => $groupId, 'members' => $ids, 'results' => $results]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.link', 'song', $ids[0] ?? '', $e);
+                error_log('[admin_song_link] ' . $e->getMessage());
+                sendJson(['error' => 'Link failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { song_ids: [SongId, ...] } (a single song_id is also
+           accepted for a one-song unlink). Cluster-batch removal — each id
+           is dropped from its OWN counterpart group independently via the
+           SAME per-song core (includes/song_link_admin.php's
+           songLinkRemove()) manage/duplicate-songs.php's own 'unlink'
+           action also calls — one remove implementation within this
+           batch's scope, and a behavioural MIRROR of api2.php's
+           song_link_remove (api2.php itself was out of scope this batch;
+           see song_link_admin.php's doc-block). */
+        case 'admin_song_unlink': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_songs entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_link_admin.php';
+
+            $ids = $body['song_ids'] ?? ($body['song_id'] ?? []);
+            if (is_string($ids)) { $ids = explode(',', $ids); }
+            $ids = array_values(array_unique(array_filter(
+                array_map(static fn($v): string => trim((string)$v), (array)$ids),
+                static fn(string $v): bool => $v !== ''
+            )));
+            if (count($ids) < 1) {
+                sendJson(['error' => 'Provide at least one song_id to unlink.'], 400);
+                break;
+            }
+
+            try {
+                $deleted = [];
+                foreach ($ids as $sid) {
+                    $r = songLinkRemove($db, null, $sid);
+                    $deleted[$sid] = (int)($r['deleted'] ?? 0);
+                }
+                logActivity('api.admin.song.unlink', 'song', $ids[0], ['song_ids' => $ids, 'deleted' => $deleted]);
+                sendJson(['ok' => true, 'deleted' => $deleted]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.unlink', 'song', $ids[0] ?? '', $e);
+                error_log('[admin_song_unlink] ' . $e->getMessage());
+                sendJson(['error' => 'Unlink failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST, no body — re-runs the fuzzy suggestion builder over the
+           whole catalogue (#1219). Mirrors manage/duplicate-songs.php's
+           'rebuild' action exactly (same shared core,
+           duplicateSongRebuildSuggestions()). Gate matches the page's
+           curator (edit_songs) gate — the page never required
+           manage_duplicate_songs for this read-scoring-only op. */
+        case 'admin_song_suggestions_rebuild': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_songs entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'duplicate_song_admin.php';
+
+            try {
+                $verdict = duplicateSongRebuildSuggestions();
+                if (!$verdict['ok']) {
+                    sendJson(['error' => $verdict['error']], $verdict['status']);
+                    break;
+                }
+                sendJson(['ok' => true, 'message' => $verdict['message']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.suggestions_rebuild', 'song', '', $e);
+                error_log('[admin_song_suggestions_rebuild] ' . $e->getMessage());
+                sendJson(['error' => 'Rebuild failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST, no body — bulk-link cross-book songs sharing a hard id
+           (ISWC/CCLI/ISRC, #1125). Mirrors manage/duplicate-songs.php's
+           'auto_link' action exactly (shared core, duplicateSongAutoLink(),
+           itself a thin wrapper over the pre-existing
+           autoLinkHardIdCounterparts()). Gate = manage_duplicate_songs —
+           the page's own gate for this bulk, non-interactive write. */
+        case 'admin_song_auto_link': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_duplicate_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_duplicate_songs entitlement is required.'], 403);
+                break;
+            }
+            $db = getDbMysqli();
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'duplicate_song_admin.php';
+
+            try {
+                $userId  = (int)($authUser['Id'] ?? 0) ?: null;
+                $verdict = duplicateSongAutoLink($db, $userId);
+                if (!$verdict['ok']) {
+                    sendJson(['error' => $verdict['error']], $verdict['status']);
+                    break;
+                }
+                $r = array_diff_key($verdict, ['ok' => 1]);
+                logActivity('api.admin.song.link.auto', 'song', '', $r);
+                sendJson(['ok' => true] + $r);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.auto_link', 'song', '', $e);
+                error_log('[admin_song_auto_link] ' . $e->getMessage());
+                sendJson(['error' => 'Auto-link failed.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A11 — Deleted songs restore/purge (mirrors manage/deleted-songs.php)
+         * Gates: restore = delete_songs (the page's own gate); purge =
+         * purge_songs (the page's separate, stricter per-action gate —
+         * D3 owner decision so a delete_songs-only role can never
+         * silently gain irreversible purge power). Both delegate to the
+         * ONE lifecycle core, includes/song_soft_delete.php, already
+         * shared with the page — no new core needed here.
+         * ----------------------------------------------------------------- */
+
+        /* POST body: { song_id } */
+        case 'admin_song_restore': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('delete_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The delete_songs entitlement is required.'], 403);
+                break;
+            }
+            $db     = getDbMysqli();
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $songId = trim((string)($body['song_id'] ?? ''));
+            $userId = (int)($authUser['Id'] ?? 0) ?: null;
+
+            try {
+                $verdict = songRestore($db, $songId, $userId);
+                if (!$verdict['ok']) {
+                    sendJson(['error' => $verdict['error']], $verdict['status']);
+                    break;
+                }
+                logActivity('api.admin.song.restore', 'song', $songId, [
+                    'title'    => (string)($verdict['title'] ?? ''),
+                    'songbook' => (string)($verdict['songbook'] ?? ''),
+                ]);
+                sendJson(['ok' => true, 'songId' => $songId]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.restore', 'song', $songId, $e);
+                error_log('[admin_song_restore] ' . $e->getMessage());
+                sendJson(['error' => 'Restore failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { song_id, confirm, redirect_to? }
+           `confirm` MUST equal `song_id` exactly (case-insensitive) — the
+           #1218 §2 type-to-confirm ceremony re-enforced server-side
+           (rule #29-adjacent: a client-side arm alone cannot be trusted;
+           a replayed/hand-built POST without the typed id is refused). */
+        case 'admin_song_purge': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('purge_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The purge_songs entitlement is required.'], 403);
+                break;
+            }
+            $db      = getDbMysqli();
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $songId  = trim((string)($body['song_id'] ?? ''));
+            $confirm = trim((string)($body['confirm'] ?? ''));
+            if ($songId === '' || strcasecmp($confirm, $songId) !== 0) {
+                sendJson(['error' => 'Type the exact song id to confirm the purge.'], 400);
+                break;
+            }
+            $redirectTo = trim((string)($body['redirect_to'] ?? ''));
+            $userId     = (int)($authUser['Id'] ?? 0) ?: null;
+
+            try {
+                $verdict = songPurge($db, $songId, $userId, $redirectTo === '' ? null : $redirectTo);
+                if (!$verdict['ok']) {
+                    sendJson(['error' => $verdict['error']], $verdict['status']);
+                    break;
+                }
+                logActivity('api.admin.song.purge', 'song', $songId, [
+                    'title'       => (string)($verdict['title'] ?? ''),
+                    'songbook'    => (string)($verdict['songbook'] ?? ''),
+                    'redirect_to' => $verdict['redirectTo'] ?? '(tombstone)',
+                ]);
+                sendJson([
+                    'ok'         => true,
+                    'songId'     => $songId,
+                    'deleted'    => (int)($verdict['deleted'] ?? 0),
+                    'redirectTo' => $verdict['redirectTo'] ?? null,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.purge', 'song', $songId, $e);
+                error_log('[admin_song_purge] ' . $e->getMessage());
+                sendJson(['error' => 'Purge failed.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A13 — Musician-duplicate dismiss/undismiss (mirrors
+         * manage/musician-duplicates.php). Gate = manage_musicians — the
+         * page's ONE uniform gate for view + dismiss + merge (admin_musician_
+         * merge already exists; never re-added here). Both delegate to the
+         * ONE shared core, includes/musician_duplicates.php.
+         * ----------------------------------------------------------------- */
+
+        /* POST body: { ids: "1,2,3" or [1,2,3], reason? } */
+        case 'admin_musician_duplicate_dismiss': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_musicians entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_duplicates.php';
+
+            $idsRaw = $body['ids'] ?? [];
+            if (is_string($idsRaw)) { $idsRaw = explode(',', $idsRaw); }
+            $userId = (int)($authUser['Id'] ?? 0) ?: null;
+
+            try {
+                $result = musicianDuplicatesDismissCluster($db, (array)$idsRaw, $userId, (string)($body['reason'] ?? ''));
+                if (!$result['ok']) {
+                    sendJson(['error' => $result['error']], $result['status']);
+                    break;
+                }
+                logActivity('api.admin.musicians.dupe_dismiss', 'musician', (string)$result['ids'][0], [
+                    'ids' => $result['ids'], 'reason' => $result['reason'],
+                ]);
+                sendJson(['ok' => true, 'ids' => $result['ids'], 'reason' => $result['reason']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musicians.dupe_dismiss', 'musician', '', $e);
+                error_log('[admin_musician_duplicate_dismiss] ' . $e->getMessage());
+                sendJson(['error' => 'Dismiss failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { id_a, id_b } */
+        case 'admin_musician_duplicate_undismiss': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_musicians entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_duplicates.php';
+
+            try {
+                $result = musicianDuplicatesUndismissPair($db, (int)($body['id_a'] ?? 0), (int)($body['id_b'] ?? 0));
+                if (!$result['ok']) {
+                    sendJson(['error' => $result['error']], $result['status']);
+                    break;
+                }
+                logActivity('api.admin.musicians.dupe_undismiss', 'musician', (string)$result['idA'], [
+                    'id_a' => $result['idA'], 'id_b' => $result['idB'],
+                ]);
+                sendJson(['ok' => true, 'deleted' => $result['deleted']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musicians.dupe_undismiss', 'musician', '', $e);
+                error_log('[admin_musician_duplicate_undismiss] ' . $e->getMessage());
+                sendJson(['error' => 'Undismiss failed.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A14 — Analytics: top songs/books (mirrors manage/analytics.php's
+         * top_songs/top_books CSV-export panels; admin_analytics_searches
+         * already covers the search-query panels, and the public
+         * popular_songs action does NOT substitute — see the doc-block on
+         * analyticsTopSongs()/analyticsTopBooks() (includes/analytics_
+         * ingest.php) for exactly why: popular_songs filters through
+         * songVisibleSql()/songServableSql() + the caller's language
+         * filter, which an admin HISTORICAL report must not apply, and it
+         * has no book-level rollup at all. Gate = view_analytics — the
+         * page's own gate (not the bare admin-role check the older,
+         * pre-existing admin_analytics_searches/admin_data_health actions
+         * happen to use). GET ?range=7|30|90 (default 30). */
+        case 'admin_analytics_top': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('view_analytics', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The view_analytics entitlement is required.'], 403);
+                break;
+            }
+            $range = (int)($_GET['range'] ?? 30);
+            if (!in_array($range, [7, 30, 90], true)) { $range = 30; }
+            $since = (new DateTime("-{$range} days"))->format('Y-m-d H:i:s');
+
+            try {
+                $db = getDbMysqli();
+                $songRows = analyticsTopSongs($db, $since);
+                $bookRows = analyticsTopBooks($db, $since);
+
+                $songs = [];
+                foreach ($songRows as $r) {
+                    $songs[] = [
+                        'songId'      => (string)$r[0],
+                        'title'       => $r[1] !== null ? (string)$r[1] : null,
+                        'songbook'    => $r[2] !== null ? (string)$r[2] : null,
+                        'number'      => $r[3] !== null ? (int)$r[3] : null,
+                        'views'       => (int)$r[4],
+                    ];
+                }
+                $books = [];
+                foreach ($bookRows as $r) {
+                    $books[] = ['songbook' => (string)$r[0], 'views' => (int)$r[1]];
+                }
+
+                sendJson(['range' => $range, 'songs' => $songs, 'books' => $books]);
+            } catch (\Throwable $e) {
+                error_log('[admin_analytics_top] ' . $e->getMessage());
+                sendJson(['error' => 'Analytics unavailable.', 'songs' => [], 'books' => []], 503);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A15 — Data-health "disconnect legacy fallbacks" write (mirrors
+         * manage/data-health.php's disconnect_fallbacks POST). Gate =
+         * drop_legacy_tables — the page's OWN gate (the older, pre-existing
+         * read-only admin_data_health action happens to use a bare
+         * admin-role check instead; this NEW write action matches the
+         * page it mirrors exactly, per the task's instruction). Delegates
+         * to the ONE shared core, includes/data_health_admin.php, whose
+         * op allow-list (rule #20) today recognises only
+         * 'disconnect_fallbacks'.
+         * ----------------------------------------------------------------- */
+
+        /* POST body: { op: "disconnect_fallbacks" } */
+        case 'admin_data_health_fix': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('drop_legacy_tables', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The drop_legacy_tables entitlement is required.'], 403);
+                break;
+            }
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $op   = (string)($body['op'] ?? '');
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'data_health_admin.php';
+
+            try {
+                $result = dataHealthFixApply($op);
+                if (!$result['ok']) {
+                    sendJson(['error' => $result['error']], $result['status']);
+                    break;
+                }
+                $r = array_diff_key($result, ['ok' => 1]);
+                logActivity('api.admin.data_health.fix', 'system', $op, $r);
+                sendJson(['ok' => true, 'op' => $op] + $r);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.data_health.fix', 'system', $op, $e);
+                error_log('[admin_data_health_fix] ' . $e->getMessage());
+                sendJson(['error' => 'Fix failed.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A16 — Activity-log IP geolocation backfill (mirrors
+         * manage/activity-log.php's ?action=geo AJAX endpoint). Gate =
+         * view_activity_log — the page's own gate (this endpoint only
+         * READS/caches geo data for rows the caller can already see; it
+         * never widens what's visible). Delegates to the ONE shared core,
+         * includes/activity_log_geo.php, already reused by the page.
+         * ----------------------------------------------------------------- */
+
+        /* POST body: { ips: "1.2.3.4,5.6.7.8" or [ips...] } (<=25/call) */
+        case 'admin_ip_geolocate': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('view_activity_log', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The view_activity_log entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log_geo.php';
+            if (!activityLogObsColumnsExist($db)) {
+                sendJson(['error' => 'Activity-log observability columns are not migrated on this install yet.'], 503);
+                break;
+            }
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $ips  = $body['ips'] ?? [];
+            if (is_string($ips)) { $ips = explode(',', $ips); }
+
+            try {
+                $countries = activityLogGeoResolveIps($db, (array)$ips);
+                sendJson(['ok' => true, 'countries' => $countries]);
+            } catch (\Throwable $e) {
+                error_log('[admin_ip_geolocate] ' . $e->getMessage());
+                sendJson(['error' => 'Geolocation lookup failed.'], 500);
+            }
+            break;
+        }
+
         /* -----------------------------------------------------------------
          * Live Follow (#1268) — web/PWA real-time multi-device follow.
          * DB-relayed short-poll over tblLiveFollowSessions (no SSE — shared

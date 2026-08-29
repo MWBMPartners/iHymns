@@ -20,6 +20,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'environment.php'; // #1315 — ihymns_environment() for the per-env log default
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log_geo.php'; // #1969 API-coverage Batch 5 — shared with api.php's admin_ip_geolocate
 
 requireAuth();
 $currentUser = getCurrentUser();
@@ -48,19 +49,10 @@ $db = getDbMysqli();
 
 /* #1207 — do the observability columns (Environment / RequestPath / Referrer /
    Country) exist yet? Probed once; gates the env filter, the path search, the
-   SELECT tail, and the display so a pre-migration deploy still renders. */
-$hasObsCols = false;
-try {
-    $obsProbe = $db->prepare(
-        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME   = 'tblActivityLog'
-            AND COLUMN_NAME  = 'Environment' LIMIT 1"
-    );
-    $obsProbe->execute();
-    $hasObsCols = (bool)$obsProbe->get_result()->fetch_row();
-    $obsProbe->close();
-} catch (\Throwable $_e) { /* pre-migration deploy → stays false */ }
+   SELECT tail, and the display so a pre-migration deploy still renders.
+   #1969 API-coverage Batch 5 — the probe itself now lives in the shared core
+   (activityLogObsColumnsExist()), reused by api.php's admin_ip_geolocate. */
+$hasObsCols = activityLogObsColumnsExist($db);
 /* SELECT tail for the observability columns — empty on a pre-migration deploy
    so the query still compiles. Reused by the CSV export + the main SELECT. */
 $obsColsSql = $hasObsCols ? ', a.Environment, a.RequestPath, a.Referrer, a.Country' : '';
@@ -115,26 +107,11 @@ if ($hasObsCols && ($_GET['action'] ?? '') === 'geo') {
         echo json_encode(['ok' => false, 'error' => 'csrf']);
         exit;
     }
+    /* #1969 API-coverage Batch 5 — the resolve+snapshot loop now lives in
+       the ONE shared core (activityLogGeoResolveIps()), reused verbatim by
+       api.php's admin_ip_geolocate. */
     $ipsRaw = (string)($_POST['ips'] ?? '');
-    $ips = array_values(array_unique(array_filter(array_map('trim', explode(',', $ipsRaw)))));
-    $ips = array_slice($ips, 0, 25);   // cap external lookups per call (rate limits)
-    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ip_geolocation.php';
-    $countries = [];
-    foreach ($ips as $oneIp) {
-        $geo = ihymnsGeoLookup($oneIp, true);   // allow external providers here
-        if ($geo !== null && $geo['code'] !== '') {
-            $countries[$oneIp] = $geo['code'];
-            /* Snapshot onto rows from this IP that have no country yet, so the
-               next view needs no lookup at all (the owner's "save the country on
-               the row" point). Bound; best-effort. */
-            try {
-                $u = $db->prepare("UPDATE tblActivityLog SET Country = ? WHERE IpAddress = ? AND (Country IS NULL OR Country = '')");
-                $u->bind_param('ss', $countries[$oneIp], $oneIp);
-                $u->execute();
-                $u->close();
-            } catch (\Throwable $_e) { /* best-effort backfill */ }
-        }
-    }
+    $countries = activityLogGeoResolveIps($db, explode(',', $ipsRaw));
     echo json_encode(['ok' => true, 'countries' => $countries]);
     exit;
 }

@@ -51,6 +51,8 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';   /* #1343 */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_external_ids.php';   /* #1749 — merge must MOVE store rows, not let the FK cascade eat them (#1755) */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'duplicate_song_admin.php'; /* #1969 API-coverage Batch 5 — merge/rebuild/auto_link core, shared with api.php's admin_song_merge/_suggestions_rebuild/_auto_link */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_link_admin.php';      /* #1969 API-coverage Batch 5 — per-song unlink core, shared with api.php's admin_song_unlink (mirrors, but does not re-point, api2.php's song_link_remove — that file was out of scope this batch) */
 
 /* @disabled-visible: admin surface (#1765) — this ENTIRE page (detection,
    link/unlink, dismiss, rebuild, merge) is gated edit_songs / manage_duplicate_songs
@@ -78,26 +80,11 @@ $activePage = 'duplicate-songs';
 $db   = getDbMysqli();
 $csrf = csrfToken();
 
-/* Every table that references tblSongs.SongId (authoritative, from schema.sql).
-   The merge re-points each to the survivor. Table + column names are fixed
-   constants from THIS source (never user input) — safe to interpolate; the
-   SongId VALUES are always bound. (See #1064 for the FK-vs-soft-ref split.) */
-const MERGE_FK_TABLES_SINGLE = [
-    'tblSongbookEntries', 'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
-    'tblSongAdaptors', 'tblSongTranslators', 'tblSongArtists', 'tblSongComponents',
-    'tblLyrics', 'tblUserFavorites', 'tblSongKeys', 'tblSongHistory', 'tblSongTagMap',
-    'tblSongLinks', 'tblCatalogueSongs', 'tblSongExternalLinks', 'tblSongAlternativeTitles',
-    'tblSongLanguages', 'tblSongMedia', 'tblWorkSongs',
-];
-const MERGE_FK_TABLES_PAIR = [
-    'tblSongTranslations'   => ['SourceSongId', 'TranslatedSongId'],
-    'tblSongLinkSuggestions' => ['SongIdA', 'SongIdB'],
-];
-const MERGE_SOFT_REFS = [
-    'tblSongRequests'                 => ['ResolvedSongId'],
-    'tblSongRevisions'                => ['SongId'],
-    'tblSongLinkSuggestionsDismissed' => ['SongIdA', 'SongIdB'],
-];
+/* The FK-repoint table lists + the whole merge transaction moved to the
+   shared core (#1969 API-coverage Batch 5, rule #22) —
+   includes/duplicate_song_admin.php's DUPLICATE_SONG_MERGE_FK_TABLES_SINGLE
+   / _PAIR / _SOFT_REFS + duplicateSongMergeExecute(), reused verbatim by
+   api.php's admin_song_merge so a native app merges through the SAME code. */
 
 /* ----------------------------------------------------------------------
  * POST dispatcher — JSON in / JSON out.
@@ -124,221 +111,31 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         }
         $survivor  = trim((string)($_POST['survivor_id'] ?? ''));
         $duplicate = trim((string)($_POST['duplicate_id'] ?? ''));
-        if ($survivor === '' || $duplicate === '') {
-            http_response_code(400);
-            echo json_encode(['error' => 'survivor_id and duplicate_id are required.']);
-            exit;
-        }
-        if ($survivor === $duplicate) {
-            http_response_code(400);
-            echo json_encode(['error' => 'A song cannot be merged into itself.']);
-            exit;
-        }
+        $force     = (string)($_POST['force'] ?? '') === '1';
+        $mergeBy   = (int)($currentUser['id'] ?? 0) ?: null;
 
-        /* Both must exist AND be visible (#1694) — a soft-deleted song is
-           never OFFERED for merge (the listings below are filtered), so a
-           merge naming one is a stale request; refuse rather than destroy or
-           resurrect. Restore first, then merge. */
-        $chk = $db->prepare('SELECT SongId FROM tblSongs WHERE SongId IN (?, ?) AND ' . songVisibleSql($db, ''));
-        $chk->bind_param('ss', $survivor, $duplicate);
-        $chk->execute();
-        $found = [];
-        $r = $chk->get_result();
-        while ($row = $r->fetch_assoc()) { $found[(string)$row['SongId']] = true; }
-        $chk->close();
-        if (!isset($found[$survivor]) || !isset($found[$duplicate])) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Both songs must exist.']);
+        /* #1969 API-coverage Batch 5 — the entire validate + #1218 guard +
+           transaction now lives in the ONE shared core (rule #22),
+           reused verbatim by api.php's admin_song_merge. Every status code
+           and error string below is byte-identical to what this block
+           always returned (rule #35 — status is the contract). */
+        $verdict = duplicateSongMergeExecute($db, $survivor, $duplicate, $force, $mergeBy);
+        if (!$verdict['ok']) {
+            http_response_code($verdict['status']);
+            echo json_encode(['error' => $verdict['error']]);
             exit;
         }
 
-        /* #1218 guard — two songs in the SAME official songbook with the same
-           title are almost always DIFFERENT hymns (a published hymnal does not
-           list one song twice under two numbers). Refuse to merge such a pair
-           unless the curator explicitly forces it via the §2 type-to-confirm
-           path, so a casual click or a replayed request can't quietly destroy a
-           distinct record. */
-        $force = (string)($_POST['force'] ?? '') === '1';
-        if (!$force) {
-            $bstmt = $db->prepare(
-                'SELECT s.SongId, s.SongbookAbbr, COALESCE(sb.IsOfficial, 0) AS IsOfficial
-                   FROM tblSongs s
-                   LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                  WHERE s.SongId IN (?, ?)'
-            );
-            $bstmt->bind_param('ss', $survivor, $duplicate);
-            $bstmt->execute();
-            $books = [];
-            $br = $bstmt->get_result();
-            while ($row = $br->fetch_assoc()) { $books[(string)$row['SongId']] = $row; }
-            $bstmt->close();
-            $sa = $books[$survivor]  ?? null;
-            $sd = $books[$duplicate] ?? null;
-            if ($sa && $sd
-                && (string)$sa['SongbookAbbr'] === (string)$sd['SongbookAbbr']
-                && (int)$sa['IsOfficial'] === 1) {
-                http_response_code(409);
-                echo json_encode(['error' =>
-                    'Both songs are in the same official songbook (' . (string)$sa['SongbookAbbr']
-                    . ') — almost certainly different hymns that share a title. Merge is blocked here; '
-                    . 'use the type-to-confirm control if you are certain.']);
-                exit;
-            }
+        if (function_exists('logActivity')) {
+            try {
+                logActivity('song.merge', 'song', $verdict['survivorId'], [
+                    'merged_from' => $verdict['mergedFrom'],
+                    'tables'      => $verdict['tables'],
+                ]);
+            } catch (\Throwable $_e) { /* audit best-effort */ }
         }
-
-        $db->begin_transaction();
-        try {
-            /* Single-column FK tables. */
-            foreach (MERGE_FK_TABLES_SINGLE as $t) {
-                $u = $db->prepare("UPDATE IGNORE `{$t}` SET SongId = ? WHERE SongId = ?");
-                $u->bind_param('ss', $survivor, $duplicate);
-                $u->execute();
-                $u->close();
-                /* Any rows that couldn't move (UNIQUE collision with a survivor row)
-                   are leftover duplicates — drop them. */
-                $d = $db->prepare("DELETE FROM `{$t}` WHERE SongId = ?");
-                $d->bind_param('s', $duplicate);
-                $d->execute();
-                $d->close();
-            }
-
-            /* #1749 full unification — the store is the recording-ID
-             * authority; a merge must MOVE the duplicate's tblSongExternalIds
-             * rows to the survivor, not let fk_SongExternalIds_Song's
-             * ON DELETE CASCADE (schema.sql) silently eat them the moment
-             * the duplicate row is deleted below. Before this fix a merge
-             * quietly destroyed the duplicate's external-ID history — data
-             * loss that pre-dates this commit (issue #1755).
-             *
-             * ELI5: when two song records get merged into one, any Spotify /
-             * ISRC / MusicBrainz ids recorded against the one that's going
-             * away need to move to the one that survives, not vanish.
-             *
-             * The duplicate's own MARKER row (its `SourceRef =
-             * SONG_EXTERNAL_ID_ISRC_MIRROR_SOURCE_REF` column-projection
-             * artefact, if it has one) is DEMOTED to a plain second-recording
-             * row (`SourceRef` -> NULL, `Source` kept for provenance) as part
-             * of the SAME UPDATE, so the survivor can never end up with TWO
-             * marker rows for one song — an anomaly `songExternalIdIsrcProjectionSql()`'s
-             * `ORDER BY` only ever expects at most one of (§2.1 in the build
-             * spec). The survivor's OWN marker, if it has one, is untouched
-             * and stays the §2.1 primary; the demoted row simply becomes an
-             * ordinary rank-2-by-Id candidate.
-             *
-             * `UPDATE IGNORE` + DELETE-leftover is the SAME collision idiom
-             * the `MERGE_FK_TABLES_SINGLE` loop above uses for
-             * `uq_Song_Type_Value (SongId, IdType, IdValue)` — a row that
-             * can't move because the survivor already has the identical
-             * (IdType, IdValue) pair is a leftover duplicate fact, safe to
-             * drop.
-             *
-             * Deliberately NOT added to `MERGE_FK_TABLES_SINGLE`: that loop's
-             * plain `SET SongId = ?` has no way to ALSO carry the SourceRef
-             * demotion, and running it ungated on an un-migrated install
-             * would STRICT-throw on a missing table (rule #9) — so this stays
-             * its own gated block, existence-probed the same way every other
-             * `tblSongExternalIds` touch in this codebase is.
-             *
-             * The duplicate's OWN `tblSongs.Isrc` column needs nothing here:
-             * the whole row is hard-deleted a few statements below. */
-            if (songExternalIdsTableExists($db)) {
-                $isrcMirrorSourceRef = SONG_EXTERNAL_ID_ISRC_MIRROR_SOURCE_REF;
-                $extIdMove = $db->prepare(
-                    "UPDATE IGNORE tblSongExternalIds
-                        SET SongId = ?,
-                            SourceRef = IF(IdType = 'isrc' AND SourceRef <=> ?, NULL, SourceRef)
-                      WHERE SongId = ?"
-                );
-                $extIdMove->bind_param('sss', $survivor, $isrcMirrorSourceRef, $duplicate);
-                $extIdMove->execute();
-                $extIdMove->close();
-                /* Leftover rows that couldn't move (uq_Song_Type_Value
-                   collision with a row the survivor already has) — same
-                   drop-the-duplicate-fact posture as every other table above. */
-                $extIdLeftover = $db->prepare('DELETE FROM tblSongExternalIds WHERE SongId = ?');
-                $extIdLeftover->bind_param('s', $duplicate);
-                $extIdLeftover->execute();
-                $extIdLeftover->close();
-                /* The store has the last word (D-1): re-project the
-                   survivor's now-possibly-changed set of isrc rows into its
-                   tblSongs.Isrc column — this is what lets a survivor with NO
-                   prior ISRC of its own get PROMOTED to the duplicate's, and
-                   what re-confirms the survivor's own marker stays primary
-                   when it already had one. */
-                songExternalIdSyncIsrcDenorm($db, $survivor);
-            }
-
-            /* Two-column relationship tables. */
-            foreach (MERGE_FK_TABLES_PAIR as $t => $cols) {
-                foreach ($cols as $c) {
-                    $u = $db->prepare("UPDATE IGNORE `{$t}` SET `{$c}` = ? WHERE `{$c}` = ?");
-                    $u->bind_param('ss', $survivor, $duplicate);
-                    $u->execute();
-                    $u->close();
-                    $d = $db->prepare("DELETE FROM `{$t}` WHERE `{$c}` = ?");
-                    $d->bind_param('s', $duplicate);
-                    $d->execute();
-                    $d->close();
-                }
-            }
-            /* Soft references (no FK constraint → repoint explicitly or they
-               dangle after the delete). Same UPDATE IGNORE + DELETE-leftover. */
-            foreach (MERGE_SOFT_REFS as $t => $cols) {
-                foreach ($cols as $c) {
-                    $u = $db->prepare("UPDATE IGNORE `{$t}` SET `{$c}` = ? WHERE `{$c}` = ?");
-                    $u->bind_param('ss', $survivor, $duplicate);
-                    $u->execute();
-                    $u->close();
-                    $d = $db->prepare("DELETE FROM `{$t}` WHERE `{$c}` = ?");
-                    $d->bind_param('s', $duplicate);
-                    $d->execute();
-                    $d->close();
-                }
-            }
-            /* #1343 — keep the duplicate's permalink alive: forward any redirects
-               that already pointed AT the duplicate to the survivor (so they aren't
-               nulled by the FK cascade when the row goes), then add the duplicate ->
-               survivor redirect itself. Gated — no-ops if tblSongRedirects isn't
-               migrated. Done before the delete so the cascade can't strand a chain. */
-            $mergeBy = (int)($currentUser['id'] ?? 0) ?: null;
-            songRedirectRepoint($db, $duplicate, $survivor);
-            songRedirectWrite($db, $duplicate, $survivor, 'merge', $mergeBy);
-            /* #1343-B — also keep the duplicate's opaque PublicId permalink alive
-               (a shared /song/<PublicId> must survive the merge). Gated. */
-            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
-            if (songPublicId_columnReady($db)) {
-                $mp = $db->prepare('SELECT PublicId FROM tblSongs WHERE SongId = ? LIMIT 1');
-                $mp->bind_param('s', $duplicate);
-                $mp->execute();
-                $dupPubId = (string)($mp->get_result()->fetch_assoc()['PublicId'] ?? '');
-                $mp->close();
-                if ($dupPubId !== '') { songRedirectWrite($db, $dupPubId, $survivor, 'merge', $mergeBy); }
-            }
-
-            /* Finally remove the duplicate song. */
-            $del = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
-            $del->bind_param('s', $duplicate);
-            $del->execute();
-            $del->close();
-
-            $db->commit();
-
-            if (function_exists('logActivity')) {
-                try {
-                    logActivity('song.merge', 'song', $survivor, [
-                        'merged_from' => $duplicate,
-                        'tables'      => count(MERGE_FK_TABLES_SINGLE) + count(MERGE_FK_TABLES_PAIR) + count(MERGE_SOFT_REFS),
-                    ]);
-                } catch (\Throwable $_e) { /* audit best-effort */ }
-            }
-            echo json_encode(['success' => true, 'survivorId' => $survivor, 'mergedFrom' => $duplicate]);
-            exit;
-        } catch (\Throwable $e) {
-            try { $db->rollback(); } catch (\Throwable $_) {}
-            http_response_code(500);
-            echo json_encode(['error' => 'Merge failed (rolled back): ' . $e->getMessage()]);
-            exit;
-        }
+        echo json_encode(['success' => true, 'survivorId' => $verdict['survivorId'], 'mergedFrom' => $verdict['mergedFrom']]);
+        exit;
     }
 
     /* -------- link (curator) — bulk cross-book counterpart link (#1219) -------- */
@@ -485,50 +282,28 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             exit;
         }
         try {
-            /* Resolve the row + its GroupId before deleting so we can
-               clean up an orphaned singleton in the same pass — mirrors
-               v1's remove_song_link (api.php:692) exactly. */
-            $stmt = $db->prepare('SELECT Id, GroupId FROM tblSongLinks WHERE SongId = ?');
-            $stmt->bind_param('s', $songId);
-            $stmt->execute();
-            $row = $stmt->get_result()->fetch_assoc();
-            $stmt->close();
-            if (!$row) {
-                /* Already not linked — success, not an error, so a
-                   double-click (or a stale page) doesn't surface a
-                   spurious failure. Same choice v1 made. */
-                echo json_encode(['success' => true, 'deleted' => 0]);
+            /* #1969 API-coverage Batch 5 — the find-then-delete-then-
+               singleton-cleanup logic now lives in the ONE shared per-song
+               core (includes/song_link_admin.php, songLinkRemove()) — the
+               SAME function api.php's new admin_song_unlink action calls
+               (rule #22: one remove implementation for this batch's
+               scope). That core's own doc-block mirrors — but, per this
+               batch's explicit constraints, does not re-point —
+               manage/editor/api2.php's identical song_link_remove case. */
+            $result = songLinkRemove($db, null, $songId);
+            if (!$result['ok']) {
+                http_response_code($result['status']);
+                echo json_encode(['error' => $result['error']]);
                 exit;
             }
-
-            $groupId = (int)$row['GroupId'];
-            $rowId   = (int)$row['Id'];
-
-            $del = $db->prepare('DELETE FROM tblSongLinks WHERE Id = ?');
-            $del->bind_param('i', $rowId);
-            $del->execute();
-            $deleted = $del->affected_rows;
-            $del->close();
-
-            /* A group with fewer than two members left is meaningless —
-               drop the remainder too (same rule the editor enforced). */
-            $r = $db->prepare('SELECT COUNT(*) AS n FROM tblSongLinks WHERE GroupId = ?');
-            $r->bind_param('i', $groupId);
-            $r->execute();
-            $remaining = (int)$r->get_result()->fetch_assoc()['n'];
-            $r->close();
-            if ($remaining < 2) {
-                $cleanup = $db->prepare('DELETE FROM tblSongLinks WHERE GroupId = ?');
-                $cleanup->bind_param('i', $groupId);
-                $cleanup->execute();
-                $cleanup->close();
-            }
-
-            if (function_exists('logActivity')) {
-                try { logActivity('song.unlink', 'song', $songId, ['group' => $groupId]); }
+            /* `groupId` present only when a row was actually found — matches
+               this block's original log gate (no log on an already-gone
+               double-click). */
+            if (array_key_exists('groupId', $result) && function_exists('logActivity')) {
+                try { logActivity('song.unlink', 'song', $songId, ['group' => $result['groupId']]); }
                 catch (\Throwable $_e) {}
             }
-            echo json_encode(['success' => true, 'deleted' => $deleted]);
+            echo json_encode(['success' => true, 'deleted' => $result['deleted']]);
             exit;
         } catch (\Throwable $e) {
             http_response_code(500);
@@ -584,18 +359,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
     /* -------- rebuild (curator) — re-run the fuzzy suggestion builder (#1219) -------- */
     if ($action === 'rebuild') {
-        ob_start();
-        try {
-            require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
-                . DIRECTORY_SEPARATOR . 'tools'
-                . DIRECTORY_SEPARATOR . 'build-song-link-suggestions.php';
-            $out = (string)ob_get_clean();
-            echo json_encode(['success' => true, 'message' => trim(strip_tags(str_replace('<br>', ' · ', $out)))]);
-        } catch (\Throwable $e) {
-            if (ob_get_level() > 0) { ob_end_clean(); }
-            http_response_code(500);
-            echo json_encode(['error' => 'Rebuild failed: ' . $e->getMessage()]);
+        /* #1969 API-coverage Batch 5 — the ob_start()/require/ob_get_clean()
+           dance now lives in the shared core (duplicateSongRebuildSuggestions()),
+           reused verbatim by api.php's admin_song_suggestions_rebuild. */
+        $verdict = duplicateSongRebuildSuggestions();
+        if (!$verdict['ok']) {
+            http_response_code($verdict['status']);
+            echo json_encode(['error' => $verdict['error']]);
+            exit;
         }
+        echo json_encode(['success' => true, 'message' => $verdict['message']]);
         exit;
     }
 
@@ -612,22 +385,22 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             echo json_encode(['error' => 'Auto-link requires the manage_duplicate_songs entitlement.']);
             exit;
         }
-        try {
-            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
-                . DIRECTORY_SEPARATOR . 'tools'
-                . DIRECTORY_SEPARATOR . 'auto-link-hard-id-counterparts.php';
-            $createdBy = (int)($currentUser['id'] ?? 0) ?: null;
-            $r = autoLinkHardIdCounterparts($db, $createdBy);
-            if (function_exists('logActivity')) {
-                try { logActivity('song.link.auto', 'song', '', $r); } catch (\Throwable $_e) {}
-            }
-            echo json_encode(['success' => true] + $r);
-            exit;
-        } catch (\Throwable $e) {
-            http_response_code(500);
-            echo json_encode(['error' => 'Auto-link failed: ' . $e->getMessage()]);
+        /* #1969 API-coverage Batch 5 — thin try/catch wrapper now lives in
+           the shared core (duplicateSongAutoLink()), reused verbatim by
+           api.php's admin_song_auto_link. */
+        $createdBy = (int)($currentUser['id'] ?? 0) ?: null;
+        $verdict   = duplicateSongAutoLink($db, $createdBy);
+        if (!$verdict['ok']) {
+            http_response_code($verdict['status']);
+            echo json_encode(['error' => $verdict['error']]);
             exit;
         }
+        $r = array_diff_key($verdict, ['ok' => 1]);
+        if (function_exists('logActivity')) {
+            try { logActivity('song.link.auto', 'song', '', $r); } catch (\Throwable $_e) {}
+        }
+        echo json_encode(['success' => true] + $r);
+        exit;
     }
 
     http_response_code(400);
