@@ -10,6 +10,16 @@ with none of the behind-the-scenes technical detail.
 > `## <version> — <date>` heading style and `- ` bullets so the app can display
 > it. See `.claude/whats-new-style.md` for the full house style.
 
+## 1.3.0 — 29 August 2026
+
+- **A guided setup helper for connected services** — Admins can now turn on
+  three optional extras — QR codes, bot protection on sign-up/sign-in forms,
+  and the connected-apps switchboard — with a short, step-by-step guide
+  instead of a bare settings form: what you'll need, where to paste it, and
+  a built-in "test the connection" check before you're done, so you know
+  straight away whether it's actually working. The full settings screen is
+  still there if you'd rather set it up yourself.
+
 ## 1.1.0 — 28 August 2026
 
 - **A guided helper for starting a new song** — Adding a new song to the

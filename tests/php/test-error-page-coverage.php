@@ -523,9 +523,14 @@ $exemptions = [
                   . 'classic-form save_type_patterns/create_type cases — those set the status code and continue '
                   . "rendering the normal HTML page with \$error inline (not a JSON body), the SAME non-JSON shape "
                   . "that page's own pre-existing 409 duplicate-slug refusal already has in the 409 exemption "
-                  . 'above; grouped here rather than invented as a new exemption entry.',
+                  . 'above; grouped here rather than invented as a new exemption entry. #2003 (the "Connect a '
+                  . 'service" wizard) added TWO more JSON-only 422 sites on configuration.php, same shape as '
+                  . "the rest of this exemption: the integration_test branch's unknown-integration guard, and "
+                  . 'the additive respond=json envelope passing through the classic save handler\'s OWN '
+                  . '(unchanged) validation-error path as a status code instead of the classic $saveError HTML '
+                  . 'render — no new render surface, no new validation rule.',
         'paths' => [
-            'api.php', 'includes/song_soft_delete.php', 'manage/editor/api2.php',
+            'api.php', 'includes/song_soft_delete.php', 'manage/configuration.php', 'manage/editor/api2.php',
             'manage/external-link-types.php', 'manage/organisations.php',
         ],
     ],

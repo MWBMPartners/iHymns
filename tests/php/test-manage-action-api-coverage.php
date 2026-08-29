@@ -593,6 +593,12 @@ $MAPPING = [
        native curator app would need — it is the server's own configuration. */
     'configuration.php' => [
         'captcha_probe'                    => 'web_only:configuration-secrets',
+        /* #2003 — the "Connect a service" wizard's live-connectivity
+           diagnostic for the server's OWN saved integration credentials —
+           same class as captcha_probe/test_email immediately beside it
+           (web-only reasoning: nothing a native app can use, it exists
+           only to configure/verify THIS server's own configuration). */
+        'integration_test'                 => 'web_only:configuration-secrets',
         'save_apple'                       => 'web_only:configuration-secrets',
         'save_captcha'                     => 'web_only:configuration-secrets',
         'save_cuercode'                    => 'web_only:configuration-secrets',

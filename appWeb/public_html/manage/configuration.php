@@ -235,6 +235,11 @@ $saveWarning = '';     /* #1304 — non-blocking SSRF heads-up (private/reserved
 $webhookNewDrainKey = null;   /* #1909 — one-shot: a freshly regenerated drain key, shown ONCE */
 $langRefreshNewKey  = null;   /* BCP 47 registry plan §3.4 — one-shot: a freshly generated refresh key, shown ONCE */
 $testResult  = null;   /* ['ok' => bool, 'message' => string]|null */
+/* #2003 — set alongside $saveError inside the CSRF-fail branch below so the
+   additive respond=json envelope (§6.3) can tell "CSRF failed" (403) apart
+   from "the handler ran and rejected the input" (422) without regex-matching
+   $saveError's prose (rule #35 — branch on a status/flag, never a sentence). */
+$csrfFailed  = false;
 
 /* #1304 — defence-in-depth: does an SMTP host resolve to a private/reserved
    network address? Used to WARN (never block) on save — an admin pointing the
@@ -269,8 +274,67 @@ $smtpHostIsPrivate = function (string $host): bool {
 };
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
-        $saveError = 'CSRF token invalid — refresh the page and try again.';
+    /* #2003 — "Connect a service" wizard: live-test branch. An early,
+       self-contained JSON-in/JSON-out branch (the external-link-types.php
+       `wizard_create_type` shape, #1992) that runs BEFORE the classic
+       dispatch below and gates on validateCsrfRequest() (rule #29) rather
+       than the baked-token validateCsrf() the classic dispatch still uses —
+       the wizard modal can sit open for a while before an admin clicks
+       "Test connection", and a long-open page must not sporadically 403 on
+       a rotated/GC'd session token. validateCsrfRequest() requires the
+       X-Requested-With header (a browser cannot set it cross-origin without
+       a CORS preflight this server never grants) OR a still-valid session
+       token — a classic form POST from this page never sends that header,
+       so its own validateCsrf()-gated path below is completely unaffected
+       by this branch existing.
+       The response carries STRUCTURAL status keys + numbers ONLY — never a
+       secret, never provider prose the client would regex-match (rule #35).
+       Mapped 'web_only:configuration-secrets' in
+       tests/php/test-manage-action-api-coverage.php — a live-connectivity
+       diagnostic for the server's OWN saved credentials has no native-app
+       use, the same reasoning already covers captcha_probe/test_email. */
+    if ((string)($_POST['action'] ?? '') === 'integration_test') {
+        header('Content-Type: application/json; charset=UTF-8');
+        if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+            http_response_code(403);
+            echo json_encode(['error' => 'CSRF check failed — please retry.']);
+            exit;
+        }
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'integration_registry.php';
+        $integrationKey = (string)($_POST['integration'] ?? '');
+        if (!in_array($integrationKey, array_keys(integrationRegistry()), true)) {
+            http_response_code(422);
+            echo json_encode(['error' => 'Unknown integration.']);
+            exit;
+        }
+        try {
+            $result = integrationTestDispatch($integrationKey, $db);
+            /* configState read-back (rule #35/#40): re-resolve via the SAME
+               resolvers the cards use, so the wizard's confirm step can
+               never disagree with actual runtime behaviour. */
+            $result['configState'] = integrationConfigState($integrationKey);
+            echo json_encode($result);
+        } catch (\Throwable $e) {
+            error_log('[manage configuration integration_test] ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Test failed unexpectedly.']);
+        }
+        exit;
+    }
+
+    /* #2003 rule #29 — widened from the bare validateCsrf() to
+       validateCsrfRequest(): a STRICT superset (still accepts a valid
+       session token — a classic form submit from this page carries no
+       X-Requested-With header, so its behaviour is byte-identical) that
+       also accepts a same-origin AJAX request (X-Requested-With present +
+       any Origin/Referer host matching this one). The wizard's SAVE step
+       (§6.3's respond=json envelope) is the reason this needed widening:
+       without it, a long-open wizard modal would inherit the exact
+       sporadic-403-on-a-stale-baked-token failure mode rule #29 exists to
+       fix. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+        $csrfFailed = true;
+        $saveError  = 'CSRF token invalid — refresh the page and try again.';
     } else {
         $action = (string)($_POST['action'] ?? '');
         if ($action === 'save_email') {
@@ -1165,6 +1229,39 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     }
 }
 
+/* #2003 — additive AJAX envelope for the "Connect a service" wizard's SAVE
+   step. A classic full-page form submit NEVER sends respond=json, so it
+   renders the page exactly as before this existed — this block is placed
+   AFTER every existing action case runs (never inside one), so it can only
+   ever observe the SAME $saveSuccess/$saveError/$saveWarning/$csrfFailed
+   the page was already going to render, never change what happened above.
+   The wizard posts the EXISTING save_intappsapi/save_cuercode/save_captcha
+   actions (§D3 of the plan) plus this one extra field, so the handler that
+   actually runs is byte-for-byte the one the manual form runs — no forked
+   write path (rule #22).
+   `ok` is STRUCTURAL, never a prose match (rule #35): the client branches
+   on `result.ok` and the HTTP status (403 = CSRF, 422 = the handler's own
+   validation error), never on the wording of `error`/`success`/`warning`.
+   `warning` matters beyond a courtesy: it carries the intapps "channel
+   listed but credentials incomplete" fail-open notice and captcha's
+   both-doors lockout warning into the wizard verbatim — one source of
+   prose, never a second copy of either message. */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (string)($_POST['respond'] ?? '') === 'json') {
+    header('Content-Type: application/json; charset=UTF-8');
+    if ($csrfFailed) {
+        http_response_code(403);
+    } elseif ($saveError !== '') {
+        http_response_code(422);
+    }
+    echo json_encode([
+        'ok'      => !$csrfFailed && $saveError === '',
+        'success' => $saveSuccess !== '' ? $saveSuccess : null,
+        'error'   => $saveError   !== '' ? $saveError   : null,
+        'warning' => $saveWarning !== '' ? $saveWarning : null,
+    ]);
+    exit;
+}
+
 /* ----------------------------------------------------------------------
  * Read current settings (after any save)
  * ---------------------------------------------------------------------- */
@@ -1311,15 +1408,15 @@ $langRefreshSchemaReady = languageRegistrySchemaReady($db);
 
 /* Per-form native-impact captions (the D3 warning made permanent UI). Keyed by
    captchaFormKeys() value; a key without an entry falls back to a generic
-   caption, so the card can never silently drop a newly-added form. */
-$captchaFormMeta = [
-    'registration'   => ['label' => 'Registration',        'caption' => 'Breaks native app sign-up until the apps add widget support.'],
-    'login'          => ['label' => 'Login',               'caption' => 'Breaks native sign-in. Login already carries the strongest rate limits — enable last, if at all.'],
-    'password_reset' => ['label' => 'Password reset',      'caption' => 'Breaks native password reset until the apps add widget support.'],
-    'email_login'    => ['label' => 'Email login (code)',  'caption' => 'Breaks native magic-link login until the apps add widget support.'],
-    'song_request'   => ['label' => 'Song requests',       'caption' => 'Guards the web /request form only — no native impact. The native-app request endpoint and any direct API submission carry no widget, so they stay bounded by the per-IP daily cap instead. Ends the no-JS form fallback while enabled.'],
-    'manage_login'   => ['label' => 'Admin login (/manage)','caption' => 'Admin login page — no native impact.'],
-];
+   caption, so the card can never silently drop a newly-added form.
+   #2003 (owner sub-decision O3, plan §5.1) — this map now lives in
+   includes/integration_registry.php::integrationCaptchaFormMeta() so the
+   "Connect a service" wizard's CAPTCHA checkbox step can show the SAME
+   labels/captions without a second, driftable copy (rule #35). This is an
+   OUTPUT-IDENTICAL extract-first (rule #22): the array below is unchanged,
+   word for word — only where it is DEFINED moved. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'integration_registry.php';
+$captchaFormMeta = integrationCaptchaFormMeta();
 
 /* #1770 §4.7 — the APP-DEFAULT layer of the leader-idle precedence chain;
    read via the SAME resolver-adjacent constants service_mode.php declares
@@ -1577,8 +1674,21 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-broadcast-pin me-2"></i>IntAppsAPI Gateway
             </h2>
-            <span class="badge <?= $intappsResolvedEnabled ? 'bg-success' : 'bg-secondary' ?>">
-                <?= $intappsResolvedEnabled ? 'Active' : 'Dormant' ?>
+            <span class="d-flex align-items-center gap-2">
+                <?php /* #2003 — "Connect a service" wizard launcher. Additive: opens the
+                         ONE shared modal (§6.5) with data-integration naming this card;
+                         the badge beside it is untouched. type="button" is load-bearing
+                         (the #1999 lesson) — this page has no surrounding <form> today,
+                         but a bare <button> with no explicit type still defaults to
+                         type="submit" and would otherwise submit whichever form the
+                         browser deems nearest. */ ?>
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+                        data-bs-target="#integrationConnectModal" data-integration="intapps">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Set up with a guide
+                </button>
+                <span class="badge <?= $intappsResolvedEnabled ? 'bg-success' : 'bg-secondary' ?>">
+                    <?= $intappsResolvedEnabled ? 'Active' : 'Dormant' ?>
+                </span>
             </span>
         </div>
         <div class="card-body">
@@ -1665,8 +1775,16 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-qr-code me-2"></i>CueRCode QR Generator
             </h2>
-            <span class="badge <?= $cuercodeConfigured ? 'bg-success' : 'bg-secondary' ?>">
-                <?= $cuercodeConfigured ? 'Active' : 'Dormant' ?>
+            <span class="d-flex align-items-center gap-2">
+                <?php /* #2003 — "Connect a service" wizard launcher (see the IntAppsAPI
+                         card above for the full rationale comment). */ ?>
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+                        data-bs-target="#integrationConnectModal" data-integration="cuercode">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Set up with a guide
+                </button>
+                <span class="badge <?= $cuercodeConfigured ? 'bg-success' : 'bg-secondary' ?>">
+                    <?= $cuercodeConfigured ? 'Active' : 'Dormant' ?>
+                </span>
             </span>
         </div>
         <div class="card-body">
@@ -1723,8 +1841,16 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-shield-check me-2"></i>CAPTCHA (bot protection)
             </h2>
-            <span class="badge <?= $captchaConfiguredNow ? 'bg-success' : 'bg-secondary' ?>">
-                <?= $captchaConfiguredNow ? 'Active' : 'Dormant' ?>
+            <span class="d-flex align-items-center gap-2">
+                <?php /* #2003 — "Connect a service" wizard launcher (see the IntAppsAPI
+                         card above for the full rationale comment). */ ?>
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+                        data-bs-target="#integrationConnectModal" data-integration="captcha">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Set up with a guide
+                </button>
+                <span class="badge <?= $captchaConfiguredNow ? 'bg-success' : 'bg-secondary' ?>">
+                    <?= $captchaConfiguredNow ? 'Active' : 'Dormant' ?>
+                </span>
             </span>
         </div>
         <div class="card-body">
@@ -3086,6 +3212,72 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 </main>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
+
+<?php
+/* #2003 — "Connect a service" guided wizard: the ONE shared modal shell +
+   its secret-free JSON projection + the bootstrap that wires it to every
+   "Set up with a guide" launcher button rendered on the three cards above.
+   integration_registry.php was already require_once'd earlier on this page
+   (the $captchaFormMeta extract, and possibly the integration_test POST
+   branch) — require_once here is a no-op in that case and the ONLY load on
+   a plain GET request. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'integration_registry.php';
+$integrationProjection = integrationClientProjection(
+    static fn(string $k, ?string $d = null): ?string => getAppSetting($k, $d)
+);
+$_icwPath = dirname(__DIR__) . '/js/modules/integration-connect-wizard.js';
+$icwVer   = is_file($_icwPath) ? (string)filemtime($_icwPath) : '1';
+?>
+<script type="application/json" data-integration-registry><?= json_encode(
+    $integrationProjection,
+    JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+) ?></script>
+
+<div class="modal fade" id="integrationConnectModal" tabindex="-1" aria-hidden="true"
+     aria-labelledby="integrationConnectModalLabel" data-bs-backdrop="static">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5 mb-0" id="integrationConnectModalLabel">Connect a service</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <!-- data-icw-steps wraps the progress trail + the driver-built
+             [data-wiz-step] panes as ONE unit, so showDonePane() (in
+             integration-connect-wizard.js) can hide both together — the
+             manage/venues.php svcwiz-steps-wrap shape. -->
+        <div data-icw-steps>
+          <div data-wiz-progress class="mb-3"></div>
+          <div data-icw-panes></div>
+        </div>
+        <div data-icw-done hidden>
+          <h3 tabindex="-1" data-icw-done-heading class="h6 mb-3">Connected</h3>
+          <div data-icw-done-body class="small"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-wiz-back hidden>Back</button>
+        <button type="button" class="btn btn-primary" data-wiz-next>Next</button>
+        <button type="button" class="btn btn-primary" data-icw-done-close data-bs-dismiss="modal" hidden>Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script type="module">
+/* #2003 — inline module bootstrap on /manage/* (the established, CSP-safe
+   house pattern — manage/external-link-types.php's own comment on this
+   exact point: this page sends no script-src, so there is no CSP obstacle
+   to a plain inline module here). The bulky logic lives in the shared
+   js/modules/integration-connect-wizard.js file, keeping this bootstrap a
+   few lines so a future hub page (plan §D1 option B, not built in Phase 1)
+   could reuse the same module without touching this page. */
+import { initIntegrationConnectWizard } from '/js/modules/integration-connect-wizard.js?v=<?= htmlspecialchars($icwVer, ENT_QUOTES) ?>';
+initIntegrationConnectWizard({
+    modalEl:   document.getElementById('integrationConnectModal'),
+    registry:  JSON.parse(document.querySelector('[data-integration-registry]').textContent),
+    csrfToken: <?= json_encode($csrf, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>,
+});
+</script>
 
 <script>
 (function () {

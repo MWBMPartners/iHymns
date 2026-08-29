@@ -1959,6 +1959,14 @@ foreach ($sections as $s) {
                         Appstore (Fire OS). It's just an address book entry: it doesn't publish anything, it only
                         tells the site what to link to once an app <em>is</em> published.
                     </p>
+                    <p class="small text-secondary">
+                        <?php /* #2003 — one-sentence pointer to the new guided setup helper; the full
+                                 walkthrough lives in the wizard itself, not here. */ ?>
+                        Three cards further down this same <a href="/manage/configuration">Settings</a> page
+                        &mdash; IntAppsAPI Gateway, CueRCode QR codes, and CAPTCHA &mdash; also offer a
+                        &ldquo;Set up with a guide&rdquo; button that walks you through what you need, saves your
+                        details, and checks the connection before you're done.
+                    </p>
                     <h3 class="h6">What to paste in each field</h3>
                     <ul>
                         <li><strong>Apple App Store</strong> &mdash; the numeric App Store ID, or the full <code>apps.apple.com</code> URL. One listing covers the universal app across iOS/iPadOS/macOS/tvOS/watchOS/visionOS.</li>
