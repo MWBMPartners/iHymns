@@ -324,6 +324,14 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    call these SAME functions manage/tunes.php's POST handlers call — one
    validation/persist/merge/delete core, two thin callers (rule #22/#35). */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_admin.php';
+/* #2006 (epic #2002, plan §11 OD-2) — the content-restriction admin CRUD
+   shared core. admin_restriction_create/_delete below call the SAME
+   restrictionAdminValidate()/…Create()/…Delete() functions
+   manage/restrictions.php's POST handlers call — rule #22/#35. Before this
+   change the API twin ran its OWN inline INSERT/DELETE with NO vocabulary
+   validation at all; re-pointing it here closes that gap rather than
+   leaving it as a permanent, pre-existing fork. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'restriction_admin.php';
 /* #93/#1765, API-coverage batch 4a (A1) — the publisher admin CRUD shared
    cores. The admin_publisher_* actions below call these SAME functions
    manage/publishers.php's POST handlers call — rule #22/#35, exactly the
@@ -9315,30 +9323,30 @@ if ($action !== null) {
                 break;
             }
 
+            /* #2006 (plan §11 OD-2) — delegates to the SAME
+               restrictionAdminValidate()/…Create() core
+               manage/restrictions.php's `create` case calls, closing a
+               pre-existing gap: this action used to run its own inline
+               INSERT with NO vocabulary validation at all, so a native
+               client could store a restriction type/effect/priority the
+               evaluator (content_access.php) would silently never honour.
+               json_decode(..., true) can return null/non-array for a
+               malformed body — coerce to [] so restrictionAdminValidate()
+               (which only reads known string/int keys) sees an empty,
+               cleanly-rejected input rather than a warning. */
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
+            if (!is_array($body)) {
+                $body = [];
+            }
+            $result = restrictionAdminValidate($body);
+            if ($result['error'] !== null) {
+                sendJson(['error' => $result['error']], 422);
+                break;
+            }
 
             $db = getDbMysqli();
-            $stmt = $db->prepare(
-                'INSERT INTO tblContentRestrictions
-                 (EntityType, EntityId, RestrictionType, TargetType, TargetId, Effect, Priority, Reason)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-            );
-            /* Six string columns + Priority(int) + Reason(string). */
-            $entityType  = trim($body['entity_type']      ?? '');
-            $entityIdStr = trim($body['entity_id']        ?? '');
-            $restrType   = trim($body['restriction_type'] ?? '');
-            $targetType  = trim($body['target_type']      ?? '');
-            $targetIdStr = trim($body['target_id']        ?? '');
-            $effect      = trim($body['effect']           ?? 'deny');
-            $priority    = (int)($body['priority']        ?? 0);
-            $reason      = trim($body['reason']           ?? '');
-            $stmt->bind_param('ssssssis',
-                $entityType, $entityIdStr, $restrType, $targetType,
-                $targetIdStr, $effect, $priority, $reason);
-            $stmt->execute();
-            $newId = (int)$db->insert_id;
-            $stmt->close();
+            $newId = restrictionAdminCreate($db, $result['fields']);
 
             sendJson(['ok' => true, 'id' => $newId], 201);
             break;
@@ -9368,11 +9376,9 @@ if ($action !== null) {
                 break;
             }
 
+            /* #2006 — delegates to the shared core. */
             $db = getDbMysqli();
-            $stmt = $db->prepare('DELETE FROM tblContentRestrictions WHERE Id = ?');
-            $stmt->bind_param('i', $delId);
-            $stmt->execute();
-            $stmt->close();
+            restrictionAdminDelete($db, $delId);
 
             sendJson(['ok' => true]);
             break;

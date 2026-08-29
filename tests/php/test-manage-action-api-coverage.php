@@ -669,6 +669,21 @@ $MAPPING = [
         'update'      => 'web_only:feature-gating-switches',
     ],
 
+    /* gating.php — the guided content-gating activation wizard (#2006, epic
+       #2002). All three writes are GATING SWITCHES: flipping enforcement
+       (or seeding the rules it enforces) from a network API defeats the
+       dormancy discipline the whole #1769 program is built on (rule #28A)
+       — the same reasoning as feature-gating-switches and
+       configuration.php's save_feature_gating row above. The wizard's
+       preview/test reads (wizard_status, wizard_song_test) are
+       GET-dispatched and therefore correctly outside this guard's scope
+       (the gating-noop-verify.php precedent). */
+    'gating.php' => [
+        'wizard_seed_restrictions' => 'web_only:gating-switches',
+        'wizard_flip_gating'       => 'web_only:gating-switches',
+        'wizard_rollback_gating'   => 'web_only:gating-switches',
+    ],
+
     'groups.php' => [
         'add_member'    => 'api:admin_group_member_add',
         'create'        => 'api:admin_group_create',

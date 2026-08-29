@@ -189,41 +189,24 @@ $loadSettings = function (mysqli $db, array $keys): array {
     return $out;
 };
 
-$saveSetting = function (mysqli $db, string $key, string $value): void {
-    /* Encrypt-at-rest for secret-flagged settings (#1466). Gated on the cutover
-       flag `secret_encryption_active` (set by the encrypt-in-place migration once
-       every docroot has the engine + key) so this is a verified NO-OP until then:
-       pre-cutover, secrets store as plaintext exactly as before; the migration
-       encrypts them in bulk and flips the flag; thereafter every new/updated
-       secret is encrypted here too. secret_crypto.php is required HARD at the top
-       of this page, so isSecretSettingKey()/secretEncrypt()/secretCryptoReady()
-       are GUARANTEED defined here — the gate deliberately carries NO
-       function_exists() guard: guarding on it would fail OPEN (silently store
-       plaintext) if the engine were ever missing. Instead we fail CLOSED — a
-       non-empty secret can NEVER be silently stored as plaintext once encryption
-       is active: if the master key is missing on this docroot we throw rather
-       than write a cleartext secret. */
-    /* #1671 F6 — the rule itself now lives in the PURE
-       appSettingValueForStorage() (includes/secret_crypto.php) because a second
-       page (manage/notifications.php, storing the VAPID private key) needed the
-       identical decision, and a second copy of "encrypt secrets at rest" is the
-       kind of duplication whose divergence is invisible until a secret is
-       sitting in the database in the clear. Behaviour here is UNCHANGED
-       byte-for-byte — including the deliberate absence of a function_exists()
-       guard, which is what makes it fail CLOSED. */
-    $value = appSettingValueForStorage(
-        $key,
-        $value,
-        getAppSetting('secret_encryption_active', '0') === '1'
-    );
-    $stmt = $db->prepare(
-        'INSERT INTO tblAppSettings (SettingKey, SettingValue)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue)'
-    );
-    $stmt->bind_param('ss', $key, $value);
-    $stmt->execute();
-    $stmt->close();
+/* #2006 — one-line delegate to the ALREADY-SHARED setAppSetting() core
+   (includes/maintenance.php, added by #1671 F6 for manage/notifications.php's
+   VAPID-key write). This closure used to carry its OWN inline copy of the
+   encrypt-at-rest decision + the INSERT … ON DUPLICATE KEY UPDATE — a
+   second copy of the exact same logic setAppSetting() already implements
+   (its own doc-block even anticipated this: "configuration.php now
+   delegates here too, so there is ONE rule" — a claim that was NOT yet
+   true until this change, rule #26's stale-comment lesson). Discovered
+   while wiring the content-gating activation wizard's flip
+   (gatingWizardSetFlag(), includes/gating_wizard.php) onto a shared write
+   core: rather than adding a THIRD near-identical function, this closure
+   now calls the one that already existed (rule #22 — "extract first, use
+   second" applies just as much to "another function already does this" as
+   to "this page already does this"). Every save_* handler below calls
+   $saveSetting exactly as before, so this page's behaviour is
+   byte-identical; setAppSetting() itself is unchanged. */
+$saveSetting = static function (mysqli $db, string $key, string $value): void {
+    setAppSetting($db, $key, $value);
 };
 
 /* ----------------------------------------------------------------------

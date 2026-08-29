@@ -12,6 +12,14 @@ with none of the behind-the-scenes technical detail.
 
 ## 1.3.0 — 29 August 2026
 
+- **A guided helper for switching content locking on** — Turning on the
+  setting that limits copyrighted songs to the right membership level is
+  now a short, step-by-step guide instead of a bare switch: it explains
+  what will change, shows you the numbers first (how many songs, how much
+  audio and sheet music), checks that a licence is actually in place, lets
+  you try it out on one real song before committing, and gives you a
+  one-click way to undo it afterwards. The plain switch is still there if
+  you'd rather flip it yourself.
 - **A guided setup helper for connected services** — Admins can now turn on
   three optional extras — QR codes, bot protection on sign-up/sign-in forms,
   and the connected-apps switchboard — with a short, step-by-step guide

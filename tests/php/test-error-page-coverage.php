@@ -486,13 +486,16 @@ $exemptions = [
     409 => [
         'reason' => 'Editor save conflicts, un-migrated-table refusals and duplicate-name refusals — every '
                   . 'site returns JSON (sendJson / ed2_respond, or a return-array a caller relays to sendJson), '
-                  . 'never a rendered page.',
+                  . 'never a rendered page. #2006 (epic #2002) added the content-gating activation wizard\'s '
+                  . 'wizard_flip_gating action: a JSON-only 409 body listing the precondition blockers/warnings '
+                  . '(gatingWizardEvaluatePreconditions()) when the flip is refused — same JSON-only, no-render '
+                  . 'shape as every other site in this exemption.',
         'paths' => [
             'api.php', 'includes/api_keys.php', 'includes/duplicate_song_admin.php',
             'includes/musician_duplicates.php', 'includes/song_link_admin.php',
             'includes/song_soft_delete.php', 'manage/api-keys.php',
             'manage/duplicate-songs.php', 'manage/editor/api.php', 'manage/editor/api2.php',
-            'manage/external-link-types.php', 'manage/languages.php', 'manage/musician-duplicates.php',
+            'manage/external-link-types.php', 'manage/gating.php', 'manage/languages.php', 'manage/musician-duplicates.php',
             'manage/organisations.php', 'manage/setup-database.php', 'manage/songbooks.php', 'manage/tags.php',
         ],
     ],
@@ -528,10 +531,14 @@ $exemptions = [
                   . "the rest of this exemption: the integration_test branch's unknown-integration guard, and "
                   . 'the additive respond=json envelope passing through the classic save handler\'s OWN '
                   . '(unchanged) validation-error path as a status code instead of the classic $saveError HTML '
-                  . 'render — no new render surface, no new validation rule.',
+                  . 'render — no new render surface, no new validation rule. #2006 (epic #2002) added FOUR more '
+                  . "JSON-only 422 sites on the content-gating activation wizard (manage/gating.php): bad input on "
+                  . "wizard_status's optional seed-preview / wizard_song_test's SongId-shape check, and bad-input "
+                  . 'refusals on wizard_seed_restrictions (invalid scope / no songbooks picked) — same JSON-only, '
+                  . 'no-render shape as the rest of this exemption.',
         'paths' => [
             'api.php', 'includes/song_soft_delete.php', 'manage/configuration.php', 'manage/editor/api2.php',
-            'manage/external-link-types.php', 'manage/organisations.php',
+            'manage/external-link-types.php', 'manage/gating.php', 'manage/organisations.php',
         ],
     ],
     502 => [

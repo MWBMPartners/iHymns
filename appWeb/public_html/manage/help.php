@@ -1457,9 +1457,9 @@ foreach ($sections as $s) {
                     <p>
                         One page that answers &ldquo;what is locked, for whom, and is it safe to turn on?&rdquo; without visiting every separate content-access page. It gathers the family — <a href="#restrictions">Content Restrictions</a>, <a href="#tiers">Membership Tiers</a>, <a href="#licence-types">Licence Types</a>, Feature Access (below), <a href="#entitlements">Role Permissions</a> — behind a <strong>readiness checklist</strong> and shows whether the master switch is on or off. Available to global admins.
                     </p>
-                    <div class="gotcha small">
-                        <strong>Read-only by design:</strong> this hub does <em>not</em> own the master switch. Turning enforcement on is the one action in the program that changes anything — it changes what every reader sends at once — so it stays a deliberate human act on <a href="/manage/configuration#feature-gating">Settings &rarr; Feature Access</a>, with exactly one place to make the change. The hub reads the state, runs the checklist, and links you to the switch.
-                    </div>
+                    <p class="small">
+                        A <strong>Guided setup&hellip;</strong> button on this page walks you through turning the switch on safely: it previews exactly what would change first (how many songs, how much audio and sheet music), checks that a licence is actually on file, lets you optionally add extra rules, and lets you try the result on one real song before you commit — then gives you a one-click way to undo it. This is the recommended way to switch it on. The plain switch still lives on <a href="/manage/configuration#feature-gating">Settings &rarr; Feature Access</a> too, for a quick manual flip or an emergency rollback — both doors save the same setting, so nothing can drift between them.
+                    </p>
 
                     <h3 class="h6 mt-3">Feature Access <span class="text-muted small fw-normal">(<code>/manage/feature-gating</code>)</span></h3>
                     <p class="small">

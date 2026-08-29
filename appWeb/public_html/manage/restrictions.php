@@ -30,6 +30,13 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    require_licence picker sources from (was a const duplicated from
    organisations.php). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+/* #2006 — the extracted restriction validate/create/delete core (epic
+   #2002). RESTRICTIONS_ENTITY_TYPES / RESTRICTIONS_TYPES /
+   RESTRICTIONS_EFFECTS now live there (moved verbatim) so this page and
+   the content-gating activation wizard's row-seeding step (and, per OD-2,
+   api.php's admin_restriction_create/_delete) validate a rule the SAME
+   way — rule #22. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'restriction_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -47,17 +54,11 @@ $error   = '';
 $success = '';
 $db      = getDbMysqli();
 
-/* Allowed vocabularies — kept tight so the UI can't POST rubbish the
-   evaluator will silently ignore. Keep in sync with content_access.php. */
-const RESTRICTIONS_ENTITY_TYPES = ['song', 'songbook', 'feature'];
-const RESTRICTIONS_TYPES = [
-    'block_platform' => 'Block platform',
-    'block_user'     => 'Block user',
-    'block_org'      => 'Block organisation',
-    'require_licence'=> 'Require licence',
-    'require_org'    => 'Require organisation',
-];
-const RESTRICTIONS_EFFECTS = ['deny', 'allow'];
+/* Allowed vocabularies — RESTRICTIONS_ENTITY_TYPES / RESTRICTIONS_TYPES /
+   RESTRICTIONS_EFFECTS moved to includes/restriction_admin.php (#2006) so
+   the validator there and this page's rendering share ONE list. Keep in
+   sync with content_access.php's rule model — that file documents what
+   each RestrictionType actually does at evaluation time. */
 
 /* Picker vocabularies for the #498 name-first form. Hard-coded where
    the list is small and closed (platforms, features), loaded from
@@ -106,66 +107,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         switch ($action) {
             case 'create': {
-                $entityType      = trim((string)($_POST['entity_type']      ?? ''));
-                $entityId        = trim((string)($_POST['entity_id']        ?? ''));
-                $restrictionType = trim((string)($_POST['restriction_type'] ?? ''));
-                $targetType      = trim((string)($_POST['target_type']      ?? ''));
-                $targetId        = trim((string)($_POST['target_id']        ?? ''));
-                $effect          = trim((string)($_POST['effect']           ?? 'deny'));
-                $priority        = (int)  ($_POST['priority']               ?? 0);
-                $reason          = trim((string)($_POST['reason']           ?? ''));
-
-                if (!in_array($entityType, RESTRICTIONS_ENTITY_TYPES, true)) {
-                    $error = 'Invalid entity type.'; break;
+                /* #2006 — delegates to the shared core (includes/restriction_admin.php)
+                   instead of validating + INSERTing inline. Same checks, same
+                   messages, same bind shape — byte-identical behaviour, now
+                   shared with the content-gating wizard's row-seeding step and
+                   (per OD-2) api.php's admin_restriction_create action. */
+                $result = restrictionAdminValidate($_POST);
+                if ($result['error'] !== null) {
+                    $error = $result['error'];
+                    break;
                 }
-                if ($entityId === '') {
-                    $error = 'Entity ID is required (use "*" to target every entity of the type).'; break;
-                }
-                if (!array_key_exists($restrictionType, RESTRICTIONS_TYPES)) {
-                    $error = 'Invalid restriction type.'; break;
-                }
-                /* #1769 P4 Commit E (D10) — Effect HONESTY. content_access.php
-                   IGNORES Effect for every require_* type ("licence found → pass;
-                   absent → deny", never an allow/deny toggle — see that file's
-                   note beside the require_licence branch). Storing Effect='allow'
-                   on such a row is a lie the engine can't honour, so normalise it
-                   to 'deny' server-side. This is ENGINE-DEAD → a provably zero
-                   behaviour change (the value was already ignored), and it stops
-                   the row from claiming a policy it never had. The UI hides the
-                   Effect control for these types too (see the form's JS). */
-                if (str_starts_with($restrictionType, 'require_')) {
-                    $effect = 'deny';
-                }
-                if (!in_array($effect, RESTRICTIONS_EFFECTS, true)) {
-                    $error = 'Effect must be allow or deny.'; break;
-                }
-                if ($priority < 0 || $priority > 1000) {
-                    $error = 'Priority must be between 0 and 1000.'; break;
-                }
-
-                $stmt = $db->prepare(
-                    'INSERT INTO tblContentRestrictions
-                        (EntityType, EntityId, RestrictionType, TargetType, TargetId, Effect, Priority, Reason)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-                );
-                /* Types: six string columns, then Priority(int), then Reason(string). */
-                $stmt->bind_param(
-                    'ssssssis',
-                    $entityType, $entityId, $restrictionType,
-                    $targetType, $targetId, $effect, $priority, $reason
-                );
-                $stmt->execute();
-                $newRestrictionId = (int)$db->insert_id;
-                $stmt->close();
+                $fields = $result['fields'];
+                $newRestrictionId = restrictionAdminCreate($db, $fields);
                 /* #1769 P4 — every gating action is logged (owner directive). */
                 if (function_exists('logActivity')) {
                     logActivity('admin.restrictions.create', 'content_restriction', (string)$newRestrictionId, [
-                        'entityType'      => $entityType,
-                        'entityId'        => $entityId,
-                        'restrictionType' => $restrictionType,
-                        'targetId'        => $targetId,
-                        'effect'          => $effect,
-                        'priority'        => $priority,
+                        'entityType'      => $fields['entityType'],
+                        'entityId'        => $fields['entityId'],
+                        'restrictionType' => $fields['restrictionType'],
+                        'targetId'        => $fields['targetId'],
+                        'effect'          => $fields['effect'],
+                        'priority'        => $fields['priority'],
                     ]);
                 }
                 $success = 'Restriction created.';
@@ -175,10 +137,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             case 'delete': {
                 $id = (int)($_POST['id'] ?? 0);
                 if ($id <= 0) { $error = 'Invalid request.'; break; }
-                $stmt = $db->prepare('DELETE FROM tblContentRestrictions WHERE Id = ?');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
-                $stmt->close();
+                /* #2006 — delegates to the shared core. */
+                restrictionAdminDelete($db, $id);
                 if (function_exists('logActivity')) {
                     logActivity('admin.restrictions.delete', 'content_restriction', (string)$id, []);
                 }
