@@ -28,6 +28,7 @@
  * ========================================================================== */
 
 import { buildEnrichmentPanel } from './enrichment-panel.js';
+import { iconBtn } from './ui-helpers.js';
 
 /* #1869 (epic #1863, CLAUDE.md rule #43's LAST picker item — registry
    SOURCING, not a typeahead). This was the whole section-type vocabulary
@@ -606,18 +607,6 @@ export function mountStructureTab(container, opts) {
 
         card.append(header, body);
         return card;
-    }
-
-    function iconBtn(icon, title, disabled, onClick) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'btn btn-outline-secondary';
-        b.title = title;
-        b.setAttribute('aria-label', title);
-        b.disabled = !!disabled;
-        b.innerHTML = '<i class="bi ' + icon + '" aria-hidden="true"></i>';
-        b.addEventListener('click', onClick);
-        return b;
     }
 
     /* ---- structural ops (these DO re-render via the store) ---- */

@@ -17,6 +17,8 @@
  *  flushPending() below.
  * ========================================================================== */
 
+import { iconBtn } from './ui-helpers.js';
+
 const SAVE_DEBOUNCE_MS = 500;
 
 /* Kinds + their UI hints. ACCEPT is only a picker convenience — the SERVER
@@ -216,18 +218,6 @@ export function mountMediaTab(container, opts) {
     }
 
     /* ---- render ---- */
-
-    function iconBtn(icon, title, disabled, onClick) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'btn btn-outline-secondary';
-        b.title = title;
-        b.setAttribute('aria-label', title);
-        b.disabled = !!disabled;
-        b.innerHTML = '<i class="bi ' + icon + '" aria-hidden="true"></i>';
-        b.addEventListener('click', onClick);
-        return b;
-    }
 
     function buildFileRow(item, index, total) {
         const row = document.createElement('div');
