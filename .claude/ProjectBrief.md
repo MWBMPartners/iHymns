@@ -4,6 +4,36 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-29 (follow-ups pass — all five owner-answered items landed; queue empty)
+
+Same branch `claude/dormant-features-settings-1sdw4t`, head **`b5ba5a36`**, suite **239 PHP / 82 JS**.
+After the API-coverage program (note below), the five owner-answered follow-ups were implemented
+sequentially — Fable analysis → Sonnet implementation → Opus verification + commit — each
+mutation-proven and page-parity-checked:
+
+- **#1984 `6dfbfc55`** — opt-in "Emphasise Links" a11y mode (CVD-mechanism twin; rule #18 default kept).
+- **#1986 `f2367a64`+`2b263b04`** — 11 bare-role→entitlement gate swaps (behaviour-neutral) + a real
+  licence-field authz gap closed in `admin_organisation_update` (now mirrors the page's
+  `manage_org_licences` preserve).
+- **#1988 `511f3e86`** — Works "extras" over the API (extras/origin-city/membership/external-links);
+  7 closures extracted into `work_admin.php`, page re-pointed byte-identically; `getWork()`
+  round-trip keys added.
+- **#1987 `6ec83022`** — webhook show-once: retired the one remaining reveal-existing leak
+  (`webhooks.php::reveal_secret` + `webhookSubscriptionRevealSecret()`); signing/encrypt-at-rest
+  untouched.
+- **#1990 `f414ee30`** — a11y m2/m8 sweep: 313 `<th>` scope attrs + ~694 decorative-icon
+  `aria-hidden` + 2 `role="img"` + 11 icon-only `aria-label`, across 68 files, guarded.
+
+Each shipped a mutation-proven guard. GitHub reconciliation: #1200 closed, #517/#946↔#1769 noted
+(the #946↔#1769 naming-vs-gating overlap is an **open A/B/C decision for the owner** — recommend
+folding #946 into #1769's P4). New follow-ups filed: **#1989** (re-wrap pre-cutover table-held
+webhook secrets — the #1909 A.14 card, never filed) and **#1991** (consolidate the 3 duplicate
+editor-v2 `iconBtn()` helpers) — both **open, non-blocking**. Owner-pending (unchanged, non-blocking):
+D4 (real ProPresenter chord/timeline `.pro`), #1985 (FCM/ADM creds + `fcmSend`). Full session record:
+`.claude/sessions/2026-08-29-HANDOFF.md` (Continuation section).
+
+---
+
 ## 📌 Continuation note — 2026-08-29 (API-coverage program complete — every admin/curator action reachable over the API; redo security audit clean bar one Medium IDOR, fixed)
 
 Branch `claude/dormant-features-settings-1sdw4t` (continuation of the 2026-08-28 session below).
