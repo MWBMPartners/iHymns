@@ -278,6 +278,17 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    and the collaboration invite would have been the fourth. Best-effort by
    contract: a notification failure never fails the action that triggered it. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'notifications.php';
+/* API-coverage batch 7 — Web Push (#311, #1671 F6). Required explicitly
+   rather than relied on transitively (rule #22): webPushBroadcast() /
+   webPushBuildPayload() / webPushKindValid() / webPushConfigured() back the
+   admin_notification_push_send / admin_notification_push_test actions
+   below, the same functions manage/notifications.php's push_send/push_test
+   handlers call. secretDecrypt()/secretIsEncrypted() (needed to read the
+   VAPID private key getAppSetting() transparently decrypts) are already
+   loaded transitively later in this same bootstrap section, via
+   webhooks.php's own secret_crypto.php require — this file only adds the
+   Web Push functions themselves. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'web_push.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
    so curators reading /manage/activity-log see every server-side
@@ -13806,6 +13817,145 @@ if ($action !== null) {
             break;
         }
 
+        /* -----------------------------------------------------------------
+         * Admin: delete one in-app notification row
+         * POST body: { id }
+         *
+         * Mirrors /manage/notifications.php's `delete` handler exactly — a
+         * plain DELETE by Id, no ownership/ownership-of-recipient check
+         * (any holder of manage_notifications may delete any row, same as
+         * the page). API-coverage batch 7 — was flagged
+         * `web_only:GAP-notification-delete` by
+         * tests/php/test-manage-action-api-coverage.php until now.
+         * ----------------------------------------------------------------- */
+        case 'admin_notification_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_notifications', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_notifications entitlement is required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Notification id required.'], 400);
+                break;
+            }
+
+            try {
+                $db   = getDbMysqli();
+                $stmt = $db->prepare('DELETE FROM tblNotifications WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $deleted = $stmt->affected_rows > 0;
+                $stmt->close();
+
+                logActivity('api.admin.notification.delete', 'notification', (string)$id, ['deleted' => $deleted]);
+                sendJson(['ok' => true, 'id' => $id, 'deleted' => $deleted]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.notification.delete', 'notification', (string)$id, $e);
+                error_log('[admin_notification_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete notification.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: Web Push broadcast / self-test (#311, #1671 F6)
+         * POST body: { push_kind? (default announcement), push_title,
+         *              push_body?, push_url? }
+         *
+         * Two actions, one shared body — mirrors /manage/notifications.php's
+         * `push_send`/`push_test` handlers, which are themselves one `if`
+         * distinguished only by which of the two action names posted.
+         * `admin_notification_push_send` broadcasts to every subscribed +
+         * opted-in device; `admin_notification_push_test` forces
+         * push_kind='test' and targets ONLY the caller's own subscriptions
+         * (a real push through the real pipeline, aimed at nobody else).
+         * DISTINCT from `admin_notification_send` above, which only ever
+         * writes the in-app tblNotifications row and never calls
+         * webPushBroadcast() — API-coverage batch 7 found no API twin for
+         * either push action at all (`web_only:GAP-webpush-broadcast`).
+         *
+         * `push_generate_keys` (VAPID key mint) is DELIBERATELY NOT ported —
+         * it is a one-time infra/secret action (generating over an existing
+         * key silently breaks every currently-subscribed device) rather
+         * than app functionality a native client would ever need to invoke;
+         * classified `web_only:infra-secret` and left that way.
+         * ----------------------------------------------------------------- */
+        case 'admin_notification_push_send':
+        case 'admin_notification_push_test': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_notifications', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_notifications entitlement is required.'], 403);
+                break;
+            }
+            $isTest = ($action === 'admin_notification_push_test');
+
+            $body      = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $pushKind  = trim((string)($body['push_kind'] ?? 'announcement'));
+            $pushTitle = trim((string)($body['push_title'] ?? ''));
+            $pushBody  = trim((string)($body['push_body']  ?? ''));
+            $pushUrl   = trim((string)($body['push_url']   ?? ''));
+
+            if ($isTest) {
+                /* A test is a real push through the real pipeline — same
+                   kind registry, same encryption, same transport — aimed
+                   only at the caller's own devices. Mirrors the page's
+                   push_test branch exactly, including its default
+                   title/body. */
+                $pushKind  = 'test';
+                $pushTitle = $pushTitle !== '' ? $pushTitle : 'iHymns test notification';
+                $pushBody  = $pushBody  !== '' ? $pushBody  : 'If you can see this, push notifications are working.';
+            }
+
+            if (!webPushConfigured()) {
+                sendJson(['error' => 'Generate a VAPID keypair first — nothing can be sent without one.'], 409);
+                break;
+            }
+            if (!webPushKindValid($pushKind)) {
+                sendJson(['error' => 'Unknown notification kind.'], 400);
+                break;
+            }
+            if ($pushTitle === '') {
+                sendJson(['error' => 'A push notification needs a title.'], 400);
+                break;
+            }
+
+            try {
+                $db      = getDbMysqli();
+                $payload = webPushBuildPayload($pushKind, $pushTitle, $pushBody, $pushUrl);
+                $targets = $isTest ? [(int)($authUser['Id'] ?? 0)] : null;
+                $res     = webPushBroadcast($db, $pushKind, $payload, $targets);
+
+                logActivity('api.admin.notification.push_broadcast', 'notification', '', [
+                    'kind'    => $pushKind,
+                    'test'    => $isTest,
+                    'sent'    => $res['sent'],
+                    'failed'  => $res['failed'],
+                    'pruned'  => $res['pruned'],
+                    'skipped' => $res['skipped'],
+                ]);
+
+                sendJson(['ok' => true] + $res);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.notification.push_broadcast', 'notification', '', $e, [
+                    'kind' => $pushKind, 'test' => $isTest,
+                ]);
+                error_log('[admin_notification_push_send] ' . $e->getMessage());
+                sendJson(['error' => 'Push broadcast failed.'], 500);
+            }
+            break;
+        }
+
         /* =================================================================
          * SONGBOOKS — admin CRUD parity (#719 PR 2a)
          *
@@ -13815,8 +13965,14 @@ if ($action !== null) {
          * to match the rest of /api.php; the underlying SQL writes the
          * same column set as the web admin.
          *
-         * Auth: admin / global_admin role only — same gate that grants the
-         * `manage_songbooks` entitlement (see includes/entitlements.php).
+         * Auth: userHasEntitlement('manage_songbooks', ...) — the SAME
+         * entitlement /manage/songbooks.php itself gates the whole page on
+         * (F2 entitlement-gate cleanup, API-coverage batch 7; previously a
+         * raw `in_array($Role, ['admin','global_admin'])` here, which meant
+         * an operator revoking `manage_songbooks` at /manage/entitlements
+         * silently left this API surface open). manage_songbooks defaults
+         * to exactly ['admin','global_admin'], so the admitted set is
+         * unchanged today (see includes/entitlements.php).
          *
          * Activity-log verb prefix is `api.admin.songbook.*` so a curator
          * scanning /manage/activity-log can tell API-driven changes apart
@@ -13847,7 +14003,9 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               section doc-block above. */
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -14029,7 +14187,9 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               section doc-block above. */
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -14322,7 +14482,9 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               section doc-block above. */
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -14856,6 +15018,37 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
                 sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            /* Per-action entitlement (#1590, entitlement truth-up E1 — the
+             * odd one out of the admin_user_* family, added in the F2
+             * entitlement-gate cleanup, API-coverage batch 7). See the note
+             * on admin_user_update above for why this lives here AND on the
+             * page.
+             *
+             * WHY view_users, UNLIKE ITS SIX SIBLINGS: /manage/users.php's
+             * own `create` case deliberately has NO per-action entry in
+             * that page's $ACTION_ENTITLEMENTS map — its doc-comment there
+             * says so explicitly: there is no `create_users` entitlement,
+             * and reusing `edit_users` would make that checkbox's label
+             * ("Change profile / display name / email") untrue. So the
+             * page's ONLY gate on who may create a user is `view_users`,
+             * checked once at the top of the file before the POST switch is
+             * even reached. Matching the page exactly means matching THAT
+             * gate here, not inventing a new entitlement key.
+             *
+             * EQUIVALENCE — no live behaviour change. The raw gate
+             * immediately above admits exactly ['admin','global_admin'];
+             * `view_users`'s default map is that same pair. The raw check
+             * is deliberately KEPT rather than replaced, exactly as on
+             * admin_user_update: it also establishes $authUser, and this is
+             * now an AND of two conditions that agree today.
+             *
+             * @see appWeb/public_html/manage/users.php
+             * @see appWeb/public_html/includes/entitlements.php
+             */
+            if (!userHasEntitlement('view_users', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The view_users entitlement is required.'], 403);
                 break;
             }
 
@@ -17999,7 +18192,17 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — swapped
+               from the raw `in_array($Role, ['admin','global_admin'])` to
+               the SAME entitlement /manage/musicians.php itself gates on
+               (top-of-file `userHasEntitlement('manage_musicians', ...)`,
+               covering every action on that page including `add`) — rule
+               #1587: an API twin must honour the same entitlements-page
+               override its sibling page does. manage_musicians defaults to
+               exactly ['admin','global_admin'], so the admitted set is
+               unchanged today; only a future override now actually reaches
+               this endpoint too. */
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -18198,7 +18401,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               note on admin_musician_add above. Same swap, same
+               equivalence. */
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -18392,7 +18598,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               note on admin_musician_add above. Same swap, same
+               equivalence. */
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -18498,7 +18707,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               note on admin_musician_add above. Same swap, same
+               equivalence. */
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -18622,7 +18834,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               note on admin_musician_add above. Same swap, same
+               equivalence. */
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -18694,23 +18909,256 @@ if ($action !== null) {
         }
 
         /* =================================================================
+         * MUSICIANS — registry grouping + relations (#1741 P4a), API-coverage
+         * batch 7
+         *
+         * Mirrors /manage/musicians.php's `add_member`/`remove_member`/
+         * `add_relation`/`remove_relation`/`bulk_register_unregistered`
+         * POST handlers — the five actions that postdated the 2026-08-28
+         * audit and were flagged `web_only:GAP-*` by
+         * tests/php/test-manage-action-api-coverage.php until now. Every
+         * write delegates to the SAME includes/musician_helpers.php cores
+         * the page calls (addMusicianRelation()/removeMusicianRelation()/
+         * removeMusicianGroupMember()/musicianBulkRegisterRemaining()) —
+         * never a forked SQL statement re-embedded here (rule #22).
+         *
+         * Activity-log verb prefix is `api.admin.musician.*`, matching the
+         * CRUD family immediately above.
+         * ================================================================= */
+
+        /* POST body: { group_id, member_id, date_from?, date_to?, note? } */
+        case 'admin_musician_member_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $groupId  = (int)($body['group_id']  ?? 0);
+            $memberId = (int)($body['member_id'] ?? 0);
+            /* Mirrors the page: an unparseable partial date is silently
+               dropped (null) rather than rejected — add_member has never
+               400'd on a bad date, only add() (the full registry form)
+               does. */
+            $pb = partialDateParse((string)($body['date_from'] ?? ''));
+            $pd = partialDateParse((string)($body['date_to']   ?? ''));
+            $dateFrom     = $pb['ok'] ? $pb['date']      : null;
+            $dateFromPrec = $pb['ok'] ? $pb['precision'] : null;
+            $dateTo       = $pd['ok'] ? $pd['date']      : null;
+            $dateToPrec   = $pd['ok'] ? $pd['precision'] : null;
+            $note = trim((string)($body['note'] ?? '')) ?: null;
+
+            try {
+                $db     = getDbMysqli();
+                $result = addMusicianRelation(
+                    $db, $groupId, $memberId, 'member',
+                    $dateFrom, $dateFromPrec, $dateTo, $dateToPrec, $note
+                );
+                if (!$result['ok']) {
+                    sendJson($result, 400);
+                    break;
+                }
+                logActivity('api.admin.musician.member_add', 'musician', (string)$groupId, [
+                    'group_id' => $groupId, 'member_id' => $memberId,
+                    'date_from' => $dateFrom, 'date_to' => $dateTo,
+                ]);
+                sendJson($result);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musician.member_add', 'musician', (string)$groupId, $e);
+                error_log('[admin_musician_member_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add member.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { group_id, member_id } */
+        case 'admin_musician_member_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $groupId  = (int)($body['group_id']  ?? 0);
+            $memberId = (int)($body['member_id'] ?? 0);
+
+            try {
+                $db     = getDbMysqli();
+                $result = removeMusicianGroupMember($db, $groupId, $memberId);
+                if (!$result['ok']) {
+                    sendJson($result, 400);
+                    break;
+                }
+                logActivity('api.admin.musician.member_remove', 'musician', (string)$groupId, [
+                    'group_id' => $groupId, 'member_id' => $memberId,
+                ]);
+                sendJson($result);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musician.member_remove', 'musician', (string)$groupId, $e);
+                error_log('[admin_musician_member_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove member.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { subject_id, object_id, relation_type? (default 'portrays'), date_from?, date_to?, note? } */
+        case 'admin_musician_relation_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body         = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $subjectId    = (int)($body['subject_id'] ?? 0);
+            $objectId     = (int)($body['object_id']  ?? 0);
+            $relationType = trim((string)($body['relation_type'] ?? 'portrays'));
+            $pb = partialDateParse((string)($body['date_from'] ?? ''));
+            $pd = partialDateParse((string)($body['date_to']   ?? ''));
+            $dateFrom     = $pb['ok'] ? $pb['date']      : null;
+            $dateFromPrec = $pb['ok'] ? $pb['precision'] : null;
+            $dateTo       = $pd['ok'] ? $pd['date']      : null;
+            $dateToPrec   = $pd['ok'] ? $pd['precision'] : null;
+            $note = trim((string)($body['note'] ?? '')) ?: null;
+
+            try {
+                $db     = getDbMysqli();
+                $result = addMusicianRelation(
+                    $db, $subjectId, $objectId, $relationType,
+                    $dateFrom, $dateFromPrec, $dateTo, $dateToPrec, $note
+                );
+                if (!$result['ok']) {
+                    sendJson($result, 400);
+                    break;
+                }
+                logActivity('api.admin.musician.relation_add', 'musician', (string)$subjectId, [
+                    'subject_id' => $subjectId, 'object_id' => $objectId, 'relation_type' => $relationType,
+                    'date_from' => $dateFrom, 'date_to' => $dateTo,
+                ]);
+                sendJson($result);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musician.relation_add', 'musician', (string)$subjectId, $e);
+                error_log('[admin_musician_relation_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add relation.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { id } — the tblMusicianRelations row's own Id */
+        case 'admin_musician_relation_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body       = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $relationId = (int)($body['id'] ?? 0);
+
+            try {
+                $db     = getDbMysqli();
+                $result = removeMusicianRelation($db, $relationId);
+                if (!$result['ok']) {
+                    sendJson($result, 400);
+                    break;
+                }
+                logActivity('api.admin.musician.relation_remove', 'musician', (string)$relationId, ['id' => $relationId]);
+                sendJson($result);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musician.relation_remove', 'musician', (string)$relationId, $e);
+                error_log('[admin_musician_relation_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove relation.'], 500);
+            }
+            break;
+        }
+
+        /* No request body — registers every cited-but-unregistered name and
+           reconciles byte-variant spellings against the registry (#1503 +
+           #1784). Mirrors the page's "Add all remaining (N)" banner button. */
+        case 'admin_musician_bulk_register': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            try {
+                $db  = getDbMysqli();
+                $run = musicianBulkRegisterRemaining($db);
+
+                logActivity('api.admin.musician.bulk_register', 'musician', '', [
+                    'bulk_run_id' => $run['bulk_run_id'],
+                    'registered'  => $run['registered'],
+                    'skipped'     => $run['skipped'],
+                    'candidates'  => $run['candidates'],
+                    'reconciled_rewritten' => $run['reconcile']['rewritten'],
+                    'reconciled_adopted'   => $run['reconcile']['adopted'],
+                    'reconciled_new'       => $run['reconcile']['registered'],
+                    'reconciled_ambiguous' => $run['reconcile']['ambiguous'],
+                ]);
+
+                sendJson([
+                    'ok'          => true,
+                    'bulk_run_id' => $run['bulk_run_id'],
+                    'registered'  => $run['registered'],
+                    'skipped'     => $run['skipped'],
+                    'candidates'  => $run['candidates'],
+                    'reconcile'   => $run['reconcile'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musician.bulk_register', 'musician', '', $e);
+                error_log('[admin_musician_bulk_register] ' . $e->getMessage());
+                sendJson(['error' => 'Bulk register failed.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
          * TUNES — admin CRUD (#1748)
          *
          * Mirrors /manage/tunes.php's POST handlers. Every mutating
          * endpoint calls the SAME shared cores in includes/tune_admin.php
          * that page uses (rule #22/#35 — nothing to drift, unlike the
-         * musician family immediately above, which duplicates its logic
-         * between this file and manage/musicians.php — an acknowledged
-         * wart the build spec explicitly says not to copy).
+         * musician CRUD family immediately above (`admin_musician_add`/
+         * `_update`/`_rename`/`_merge`/`_delete`), which still duplicates
+         * its validation/persist logic between this file and
+         * manage/musicians.php — an acknowledged wart the build spec
+         * explicitly says not to copy; the registry-grouping/relations
+         * actions directly above THIS comment, added in API-coverage batch
+         * 7, do NOT share that wart — they delegate to
+         * includes/musician_helpers.php like the tune family does).
          *
-         * Gate: userHasEntitlement('manage_tunes') rather than the raw
-         * `in_array($Role, ['admin','global_admin'])` the musician family
-         * above uses — a DELIBERATE deviation (#1748 §4): the codebase is
-         * migrating role gates to userHasEntitlement() (api.php:8215's own
-         * migration note, every #1590-era action), which keeps this API
-         * gate identical to manage/tunes.php's page gate + admin-links.php's
-         * nav entry (#1587's spirit). manage_tunes defaults to exactly
-         * ['admin','global_admin'], so the admitted set is identical at
+         * Gate: userHasEntitlement('manage_tunes'), matching the musician
+         * CRUD family's own gate (F2 entitlement-gate cleanup, API-coverage
+         * batch 7 — that family used to gate on the raw
+         * `in_array($Role, ['admin','global_admin'])` this comment
+         * originally contrasted itself against; both families now use
+         * userHasEntitlement() so an operator's entitlements-page override
+         * is honoured on every admin write, not just the ones added after
+         * #1748). manage_tunes / manage_musicians both default to exactly
+         * ['admin','global_admin'], so the admitted set is unchanged at
          * ship time either way.
          *
          * Activity-log verb prefix is `api.admin.tune.*`. HTTP status IS

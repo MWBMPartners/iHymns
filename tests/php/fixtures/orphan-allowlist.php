@@ -473,6 +473,36 @@ return [
            includes/ia_reconcile.php), never a forked fetch/segment/score. */
         'admin_ia_reconcile_run'                => 'deliberate API-first surface (API-coverage batch 6b, §4.3 A17); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; delegates to the SAME shared includes/ia_client.php + includes/ia_reconcile.php pipeline manage/ia-reconcile.php\'s own POST run handler calls (never a fork), so nothing first-party calls the JSON twin yet',
 
+        /* API-coverage batch 7 (closing the last 8 `web_only:GAP-*` entries
+           tests/php/test-manage-action-api-coverage.php's own mapping was
+           carrying) — musician-registry grouping/relations API parity for
+           manage/musicians.php's add_member/remove_member/add_relation/
+           remove_relation/bulk_register_unregistered POST handlers (#1741
+           P4a family, postdates the 2026-08-28 audit) + Web Push admin API
+           parity for manage/notifications.php's delete/push_send/push_test
+           handlers. Same D1-default-A posture as the families above. All
+           five musician actions delegate to the SAME shared
+           includes/musician_helpers.php cores the page uses
+           (addMusicianRelation()/removeMusicianRelation()/
+           removeMusicianGroupMember()/musicianBulkRegisterRemaining() — the
+           last one itself extracted from the page's own inline handler in
+           THIS batch, so the page was ALSO re-pointed at it, never leaving
+           two copies of the transaction). The two push actions delegate to
+           the SAME pre-existing includes/web_push.php webPushBroadcast()/
+           webPushBuildPayload() cores manage/notifications.php's own
+           push_send/push_test branches call. tests/php/
+           test-api-coverage-batch7.php proves the dispatch/gate/delegation
+           for all eight, and that the standing coverage guard's mapping was
+           actually updated (no `GAP-*` reason left for any of them). */
+        'admin_musician_member_add'             => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/musicians.php\'s add_member handler calls the SAME shared includes/musician_helpers.php addMusicianRelation() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_musician_member_remove'          => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/musicians.php\'s remove_member handler calls the SAME shared includes/musician_helpers.php removeMusicianGroupMember() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_musician_relation_add'           => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/musicians.php\'s add_relation handler calls the SAME shared includes/musician_helpers.php addMusicianRelation() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_musician_relation_remove'        => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/musicians.php\'s remove_relation handler calls the SAME shared includes/musician_helpers.php removeMusicianRelation() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_musician_bulk_register'          => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/musicians.php\'s bulk_register_unregistered handler calls the SAME newly-extracted shared includes/musician_helpers.php musicianBulkRegisterRemaining() core (the page was re-pointed at it in this same batch — never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_notification_delete'             => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/notifications.php\'s delete handler issues the SAME "DELETE FROM tblNotifications WHERE Id = ?" statement (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_notification_push_send'          => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/notifications.php\'s push_send handler calls the SAME pre-existing includes/web_push.php webPushBroadcast() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_notification_push_test'          => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/notifications.php\'s push_test handler calls the SAME pre-existing includes/web_push.php webPushBroadcast() core (never a fork), so nothing first-party calls the JSON twin yet',
+
         /* ---------------------------------------------------------------
          * 1b. Content-gating / licensing family — 12 (§2.2 + `tier_check`).
          *

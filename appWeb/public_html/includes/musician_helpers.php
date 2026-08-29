@@ -3817,3 +3817,78 @@ function musicianCitedUnregisteredNames(\mysqli $db): array
     $rows = $db->query($sql)->fetch_all(MYSQLI_ASSOC);
     return array_map(static fn(array $r): string => (string)$r['Name'], $rows);
 }
+
+/**
+ * Run the whole "Add all remaining (N)" one-click flow (#1503 + the #1784
+ * byte-reconciliation follow-up): register every cited-but-unregistered
+ * name, then reconcile byte-variant spellings, inside ONE transaction.
+ *
+ * ELI5: this is the single button-press behind the parent /manage/musicians
+ * page's banner. It used to be a block of code written out once, inline, on
+ * that page; API-coverage batch 7 (#1741 P4a family) needed the EXACT same
+ * behaviour for the `admin_musician_bulk_register` API twin, and two copies
+ * of a transaction + loop is precisely the "same logic in two places" the
+ * modularity rule bans — so it moved here and both callers now delegate to
+ * it (rule #22). manage/musicians.php's `bulk_register_unregistered` POST
+ * handler and api.php's `admin_musician_bulk_register` action are both thin
+ * wrappers that call this and format their own success text / JSON.
+ *
+ * Idempotency (unchanged from the original inline version): (1) the
+ * candidate list itself only contains names with NOT EXISTS a matching
+ * registry row at query time (musicianCitedUnregisteredNames()), and (2)
+ * each iteration re-checks Name existence immediately before calling
+ * registerMusicianByName(), so a name registered by a concurrent editor
+ * between the query and this loop is skipped, not double-inserted or
+ * erroring on the UNIQUE constraint.
+ *
+ * Opens its own transaction (unlike musicianReconcileCreditNameBytes(),
+ * which is transaction-agnostic) because this is the ONE place both the
+ * register loop and the reconcile pass need to commit — or roll back —
+ * together; a caller must NOT already be inside a transaction of its own.
+ *
+ * @return array{bulk_run_id:string, registered:int, skipped:int,
+ *               candidates:int,
+ *               reconcile:array{scanned:int,rewritten:int,registered:int,adopted:int,ambiguous:int,names:array<int,array<string,mixed>>}}
+ */
+function musicianBulkRegisterRemaining(\mysqli $db): array
+{
+    $names = musicianCitedUnregisteredNames($db);
+
+    $bulkRunId  = bin2hex(random_bytes(6));
+    $registered = 0;
+    $skipped    = 0;
+
+    $db->begin_transaction();
+    try {
+        foreach ($names as $name) {
+            $stmt = $db->prepare('SELECT Id FROM tblMusicians WHERE Name = ? LIMIT 1');
+            $stmt->bind_param('s', $name);
+            $stmt->execute();
+            $existing = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            if ($existing) { $skipped++; continue; }
+
+            $newId = registerMusicianByName($db, $name);
+            if ($newId > 0) { $registered++; } else { $skipped++; }
+        }
+
+        /* #1784 — self-heal byte-variant names the loop above "skips" (a
+           collation-matching-but-not-byte-identical registry row already
+           exists). Same shared core the migration runs (rule #22); runs
+           inside this same transaction. */
+        $reconcile = musicianReconcileCreditNameBytes($db);
+
+        $db->commit();
+    } catch (\Throwable $e) {
+        $db->rollback();
+        throw $e;
+    }
+
+    return [
+        'bulk_run_id' => $bulkRunId,
+        'registered'  => $registered,
+        'skipped'     => $skipped,
+        'candidates'  => count($names),
+        'reconcile'   => $reconcile,
+    ];
+}

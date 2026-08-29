@@ -11993,6 +11993,250 @@ paths:
             not set. Response includes `usage_count`, `name`, `hint`.
 
   # ===========================================================================
+  # ADMIN — MUSICIANS: registry grouping + relations  (#1741 P4a,
+  # API-coverage batch 7). JSON twins of /manage/musicians.php's
+  # add_member/remove_member/add_relation/remove_relation/
+  # bulk_register_unregistered POST handlers — these five postdated the
+  # 2026-08-28 audit and were the last `web_only:GAP-*` entries in
+  # tests/php/test-manage-action-api-coverage.php.
+  # ===========================================================================
+
+  /api.php?action=admin_musician_member_add:
+    post:
+      operationId: adminMusicianMemberAdd
+      tags: [Admin — Musicians]
+      summary: Add a group member (a 'member'-typed relation row)
+      description: |
+        Idempotent — re-adding an existing (group, member) pair is a
+        no-op success. `group_id` must reference a row flagged
+        `IsGroup = 1`. An unparseable `date_from`/`date_to` is silently
+        dropped (stored as null) rather than rejected — this mirrors
+        the page's own `add_member` handler, unlike
+        `admin_musician_add`'s stricter validation of the full
+        registry form.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_musician_member_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [group_id, member_id]
+              properties:
+                group_id:  { type: integer, description: The tblMusicians.Id of the group (must have IsGroup=1). }
+                member_id: { type: integer, description: The tblMusicians.Id of the person being added as a member. }
+                date_from: { type: string, nullable: true, description: "Flexible partial date: YYYY, MM/YYYY, DD/MM/YYYY, or ISO." }
+                date_to:   { type: string, nullable: true }
+                note:      { type: string, nullable: true }
+      responses:
+        "200":
+          description: Member added (or already present)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  relationId: { type: integer }
+                  member:     { type: object, properties: { id: { type: integer }, name: { type: string } } }
+                  subject:    { type: object, properties: { id: { type: integer }, name: { type: string } } }
+                  object:     { type: object, properties: { id: { type: integer }, name: { type: string } } }
+        "400":
+          description: "Validation error — missing ids, self-relation, subject not flagged as a Group, or a pending migration is needed. Body echoes {ok:false, error}."
+        "403":
+          description: The manage_musicians entitlement is required
+
+  /api.php?action=admin_musician_member_remove:
+    post:
+      operationId: adminMusicianMemberRemove
+      tags: [Admin — Musicians]
+      summary: Remove a group member
+      description: |
+        Idempotent — removing a non-member (already removed, or never
+        a member) is a 0-rows-affected success, not an error.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_musician_member_remove] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [group_id, member_id]
+              properties:
+                group_id:  { type: integer }
+                member_id: { type: integer }
+      responses:
+        "200":
+          description: Member removed (or was already absent)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  removed: { type: integer, description: Rows affected (0 or 1). }
+        "400":
+          description: "Validation error — missing ids, or a pending migration is needed."
+        "403":
+          description: The manage_musicians entitlement is required
+
+  /api.php?action=admin_musician_relation_add:
+    post:
+      operationId: adminMusicianRelationAdd
+      tags: [Admin — Musicians]
+      summary: Add a general-purpose relation row (e.g. 'portrays')
+      description: |
+        The generalised sibling of `admin_musician_member_add` for
+        relation types other than 'member' — most commonly 'portrays'
+        (subject PORTRAYER portrays object PORTRAYED-FIGURE). Idempotent
+        on the same (subject, object, relation_type) triple. An
+        unparseable `date_from`/`date_to` is silently dropped, mirroring
+        the page's `add_relation` handler.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_musician_relation_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject_id, object_id]
+              properties:
+                subject_id:    { type: integer }
+                object_id:     { type: integer }
+                relation_type:
+                  type: string
+                  default: portrays
+                  description: A key from the MUSICIAN_RELATION_TYPES vocabulary (e.g. portrays).
+                date_from: { type: string, nullable: true }
+                date_to:   { type: string, nullable: true }
+                note:      { type: string, nullable: true }
+      responses:
+        "200":
+          description: Relation added (or already present)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  relationId: { type: integer }
+                  member:     { type: object, properties: { id: { type: integer }, name: { type: string } } }
+                  subject:    { type: object, properties: { id: { type: integer }, name: { type: string } } }
+                  object:     { type: object, properties: { id: { type: integer }, name: { type: string } } }
+        "400":
+          description: "Validation error — missing ids, self-relation, unrecognised relation_type, person not found, or a pending migration is needed."
+        "403":
+          description: The manage_musicians entitlement is required
+
+  /api.php?action=admin_musician_relation_remove:
+    post:
+      operationId: adminMusicianRelationRemove
+      tags: [Admin — Musicians]
+      summary: Remove a relation row by its own Id
+      description: |
+        Removes one `tblMusicianRelations` row directly by Id — the
+        general-purpose counterpart to `admin_musician_member_remove`
+        (which deletes by the group/member pair instead). Idempotent.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_musician_relation_remove] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer, description: The tblMusicianRelations row's own Id. }
+      responses:
+        "200":
+          description: Relation removed (or was already absent)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  removed: { type: integer, description: Rows affected (0 or 1). }
+        "400":
+          description: "Validation error — missing id, or a pending migration is needed."
+        "403":
+          description: The manage_musicians entitlement is required
+
+  /api.php?action=admin_musician_bulk_register:
+    post:
+      operationId: adminMusicianBulkRegister
+      tags: [Admin — Musicians]
+      summary: Register every cited-but-unregistered name, then reconcile byte-variant spellings
+      description: |
+        JSON twin of the parent /manage/musicians page's "Add all
+        remaining (N)" one-click banner button. No request body. Two
+        steps inside one transaction: (1) every name cited on >= 1
+        song-credit row with no matching tblMusicians registry row is
+        registered via the same insertion point every other
+        registration path uses; (2) a byte-variant reconciliation pass
+        (#1784) adopts the registry's exact spelling into credit rows
+        that differ only by stray bytes (a trailing space, an NBSP),
+        or auto-registers a name with no collation match at all.
+        Idempotent — a second call with nothing new to do reports
+        registered=0.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_musician_bulk_register] }
+      responses:
+        "200":
+          description: Bulk-register run complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:          { type: boolean, example: true }
+                  bulk_run_id: { type: string, description: A 12-hex-char run identifier, for cross-referencing the activity log. }
+                  registered:  { type: integer }
+                  skipped:     { type: integer }
+                  candidates:  { type: integer }
+                  reconcile:
+                    type: object
+                    properties:
+                      scanned:    { type: integer }
+                      rewritten:  { type: integer }
+                      registered: { type: integer }
+                      adopted:    { type: integer }
+                      ambiguous:  { type: integer }
+        "403":
+          description: The manage_musicians entitlement is required
+        "500":
+          description: Bulk register failed (transaction rolled back)
+
+  # ===========================================================================
   # ADMIN — TUNES  (#1748)
   # ===========================================================================
 
@@ -16741,6 +16985,152 @@ paths:
           description: Admin access required
         "404":
           description: "audience=user: no user matched target_user"
+
+  /api.php?action=admin_notification_delete:
+    post:
+      operationId: adminNotificationDelete
+      tags: [Admin — Notifications]
+      summary: Delete one in-app notification row
+      description: |
+        JSON twin of /manage/notifications's `delete` handler — a plain
+        delete by Id, no ownership check (any holder of
+        manage_notifications may delete any row, matching the page).
+        API-coverage batch 7 — was `web_only:GAP-notification-delete`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_notification_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Delete attempted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  id:      { type: integer }
+                  deleted: { type: boolean, description: Whether a row actually existed and was removed. }
+        "400":
+          description: Missing id
+        "403":
+          description: The manage_notifications entitlement is required
+
+  /api.php?action=admin_notification_push_send:
+    post:
+      operationId: adminNotificationPushSend
+      tags: [Admin — Notifications]
+      summary: Broadcast a Web Push notification to every subscribed + opted-in device
+      description: |
+        JSON twin of /manage/notifications's `push_send` handler.
+        DISTINCT from `admin_notification_send` above, which only ever
+        writes the in-app tblNotifications row — this sends a real RFC
+        8291 Web Push message via `webPushBroadcast()`. Requires a
+        VAPID keypair to already be provisioned (`push_generate_keys`,
+        a web-only infra action — see /manage/notifications).
+        API-coverage batch 7 — was `web_only:GAP-webpush-broadcast`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_notification_push_send] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [push_title]
+              properties:
+                push_kind:
+                  type: string
+                  default: announcement
+                  description: A key from the Web Push kind registry (includes/web_push.php's webPushKinds()) — e.g. announcement, song_deleted.
+                push_title: { type: string }
+                push_body:  { type: string }
+                push_url:   { type: string, nullable: true }
+      responses:
+        "200":
+          description: Broadcast attempted (per-device outcome tallied, not a per-recipient success guarantee)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  configured: { type: boolean }
+                  sent:       { type: integer }
+                  failed:     { type: integer }
+                  pruned:     { type: integer, description: Dead subscriptions removed after a rejection from the push service. }
+                  skipped:    { type: integer, description: Recipients who opted out of this notification kind. }
+        "400":
+          description: Missing title or unknown push_kind
+        "403":
+          description: The manage_notifications entitlement is required
+        "409":
+          description: No VAPID keypair is provisioned yet — generate one first (web-only)
+
+  /api.php?action=admin_notification_push_test:
+    post:
+      operationId: adminNotificationPushTest
+      tags: [Admin — Notifications]
+      summary: Send a Web Push self-test to the caller's own subscribed devices
+      description: |
+        JSON twin of /manage/notifications's `push_test` handler — a
+        real push through the real pipeline (same kind registry, same
+        encryption, same transport as `admin_notification_push_send`),
+        aimed only at the caller's own devices. push_kind is forced to
+        'test' regardless of what is posted; push_title/push_body fall
+        back to a default line when blank.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_notification_push_test] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                push_title: { type: string, description: "Defaults to \"iHymns test notification\" when omitted." }
+                push_body:  { type: string, description: "Defaults to a stock confirmation line when omitted." }
+                push_url:   { type: string, nullable: true }
+      responses:
+        "200":
+          description: Test push attempted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  configured: { type: boolean }
+                  sent:       { type: integer }
+                  failed:     { type: integer }
+                  pruned:     { type: integer }
+                  skipped:    { type: integer }
+        "403":
+          description: The manage_notifications entitlement is required
+        "409":
+          description: No VAPID keypair is provisioned yet — generate one first (web-only)
 
   # ===========================================================================
   # USER PREFERENCES + ACCOUNT

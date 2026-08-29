@@ -131,19 +131,25 @@ declare(strict_types=1);
  * from memory of the plan document — several names differ from what the
  * plan predicted (`tunes.php`'s `create` → `admin_tune_add`, not
  * `admin_tune_create`; `musicians.php`'s `delete_from_registry` →
- * `admin_credit_person_delete`). A few real, currently-open gaps were
- * found IN BUILDING this guard that the 2026-08-28 plan does not mention at
- * all — `musicians.php`'s `add_member`/`remove_member`/`add_relation`/
+ * `admin_credit_person_delete`). Eight real gaps were found IN BUILDING
+ * this guard that the 2026-08-28 plan does not mention at all —
+ * `musicians.php`'s `add_member`/`remove_member`/`add_relation`/
  * `remove_relation`/`bulk_register_unregistered` (musician-registry
  * grouping/relations, #1741 P4a — postdates the plan) and
  * `notifications.php`'s `delete`/`push_send`/`push_test` (Web Push
  * broadcast — distinct from `admin_notification_send`, which only creates
- * the in-app row). These are marked `web_only:GAP-...` rather than force-
- * mapped to something incorrect — see this file's commit message / the
- * session report for the explicit flag the task brief asked for. They keep
- * this guard GREEN (a currently-open gap is not a NEW regression) while
- * staying honestly distinguishable — `grep "GAP-"` on this file — from a
- * deliberately-permanent `web_only:` entry.
+ * the in-app row). They were first marked `web_only:GAP-...` (rather than
+ * force-mapped to something incorrect) so the guard stayed GREEN while the
+ * gap was still open, honestly distinguishable — `grep "GAP-"` on this
+ * file — from a deliberately-permanent `web_only:` entry. API-coverage
+ * batch 7 then closed all eight (new `admin_musician_member_add/_remove`,
+ * `admin_musician_relation_add/_remove`, `admin_musician_bulk_register`,
+ * `admin_notification_delete`, `admin_notification_push_send/_test` in
+ * api.php) and this mapping was updated to `api:...` accordingly — see
+ * tests/php/test-api-coverage-batch7.php for the dispatch/gate/delegation
+ * proof. No `GAP-*` reason remains anywhere in $MAPPING as of that batch
+ * (`push_generate_keys` alone stays `web_only:infra-secret` — a reasoned
+ * permanent classification, never a GAP).
  *
  * MUTATION-TESTING PROTOCOL (rule #34)
  * --------------------------------------
@@ -699,22 +705,25 @@ $MAPPING = [
 
     'musicians.php' => [
         'add'                       => 'api:admin_credit_person_add',
-        /* GAPS found while building THIS guard, not discussed anywhere in
-           the 2026-08-28 plan (verified: none of "member"/"relation"/
-           "bulk_register" appears anywhere in api.php's action list). All
-           five delegate to includes/musician_helpers.php's
-           addMusicianRelation()/removeMusicianRelation()/
-           removeMusicianGroupMember()/musicianCitedUnregisteredNames() —
-           #1741 P4a, which postdates the plan's audit. Flagged per the task
-           brief ("flag it, don't guess-map it") rather than force-mapped —
-           see this file's commit message / the session report. */
-        'add_member'                => 'web_only:GAP-musician-group-membership',
-        'add_relation'              => 'web_only:GAP-musician-relation',
-        'bulk_register_unregistered'=> 'web_only:GAP-musician-bulk-register',
+        /* These five were GAPS found while building THIS guard, not
+           discussed anywhere in the 2026-08-28 plan (#1741 P4a postdates
+           the plan's audit). API-coverage batch 7 closed all five —
+           admin_musician_member_add/_remove and
+           admin_musician_relation_add/_remove/admin_musician_bulk_register
+           now exist in api.php, gated on manage_musicians and delegating to
+           the SAME includes/musician_helpers.php cores this page uses
+           (addMusicianRelation()/removeMusicianRelation()/
+           removeMusicianGroupMember()/musicianBulkRegisterRemaining() —
+           the last one itself extracted from this page's inline handler in
+           the same batch, rule #22). See
+           tests/php/test-api-coverage-batch7.php. */
+        'add_member'                => 'api:admin_musician_member_add',
+        'add_relation'              => 'api:admin_musician_relation_add',
+        'bulk_register_unregistered'=> 'api:admin_musician_bulk_register',
         'delete_from_registry'      => 'api:admin_credit_person_delete',
         'merge'                     => 'api:admin_credit_person_merge',
-        'remove_member'             => 'web_only:GAP-musician-group-membership',
-        'remove_relation'           => 'web_only:GAP-musician-relation',
+        'remove_member'             => 'api:admin_musician_member_remove',
+        'remove_relation'           => 'api:admin_musician_relation_remove',
         'rename'                    => 'api:admin_credit_person_rename',
         'update_person'             => 'api:admin_credit_person_update',
     ],
@@ -736,18 +745,23 @@ $MAPPING = [
 
     'notifications.php' => [
         'compose'            => 'api:admin_notification_send',
-        /* GAP — verified admin_notification_send only INSERTs tblNotifications
-           (the in-app row); it never calls webPushBroadcast(). No
-           admin_notification_delete exists either. Not discussed in the
-           plan. Flagged, not guess-mapped. */
-        'delete'             => 'web_only:GAP-notification-delete',
+        /* API-coverage batch 7 closed this GAP — admin_notification_delete
+           is a plain DELETE-by-Id twin of this page's own `delete` handler,
+           gated on manage_notifications. */
+        'delete'             => 'api:admin_notification_delete',
         /* Mints a NEW VAPID keypair — invalidates every existing push
            subscription tree-wide. Same risk class as configuration.php's
            secret_generate_key; a reasoned deliberate classification, not a
-           plan citation. */
+           plan citation. Still correctly web_only — this is genuinely a
+           one-time infra/secret action, not app functionality. */
         'push_generate_keys' => 'web_only:infra-secret',
-        'push_send'          => 'web_only:GAP-webpush-broadcast',
-        'push_test'          => 'web_only:GAP-webpush-broadcast',
+        /* API-coverage batch 7 closed this GAP — admin_notification_push_send
+           calls webPushBroadcast() (DISTINCT from admin_notification_send,
+           which only ever INSERTs the in-app tblNotifications row). */
+        'push_send'          => 'api:admin_notification_push_send',
+        /* Same batch — admin_notification_push_test mirrors this page's
+           push_test branch (forces kind='test', targets only the caller). */
+        'push_test'          => 'api:admin_notification_push_test',
     ],
 
     'organisations.php' => [

@@ -646,60 +646,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
     }
 
     try {
-        $db    = getDbMysqli();
-        $names = musicianCitedUnregisteredNames($db);
+        $db  = getDbMysqli();
+        /* API-coverage batch 7 — the register-loop + #1784 byte-reconcile
+           transaction now lives in the ONE shared core both this page and
+           api.php's admin_musician_bulk_register action call (rule #22);
+           see includes/musician_helpers.php::musicianBulkRegisterRemaining()
+           for the full behaviour this used to inline. */
+        $run = musicianBulkRegisterRemaining($db);
 
-        $bulkRunId  = bin2hex(random_bytes(6));
-        $registered = 0;
-        $skipped    = 0;
+        $bulkRunId  = $run['bulk_run_id'];
+        $registered = $run['registered'];
+        $skipped    = $run['skipped'];
+        $reconcile  = $run['reconcile'];
 
-        $db->begin_transaction();
-        try {
-            foreach ($names as $name) {
-                $stmt = $db->prepare('SELECT Id FROM tblMusicians WHERE Name = ? LIMIT 1');
-                $stmt->bind_param('s', $name);
-                $stmt->execute();
-                $existing = $stmt->get_result()->fetch_row();
-                $stmt->close();
-                if ($existing) { $skipped++; continue; }
-
-                $newId = registerMusicianByName($db, $name);
-                if ($newId > 0) { $registered++; } else { $skipped++; }
-            }
-
-            /* #1784 — self-heal the byte-variant names the register loop above
-               "skips". A candidate like "Eddie James " (trailing space) already
-               has a collation-matching registry row ("Eddie James"), so the loop
-               finds it and skips — but the credit rows keep their stray bytes and
-               the counter never clears. Reconciliation rewrites those credit rows
-               to the registry's exact spelling (and auto-registers any name with
-               no registry row at all), so pressing "Add all now" actually drives
-               the counter to zero. Same shared core the migration runs (rule #22);
-               runs inside this same transaction. */
-            $reconcile = musicianReconcileCreditNameBytes($db);
-
-            $db->commit();
-
-            $logMusician('bulk_register_remaining', '', [
-                'bulk_run_id' => $bulkRunId,
-                'registered'  => $registered,
-                'skipped'     => $skipped,
-                'candidates'  => count($names),
-                'reconciled_rewritten' => $reconcile['rewritten'],
-                'reconciled_adopted'   => $reconcile['adopted'],
-                'reconciled_new'       => $reconcile['registered'],
-                'reconciled_ambiguous' => $reconcile['ambiguous'],
-            ]);
-            $reconFixed = $reconcile['rewritten'] + $reconcile['registered'];
-            $success = "Bulk run {$bulkRunId} done: {$registered} name" . ($registered === 1 ? '' : 's')
-                     . ' registered'
-                     . ($reconFixed > 0 ? ", {$reconcile['adopted']} matched an existing registry spelling and {$reconcile['rewritten']} credit row(s) tidied" : '')
-                     . ($reconcile['ambiguous'] > 0 ? ", {$reconcile['ambiguous']} left for duplicate review (registry has two matching rows)" : '')
-                     . '.';
-        } catch (\Throwable $tx) {
-            $db->rollback();
-            throw $tx;
-        }
+        $logMusician('bulk_register_remaining', '', [
+            'bulk_run_id' => $bulkRunId,
+            'registered'  => $registered,
+            'skipped'     => $skipped,
+            'candidates'  => $run['candidates'],
+            'reconciled_rewritten' => $reconcile['rewritten'],
+            'reconciled_adopted'   => $reconcile['adopted'],
+            'reconciled_new'       => $reconcile['registered'],
+            'reconciled_ambiguous' => $reconcile['ambiguous'],
+        ]);
+        $reconFixed = $reconcile['rewritten'] + $reconcile['registered'];
+        $success = "Bulk run {$bulkRunId} done: {$registered} name" . ($registered === 1 ? '' : 's')
+                 . ' registered'
+                 . ($reconFixed > 0 ? ", {$reconcile['adopted']} matched an existing registry spelling and {$reconcile['rewritten']} credit row(s) tidied" : '')
+                 . ($reconcile['ambiguous'] > 0 ? ", {$reconcile['ambiguous']} left for duplicate review (registry has two matching rows)" : '')
+                 . '.';
     } catch (\Throwable $e) {
         error_log('[manage/musicians.php] bulk_register_unregistered failed: ' . $e->getMessage());
         $error = 'Bulk register failed: ' . $e->getMessage();
