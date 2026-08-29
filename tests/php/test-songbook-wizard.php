@@ -709,6 +709,50 @@ ok('(k) songbookAdminValidateCreate() calls validateSongbookAbbr(', str_contains
 ok('(k) songbookAdminValidateCreate() contains NO second hand-rolled IL-reservation regex (must delegate to ilidAbbrIsReserved() via the ONE validator, never a private copy)',
     !preg_match('/\^IL\[/i', $coreValidateFn));
 
+/* ---- (l) a11y audit F3/F6/F7 — the abbreviation-status live region uses
+   role="status" + is aria-describedby'd from its input, the hard-required
+   Name/Abbreviation inputs carry aria-required, and checkAbbr()'s live
+   status uses the -emphasis contrast tokens (never a bare text-success/
+   text-danger — text-warning-emphasis was already correct before this
+   pass and is re-asserted here so it can't regress). ---- */
+ok('(l) sbwiz-abbr-status carries role="status" (live announcement, WCAG 4.1.3)',
+    (bool)preg_match('~id="sbwiz-abbr-status"[^>]*\brole="status"~', $pageSrc)
+    || (bool)preg_match('~\brole="status"[^>]*id="sbwiz-abbr-status"~', $pageSrc));
+ok('(l) sbwiz-abbreviation is aria-describedby="sbwiz-abbr-status" (pairs the input with its live status)',
+    (bool)preg_match('~id="sbwiz-abbreviation"[\s\S]{0,200}?aria-describedby="sbwiz-abbr-status"~', $pageSrc));
+ok('(l) sbwiz-name carries aria-required="true" (hard-required field)',
+    (bool)preg_match('~id="sbwiz-name"[^>]*aria-required="true"~', $pageSrc));
+ok('(l) sbwiz-abbreviation carries aria-required="true" (hard-required field)',
+    (bool)preg_match('~aria-required="true"[^>]*id="sbwiz-abbreviation"~', $pageSrc)
+    || (bool)preg_match('~id="sbwiz-abbreviation"[\s\S]{0,200}?aria-required="true"~', $pageSrc));
+
+$checkAbbrBody = functionBodyFor($pageSrc, 'checkAbbr');
+ok('(l) isolated checkAbbr() body (non-empty)', $checkAbbrBody !== '');
+foreach (['text-success-emphasis', 'text-warning-emphasis', 'text-danger-emphasis'] as $token) {
+    ok("(l) checkAbbr() sets the {$token} token on the abbr-status element", str_contains($checkAbbrBody, $token));
+}
+/** True when `$body` contains a BARE text-success/text-warning/text-danger
+ *  class (not immediately followed by "-emphasis") — mirrors
+ *  test-external-link-wizard.php's / test-organisation-wizard.php's own. */
+function sbwHasBareStatusColourClass(string $body): bool
+{
+    return (bool)preg_match('/\btext-(?:success|warning|danger)\b(?!-emphasis)/', $body);
+}
+ok('sbwHasBareStatusColourClass() accepts a fixture with only -emphasis tokens',
+    !sbwHasBareStatusColourClass("className = 'form-text small text-success-emphasis';"));
+ok('MUTATION PROOF: sbwHasBareStatusColourClass() flags a fixture with a bare text-success class',
+    sbwHasBareStatusColourClass("className = 'form-text small text-success';"));
+ok('(l) checkAbbr() contains NO bare text-success/text-warning/text-danger status class (WCAG 1.4.3)',
+    !sbwHasBareStatusColourClass($checkAbbrBody));
+
+/* MUTATION PROOF: revert one -emphasis token to bare on a COPY of the real
+   body and confirm the check goes red. */
+ok('(l) fixture precondition: the real checkAbbr() body genuinely uses text-success-emphasis',
+    str_contains($checkAbbrBody, 'text-success-emphasis'));
+$mutatedBareAbbrSuccess = str_replace('text-success-emphasis', 'text-success', $checkAbbrBody);
+ok('(l) MUTATION PROOF: reverting text-success-emphasis to bare text-success on a copy of the real body makes the check go red',
+    sbwHasBareStatusColourClass($mutatedBareAbbrSuccess));
+
 /* =========================================================================
  * REPORT
  * ========================================================================= */

@@ -291,7 +291,7 @@ export function mountNewSongWizard(ctx) {
             message = 'Song ' + raw + ' is occupied by a hidden (deleted) song in ' + abbr
                 + ' — restore or purge it at /manage/deleted-songs, or pick a different number.';
         } else if (status === 'taken') {
-            availEl.classList.add('text-danger');
+            availEl.classList.add('text-danger-emphasis');
             message = 'Song ' + raw + ' already exists in ' + abbr + '.';
             offerOpen = true;
         } else {

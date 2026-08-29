@@ -162,8 +162,22 @@ function songbookAdminValidateCreate(\mysqli $db, array $in): array
     }
 
     /* #672 — bibliographic + authority-control identifiers. All nullable,
-       all VARCHAR. trim()→null normalises blank inputs to real NULL. */
-    $websiteUrl   = trim((string)($in['website_url']         ?? '')) ?: null;
+       all VARCHAR. trim()→null normalises blank inputs to real NULL.
+       Security audit F6 — every field here is now mb_substr()-capped to
+       its tblSongbooks column width (the SAME caps the MARCXML import path
+       at manage/songbooks.php already applies, e.g. its OclcNumber/Lccn
+       comments) BEFORE the ?: null coalesce, so an over-length paste is
+       silently truncated here rather than throwing a STRICT-mode 1406 at
+       bind_param() time (rule #19 — mysqli runs
+       MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT, so an overflow THROWS,
+       not truncates, and an uncaught throw here white-screens the
+       create/update handler with a generic 500). ArkId/OpenLibraryWorkId/
+       OpenLibraryEditionId are NOT capped here — mediaIdentifierPublicationClean()
+       below already REJECTS an over-length value with a friendly error
+       instead of silently truncating an identifier (truncating an ARK/OL
+       id would mint a wrong-but-plausible identifier, which is worse than
+       refusing it). */
+    $websiteUrl   = mb_substr(trim((string)($in['website_url']   ?? '')), 0, 500) ?: null;
     /* #1765 Feature 7 — the dedicated Internet Archive URL input was
        removed from the create form; IA links now go through the
        external-links card-list, reachable only after the row exists (the
@@ -173,22 +187,24 @@ function songbookAdminValidateCreate(\mysqli $db, array $in): array
        has had since #1765 Feature 7, closing the page/API drift #1993 set
        out to fix. */
     $iaUrl        = null;
-    $wikipediaUrl = trim((string)($in['wikipedia_url']       ?? '')) ?: null;
-    $wikidataId   = trim((string)($in['wikidata_id']         ?? '')) ?: null;
-    $oclcNumber   = trim((string)($in['oclc_number']         ?? '')) ?: null;
-    $ocnNumber    = trim((string)($in['ocn_number']          ?? '')) ?: null;
-    $lcpNumber    = trim((string)($in['lcp_number']          ?? '')) ?: null;
-    $isbn         = trim((string)($in['isbn']                ?? '')) ?: null;
+    $wikipediaUrl = mb_substr(trim((string)($in['wikipedia_url'] ?? '')), 0, 500) ?: null;
+    $wikidataId   = mb_substr(trim((string)($in['wikidata_id']   ?? '')), 0, 20)  ?: null;
+    $oclcNumber   = mb_substr(trim((string)($in['oclc_number']   ?? '')), 0, 30)  ?: null;
+    $ocnNumber    = mb_substr(trim((string)($in['ocn_number']    ?? '')), 0, 30)  ?: null;
+    $lcpNumber    = mb_substr(trim((string)($in['lcp_number']    ?? '')), 0, 30)  ?: null;
+    $isbn         = mb_substr(trim((string)($in['isbn']          ?? '')), 0, 20)  ?: null;
     /* #1765 Feature 3 — validated via the ONE shared validator,
        mediaIdentifierPublicationClean(). Empty input → null; a non-empty
-       value that doesn't look like a real ARK is rejected. */
+       value that doesn't look like a real ARK is rejected. That helper
+       already enforces its own column-width guard (§ its own doc-block),
+       so no additional mb_substr() cap belongs here. */
     $arkClean = mediaIdentifierPublicationClean('ark', (string)($in['ark_id'] ?? ''));
     if ($arkClean['error'] !== null) { return [null, $arkClean['error'], 400, 'ark_id']; }
     $arkId    = $arkClean['value'];
-    $isniId       = trim((string)($in['isni_id']             ?? '')) ?: null;
-    $viafId       = trim((string)($in['viaf_id']             ?? '')) ?: null;
-    $lccn         = trim((string)($in['lccn']                ?? '')) ?: null;
-    $lcClass      = trim((string)($in['lc_class']            ?? '')) ?: null;
+    $isniId       = mb_substr(trim((string)($in['isni_id']       ?? '')), 0, 25)  ?: null;
+    $viafId       = mb_substr(trim((string)($in['viaf_id']       ?? '')), 0, 20)  ?: null;
+    $lccn         = mb_substr(trim((string)($in['lccn']          ?? '')), 0, 20)  ?: null;
+    $lcClass      = mb_substr(trim((string)($in['lc_class']      ?? '')), 0, 50)  ?: null;
 
     /* #1765 Feature 2 — public-domain flag (informational only, never a
        content gate). Feature 3 — the OpenLibrary Work/Edition id pair,

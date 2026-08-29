@@ -515,9 +515,19 @@ $exemptions = [
         'paths' => ['audio-media.php', 'song-media.php'],
     ],
     422 => [
-        'reason' => 'Unprocessable ingest/import payloads and an un-classified soft-delete refusal — JSON-only, '
-                  . 'no render surface.',
-        'paths' => ['api.php', 'includes/song_soft_delete.php', 'manage/editor/api2.php'],
+        'reason' => 'Unprocessable ingest/import payloads, an un-classified soft-delete refusal, and (security '
+                  . 'audit F2, 2026-08-29) the wizard-suite\'s repeatable-row DoS caps rejecting an '
+                  . 'oversized pattern/licence/member-row batch BEFORE a single row is processed. '
+                  . 'organisations.php\'s cap check sits in its JSON-only wizard_create_organisation branch, same '
+                  . 'shape as the rest of this exemption. external-link-types.php\'s cap check ALSO fires from its '
+                  . 'classic-form save_type_patterns/create_type cases — those set the status code and continue '
+                  . "rendering the normal HTML page with \$error inline (not a JSON body), the SAME non-JSON shape "
+                  . "that page's own pre-existing 409 duplicate-slug refusal already has in the 409 exemption "
+                  . 'above; grouped here rather than invented as a new exemption entry.',
+        'paths' => [
+            'api.php', 'includes/song_soft_delete.php', 'manage/editor/api2.php',
+            'manage/external-link-types.php', 'manage/organisations.php',
+        ],
     ],
     502 => [
         'reason' => "CORRECTED while building this guard (#1704): the brief assumed 502 was 'never "

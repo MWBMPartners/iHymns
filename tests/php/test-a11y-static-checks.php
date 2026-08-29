@@ -386,6 +386,103 @@ function a11yHasSkipLinkAndMainLandmark(string $src): bool
     return $hasSkipLink && $hasMain;
 }
 
+/**
+ * @return array{offset:int,line:int,tag:string,window:string}[] every
+ * guided-wizard modal in `$src` (already comment-stripped — see below for
+ * why that matters) — a `<div class="modal fade" …>` whose bounded window
+ * (from its own opening tag up to the START of the NEXT such modal, or
+ * 6000 chars, whichever is smaller) contains `data-wiz-progress`, the
+ * js/modules/admin-wizard.js framework's own step-progress placeholder
+ * (`renderProgress()` injects it into every step-based wizard modal and
+ * NOTHING else in this codebase emits that string). This is a genuine
+ * STRUCTURAL fingerprint, not a hand-typed file/id list (rule #34) — a
+ * sixth wizard modal built on the shared stepper is picked up
+ * automatically, and an ordinary Bootstrap modal (`editModal`,
+ * `deleteModal`, editor2.php's plain `v2-new-modal`, …) is never swept in.
+ *
+ * Comment-stripping is LOAD-BEARING, not decoration: editor2.php's own
+ * `v2-new-modal` (an ordinary, non-wizard modal) sits immediately before
+ * `v2-new-wizard-modal` (the real wizard), separated only by a PHP
+ * doc-comment that itself PROSE-MENTIONS "[data-wiz-progress]" while
+ * explaining the wizard markup below it — on unstripped source, that
+ * mention falls inside `v2-new-modal`'s own bounded window (it ends only
+ * at the NEXT modal's opening tag, and the comment sits before that tag)
+ * and misclassifies the wrong modal as a wizard. This is the exact same
+ * "a doc-comment mentioning the fingerprint is not the fingerprint" trap
+ * `a11yFindStaticIds()`'s own doc-block warns about for `${…}` — caught
+ * here by a dedicated fixture below (rule #34) rather than assumed away.
+ */
+function a11yFindWizardModals(string $src): array
+{
+    $out = [];
+    if (preg_match_all('~<div\s+class="modal fade"[^>]*>~', $src, $m, PREG_OFFSET_CAPTURE) === false) {
+        return $out;
+    }
+    $offsets = array_map(static fn(array $x): int => $x[1], $m[0]);
+    $tags    = array_map(static fn(array $x): string => $x[0], $m[0]);
+    $n = count($offsets);
+    for ($i = 0; $i < $n; $i++) {
+        $start = $offsets[$i];
+        $cap   = $i + 1 < $n ? min($offsets[$i + 1], $start + 6000) : min($start + 6000, strlen($src));
+        $window = substr($src, $start, max(0, $cap - $start));
+        if (!str_contains($window, 'data-wiz-progress')) {
+            continue; // an ordinary modal, not one built on the shared stepper
+        }
+        $out[] = [
+            'offset' => $start,
+            'line'   => substr_count(substr($src, 0, $start), "\n") + 1,
+            'tag'    => $tags[$i],
+            'window' => $window,
+        ];
+    }
+    return $out;
+}
+
+/**
+ * @return int[] 1-based line numbers of every wizard modal
+ * (a11yFindWizardModals()) that is missing `aria-labelledby="…"` on the
+ * modal element itself, OR whose `aria-labelledby` value has no matching
+ * `id="…"` on a heading that also carries the `modal-title` class
+ * anywhere in the modal's own window (a11y audit F4, 2026-08-29 wizard
+ * audit) — WCAG 4.1.2, a modal with no accessible name announces only
+ * "dialog" when a screen reader enters it.
+ */
+function a11yWizardModalsMissingLabelledby(string $src): array
+{
+    $lines = [];
+    foreach (a11yFindWizardModals($src) as $modal) {
+        if (!preg_match('~\baria-labelledby="([^"]+)"~', $modal['tag'], $lm)) {
+            $lines[] = $modal['line'];
+            continue;
+        }
+        $idNeedle = preg_quote($lm[1], '~');
+        $hasHeadingId =
+            preg_match('~<h[1-6]\b[^>]*\bclass="[^"]*\bmodal-title\b[^"]*"[^>]*\bid="' . $idNeedle . '"~', $modal['window']) === 1
+            || preg_match('~<h[1-6]\b[^>]*\bid="' . $idNeedle . '"[^>]*\bclass="[^"]*\bmodal-title\b[^"]*"~', $modal['window']) === 1;
+        if (!$hasHeadingId) {
+            $lines[] = $modal['line'];
+        }
+    }
+    return $lines;
+}
+
+/**
+ * @return int[] 1-based line numbers of every wizard modal
+ * (a11yFindWizardModals()) still carrying `btn-close-white` instead of the
+ * theme-aware plain `btn-close` (a11y audit F5, 2026-08-29 wizard audit —
+ * #953/#955's regression: white-on-white in light theme).
+ */
+function a11yWizardModalsBtnCloseWhite(string $src): array
+{
+    $lines = [];
+    foreach (a11yFindWizardModals($src) as $modal) {
+        if (str_contains($modal['window'], 'btn-close-white')) {
+            $lines[] = $modal['line'];
+        }
+    }
+    return $lines;
+}
+
 /* ---------------------------------------------------------------------------
  * SELF-TEST — prove the scanners can actually fail (rule #34) before
  * trusting them against the real tree.
@@ -581,6 +678,74 @@ $ctrlEmptyNoIconFixture = '<button type="button" id="js-fill-me"></button>';
 if (a11yIconAccessibility($ctrlEmptyNoIconFixture)['controls'] !== []) {
     $selfTestFailures[] = 'a11yIconAccessibility() false-flagged a totally empty <button> with NO icon inside '
         . '(a legitimate script-populated-later placeholder) — the has-a-bi-icon precondition regressed.';
+}
+
+// Wizard-suite audit F4/F5 (2026-08-29) — a11yFindWizardModals() /
+// a11yWizardModalsMissingLabelledby() / a11yWizardModalsBtnCloseWhite().
+$wizGoodFixture = '<div class="modal fade" id="xWizardModal" aria-labelledby="xWizardModalLabel">'
+    . '<div class="modal-header"><h2 class="modal-title h5" id="xWizardModalLabel">X — guided</h2>'
+    . '<button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>'
+    . '<div class="modal-body"><div data-wiz-progress></div></div></div>';
+if (a11yFindWizardModals($wizGoodFixture) === []) {
+    $selfTestFailures[] = 'a11yFindWizardModals() did not classify a fixture modal genuinely carrying '
+        . 'data-wiz-progress as a wizard modal.';
+}
+if (a11yWizardModalsMissingLabelledby($wizGoodFixture) !== []) {
+    $selfTestFailures[] = 'a11yWizardModalsMissingLabelledby() false-flagged an already-correct wizard modal '
+        . '(aria-labelledby present + matching id on a modal-title heading).';
+}
+if (a11yWizardModalsBtnCloseWhite($wizGoodFixture) !== []) {
+    $selfTestFailures[] = 'a11yWizardModalsBtnCloseWhite() false-flagged a wizard modal that already uses plain btn-close.';
+}
+$wizNonWizardFixture = '<div class="modal fade" id="plainModal"><div class="modal-header">'
+    . '<h2 class="modal-title">Plain</h2><button type="button" class="btn-close-white" data-bs-dismiss="modal"></button>'
+    . '</div><div class="modal-body">no stepper here</div></div>';
+if (a11yFindWizardModals($wizNonWizardFixture) !== []) {
+    $selfTestFailures[] = 'a11yFindWizardModals() misclassified an ORDINARY modal (no data-wiz-progress, even '
+        . 'with a bare btn-close-white and no aria-labelledby) as a wizard modal — both wizard checks would '
+        . 'wrongly fire on every plain Bootstrap modal in the app.';
+}
+if (a11yWizardModalsMissingLabelledby($wizNonWizardFixture) !== [] || a11yWizardModalsBtnCloseWhite($wizNonWizardFixture) !== []) {
+    $selfTestFailures[] = 'a11yWizardModalsMissingLabelledby()/a11yWizardModalsBtnCloseWhite() flagged an '
+        . 'ordinary (non-wizard) modal — these two checks must only ever apply to a11yFindWizardModals() output.';
+}
+$wizNoLabelledbyFixture = '<div class="modal fade" id="yWizardModal"><div class="modal-header">'
+    . '<h2 class="modal-title">Y — guided</h2><button type="button" class="btn-close-white" data-bs-dismiss="modal"></button>'
+    . '</div><div class="modal-body"><div data-wiz-progress></div></div></div>';
+if (a11yWizardModalsMissingLabelledby($wizNoLabelledbyFixture) === []) {
+    $selfTestFailures[] = 'a11yWizardModalsMissingLabelledby() did not flag a wizard modal with NO aria-labelledby at all.';
+}
+if (a11yWizardModalsBtnCloseWhite($wizNoLabelledbyFixture) === []) {
+    $selfTestFailures[] = 'a11yWizardModalsBtnCloseWhite() did not flag a wizard modal still carrying btn-close-white.';
+}
+$wizMismatchedIdFixture = '<div class="modal fade" id="zWizardModal" aria-labelledby="zWizardModalLabel">'
+    . '<div class="modal-header"><h2 class="modal-title" id="totally-different-id">Z — guided</h2>'
+    . '<button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>'
+    . '<div class="modal-body"><div data-wiz-progress></div></div></div>';
+if (a11yWizardModalsMissingLabelledby($wizMismatchedIdFixture) === []) {
+    $selfTestFailures[] = 'a11yWizardModalsMissingLabelledby() did not flag a wizard modal whose aria-labelledby '
+        . 'value points at an id nothing on the heading actually carries (a dangling reference).';
+}
+// The editor2.php regression this function's own doc-block names: an
+// ordinary modal immediately followed by a PHP doc-comment that itself
+// PROSE-MENTIONS "data-wiz-progress" while documenting the REAL wizard
+// modal below it must not leak that mention into the ordinary modal's
+// window once comments are stripped first (the real scan always strips
+// comments before calling this — see the two live-tree assertions below).
+$wizCommentLeakFixture = '<div class="modal fade" id="plainModal"><div class="modal-header">'
+    . '<h2 class="modal-title">Plain</h2><button type="button" class="btn-close" data-bs-dismiss="modal"></button>'
+    . '</div><div class="modal-body">no stepper here</div></div>'
+    . '/* mentions [data-wiz-progress] in prose only, documenting the wizard below */'
+    . '<div class="modal fade" id="realWizardModal" aria-labelledby="realWizardModalLabel">'
+    . '<div class="modal-header"><h2 class="modal-title" id="realWizardModalLabel">Real</h2>'
+    . '<button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>'
+    . '<div class="modal-body"><div data-wiz-progress></div></div></div>';
+$wizCommentLeakStripped = a11yStripComments($wizCommentLeakFixture);
+$wizCommentLeakModals = a11yFindWizardModals($wizCommentLeakStripped);
+if (count($wizCommentLeakModals) !== 1 || $wizCommentLeakModals[0]['tag'] !== '<div class="modal fade" id="realWizardModal" aria-labelledby="realWizardModalLabel">') {
+    $selfTestFailures[] = 'MUTATION PROOF (the editor2.php v2-new-modal false positive): a11yFindWizardModals() '
+        . 'must classify EXACTLY the real wizard modal, not the preceding ordinary modal a following doc-comment '
+        . 'happens to mention data-wiz-progress about — got ' . count($wizCommentLeakModals) . ' match(es).';
 }
 
 /* -----------------------------------------------------------------------
@@ -874,6 +1039,39 @@ foreach ($m2m8Targets as $file) {
             . 'accessible name (M8, #1990). Add aria-label/title on the opening tag, or a '
             . '<span class="visually-hidden">…</span> inside — otherwise a screen reader announces only '
             . '"button"/"link" with no indication of what it does.',
+            $rel,
+            $line
+        );
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Assertion 8 (wizard-suite a11y audit F4/F5, 2026-08-29) — every guided-
+ * wizard modal (tree-derived via the data-wiz-progress fingerprint,
+ * a11yFindWizardModals() — never a hand-typed modal-id list, so a future
+ * 6th wizard is covered automatically) carries aria-labelledby matching a
+ * real id on its modal-title heading, and none still carries the
+ * white-on-white btn-close-white regression #953/#955 already fixed
+ * everywhere else. Scoped to the SAME $m2m8Targets tree this file already
+ * walks for M2/M8 (manage/, manage/includes, manage/editor, …).
+ * ------------------------------------------------------------------------- */
+foreach ($m2m8Targets as $file) {
+    $rel = substr($file, strlen($public) + 1);
+    $src = a11yStripComments((string) file_get_contents($file));
+
+    foreach (a11yWizardModalsMissingLabelledby($src) as $line) {
+        $failures[] = sprintf(
+            '%s:%d — a guided-wizard modal (data-wiz-progress present) has no aria-labelledby, or its '
+            . 'aria-labelledby value does not match a real id="…" on a .modal-title heading (a11y audit F4). '
+            . 'A screen reader entering this dialog announces only "dialog" with no name.',
+            $rel,
+            $line
+        );
+    }
+    foreach (a11yWizardModalsBtnCloseWhite($src) as $line) {
+        $failures[] = sprintf(
+            '%s:%d — a guided-wizard modal still uses btn-close-white instead of the theme-aware plain '
+            . 'btn-close (a11y audit F5) — white-on-white in light theme (#953/#955 regression).',
             $rel,
             $line
         );

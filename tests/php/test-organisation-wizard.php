@@ -693,6 +693,126 @@ $mutatedApiCreateGone = withMutatedFile($apiSrc, "case 'admin_organisation_creat
 });
 ok('(h) MUTATION PROOF: removing the API create case makes caseBodyFor() return ""', $mutatedApiCreateGone === '');
 
+/* ---- (i) security audit F2 — licence-row + member-row DoS caps enforced
+   in BOTH JSON-speaking funnels (the page's wizard branch AND the API
+   twin), each checking BEFORE its loop runs and responding 422 on excess.
+   The ONE cap constant is IHYMNS_ORG_WIZARD_ROW_CAP
+   (includes/organisation_admin.php), shared by both the licence-row check
+   and the member-row check in each funnel — asserted by reference to that
+   SAME constant (never a re-typed magic number) and by COUNT (>= 2 uses
+   per funnel: one for licence rows, one for member rows). ---- */
+ok('(i) includes/organisation_admin.php defines the ONE shared row-count cap constant IHYMNS_ORG_WIZARD_ROW_CAP',
+    (bool)preg_match('/const\s+IHYMNS_ORG_WIZARD_ROW_CAP\s*=/', $coreSrc));
+
+/** True when `$body` checks the shared row-count cap constant AND responds
+ *  422 on excess — mirrors test-external-link-wizard.php's (k) shape. */
+function orgwHasRowCapCheck(string $body): bool
+{
+    return str_contains($body, 'IHYMNS_ORG_WIZARD_ROW_CAP') && str_contains($body, '422');
+}
+
+/* Fixture self-test (rule #34) before trusting orgwHasRowCapCheck()
+   against real source. */
+$orgCapFixtureGood = "if (count(\$lTypes) > IHYMNS_ORG_WIZARD_ROW_CAP) {\n"
+    . "    http_response_code(422);\n    echo json_encode(['error' => 'Too many licence rows.']);\n    exit;\n}";
+ok('orgwHasRowCapCheck() accepts a genuine cap-check body (constant + 422 together)',
+    orgwHasRowCapCheck($orgCapFixtureGood));
+ok('MUTATION PROOF: orgwHasRowCapCheck() refuses a body with the constant but no 422 response',
+    !orgwHasRowCapCheck(str_replace('422', '200', $orgCapFixtureGood)));
+ok('MUTATION PROOF: orgwHasRowCapCheck() refuses a body with a 422 but no cap-constant reference (a hand-typed magic number)',
+    !orgwHasRowCapCheck(str_replace('IHYMNS_ORG_WIZARD_ROW_CAP', '50', $orgCapFixtureGood)));
+
+foreach ([
+    "page 'wizard_create_organisation' if-block" => $pageWizardCode,
+    "api 'admin_organisation_create' case"      => $apiCreateCode,
+] as $label => $body) {
+    ok("(i) {$label} checks the row-count cap (IHYMNS_ORG_WIZARD_ROW_CAP) and responds 422 on excess",
+        orgwHasRowCapCheck($body));
+    $capHits = substr_count($body, 'IHYMNS_ORG_WIZARD_ROW_CAP');
+    ok("(i) {$label} references the cap constant at least TWICE (once for licence rows, once for member rows — found {$capHits})",
+        $capHits >= 2);
+}
+
+/* MUTATION PROOF: strip the cap constant from a COPY of the real wizard
+   branch / API case body (str_replace, never the tracked file) and
+   confirm the presence check goes red. */
+ok('(i) fixture precondition: the real wizard branch body genuinely references the cap constant',
+    str_contains($pageWizardCode, 'IHYMNS_ORG_WIZARD_ROW_CAP'));
+$mutatedWizardNoCap = str_replace('IHYMNS_ORG_WIZARD_ROW_CAP', 'ZZZ_REMOVED_CAP', $pageWizardCode);
+ok('(i) MUTATION PROOF: removing the cap-constant reference from a copy of the real wizard branch body makes the check go red',
+    !orgwHasRowCapCheck($mutatedWizardNoCap));
+ok('(i) fixture precondition: the real API create body genuinely references the cap constant',
+    str_contains($apiCreateCode, 'IHYMNS_ORG_WIZARD_ROW_CAP'));
+$mutatedApiNoCap = str_replace('IHYMNS_ORG_WIZARD_ROW_CAP', 'ZZZ_REMOVED_CAP', $apiCreateCode);
+ok('(i) MUTATION PROOF: removing the cap-constant reference from a copy of the real API create body makes the check go red',
+    !orgwHasRowCapCheck($mutatedApiNoCap));
+
+/* ---- (j) a11y audit F1/F12 — every control addLicenceRow()/addMemberRow()
+   build carries a real label[for] bound to the SAME licenceRowSeq/
+   memberRowSeq-derived id (never just an aria-hidden visible label, which
+   names nothing), and each Remove button's name is DISTINCT per row. ---- */
+$addLicenceRowBody = functionBodyFor($pageSrc, 'addLicenceRow');
+$addMemberRowBody  = functionBodyFor($pageSrc, 'addMemberRow');
+ok('(j) isolated addLicenceRow() body (non-empty)', $addLicenceRowBody !== '');
+ok('(j) isolated addMemberRow() body (non-empty)', $addMemberRowBody !== '');
+ok('(j) addLicenceRow() no longer marks its visible labels aria-hidden (both the ready and degraded row shapes used to)',
+    !str_contains($addLicenceRowBody, 'aria-hidden="true">Type</label>'));
+foreach (['orgwiz-lic-type-', 'orgwiz-lic-number-', 'orgwiz-lic-expires-', 'orgwiz-lic-active-', 'orgwiz-lic-notes-'] as $idPrefix) {
+    ok("(j) addLicenceRow() mints a real label[for=\"{$idPrefix}\${seq}\"] control id",
+        str_contains($addLicenceRowBody, 'for="' . $idPrefix . '${seq}"') && str_contains($addLicenceRowBody, 'id="' . $idPrefix . '${seq}"'));
+}
+ok('(j) addLicenceRow() gives the Remove button a name DISTINCT per row (derived from seq, not a fixed "Remove")',
+    str_contains($addLicenceRowBody, 'aria-label="Remove licence row ${seq}"'));
+foreach (['orgwiz-mem-name-', 'orgwiz-mem-role-'] as $idPrefix) {
+    ok("(j) addMemberRow() mints a real label[for=\"{$idPrefix}\${seq}\"] control id",
+        str_contains($addMemberRowBody, 'for="' . $idPrefix . '${seq}"') && str_contains($addMemberRowBody, 'id="' . $idPrefix . '${seq}"'));
+}
+ok('(j) addMemberRow() gives the Remove button a name DISTINCT per row (was the SAME "Remove this member row" for every row before this pass)',
+    str_contains($addMemberRowBody, 'aria-label="Remove member row ${seq}"'));
+
+/* MUTATION PROOF: strip one control's label[for] from a COPY of the real
+   function body and confirm the presence check goes red. */
+ok('(j) fixture precondition: the real addLicenceRow() body genuinely mints for="orgwiz-lic-type-${seq}"',
+    str_contains($addLicenceRowBody, 'for="orgwiz-lic-type-${seq}"'));
+$mutatedNoLicTypeLabel = str_replace('for="orgwiz-lic-type-${seq}"', '', $addLicenceRowBody);
+ok('(j) MUTATION PROOF: removing the Type label[for] from a copy of the real body makes the presence check go red',
+    !str_contains($mutatedNoLicTypeLabel, 'for="orgwiz-lic-type-${seq}"'));
+ok('(j) fixture precondition: the real addMemberRow() body genuinely derives the Remove name from seq',
+    str_contains($addMemberRowBody, 'aria-label="Remove member row ${seq}"'));
+$mutatedFixedMemberRemove = str_replace('aria-label="Remove member row ${seq}"', 'aria-label="Remove this member row"', $addMemberRowBody);
+ok('(j) MUTATION PROOF: reverting the member Remove button to the old fixed name makes the per-row-distinct check go red',
+    !str_contains($mutatedFixedMemberRemove, 'aria-label="Remove member row ${seq}"'));
+
+/* ---- (k) a11y audit F6 — checkSlug()'s live slug-status uses the
+   -emphasis contrast tokens (never a bare text-success/text-danger, which
+   measures below WCAG 1.4.3 on this card's background in dark theme). ---- */
+$checkSlugBody = functionBodyFor($pageSrc, 'checkSlug');
+ok('(k) isolated checkSlug() body (non-empty)', $checkSlugBody !== '');
+foreach (['text-success-emphasis', 'text-danger-emphasis'] as $token) {
+    ok("(k) checkSlug() sets the {$token} token on the slug-status element", str_contains($checkSlugBody, $token));
+}
+/** True when `$body` contains a BARE text-success/text-warning/text-danger
+ *  class (i.e. NOT immediately followed by "-emphasis") — mirrors
+ *  test-external-link-wizard.php's elwHasBareStatusColourClass(). */
+function orgwHasBareStatusColourClass(string $body): bool
+{
+    return (bool)preg_match('/\btext-(?:success|warning|danger)\b(?!-emphasis)/', $body);
+}
+ok('orgwHasBareStatusColourClass() accepts a fixture with only -emphasis tokens',
+    !orgwHasBareStatusColourClass("className = 'form-text small text-success-emphasis';"));
+ok('MUTATION PROOF: orgwHasBareStatusColourClass() flags a fixture with a bare text-danger class',
+    orgwHasBareStatusColourClass("className = 'form-text small text-danger';"));
+ok('(k) checkSlug() contains NO bare text-success/text-warning/text-danger status class (WCAG 1.4.3)',
+    !orgwHasBareStatusColourClass($checkSlugBody));
+
+/* MUTATION PROOF: revert one -emphasis token to bare on a COPY of the real
+   body and confirm the check goes red. */
+ok('(k) fixture precondition: the real checkSlug() body genuinely uses text-danger-emphasis',
+    str_contains($checkSlugBody, 'text-danger-emphasis'));
+$mutatedBareSlugDanger = str_replace('text-danger-emphasis', 'text-danger', $checkSlugBody);
+ok('(k) MUTATION PROOF: reverting text-danger-emphasis to bare text-danger on a copy of the real body makes the check go red',
+    orgwHasBareStatusColourClass($mutatedBareSlugDanger));
+
 /* =========================================================================
  * REPORT
  * ========================================================================= */

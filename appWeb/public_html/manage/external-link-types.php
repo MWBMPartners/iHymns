@@ -118,6 +118,17 @@ if ($hasPatternsSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             if (!is_array($pNotes))  { $pNotes  = []; }
             if (!is_array($pActive)) { $pActive = []; }
 
+            /* Security audit F2 — row-count DoS cap
+               (IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP,
+               includes/external_link_type_admin.php), checked before a single
+               row is normalised — this JSON branch is bounded only by
+               post_max_size, not PHP's form max_input_vars. */
+            if (max(count($pHosts), count($pPaths)) > IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP) {
+                http_response_code(422);
+                echo json_encode(['error' => 'Too many pattern rows in one request.']);
+                exit;
+            }
+
             $patternRows = externalLinkTypeAdminNormalisePatterns($pHosts, $pPaths, $pSubs, $pPrios, $pNotes, $pActive);
             $newId = externalLinkTypeAdminCreate($db, $fields, $patternRows);
 
@@ -188,6 +199,15 @@ if ($hasPatternsSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 if (!is_array($pNotes))  $pNotes  = [];
                 if (!is_array($pActive)) $pActive = [];
 
+                /* Security audit F2 — row-count DoS cap
+                   (IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP,
+                   includes/external_link_type_admin.php). */
+                if (max(count($pHosts), count($pPaths)) > IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP) {
+                    http_response_code(422);
+                    $error = 'Too many pattern rows in one request.';
+                    break;
+                }
+
                 $patternRows = externalLinkTypeAdminNormalisePatterns($pHosts, $pPaths, $pSubs, $pPrios, $pNotes, $pActive);
                 $insertCount = externalLinkTypeAdminSave($db, $typeId, $isActive, $appliesToSave, $patternRows);
 
@@ -242,6 +262,15 @@ if ($hasPatternsSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 if (!is_array($pNotes))  $pNotes  = [];
                 if (!is_array($pActive)) $pActive = [];
 
+                /* Security audit F2 — row-count DoS cap
+                   (IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP,
+                   includes/external_link_type_admin.php). */
+                if (max(count($pHosts), count($pPaths)) > IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP) {
+                    http_response_code(422);
+                    $error = 'Too many pattern rows in one request.';
+                    break;
+                }
+
                 $patternRows = externalLinkTypeAdminNormalisePatterns($pHosts, $pPaths, $pSubs, $pPrios, $pNotes, $pActive);
 
                 try {
@@ -265,7 +294,12 @@ if ($hasPatternsSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         }
     } catch (\Throwable $e) {
         error_log('[external-link-types POST] ' . $e->getMessage());
-        $error = 'Could not save changes: ' . $e->getMessage();
+        /* Security audit F5 — every OTHER catch on this page (the wizard's
+           JSON branch, the create_type duplicate-slug catch) already keeps
+           exception prose out of the response; this generic catch was the
+           odd one out, leaking mysqli_sql_exception detail (table/column/
+           constraint names) to an admin. Detail stays in error_log() only. */
+        $error = 'Could not save changes.';
     }
 }
 
@@ -774,12 +808,12 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
     window._iHymnsLinkTypes = <?= json_encode($linkTypesForWizard, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     </script>
 
-    <div class="modal fade" id="linkTypeWizardModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal fade" id="linkTypeWizardModal" tabindex="-1" aria-hidden="true" aria-labelledby="linkTypeWizardModalLabel" data-bs-backdrop="static">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content" id="linkTypeWizardRoot">
                 <div class="modal-header">
-                    <h2 class="modal-title h5 mb-0">Add a link provider — guided</h2>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <h2 class="modal-title h5 mb-0" id="linkTypeWizardModalLabel">Add a link provider — guided</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div data-wiz-progress class="mb-3"></div>
@@ -789,12 +823,12 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                         <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
                         <div class="mb-3">
                             <label class="form-label" for="wiz-name">Name</label>
-                            <input type="text" class="form-control" id="wiz-name" maxlength="120">
+                            <input type="text" class="form-control" id="wiz-name" maxlength="120" aria-required="true">
                         </div>
                         <div class="row g-3">
                             <div class="col-md-6">
                                 <label class="form-label" for="wiz-slug">Slug</label>
-                                <input type="text" class="form-control" id="wiz-slug" maxlength="60">
+                                <input type="text" class="form-control" id="wiz-slug" maxlength="60" aria-required="true">
                                 <div class="form-text small">Derived from the name — edit it if you'd rather choose your own.</div>
                             </div>
                             <div class="col-md-6">
@@ -946,12 +980,12 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                   '<div class="col-md-2"><label class="form-label small mb-0" aria-hidden="true">Priority</label>' +
                     '<input type="number" class="form-control form-control-sm" data-wiz-pattern-priority aria-label="Pattern priority" value="100" min="0" max="65535"></div>' +
                   '<div class="col-md-3 d-flex flex-column gap-1 mt-3">' +
-                    '<div class="form-check small"><input class="form-check-input" type="checkbox" data-wiz-pattern-subdomain checked><label class="form-check-label" aria-hidden="true">Match sub-domains</label></div>' +
+                    '<div class="form-check small"><input class="form-check-input" type="checkbox" data-wiz-pattern-subdomain aria-label="Match sub-domains" checked><label class="form-check-label" aria-hidden="true">Match sub-domains</label></div>' +
                   '</div>' +
                 '</div>' +
                 '<div class="row g-2 mt-1 align-items-center">' +
-                  '<div class="col-md-8"><span class="small" data-wiz-pattern-status>Untested</span></div>' +
-                  '<div class="col-md-4 text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-wiz-pattern-remove>' +
+                  '<div class="col-md-8"><span class="small" data-wiz-pattern-status role="status">Untested</span></div>' +
+                  '<div class="col-md-4 text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-wiz-pattern-remove aria-label="Remove pattern row ' + patternSeq + '">' +
                     '<i aria-hidden="true" class="bi bi-x-lg"></i> Remove</button></div>' +
                 '</div>' +
               '</div>';
@@ -1045,15 +1079,15 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
             }
             if (result === draftSlug) {
                 statusEl.textContent = 'Matches this sample — this pattern will win.';
-                statusEl.className = 'small text-success';
+                statusEl.className = 'small text-success-emphasis';
             } else if (result) {
                 const collision = base.find(function (t) { return t.slug === result; });
                 const collisionName = collision ? collision.name : result;
                 statusEl.textContent = 'Also matched by "' + collisionName + '" — try a lower priority number to win.';
-                statusEl.className = 'small text-warning';
+                statusEl.className = 'small text-warning-emphasis';
             } else {
                 statusEl.textContent = 'No match for the sample URL — check the host.';
-                statusEl.className = 'small text-danger';
+                statusEl.className = 'small text-danger-emphasis';
             }
         }
 

@@ -135,6 +135,16 @@ function ihymns_wizard_empty_state(array $o): string
     $hint        = isset($o['hint']) ? (string)$o['hint'] : null;
     $headingTag  = (string)($o['headingTag'] ?? 'h2');
 
+    // Security audit F3: $icon is escaped below but wasn't previously
+    // pattern-validated — every real call site passes a literal Bootstrap
+    // Icons suffix, so this is defence-in-depth (class-only injection,
+    // cosmetic at worst) rather than a live path today. Mirrors the
+    // modalId discipline just above: fall back to a safe default instead
+    // of rendering whatever was passed.
+    if (preg_match('/^bi-[a-z0-9-]+$/', $icon) !== 1) {
+        $icon = 'bi-magic';
+    }
+
     if ($modalId === '' || preg_match('/^[A-Za-z0-9_-]+$/', $modalId) !== 1) {
         throw new \InvalidArgumentException(
             "ihymns_wizard_empty_state(): 'modalId' must match [A-Za-z0-9_-]+ and be non-empty, got "

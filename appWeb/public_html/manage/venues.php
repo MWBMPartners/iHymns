@@ -827,12 +827,12 @@ function venuesUrl(array $overrides = []): string
         };
     </script>
 
-    <div class="modal fade" id="svcWizardModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal fade" id="svcWizardModal" tabindex="-1" aria-hidden="true" aria-labelledby="svcWizardModalLabel" data-bs-backdrop="static">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content" id="svcWizardRoot">
                 <div class="modal-header">
-                    <h2 class="modal-title h5 mb-0">Live Service setup — guided</h2>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <h2 class="modal-title h5 mb-0" id="svcWizardModalLabel">Live Service setup — guided</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div id="svcwiz-steps-wrap">
@@ -862,7 +862,7 @@ function venuesUrl(array $overrides = []): string
                             <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
                             <div class="mb-3">
                                 <label class="form-label" for="svcwiz-org">Organisation</label>
-                                <select class="form-select" id="svcwiz-org">
+                                <select class="form-select" id="svcwiz-org" aria-required="true">
                                     <?php foreach ($orgs as $o): ?>
                                         <option value="<?= (int)$o['Id'] ?>" <?= (int)$o['Id'] === $selectedOrgId ? 'selected' : '' ?>><?= htmlspecialchars($o['Name']) ?></option>
                                     <?php endforeach; ?>
@@ -870,7 +870,7 @@ function venuesUrl(array $overrides = []): string
                             </div>
                             <div class="mb-3">
                                 <label class="form-label" for="svcwiz-venue-name">Venue name</label>
-                                <input type="text" class="form-control" id="svcwiz-venue-name" maxlength="150" placeholder="e.g. Main Sanctuary">
+                                <input type="text" class="form-control" id="svcwiz-venue-name" maxlength="150" placeholder="e.g. Main Sanctuary" aria-required="true">
                             </div>
                             <div class="mb-3">
                                 <label class="form-label" for="svcwiz-place">Find location (optional)</label>
@@ -1333,6 +1333,7 @@ function venuesUrl(array $overrides = []): string
                     + '<strong>Copy this driver key now — it will not be shown again:</strong><br>'
                     + '<code style="user-select:all;" id="svcwiz-done-key">' + escapeHtml(info.mintOutcome.key) + '</code> '
                     + '<button type="button" class="btn btn-sm btn-outline-secondary ms-2" id="svcwiz-copy-key">Copy</button>'
+                    + '<span class="small ms-2" id="svcwiz-copy-status" role="status"></span>'
                     + '<div class="form-text small mb-0">Lost it? Revoke it and mint a new one any time on the Projector Screen.</div>'
                     + '</div>';
             } else if (info.mintOutcome && info.mintOutcome.minted === false) {
@@ -1349,8 +1350,28 @@ function venuesUrl(array $overrides = []): string
             const copyBtn = document.getElementById('svcwiz-copy-key');
             if (copyBtn) {
                 copyBtn.addEventListener('click', function () {
+                    /* a11y audit F8 — a clipboard write with no visible/
+                       announced outcome leaves a screen-reader (or anyone
+                       not watching the OS clipboard) with no idea whether
+                       the copy worked. Flip the button's own text to
+                       "Copied" (a sighted, at-a-glance confirmation) AND
+                       write the SAME outcome into the adjacent role="status"
+                       span (an ANNOUNCED confirmation) — success and
+                       failure both surfaced, never silently swallowed. */
                     const codeEl = document.getElementById('svcwiz-done-key');
-                    if (codeEl && navigator.clipboard) { navigator.clipboard.writeText(codeEl.textContent).catch(function () {}); }
+                    const statusEl = document.getElementById('svcwiz-copy-status');
+                    const originalLabel = copyBtn.textContent;
+                    if (!codeEl || !navigator.clipboard) {
+                        if (statusEl) { statusEl.textContent = 'Could not copy — select and copy the key manually.'; }
+                        return;
+                    }
+                    navigator.clipboard.writeText(codeEl.textContent).then(function () {
+                        copyBtn.textContent = 'Copied';
+                        if (statusEl) { statusEl.textContent = 'Copied to clipboard.'; }
+                        setTimeout(function () { copyBtn.textContent = originalLabel; }, 2000);
+                    }).catch(function () {
+                        if (statusEl) { statusEl.textContent = 'Could not copy — select and copy the key manually.'; }
+                    });
                 });
             }
             const heading = document.getElementById('svcwiz-done-heading');
@@ -1412,6 +1433,12 @@ function venuesUrl(array $overrides = []): string
             if (dkOptinEl) { dkOptinEl.checked = false; }
             if (dkLabelInput) { dkLabelInput.value = ''; dkLabelInput.disabled = true; }
             if (dkProtocolSel) { dkProtocolSel.disabled = true; }
+            /* Security audit F1 — the DONE pane's show-once driver key is
+               only ever meant to be visible for this one reveal; clearing
+               its innerHTML here means the raw key no longer lingers
+               (hidden but still in the DOM, readable via devtools/extension)
+               for the rest of the tab's life once the modal is closed. */
+            if (doneBodyEl) { doneBodyEl.innerHTML = ''; }
             state.venueId = 0; state.scheduleId = 0; state.orgId = 0;
             if (stepsWrap) { stepsWrap.hidden = false; }
             if (doneEl) { doneEl.hidden = true; }

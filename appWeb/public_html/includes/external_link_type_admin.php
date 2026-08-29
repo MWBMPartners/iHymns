@@ -50,6 +50,22 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'external_link_helpers.php'; /* IHYMNS_LINK_ENTITY_TYPES, IHYMNS_LINK_TYPE_CATEGORIES */
 
 /**
+ * Security audit F2 — hard cap on posted pattern-row arrays shared by every
+ * caller of externalLinkTypeAdminNormalisePatterns() below (the manual
+ * "Add provider" form, the guided wizard's create/save branches, and both
+ * admin_external_link_type_save/_create API twins). A curator's real
+ * pattern list per provider is a handful of host/path rules; the classic
+ * form funnels are naturally bounded by PHP's max_input_vars (~1000
+ * fields), but the JSON-speaking wizard branch and the API twins are
+ * bounded only by post_max_size, so an uncapped request could queue
+ * 10^5+ per-row INSERTs in one transaction. Capped well above any real
+ * curator's list and well below anything that could hurt the DB; each
+ * caller checks this BEFORE calling the normaliser and responds 422
+ * rather than silently truncating.
+ */
+const IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP = 100;
+
+/**
  * Thrown by externalLinkTypeAdminCreate() when the INSERT itself hits the
  * `uq_slug` unique-key violation (mysqli errno 1062) — a race between two
  * curators creating the same slug at once, or a caller that skipped

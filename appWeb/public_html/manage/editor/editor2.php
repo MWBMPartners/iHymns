@@ -404,11 +404,11 @@ $pdSuggestForJs = [
              there). Inputs are id-prefixed (v2-nsw-*) and carry NO name=
              attribute — nothing here is ever submitted as a classic HTML
              form; every value is read by the module via getElementById. */ ?>
-    <div class="modal fade" id="v2-new-wizard-modal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal fade" id="v2-new-wizard-modal" tabindex="-1" aria-hidden="true" aria-labelledby="v2-new-wizard-modal-label" data-bs-backdrop="static">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2 class="modal-title h6"><i aria-hidden="true" class="bi bi-magic me-1"></i>New song — guided</h2>
+                    <h2 class="modal-title h6" id="v2-new-wizard-modal-label"><i aria-hidden="true" class="bi bi-magic me-1"></i>New song — guided</h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -441,7 +441,7 @@ $pdSuggestForJs = [
                         <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
                         <div class="mb-3">
                             <label class="form-label small mb-1" for="v2-nsw-title">Title</label>
-                            <input type="text" class="form-control form-control-sm" id="v2-nsw-title" maxlength="500" placeholder="Song title">
+                            <input type="text" class="form-control form-control-sm" id="v2-nsw-title" maxlength="500" placeholder="Song title" aria-required="true">
                         </div>
                         <div class="mb-0">
                             <label class="form-label small mb-1" for="v2-nsw-alt-title-input">Also known as <span class="text-muted small">(optional)</span></label>

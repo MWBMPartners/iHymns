@@ -184,6 +184,11 @@ export function createWizard(rootEl, opts = {}) {
         progressHost.textContent = '';
         const ol = document.createElement('ol');
         ol.className = 'admin-wizard-progress list-unstyled d-flex flex-wrap gap-2 small mb-0';
+        /* a11y audit F9 — the trail had no accessible name of its own (a
+           screen reader landing on it just hears "list"), so name it
+           directly rather than requiring every consumer page to wrap
+           progressHost in its own <nav aria-label>. */
+        ol.setAttribute('aria-label', 'Steps');
         steps.forEach((pane, i) => {
             const li = document.createElement('li');
             const label = stepLabel(pane, i);
@@ -203,8 +208,16 @@ export function createWizard(rootEl, opts = {}) {
                 btn.addEventListener('click', () => goTo(i));
                 li.appendChild(btn);
             } else {
+                /* a11y audit F9 — aria-disabled is only valid on a widget
+                   role (button, link, …); a plain <li> (implicit role
+                   listitem) does not accept it, so it was previously
+                   dropped by the accessibility tree entirely. This future
+                   step is genuinely inert (no control, no click handler,
+                   nothing to disable) — that inertness is already conveyed
+                   structurally (no button here at all) and visually
+                   (text-muted), so the fix is simply to stop asserting an
+                   invalid attribute rather than to find a valid one. */
                 li.className = 'text-muted';
-                li.setAttribute('aria-disabled', 'true');
                 li.textContent = `${i + 1}. ${label}`;
             }
             ol.appendChild(li);

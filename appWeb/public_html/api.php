@@ -16656,6 +16656,13 @@ if ($action !== null) {
                 $licenceResults = [];
                 if ($canEditOrgLicences) {
                     $rawLicences = is_array($body['licences'] ?? null) ? $body['licences'] : [];
+                    /* Security audit F2 — row-count DoS cap (IHYMNS_ORG_WIZARD_ROW_CAP,
+                       includes/organisation_admin.php). This JSON-body twin is
+                       bounded only by post_max_size, not a form's max_input_vars. */
+                    if (count($rawLicences) > IHYMNS_ORG_WIZARD_ROW_CAP) {
+                        sendJson(['error' => 'Too many licence rows in one request.'], 422);
+                        break;
+                    }
                     $licenceRows = [];
                     foreach ($rawLicences as $row) {
                         if (!is_array($row)) { continue; }
@@ -16679,6 +16686,13 @@ if ($action !== null) {
                    ACTIVE tblUsers row (never trust a client-claimed id). */
                 $memberResults = [];
                 $rawMembers = is_array($body['members'] ?? null) ? $body['members'] : [];
+                /* Security audit F2 — row-count DoS cap (IHYMNS_ORG_WIZARD_ROW_CAP,
+                   includes/organisation_admin.php), same reasoning as the
+                   licence-row cap above. */
+                if (count($rawMembers) > IHYMNS_ORG_WIZARD_ROW_CAP) {
+                    sendJson(['error' => 'Too many member rows in one request.'], 422);
+                    break;
+                }
                 foreach ($rawMembers as $m) {
                     if (!is_array($m)) { continue; }
                     $memberUserId = (int)($m['user_id'] ?? 0);
@@ -21977,6 +21991,15 @@ if ($action !== null) {
                callers with different wire shapes (rule #22/#35). */
             $rawPatterns = $body['patterns'] ?? [];
             if (!is_array($rawPatterns)) { $rawPatterns = []; }
+            /* Security audit F2 — row-count DoS cap
+               (IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP,
+               includes/external_link_type_admin.php), checked before the
+               transpose loop even runs — this JSON body is bounded only by
+               post_max_size, not a form's max_input_vars. */
+            if (count($rawPatterns) > IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP) {
+                sendJson(['error' => 'Too many pattern rows in one request.'], 422);
+                break;
+            }
             $pHosts = []; $pPaths = []; $pSubs = []; $pPrios = []; $pNotes = []; $pActive = [];
             foreach ($rawPatterns as $p) {
                 if (!is_array($p)) { continue; }
@@ -22070,6 +22093,14 @@ if ($action !== null) {
                (rule #22/#35), never a second normaliser. */
             $rawPatterns = $body['patterns'] ?? [];
             if (!is_array($rawPatterns)) { $rawPatterns = []; }
+            /* Security audit F2 — row-count DoS cap
+               (IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP,
+               includes/external_link_type_admin.php), checked before the
+               transpose loop even runs. */
+            if (count($rawPatterns) > IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP) {
+                sendJson(['error' => 'Too many pattern rows in one request.'], 422);
+                break;
+            }
             $pHosts = []; $pPaths = []; $pSubs = []; $pPrios = []; $pNotes = []; $pActive = [];
             foreach ($rawPatterns as $p) {
                 if (!is_array($p)) { continue; }

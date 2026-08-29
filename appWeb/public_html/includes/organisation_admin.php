@@ -97,6 +97,24 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'places.php';                 /* pl
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'org_licence_admin.php';      /* orgLicenceUpsert() — the ONE licence-row write path, never forked here */
 
 /**
+ * Security audit F2 — hard row-count cap shared by the "New Organisation"
+ * wizard's licence-row + member-row steps AND the admin_organisation_create
+ * API twin. A real curator's licence/member lists are a handful of rows;
+ * the classic manual form has no equivalent repeatable fields at all, and
+ * the wizard's own DOM only ever grows rows one at a time — but both the
+ * wizard's JSON branch (organisations.php) and the API twin (api.php) are
+ * bounded only by post_max_size, not PHP's max_input_vars the way a plain
+ * form POST is, so an uncapped request could queue 10^5+ per-row licence
+ * upserts / member upserts (each its own SELECT+INSERT) inside one
+ * request. Capped well above any real curator's list and well below
+ * anything that could hurt the DB; a caller that exceeds it gets a 422
+ * before a single row is processed — never a silent partial apply.
+ *
+ * @link https://www.php.net/manual/en/security.database.sql-injection.php background — same "never trust request-controlled iteration counts" family as SQL-injection input hardening
+ */
+const IHYMNS_ORG_WIZARD_ROW_CAP = 50;
+
+/**
  * Thrown by orgAdminCreate() when the INSERT itself hits the Slug
  * UNIQUE-key violation (mysqli errno 1062) — a race between two curators
  * creating the same slug at once, or a caller that skipped

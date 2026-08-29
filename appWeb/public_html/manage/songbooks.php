@@ -3643,12 +3643,12 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
     };
     </script>
 
-    <div class="modal fade" id="songbookWizardModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal fade" id="songbookWizardModal" tabindex="-1" aria-hidden="true" aria-labelledby="songbookWizardModalLabel" data-bs-backdrop="static">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content" id="songbookWizardRoot">
                 <div class="modal-header">
-                    <h2 class="modal-title h5 mb-0">New songbook — guided</h2>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <h2 class="modal-title h5 mb-0" id="songbookWizardModalLabel">New songbook — guided</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div data-wiz-progress class="mb-3"></div>
@@ -3659,7 +3659,7 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
                         <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
                         <div class="mb-3">
                             <label class="form-label" for="sbwiz-name">Name</label>
-                            <input type="text" class="form-control" id="sbwiz-name" maxlength="255" placeholder="e.g. Christian Praise">
+                            <input type="text" class="form-control" id="sbwiz-name" maxlength="255" placeholder="e.g. Christian Praise" aria-required="true">
                         </div>
                         <div class="form-check form-switch">
                             <input class="form-check-input" type="checkbox" id="sbwiz-is-official">
@@ -3678,8 +3678,9 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
                         <div class="mb-2">
                             <label class="form-label" for="sbwiz-abbreviation">Abbreviation</label>
                             <input type="text" class="form-control" id="sbwiz-abbreviation"
-                                   maxlength="10" pattern="[A-Za-z0-9]+" placeholder="e.g. CP" autocomplete="off">
-                            <div class="form-text small" id="sbwiz-abbr-status">
+                                   maxlength="10" pattern="[A-Za-z0-9]+" placeholder="e.g. CP" autocomplete="off"
+                                   aria-required="true" aria-describedby="sbwiz-abbr-status">
+                            <div class="form-text small" id="sbwiz-abbr-status" role="status">
                                 Letters and numbers only, up to 10 characters. We'll suggest one from the name above.
                             </div>
                         </div>
@@ -3890,7 +3891,7 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
             const icon = result.level === 'ok' ? '✅' : (result.level === 'warn' ? '⚠️' : '❌');
             abbrStatusEl.textContent = icon + ' ' + result.message;
             abbrStatusEl.className = 'form-text small ' +
-                (result.level === 'ok' ? 'text-success' : (result.level === 'warn' ? 'text-warning-emphasis' : 'text-danger'));
+                (result.level === 'ok' ? 'text-success-emphasis' : (result.level === 'warn' ? 'text-warning-emphasis' : 'text-danger-emphasis'));
             return result;
         }
         abbrInput.addEventListener('input', function () {

@@ -596,6 +596,142 @@ $definers = findCreateWizardDefiners($jsDir);
 ok('(j) exactly ONE createWizard definition tree-wide, in js/modules/admin-wizard.js (found: ' . implode(', ', $definers) . ')',
     $definers === [realpath($wizardFile)]);
 
+/* ---- (k) security audit F2 — pattern-row DoS cap enforced at EVERY
+   caller of externalLinkTypeAdminNormalisePatterns(), both page branches
+   AND both API twins, each checking BEFORE the normaliser is ever called
+   and responding 422 on excess (never a silent truncation). The ONE cap
+   constant is IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP
+   (includes/external_link_type_admin.php) — every site below is asserted
+   to reference that SAME constant, not a re-typed magic number, so a
+   future edit that drops the shared constant in favour of a hand-typed
+   100 cannot pass silently. ---- */
+ok('(k) includes/external_link_type_admin.php defines the ONE shared row-count cap constant IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP',
+    (bool)preg_match('/const\s+IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP\s*=/', $coreSrc));
+
+/** True when `$body` checks the shared pattern-row cap constant AND
+ *  responds 422 on excess — the two facts this guard cares about, without
+ *  caring whether the site is JSON (echo json_encode/sendJson) or a
+ *  classic-form $error+break, since both funnels use the shape their own
+ *  surrounding code already established. Comment-stripped FIRST — a
+ *  doc-comment naming the constant (this file's own edit added exactly
+ *  that, right above every real check) must never satisfy this on its
+ *  own; only a REFERENCE IN CODE counts. */
+function elwHasPatternRowCapCheck(string $body): bool
+{
+    $stripped = preg_replace('~/\*.*?\*/~s', '', $body) ?? $body;
+    return str_contains($stripped, 'IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP') && str_contains($stripped, '422');
+}
+
+/* Fixture self-test (rule #34) BEFORE trusting elwHasPatternRowCapCheck()
+   against real source — must accept a genuine cap-check shape and refuse
+   one missing either half. */
+$capFixtureGood = "if (max(count(\$pHosts), count(\$pPaths)) > IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP) {\n"
+    . "    http_response_code(422);\n    echo json_encode(['error' => 'Too many pattern rows.']);\n    exit;\n}";
+ok('elwHasPatternRowCapCheck() accepts a genuine cap-check body (constant + 422 together)',
+    elwHasPatternRowCapCheck($capFixtureGood));
+ok('MUTATION PROOF: elwHasPatternRowCapCheck() refuses a body with the constant but no 422 response',
+    !elwHasPatternRowCapCheck(str_replace('422', '200', $capFixtureGood)));
+ok('MUTATION PROOF: elwHasPatternRowCapCheck() refuses a body with a 422 but no cap-constant reference (a hand-typed magic number)',
+    !elwHasPatternRowCapCheck(str_replace('IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP', '100', $capFixtureGood)));
+/* The trap this guard's own first draft fell into (caught by the LIVE
+   mutation proof against the real tree below, not this fixture — kept
+   here too so the failure mode has a fast, isolated regression test): a
+   doc-comment ABOVE the real check ALSO names the constant (this file's
+   own edits do exactly that), so a naive check must not be satisfied by
+   the comment alone once the real condition is gutted. */
+$capFixtureCommentOnlyMention = '/* Security audit F2 — checks IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP, responds 422. */'
+    . "\nif (false) { /* condition gutted */ }";
+ok('MUTATION PROOF: elwHasPatternRowCapCheck() refuses a body where the constant + 422 appear ONLY inside a comment, not in real code',
+    !elwHasPatternRowCapCheck($capFixtureCommentOnlyMention));
+
+foreach ([
+    'page wizard_create_type branch'           => $pageWizardBody,
+    'page save_type_patterns case'             => $pageSaveBody,
+    'page create_type case'                    => $pageManualBody,
+    'api admin_external_link_type_save case'   => $apiSaveBody,
+    'api admin_external_link_type_create case' => $apiCreateBody,
+] as $label => $body) {
+    ok("(k) {$label} checks the pattern-row cap (IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP) and responds 422 on excess",
+        elwHasPatternRowCapCheck($body));
+}
+
+/* MUTATION PROOF: strip the cap constant reference from a COPY of the real
+   create_type case body (str_replace, never the tracked file) and confirm
+   the presence check goes red — proves this isn't vacuously true against
+   real source. */
+ok('(k) fixture precondition: the real create_type case body genuinely references the cap constant',
+    str_contains($pageManualBody, 'IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP'));
+$mutatedManualNoCap = str_replace('IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP', 'ZZZ_REMOVED_CAP', $pageManualBody);
+ok('(k) MUTATION PROOF: removing the cap-constant reference from a copy of the real create_type body makes the check go red',
+    !elwHasPatternRowCapCheck($mutatedManualNoCap));
+ok('(k) fixture precondition: the real admin_external_link_type_create API body genuinely references the cap constant',
+    str_contains($apiCreateBody, 'IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP'));
+$mutatedApiNoCap = str_replace('IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP', 'ZZZ_REMOVED_CAP', $apiCreateBody);
+ok('(k) MUTATION PROOF: removing the cap-constant reference from a copy of the real API create body makes the check go red',
+    !elwHasPatternRowCapCheck($mutatedApiNoCap));
+
+/* ---- (l) a11y audit F1/F12 — every control addPatternRow() builds
+   carries an accessible name (the "Match sub-domains" checkbox was
+   nameless before this pass; the host/path/priority inputs already had
+   aria-label and are re-asserted here so the pattern can't regress), and
+   the Remove button's name is DISTINCT per row (patternSeq-derived), not
+   the same "Remove" repeated for every row. ---- */
+$addPatternRowBody = functionBodyFor($pageSrc, 'addPatternRow');
+ok('(l) isolated addPatternRow() body (non-empty)', $addPatternRowBody !== '');
+foreach ([
+    'data-wiz-pattern-host'       => 'aria-label="Pattern host"',
+    'data-wiz-pattern-path'       => 'aria-label="Pattern path prefix"',
+    'data-wiz-pattern-priority'   => 'aria-label="Pattern priority"',
+    'data-wiz-pattern-subdomain (Match sub-domains checkbox)' => 'aria-label="Match sub-domains"',
+] as $label => $needle) {
+    ok("(l) addPatternRow() names the {$label} control ({$needle})", str_contains($addPatternRowBody, $needle));
+}
+ok('(l) addPatternRow() gives the Remove button a name DISTINCT per row (derived from patternSeq, not a fixed "Remove")',
+    str_contains($addPatternRowBody, "aria-label=\"Remove pattern row ' + patternSeq + '\""));
+
+/* MUTATION PROOF: strip the Match-sub-domains aria-label from a COPY of
+   the real function body and confirm the presence check goes red. */
+ok('(l) fixture precondition: the real addPatternRow() body genuinely names the Match-sub-domains checkbox',
+    str_contains($addPatternRowBody, 'aria-label="Match sub-domains"'));
+$mutatedNoSubdomainLabel = str_replace('aria-label="Match sub-domains"', '', $addPatternRowBody);
+ok('(l) MUTATION PROOF: removing the Match-sub-domains aria-label from a copy of the real body makes the check go red',
+    !str_contains($mutatedNoSubdomainLabel, 'aria-label="Match sub-domains"'));
+ok('(l) fixture precondition: the real addPatternRow() body genuinely derives the Remove name from patternSeq',
+    str_contains($addPatternRowBody, "aria-label=\"Remove pattern row ' + patternSeq + '\""));
+$mutatedFixedRemoveName = str_replace("aria-label=\"Remove pattern row ' + patternSeq + '\"", '', $addPatternRowBody);
+ok('(l) MUTATION PROOF: reverting the Remove button to a fixed (non-patternSeq) name makes the per-row-distinct check go red',
+    !str_contains($mutatedFixedRemoveName, "aria-label=\"Remove pattern row ' + patternSeq + '\""));
+
+/* ---- (m) a11y audit F2/F6 — testPatternRow()'s live pattern-test status
+   uses the -emphasis contrast tokens (never a bare text-success/
+   text-warning/text-danger, which measures below WCAG 1.4.3 on this
+   card's background in at least one theme). ---- */
+$testPatternRowBody = functionBodyFor($pageSrc, 'testPatternRow');
+ok('(m) isolated testPatternRow() body (non-empty)', $testPatternRowBody !== '');
+foreach (['text-success-emphasis', 'text-warning-emphasis', 'text-danger-emphasis'] as $token) {
+    ok("(m) testPatternRow() sets the {$token} token on the status element", str_contains($testPatternRowBody, $token));
+}
+/** True when `$body` contains a BARE text-success/text-warning/text-danger
+ *  class (i.e. NOT immediately followed by "-emphasis"). */
+function elwHasBareStatusColourClass(string $body): bool
+{
+    return (bool)preg_match('/\btext-(?:success|warning|danger)\b(?!-emphasis)/', $body);
+}
+ok('elwHasBareStatusColourClass() accepts a fixture with only -emphasis tokens',
+    !elwHasBareStatusColourClass("className = 'small text-success-emphasis';"));
+ok('MUTATION PROOF: elwHasBareStatusColourClass() flags a fixture with a bare text-danger class',
+    elwHasBareStatusColourClass("className = 'small text-danger';"));
+ok('(m) testPatternRow() contains NO bare text-success/text-warning/text-danger status class (WCAG 1.4.3)',
+    !elwHasBareStatusColourClass($testPatternRowBody));
+
+/* MUTATION PROOF: revert one -emphasis token to bare on a COPY of the real
+   body and confirm the check goes red. */
+ok('(m) fixture precondition: the real testPatternRow() body genuinely uses text-danger-emphasis',
+    str_contains($testPatternRowBody, 'text-danger-emphasis'));
+$mutatedBareDanger = str_replace('text-danger-emphasis', 'text-danger', $testPatternRowBody);
+ok('(m) MUTATION PROOF: reverting text-danger-emphasis to bare text-danger on a copy of the real body makes the check go red',
+    elwHasBareStatusColourClass($mutatedBareDanger));
+
 /* =========================================================================
  * REPORT
  * ========================================================================= */

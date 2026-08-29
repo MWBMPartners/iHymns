@@ -184,6 +184,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $lExps   = (array)($_POST['licence_row_expires_at']  ?? []);
                 $lActive = (array)($_POST['licence_row_active']      ?? []);
                 $lNotes  = (array)($_POST['licence_row_notes']       ?? []);
+                /* Security audit F2 — row-count DoS cap (IHYMNS_ORG_WIZARD_ROW_CAP,
+                   includes/organisation_admin.php). Checked before a single row is
+                   parsed — this JSON branch is bounded only by post_max_size, not
+                   PHP's form max_input_vars. */
+                if (count($lTypes) > IHYMNS_ORG_WIZARD_ROW_CAP) {
+                    http_response_code(422);
+                    echo json_encode(['error' => 'Too many licence rows in one request.']);
+                    exit;
+                }
                 $licenceRows = [];
                 foreach ($lTypes as $i => $t) {
                     $t = trim((string)$t);
@@ -209,6 +218,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $memberResults = [];
             $mUserIds = (array)($_POST['member_user_id'] ?? []);
             $mRoles   = (array)($_POST['member_role']    ?? []);
+            /* Security audit F2 — row-count DoS cap (IHYMNS_ORG_WIZARD_ROW_CAP,
+               includes/organisation_admin.php), same reasoning as the licence-row
+               cap above. */
+            if (count($mUserIds) > IHYMNS_ORG_WIZARD_ROW_CAP) {
+                http_response_code(422);
+                echo json_encode(['error' => 'Too many member rows in one request.']);
+                exit;
+            }
             foreach ($mUserIds as $i => $rawUserId) {
                 $memberUserId = (int)$rawUserId;
                 $memberRole   = (string)($mRoles[$i] ?? 'member');
@@ -1434,12 +1451,12 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
         };
     </script>
 
-    <div class="modal fade" id="orgWizardModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal fade" id="orgWizardModal" tabindex="-1" aria-hidden="true" aria-labelledby="orgWizardModalLabel" data-bs-backdrop="static">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content" id="orgWizardRoot">
                 <div class="modal-header">
-                    <h2 class="modal-title h5 mb-0">New organisation — guided</h2>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <h2 class="modal-title h5 mb-0" id="orgWizardModalLabel">New organisation — guided</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div id="orgwiz-steps-wrap">
@@ -1452,12 +1469,12 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
                             <div class="row g-3 mb-2">
                                 <div class="col-sm-7">
                                     <label class="form-label" for="orgwiz-name">Name</label>
-                                    <input type="text" class="form-control" id="orgwiz-name" maxlength="255" placeholder="e.g. Grace Community Church">
+                                    <input type="text" class="form-control" id="orgwiz-name" maxlength="255" placeholder="e.g. Grace Community Church" aria-required="true">
                                 </div>
                                 <div class="col-sm-5">
                                     <label class="form-label" for="orgwiz-slug">Slug</label>
-                                    <input type="text" class="form-control" id="orgwiz-slug" maxlength="100" autocomplete="off">
-                                    <div class="form-text small" id="orgwiz-slug-status">Derived from the name — edit it if you'd rather choose your own.</div>
+                                    <input type="text" class="form-control" id="orgwiz-slug" maxlength="100" autocomplete="off" aria-required="true" aria-describedby="orgwiz-slug-status">
+                                    <div class="form-text small" id="orgwiz-slug-status" role="status">Derived from the name — edit it if you'd rather choose your own.</div>
                                 </div>
                             </div>
                             <div class="mb-2">
@@ -1635,16 +1652,16 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
             }
             if (!/^[a-z0-9-]+$/.test(v)) {
                 slugStatusEl.textContent = '❌ Lowercase letters, numbers and hyphens only.';
-                slugStatusEl.className = 'form-text small text-danger';
+                slugStatusEl.className = 'form-text small text-danger-emphasis';
                 return { ok: false, message: 'Slug must be lowercase letters, digits or hyphens.' };
             }
             if (seededSlugs.some((s) => String(s).toLowerCase() === v)) {
                 slugStatusEl.textContent = '❌ That slug is already in use.';
-                slugStatusEl.className = 'form-text small text-danger';
+                slugStatusEl.className = 'form-text small text-danger-emphasis';
                 return { ok: false, message: 'That slug is already in use — pick another.' };
             }
             slugStatusEl.textContent = '✅ Available.';
-            slugStatusEl.className = 'form-text small text-success';
+            slugStatusEl.className = 'form-text small text-success-emphasis';
             return { ok: true };
         }
         nameInput.addEventListener('input', function () {
@@ -1680,39 +1697,56 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
         }
         function addLicenceRow() {
             licenceRowSeq += 1;
+            /* a11y audit F1/F12 — a real id per repeatable row, minted from
+               the SAME licenceRowSeq counter already used for
+               data-wiz-licence-row, so every control below gets a genuine
+               label[for] (never just a visually-styled-but-aria-hidden
+               <label>, which names nothing) and every row's Remove button
+               gets a name distinct from every other row's. */
+            const seq = licenceRowSeq;
             const row = document.createElement('div');
             row.className = 'card bg-secondary-subtle border-secondary';
-            row.setAttribute('data-wiz-licence-row', String(licenceRowSeq));
+            row.setAttribute('data-wiz-licence-row', String(seq));
             if (licenceTableReady) {
-                row.innerHTML =
-                  '<div class="card-body py-2">' +
-                    '<div class="row g-2 align-items-center">' +
-                      '<div class="col-md-4"><label class="form-label small mb-0" aria-hidden="true">Type</label>' +
-                        '<select class="form-select form-select-sm" data-wiz-lic-type>' + licenceTypeOptionsHtml('') + '</select></div>' +
-                      '<div class="col-md-3"><label class="form-label small mb-0" aria-hidden="true">Number</label>' +
-                        '<input type="text" class="form-control form-control-sm" data-wiz-lic-number maxlength="100" placeholder="Licence number"></div>' +
-                      '<div class="col-md-3"><label class="form-label small mb-0" aria-hidden="true">Expires</label>' +
-                        '<input type="date" class="form-control form-control-sm" data-wiz-lic-expires></div>' +
-                      '<div class="col-md-2 d-flex align-items-center gap-1 mt-3">' +
-                        '<div class="form-check small mb-0"><input class="form-check-input" type="checkbox" data-wiz-lic-active checked><label class="form-check-label" aria-hidden="true">Active</label></div>' +
-                      '</div>' +
-                    '</div>' +
-                    '<div class="row g-2 mt-1">' +
-                      '<div class="col-md-9"><input type="text" class="form-control form-control-sm" data-wiz-lic-notes maxlength="255" placeholder="Notes (optional)"></div>' +
-                      '<div class="col-md-3 text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-wiz-lic-remove><i aria-hidden="true" class="bi bi-x-lg"></i> Remove</button></div>' +
-                    '</div>' +
-                  '</div>';
+                /* Template-literal HTML (not the file's usual '...' + '...'
+                   concatenation) so each id="…" is a genuine ${seq}
+                   interpolation — test-a11y-static-checks.php's static
+                   duplicate-id scanner already special-cases exactly this
+                   shape (the SAME one manage/print-templates.php's dynamic
+                   option-row builder uses) as "per-instance unique by
+                   construction", the same way it already excludes a
+                   PHP-loop-built id; a plain '...' + seq + '...'
+                   concatenation reads as ONE static literal id to that
+                   scanner and false-positives as a duplicate the moment a
+                   second row is added. */
+                row.innerHTML = `<div class="card-body py-2">
+                    <div class="row g-2 align-items-center">
+                      <div class="col-md-4"><label class="form-label small mb-0" for="orgwiz-lic-type-${seq}">Type</label>
+                        <select class="form-select form-select-sm" data-wiz-lic-type id="orgwiz-lic-type-${seq}">${licenceTypeOptionsHtml('')}</select></div>
+                      <div class="col-md-3"><label class="form-label small mb-0" for="orgwiz-lic-number-${seq}">Number</label>
+                        <input type="text" class="form-control form-control-sm" data-wiz-lic-number id="orgwiz-lic-number-${seq}" maxlength="100" placeholder="Licence number"></div>
+                      <div class="col-md-3"><label class="form-label small mb-0" for="orgwiz-lic-expires-${seq}">Expires</label>
+                        <input type="date" class="form-control form-control-sm" data-wiz-lic-expires id="orgwiz-lic-expires-${seq}"></div>
+                      <div class="col-md-2 d-flex align-items-center gap-1 mt-3">
+                        <div class="form-check small mb-0"><input class="form-check-input" type="checkbox" data-wiz-lic-active id="orgwiz-lic-active-${seq}" checked><label class="form-check-label" for="orgwiz-lic-active-${seq}">Active</label></div>
+                      </div>
+                    </div>
+                    <div class="row g-2 mt-1">
+                      <div class="col-md-9"><label class="visually-hidden" for="orgwiz-lic-notes-${seq}">Notes</label>
+                        <input type="text" class="form-control form-control-sm" data-wiz-lic-notes id="orgwiz-lic-notes-${seq}" maxlength="255" placeholder="Notes (optional)"></div>
+                      <div class="col-md-3 text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-wiz-lic-remove aria-label="Remove licence row ${seq}"><i aria-hidden="true" class="bi bi-x-lg"></i> Remove</button></div>
+                    </div>
+                  </div>`;
                 row.querySelector('[data-wiz-lic-remove]').addEventListener('click', function () { row.remove(); });
             } else {
-                row.innerHTML =
-                  '<div class="card-body py-2">' +
-                    '<div class="row g-2 align-items-center">' +
-                      '<div class="col-md-6"><label class="form-label small mb-0" aria-hidden="true">Type</label>' +
-                        '<select class="form-select form-select-sm" data-wiz-lic-type>' + licenceTypeOptionsHtml('') + '</select></div>' +
-                      '<div class="col-md-6"><label class="form-label small mb-0" aria-hidden="true">Number</label>' +
-                        '<input type="text" class="form-control form-control-sm" data-wiz-lic-number maxlength="100" placeholder="Licence number"></div>' +
-                    '</div>' +
-                  '</div>';
+                row.innerHTML = `<div class="card-body py-2">
+                    <div class="row g-2 align-items-center">
+                      <div class="col-md-6"><label class="form-label small mb-0" for="orgwiz-lic-type-${seq}">Type</label>
+                        <select class="form-select form-select-sm" data-wiz-lic-type id="orgwiz-lic-type-${seq}">${licenceTypeOptionsHtml('')}</select></div>
+                      <div class="col-md-6"><label class="form-label small mb-0" for="orgwiz-lic-number-${seq}">Number</label>
+                        <input type="text" class="form-control form-control-sm" data-wiz-lic-number id="orgwiz-lic-number-${seq}" maxlength="100" placeholder="Licence number"></div>
+                    </div>
+                  </div>`;
             }
             licenceRowsEl.appendChild(row);
             return row;
@@ -1750,19 +1784,28 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
         }
         function addMemberRow() {
             memberRowSeq += 1;
+            /* a11y audit F1/F12 — real id per row from memberRowSeq (same
+               reasoning as addLicenceRow() above): a genuine label[for] for
+               User/Role, and a Remove name distinct per row rather than the
+               same "Remove this member row" repeated for every one. */
+            const seq = memberRowSeq;
             const row = document.createElement('div');
             row.className = 'card bg-secondary-subtle border-secondary';
-            row.setAttribute('data-wiz-member-row', String(memberRowSeq));
-            row.innerHTML =
-              '<div class="card-body py-2">' +
-                '<div class="row g-2 align-items-center">' +
-                  '<div class="col-md-6"><label class="form-label small mb-0" aria-hidden="true">User</label>' +
-                    '<input type="text" class="form-control form-control-sm" data-wiz-mem-name autocomplete="off" placeholder="Start typing a name or username…"></div>' +
-                  '<div class="col-md-4"><label class="form-label small mb-0" aria-hidden="true">Role</label>' +
-                    '<select class="form-select form-select-sm" data-wiz-mem-role>' + memberRoleOptionsHtml() + '</select></div>' +
-                  '<div class="col-md-2 text-end mt-3"><button type="button" class="btn btn-sm btn-outline-danger" data-wiz-mem-remove aria-label="Remove this member row"><i aria-hidden="true" class="bi bi-x-lg"></i></button></div>' +
-                '</div>' +
-              '</div>';
+            row.setAttribute('data-wiz-member-row', String(seq));
+            /* Template-literal HTML for the SAME reason addLicenceRow()
+               documents above — a real ${seq} interpolation, not a
+               '...' + seq + '...' concatenation that reads as one static
+               literal id to test-a11y-static-checks.php's duplicate-id
+               scanner. */
+            row.innerHTML = `<div class="card-body py-2">
+                <div class="row g-2 align-items-center">
+                  <div class="col-md-6"><label class="form-label small mb-0" for="orgwiz-mem-name-${seq}">User</label>
+                    <input type="text" class="form-control form-control-sm" data-wiz-mem-name id="orgwiz-mem-name-${seq}" autocomplete="off" placeholder="Start typing a name or username…"></div>
+                  <div class="col-md-4"><label class="form-label small mb-0" for="orgwiz-mem-role-${seq}">Role</label>
+                    <select class="form-select form-select-sm" data-wiz-mem-role id="orgwiz-mem-role-${seq}">${memberRoleOptionsHtml()}</select></div>
+                  <div class="col-md-2 text-end mt-3"><button type="button" class="btn btn-sm btn-outline-danger" data-wiz-mem-remove aria-label="Remove member row ${seq}"><i aria-hidden="true" class="bi bi-x-lg"></i></button></div>
+                </div>
+              </div>`;
             const nameEl = row.querySelector('[data-wiz-mem-name]');
             const hiddenId = document.createElement('input');
             hiddenId.type = 'hidden';
