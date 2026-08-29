@@ -37,6 +37,10 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    includes/venue_admin.php core, reused by the new ?action=org_venues API
    endpoint (rule #22). This page's own POST write handlers are unchanged. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'venue_admin.php';
+/* #1999 — the shared "Get started" empty-state launcher, rendered below
+   when the selected org has no venues yet (points at the SAME guided
+   wizard the header button above already opens — rule #1). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'wizard-empty-state.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -424,7 +428,27 @@ function venuesUrl(array $overrides = []): string
             </div>
             <div class="card-body p-0">
                 <?php if (!$venues): ?>
-                    <p class="text-secondary small m-3 mb-3">No venues yet. Add the place(s) your organisation meets.</p>
+                    <?php /* #1999 — empty-state "Get started" launcher, but ONLY when
+                             there's an organisation to attach a venue to: the wizard
+                             modal further down this page is itself gated on
+                             `$schemaReady && $orgs` (same as the header trigger above),
+                             so on a zero-organisation install a crafted ?org=<n> could
+                             otherwise land $selectedOrgId > 0 with an empty $orgs and
+                             point this launcher at a modal that never rendered
+                             (rule #33's dead-launcher trap). */ ?>
+                    <?php if ($orgs): ?>
+                        <?= ihymns_wizard_empty_state([
+                            'icon'        => 'bi-geo-alt',
+                            'heading'     => 'No venues yet',
+                            'body'        => 'Add the place(s) your organisation meets so congregants can follow along in Live Service.',
+                            'modalId'     => 'svcWizardModal',
+                            'buttonLabel' => 'Live Service setup (guided)',
+                            'wrap'        => 'bare',
+                            'hint'        => 'Prefer to type it yourself? Use the Add venue button above.',
+                        ]) ?>
+                    <?php else: ?>
+                        <p class="text-secondary small m-3 mb-3">No venues yet. Add the place(s) your organisation meets.</p>
+                    <?php endif; ?>
                 <?php else: ?>
                 <div class="table-responsive">
                     <table class="table admin-table-responsive cp-sortable align-middle mb-0">

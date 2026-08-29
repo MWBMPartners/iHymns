@@ -41,6 +41,10 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    card renderer); org_logo_admin.php (validate/stage/upsert/delete) is
    required transitively for the logo_upload/_remove/_toggle POST actions. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_admin.php';
+/* #1999 — the shared "Get started" empty-state launcher, rendered in the
+   list table's empty row below (points at the SAME guided wizard the
+   header button above already opens — rule #1). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'wizard-empty-state.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -885,7 +889,27 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
                             </tr>
                         <?php endforeach; ?>
                         <?php if (!$orgs): ?>
-                            <tr><td colspan="7" class="text-muted text-center py-4">No organisations yet. Add one below.</td></tr>
+                            <tr><td colspan="7" class="p-0 border-0">
+                                <?php /* #1999 — empty-state "Get started" launcher, nested under
+                                         this card's own "All organisations" <h2> (hence headingTag
+                                         'h3' — keeps the heading outline sequential, rule WCAG
+                                         2.4.6). $error-aware: on a load failure there is nothing to
+                                         "get started" with, so fall back to a plain note. */ ?>
+                                <?php if (!$error): ?>
+                                    <?= ihymns_wizard_empty_state([
+                                        'icon'        => 'bi-building',
+                                        'heading'     => 'No organisations yet',
+                                        'body'        => 'Organisations group members and licences — add your first one to get started.',
+                                        'modalId'     => 'orgWizardModal',
+                                        'buttonLabel' => 'New organisation (guided)',
+                                        'wrap'        => 'bare',
+                                        'hint'        => 'Prefer to type it yourself? Use the manual "Add an organisation" form below.',
+                                        'headingTag'  => 'h3',
+                                    ]) ?>
+                                <?php else: ?>
+                                    <span class="text-muted text-center d-block py-4">No organisations to show.</span>
+                                <?php endif; ?>
+                            </td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>

@@ -1367,7 +1367,7 @@ $pdSuggestForJs = [
                 const next = sidebar.getFirstId();
                 if (next) { loadSong(next); }
                 else {
-                    status('Song moved to Deleted songs (restorable). Create a New song or pick one.', 'success');
+                    status('Song moved to Deleted songs (restorable). Create a New song, pick one, or try Guided for a step-by-step start.', 'success');
                     /* #1851 FIX #7 — loadSong() enables Save + reveals
                        Duplicate for the song it loads, but nothing reversed
                        that after deleting the LAST song: both stayed
@@ -1456,7 +1456,7 @@ $pdSuggestForJs = [
                it, and mountSidebar's load() is async. */
             sidebar.whenLoaded().then(() => runPrefill(prefillBook, prefillNumber()));
         } else {
-            status('Pick a song from the list, or create a New one.');
+            status('Pick a song from the list, create a New one, or try Guided for a step-by-step start.');
         }
     </script>
     <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

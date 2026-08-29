@@ -30,6 +30,10 @@ with none of the behind-the-scenes technical detail.
   session you start from any song, or a full service with a join code your
   whole congregation can follow. The step-by-step forms you already know are
   still there if you'd rather fill them in yourself.
+- **A friendlier start on empty lists** — Landing on an empty list of link
+  types, songbooks, venues or organisations now shows a "Get started" card
+  pointing you straight at the matching guided helper, instead of just a bare
+  "nothing here yet" message.
 - **Bring songs in from ProPresenter** — You can now import songs, bundles and
   service playlists straight from ProPresenter 7, keeping their verses,
   choruses, arrangements and copyright details. A ProPresenter service playlist

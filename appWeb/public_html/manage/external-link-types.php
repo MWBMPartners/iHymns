@@ -36,6 +36,10 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    the server derives a slug from Name when the box is left blank, so it
    stays tucked out of sight until a curator wants to override it). */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'slug-field.php';
+/* #1999 — the shared "Get started" empty-state launcher, rendered below
+   when there are no link types yet (points at the SAME guided wizard the
+   header button above already opens — rule #1, one shared partial). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'wizard-empty-state.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -530,6 +534,23 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                 </form>
             </div>
         </details>
+
+        <?php /* #1999 — empty-state "Get started" launcher: only when there
+                 are no link types at all yet (every category loop below
+                 would otherwise render nothing and the page would look
+                 blank under the manual-add details). Same schema-ready
+                 gate as the header trigger + manual form above. */ ?>
+        <?php if (!$types): ?>
+            <?= ihymns_wizard_empty_state([
+                'icon'        => 'bi-link-45deg',
+                'heading'     => 'No link types yet',
+                'body'        => 'Add the external providers (Spotify, Wikipedia, YouTube, …) songs and songbooks can link out to.',
+                'modalId'     => 'linkTypeWizardModal',
+                'buttonLabel' => 'Add provider (guided)',
+                'wrap'        => 'card',
+                'hint'        => 'Prefer to type it yourself? Expand "Add a link type manually" above.',
+            ]) ?>
+        <?php endif; ?>
 
         <?php foreach ($categoryLabels as $catKey => $catLabel): ?>
             <?php if (empty($typesByCategory[$catKey])) continue; ?>

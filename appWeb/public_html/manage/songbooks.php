@@ -52,6 +52,10 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    functions api.php's admin_songbook_create API twin now calls too — so
    the three create funnels can never drift apart again. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_admin.php';
+/* #1999 — the shared "Get started" empty-state launcher, rendered in the
+   list table's empty row below (points at the SAME guided wizard the
+   header button above already opens — rule #1, one shared partial). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'wizard-empty-state.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -3346,7 +3350,27 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
                         </tr>
                     <?php endforeach; ?>
                     <?php if (!$rows): ?>
-                        <tr><td colspan="11" class="text-muted text-center py-4">No songbooks yet. Add one below.</td></tr>
+                        <tr><td colspan="11" class="p-0 border-0">
+                            <?php /* #1999 — empty-state "Get started" launcher, keeping the
+                                     11-column table shape (this <tbody> is #songbook-list-table's
+                                     JS reorder anchor) intact. $error-aware: on a load failure
+                                     there is nothing to "get started" with, so fall back to a
+                                     plain note rather than pointing at a wizard that can't save
+                                     until the underlying error is fixed. */ ?>
+                            <?php if (!$error): ?>
+                                <?= ihymns_wizard_empty_state([
+                                    'icon'        => 'bi-book',
+                                    'heading'     => 'No songbooks yet',
+                                    'body'        => 'Songbooks group the songs people browse, search and print — add your first one to get started.',
+                                    'modalId'     => 'songbookWizardModal',
+                                    'buttonLabel' => 'New songbook (guided)',
+                                    'wrap'        => 'bare',
+                                    'hint'        => 'Prefer to type it yourself? Use the manual "Add a songbook" form below.',
+                                ]) ?>
+                            <?php else: ?>
+                                <span class="text-muted text-center d-block py-4">No songbooks to show.</span>
+                            <?php endif; ?>
+                        </td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
