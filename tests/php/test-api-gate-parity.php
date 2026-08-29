@@ -20,8 +20,10 @@ declare(strict_types=1);
  * see or close (exactly the class of bug rule #1587 / the #1590
  * "entitlement truth-up" program already fixed once for `admin_songbook_*`
  * / `admin_musician_*`'s SIBLINGS and the `admin_user_*` family's other
- * six actions — this pass finishes the same job on the actions those
- * passes missed).
+ * six actions, API-coverage batch 7). This guard was extended a second
+ * time (#1986, "F2 sweep") to cover the REMAINING pre-existing bare-role
+ * admin WRITE actions batch 7 missed: the `admin_songbooks_reorder`,
+ * `admin_group_*` and `admin_organisation_*` families.
  *
  * WHAT THIS GUARD PROVES, PER ACTION
  * -----------------------------------
@@ -50,9 +52,28 @@ declare(strict_types=1);
  * that fails on correct code gets weakened or deleted" trap). It checks
  * only the NAMED set below, each with its own page-verified reason.
  *
+ * The #1986 sweep also examined — and deliberately LEFT UNCHANGED, on
+ * page-verified evidence — several bare-role actions this guard does NOT
+ * assert on: `admin_songbook_delete_cascade` / `admin_songbooks_auto_
+ * colour_fill` / `admin_songbooks_auto_colour_reassign` (manage/songbooks.
+ * php ALSO bare-role-gates these specific destructive cases, beyond its
+ * page-level manage_songbooks entitlement — genuine parity, not a miss);
+ * `auth_register`'s admin-only-registration-mode check (no sibling
+ * manage/*.php CRUD write to diff against); the nine read-only `admin_*`
+ * listing/report actions (`admin_users`, `admin_groups`,
+ * `admin_activity_log`, `admin_pending_revisions`, `admin_organisations`,
+ * `admin_analytics_searches`, `admin_data_health`, `admin_schema_audit`,
+ * `admin_migrations_status` — out of scope: the task is WRITE actions
+ * only); and `admin_revision_review`, flagged unsure because no
+ * manage/*.php page implements its approve/reject-pending-revision
+ * workflow at all (manage/revisions.php is a same-named-but-different,
+ * read-only audit log gated on `verify_songs`, which also defaults WIDER
+ * than admin+ — editor/admin/global_admin — so even guessing that key
+ * would not be behaviour-neutral).
+ *
  * WHY TREE-DERIVED WHERE IT MATTERS MOST (rule #34)
  * -----------------------------------------------------------------------
- * The set of NINE actions itself is a maintained list (matching this
+ * The set of TWENTY actions itself is a maintained list (matching this
  * codebase's other "maintained mapping with a rationale per entry"
  * guards — test-manage-action-api-coverage.php's own $MAPPING is the
  * house precedent) — a security-audit finding is inherently a named list,
@@ -72,11 +93,13 @@ declare(strict_types=1);
  * Exit status 0 = clean, 1 = at least one mismatch or a mutation self-test
  * failed to go red.
  *
- * @see appWeb/public_html/api.php                          the nine swapped/added gates
+ * @see appWeb/public_html/api.php                          the twenty swapped/added gates
  * @see appWeb/public_html/includes/entitlements.php          the ENTITLEMENTS default map
  * @see appWeb/public_html/manage/musicians.php                page-side manage_musicians gate
  * @see appWeb/public_html/manage/songbooks.php                page-side manage_songbooks gate
  * @see appWeb/public_html/manage/users.php                    page-side view_users gate + create's own doc-comment
+ * @see appWeb/public_html/manage/groups.php                   page-side manage_user_groups gate (#1986)
+ * @see appWeb/public_html/manage/organisations.php            page-side manage_organisations gate (#1986)
  * @see tests/php/test-api-coverage-batch7.php                the sibling guard this borrows its helpers from
  */
 
@@ -90,6 +113,8 @@ $entitlementsSrc   = (string)file_get_contents($repo . '/appWeb/public_html/incl
 $musiciansPageSrc  = (string)file_get_contents($repo . '/appWeb/public_html/manage/musicians.php');
 $songbooksPageSrc  = (string)file_get_contents($repo . '/appWeb/public_html/manage/songbooks.php');
 $usersPageSrc      = (string)file_get_contents($repo . '/appWeb/public_html/manage/users.php');
+$groupsPageSrc        = (string)file_get_contents($repo . '/appWeb/public_html/manage/groups.php');
+$organisationsPageSrc = (string)file_get_contents($repo . '/appWeb/public_html/manage/organisations.php');
 
 $passed = 0;
 $failed = 0;
@@ -237,14 +262,20 @@ if (!caseBodyContains($commentTrapSrc, 'somethingElse(')) {
 echo "\nF2 entitlement-gate cleanup: API/page gate parity\n\n";
 
 /**
- * The nine swapped/added actions, their expected entitlement key, and
+ * The twenty swapped/added actions, their expected entitlement key, and
  * which page's source proves that key is the page's OWN gate for the
  * equivalent operation. `admin_user_create` is the one ADDED-entitlement
  * case (kept alongside its pre-existing bare role check, matching its six
  * siblings' established #1590 E1 pattern — see the in-code comment on that
- * action); the other eight are SWAPS (bare check replaced outright,
+ * action); the other nineteen are SWAPS (bare check replaced outright,
  * matching the admin_tune_add / admin_musician_duplicate_dismiss
  * precedent already in api.php).
+ *
+ * The last eleven entries (`admin_songbooks_reorder` through
+ * `admin_organisation_member_remove`) are the #1986 "F2 sweep" addition —
+ * see the file doc-block above for which OTHER bare-role actions this same
+ * sweep examined and deliberately left alone (page also bare-checks / no
+ * sibling page / read-only / out of scope).
  */
 $GATED = [
     'admin_credit_person_add'    => ['manage_musicians', 'musicians'],
@@ -256,11 +287,25 @@ $GATED = [
     'admin_songbook_update'      => ['manage_songbooks', 'songbooks'],
     'admin_songbook_delete'      => ['manage_songbooks', 'songbooks'],
     'admin_user_create'          => ['view_users', 'users'],
+    /* #1986 F2 sweep additions */
+    'admin_songbooks_reorder'              => ['manage_songbooks', 'songbooks'],
+    'admin_group_create'                   => ['manage_user_groups', 'groups'],
+    'admin_group_update'                   => ['manage_user_groups', 'groups'],
+    'admin_group_delete'                   => ['manage_user_groups', 'groups'],
+    'admin_group_member_add'               => ['manage_user_groups', 'groups'],
+    'admin_group_member_remove'            => ['manage_user_groups', 'groups'],
+    'admin_organisation_update'            => ['manage_organisations', 'organisations'],
+    'admin_organisation_delete'            => ['manage_organisations', 'organisations'],
+    'admin_organisation_member_add'        => ['manage_organisations', 'organisations'],
+    'admin_organisation_member_role_change' => ['manage_organisations', 'organisations'],
+    'admin_organisation_member_remove'     => ['manage_organisations', 'organisations'],
 ];
 $pageSrcByTag = [
-    'musicians' => $musiciansPageSrc,
-    'songbooks' => $songbooksPageSrc,
-    'users'     => $usersPageSrc,
+    'musicians'     => $musiciansPageSrc,
+    'songbooks'     => $songbooksPageSrc,
+    'users'         => $usersPageSrc,
+    'groups'        => $groupsPageSrc,
+    'organisations' => $organisationsPageSrc,
 ];
 
 /* ---- 1. Dispatchable — each is still a real, singly-defined $action
@@ -280,14 +325,14 @@ foreach ($GATED as $name => [$entKey, $pageTag]) {
         caseBodyContains($body, "userHasEntitlement('{$entKey}'"));
 }
 
-/* ---- 3. The eight SWAP actions no longer gate on the bare role-check
+/* ---- 3. The nineteen SWAP actions no longer gate on the bare role-check
    ALONE — i.e. userHasEntitlement is what actually decides admission, not
-   just bolted on beside an unchanged bare check. For the eight swaps the
-   literal `in_array($authUser['Role'], ['admin', 'global_admin'])` string
-   must be ABSENT from the case body (it was replaced, not duplicated).
-   admin_user_create is the deliberate exception — it KEEPS the bare check
-   as well (established #1590 E1 pattern, matching its six siblings), so
-   it is asserted separately below instead of here. ---- */
+   just bolted on beside an unchanged bare check. For the nineteen swaps
+   the literal `in_array($authUser['Role'], ['admin', 'global_admin'])`
+   string must be ABSENT from the case body (it was replaced, not
+   duplicated). admin_user_create is the deliberate exception — it KEEPS
+   the bare check as well (established #1590 E1 pattern, matching its six
+   siblings), so it is asserted separately below instead of here. ---- */
 $swapOnly = $GATED;
 unset($swapOnly['admin_user_create']);
 foreach ($swapOnly as $name => [$entKey, $pageTag]) {
@@ -313,8 +358,9 @@ ok("'admin_user_create' checks userHasEntitlement AFTER establishing \$authUser 
 
 /* ---- 4. Page-side: the entitlement key really is that page's OWN gate
    for the equivalent write — not a hand-typed belief. musicians.php /
-   songbooks.php gate the WHOLE page on it (top-of-file); users.php gates
-   the WHOLE page on view_users and its `create` case has no finer
+   songbooks.php / groups.php / organisations.php gate the WHOLE page on
+   it (top-of-file, before the POST switch is even reached); users.php
+   gates the WHOLE page on view_users and its `create` case has no finer
    per-action entry (verified via the page's own explicit doc-comment
    marker, since the ABSENCE of an entry cannot be grepped for directly). ---- */
 ok('manage/musicians.php really does gate the page on manage_musicians',
@@ -326,6 +372,22 @@ ok('manage/users.php really does gate the page on view_users',
 ok('manage/users.php\'s own doc-comment confirms `create` is deliberately absent from its per-action $ACTION_ENTITLEMENTS map (so view_users — the page-level gate — really is create\'s only gate, not a guess)',
     strpos($usersPageSrc, '`create` is deliberately absent') !== false
     && strpos($usersPageSrc, 'no `create_users` entitlement') !== false);
+/* #1986 F2 sweep additions. */
+ok('manage/groups.php really does gate the page on manage_user_groups',
+    strpos($groupsPageSrc, "userHasEntitlement('manage_user_groups'") !== false);
+ok('manage/organisations.php really does gate the page on manage_organisations',
+    strpos($organisationsPageSrc, "userHasEntitlement('manage_organisations'") !== false);
+/* manage/organisations.php's `update` case ALSO has a finer field-level
+   gate (`manage_org_licences`) that PRESERVES (not rejects) just the
+   licence sub-fields for a caller without it — confirming the nuance the
+   in-code comment on admin_organisation_update documents as a known,
+   deliberately-unfixed gap (this guard proves the page reality the
+   comment describes, not that the API replicates the field-level
+   preserve behaviour — it does not, by design of this behaviour-neutral
+   sweep). */
+ok('manage/organisations.php\'s `update` case really does carry a finer manage_org_licences check alongside the page-level manage_organisations gate (the documented, deliberately-unreplicated nuance)',
+    strpos($organisationsPageSrc, "userHasEntitlement('manage_org_licences'") !== false
+    && strpos($organisationsPageSrc, '$canEditOrgLicences') !== false);
 
 /* ---- 5. EQUIVALENCE — the default map for each entitlement key really is
    EXACTLY ['admin', 'global_admin'] today, parsed from the live
@@ -368,5 +430,5 @@ if ($failed > 0 || $mutationFailures) {
     exit(1);
 }
 
-echo "\n{$passed} passed, 0 failed. All nine F2 gate-parity actions call userHasEntitlement() on the SAME key their sibling manage/*.php page gates the equivalent write on, the eight swaps genuinely replaced (not merely supplemented) the bare role check, admin_user_create correctly KEEPS its bare check in the established E1 AND-shape, and every entitlement's live default is proven to be exactly ['admin','global_admin'] — today's admitted set is unchanged.\n";
+echo "\n{$passed} passed, 0 failed. All twenty F2 gate-parity actions call userHasEntitlement() on the SAME key their sibling manage/*.php page gates the equivalent write on, the nineteen swaps genuinely replaced (not merely supplemented) the bare role check, admin_user_create correctly KEEPS its bare check in the established E1 AND-shape, and every entitlement's live default is proven to be exactly ['admin','global_admin'] — today's admitted set is unchanged.\n";
 exit(0);

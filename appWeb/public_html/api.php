@@ -14669,7 +14669,18 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — swapped from the bare
+               in_array($authUser['Role'], ['admin','global_admin']) check to
+               userHasEntitlement('manage_songbooks', ...), matching
+               manage/songbooks.php's own page-level gate (rule #1587) — the
+               page's `reorder` case has no finer per-action check of its own
+               (unlike delete_cascade / auto_colour_fill / auto_colour_reassign
+               just below, which the page ALSO bare-checks and are deliberately
+               left alone). Equivalence: manage_songbooks defaults to
+               ['admin','global_admin'] — the admitted set is unchanged today;
+               a future revocation via /manage/entitlements now reaches this
+               endpoint too. */
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -15643,7 +15654,16 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — swapped from the bare
+               in_array($authUser['Role'], ['admin','global_admin']) check to
+               userHasEntitlement('manage_user_groups', ...), the SAME
+               (and only) gate manage/groups.php checks for the whole page —
+               that page has no finer per-action entitlement of its own
+               (rule #1587). Equivalence: manage_user_groups defaults to
+               ['admin','global_admin'] — the admitted set is unchanged
+               today; a future revocation via /manage/entitlements now
+               reaches this endpoint too. */
+            if (!$authUser || !userHasEntitlement('manage_user_groups', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -15717,7 +15737,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see admin_group_create
+               above for the full rationale. Same swap, same page, same
+               equivalence proof. */
+            if (!$authUser || !userHasEntitlement('manage_user_groups', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -15807,7 +15830,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see admin_group_create
+               above for the full rationale. Same swap, same page, same
+               equivalence proof. */
+            if (!$authUser || !userHasEntitlement('manage_user_groups', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -15875,7 +15901,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see admin_group_create
+               above for the full rationale. Same swap, same page, same
+               equivalence proof. */
+            if (!$authUser || !userHasEntitlement('manage_user_groups', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -15945,7 +15974,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see admin_group_create
+               above for the full rationale. Same swap, same page, same
+               equivalence proof. */
+            if (!$authUser || !userHasEntitlement('manage_user_groups', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -16419,7 +16451,24 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — swapped from the bare
+               in_array($authUser['Role'], ['admin','global_admin']) check to
+               userHasEntitlement('manage_organisations', ...), the SAME
+               top-of-file gate manage/organisations.php checks before its
+               whole POST switch is even reached (rule #1587). Equivalence:
+               manage_organisations defaults to ['admin','global_admin'] —
+               the admitted set is unchanged today; a future revocation via
+               /manage/entitlements now reaches this endpoint too.
+               NOTE (not part of this swap — flagged, not fixed): the page's
+               `update` case ALSO has a FINER field-level gate,
+               `manage_org_licences`, that PRESERVES (not rejects) the
+               licence_type/licence_number/additional_licences fields when
+               the caller lacks it (organisations.php ~L213/~L284). This API
+               action writes those same fields unconditionally regardless of
+               manage_org_licences — a pre-existing gap this behaviour-
+               neutral sweep does not close (doing so would change live
+               behaviour, not just the gate). See the F2 sweep report. */
+            if (!$authUser || !userHasEntitlement('manage_organisations', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -16547,7 +16596,12 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see
+               admin_organisation_update above for the full rationale. Same
+               swap, same page-level gate, same equivalence proof. The
+               page's `delete` case has no finer per-action check beyond the
+               page-level manage_organisations gate. */
+            if (!$authUser || !userHasEntitlement('manage_organisations', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -16630,7 +16684,12 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see
+               admin_organisation_update above for the full rationale. Same
+               swap, same page-level gate, same equivalence proof. The
+               page's `add_member` case has no finer per-action check beyond
+               the page-level manage_organisations gate. */
+            if (!$authUser || !userHasEntitlement('manage_organisations', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -16686,7 +16745,12 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see
+               admin_organisation_update above for the full rationale. Same
+               swap, same page-level gate, same equivalence proof. The
+               page's `update_member_role` case has no finer per-action
+               check beyond the page-level manage_organisations gate. */
+            if (!$authUser || !userHasEntitlement('manage_organisations', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -16746,7 +16810,12 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see
+               admin_organisation_update above for the full rationale. Same
+               swap, same page-level gate, same equivalence proof. The
+               page's `remove_member` case has no finer per-action check
+               beyond the page-level manage_organisations gate. */
+            if (!$authUser || !userHasEntitlement('manage_organisations', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
