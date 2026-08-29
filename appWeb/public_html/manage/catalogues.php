@@ -477,8 +477,8 @@ if ($hasSchema && !empty($catalogues)) {
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action" value="add">
                 <div class="col-md-3">
-                    <label class="form-label small mb-0">Title <span class="text-danger">*</span></label>
-                    <input type="text" name="title" class="form-control form-control-sm" required maxlength="255"
+                    <label class="form-label small mb-0" for="create-cat-title">Title <span class="text-danger">*</span></label>
+                    <input type="text" name="title" id="create-cat-title" class="form-control form-control-sm" required maxlength="255"
                            placeholder="e.g. Christmas / Advent">
                 </div>
                 <div class="col-md-3">
@@ -490,16 +490,16 @@ if ($hasSchema && !empty($catalogues)) {
                     ]) ?>
                 </div>
                 <div class="col-md-3">
-                    <label class="form-label small mb-0">Description</label>
-                    <input type="text" name="description" class="form-control form-control-sm" maxlength="500">
+                    <label class="form-label small mb-0" for="create-cat-description">Description</label>
+                    <input type="text" name="description" id="create-cat-description" class="form-control form-control-sm" maxlength="500">
                 </div>
                 <div class="col-md-1">
-                    <label class="form-label small mb-0">Sort</label>
-                    <input type="number" name="sort_order" class="form-control form-control-sm" min="0" value="0">
+                    <label class="form-label small mb-0" for="create-cat-sort">Sort</label>
+                    <input type="number" name="sort_order" id="create-cat-sort" class="form-control form-control-sm" min="0" value="0">
                 </div>
                 <div class="col-md-2">
-                    <label class="form-label small mb-0">Visibility</label>
-                    <select name="visibility" class="form-select form-select-sm">
+                    <label class="form-label small mb-0" for="create-cat-visibility">Visibility</label>
+                    <select name="visibility" id="create-cat-visibility" class="form-select form-select-sm">
                         <option value="public">Public</option>
                         <option value="curated">Curated only</option>
                         <option value="admin_only">Admin only</option>
@@ -508,12 +508,12 @@ if ($hasSchema && !empty($catalogues)) {
                 <div class="col-md-3">
                     <!-- #1181 — optional catalogue badge colour; swatch writes its
                          hex into the text field (the submitted value). Blank = default. -->
-                    <label class="form-label small mb-0">Colour <small class="text-muted">(optional)</small></label>
+                    <label class="form-label small mb-0" for="create-cat-colour">Colour <small class="text-muted">(optional)</small></label>
                     <div class="input-group input-group-sm">
                         <input type="color" class="form-control form-control-color" value="#888888"
                                title="Pick a colour" aria-label="Collection colour swatch"
                                oninput="this.nextElementSibling.value = this.value.toUpperCase()">
-                        <input type="text" name="colour" class="form-control" maxlength="7"
+                        <input type="text" name="colour" id="create-cat-colour" class="form-control" maxlength="7"
                                pattern="#?[0-9A-Fa-f]{6}" placeholder="#RRGGBB — blank = default">
                     </div>
                 </div>
@@ -588,8 +588,9 @@ if ($hasSchema && !empty($catalogues)) {
                                     <button type="button" class="btn btn-sm btn-outline-info"
                                             data-bs-toggle="collapse"
                                             data-bs-target="#cat-edit-<?= (int)$c['Id'] ?>"
-                                            title="Edit">
-                                        <i class="bi bi-pencil"></i>
+                                            title="Edit"
+                                            aria-label="Edit collection &quot;<?= htmlspecialchars($c['Title'], ENT_QUOTES) ?>&quot;">
+                                        <i class="bi bi-pencil" aria-hidden="true"></i>
                                     </button>
                                     <!-- #1765 Feature 5 — export this Collection as a MARCXML file. -->
                                     <a class="btn btn-sm btn-outline-secondary"
@@ -601,8 +602,9 @@ if ($hasSchema && !empty($catalogues)) {
                                     <button type="button" class="btn btn-sm btn-outline-secondary"
                                             data-bs-toggle="collapse"
                                             data-bs-target="#cat-members-<?= (int)$c['Id'] ?>"
-                                            title="Members">
-                                        <i class="bi bi-music-note-list"></i>
+                                            title="Members"
+                                            aria-label="Members of collection &quot;<?= htmlspecialchars($c['Title'], ENT_QUOTES) ?>&quot;">
+                                        <i class="bi bi-music-note-list" aria-hidden="true"></i>
                                     </button>
                                     <form method="POST" class="d-inline"
                                           onsubmit="return confirm('Delete collection \'<?= htmlspecialchars($c['Title'], ENT_QUOTES) ?>\'? This unlinks every member song; the songs themselves are NOT deleted.');">
@@ -624,23 +626,23 @@ if ($hasSchema && !empty($catalogues)) {
                                         <input type="hidden" name="action" value="update">
                                         <input type="hidden" name="id"     value="<?= (int)$c['Id'] ?>">
                                         <div class="col-md-3">
-                                            <label class="form-label small mb-0">Title</label>
-                                            <input type="text" name="title" class="form-control form-control-sm"
+                                            <label class="form-label small mb-0" for="edit-cat-title-<?= (int)$c['Id'] ?>">Title</label>
+                                            <input type="text" name="title" id="edit-cat-title-<?= (int)$c['Id'] ?>" class="form-control form-control-sm"
                                                    value="<?= htmlspecialchars($c['Title']) ?>" required maxlength="255">
                                         </div>
                                         <div class="col-md-3">
-                                            <label class="form-label small mb-0">Description</label>
-                                            <input type="text" name="description" class="form-control form-control-sm"
+                                            <label class="form-label small mb-0" for="edit-cat-description-<?= (int)$c['Id'] ?>">Description</label>
+                                            <input type="text" name="description" id="edit-cat-description-<?= (int)$c['Id'] ?>" class="form-control form-control-sm"
                                                    value="<?= htmlspecialchars((string)($c['Description'] ?? '')) ?>" maxlength="500">
                                         </div>
                                         <div class="col-md-1">
-                                            <label class="form-label small mb-0">Sort</label>
-                                            <input type="number" name="sort_order" class="form-control form-control-sm"
+                                            <label class="form-label small mb-0" for="edit-cat-sort-<?= (int)$c['Id'] ?>">Sort</label>
+                                            <input type="number" name="sort_order" id="edit-cat-sort-<?= (int)$c['Id'] ?>" class="form-control form-control-sm"
                                                    min="0" value="<?= (int)$c['SortOrder'] ?>">
                                         </div>
                                         <div class="col-md-2">
-                                            <label class="form-label small mb-0">Visibility</label>
-                                            <select name="visibility" class="form-select form-select-sm">
+                                            <label class="form-label small mb-0" for="edit-cat-visibility-<?= (int)$c['Id'] ?>">Visibility</label>
+                                            <select name="visibility" id="edit-cat-visibility-<?= (int)$c['Id'] ?>" class="form-select form-select-sm">
                                                 <?php foreach (['public','curated','admin_only'] as $v): ?>
                                                     <option value="<?= $v ?>" <?= $c['Visibility'] === $v ? 'selected' : '' ?>><?= $v ?></option>
                                                 <?php endforeach; ?>
@@ -648,13 +650,13 @@ if ($hasSchema && !empty($catalogues)) {
                                         </div>
                                         <div class="col-md-3">
                                             <!-- #1181 — catalogue badge colour (blank = default). -->
-                                            <label class="form-label small mb-0">Colour</label>
+                                            <label class="form-label small mb-0" for="edit-cat-colour-<?= (int)$c['Id'] ?>">Colour</label>
                                             <div class="input-group input-group-sm">
                                                 <input type="color" class="form-control form-control-color"
                                                        value="<?= htmlspecialchars(($c['Colour'] ?? '') !== '' ? (string)$c['Colour'] : '#888888') ?>"
                                                        title="Pick a colour" aria-label="Collection colour swatch"
                                                        oninput="this.nextElementSibling.value = this.value.toUpperCase()">
-                                                <input type="text" name="colour" class="form-control"
+                                                <input type="text" name="colour" id="edit-cat-colour-<?= (int)$c['Id'] ?>" class="form-control"
                                                        value="<?= htmlspecialchars((string)($c['Colour'] ?? '')) ?>"
                                                        maxlength="7" pattern="#?[0-9A-Fa-f]{6}" placeholder="#RRGGBB">
                                             </div>
@@ -737,8 +739,9 @@ if ($hasSchema && !empty($catalogues)) {
                                              songs are authored in the editor, never minted here). -->
                                         <input type="hidden" name="song_id" class="cat-add-song-id" value="">
                                         <div class="col-md-4">
-                                            <label class="form-label small mb-0">Add a song</label>
+                                            <label class="form-label small mb-0" for="cat-add-song-name-<?= (int)$c['Id'] ?>">Add a song</label>
                                             <input type="text" class="form-control form-control-sm cat-add-song-name"
+                                                   id="cat-add-song-name-<?= (int)$c['Id'] ?>"
                                                    placeholder="Search by title or song id…" autocomplete="off" required
                                                    aria-label="Search for a song to add to this collection">
                                         </div>

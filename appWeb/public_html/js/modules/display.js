@@ -190,8 +190,8 @@ export class Display {
                         aria-label="Decrease font size" title="Smaller text">
                     <i class="fa-solid fa-minus" aria-hidden="true"></i>
                 </button>
-                <span class="btn btn-outline-secondary disabled" id="display-font-label"
-                      aria-label="Current font size">${Math.round(fontSize * 100)}%</span>
+                <span class="btn btn-outline-secondary disabled" id="display-font-label" role="img"
+                      aria-label="Current font size: ${Math.round(fontSize * 100)}%">${Math.round(fontSize * 100)}%</span>
                 <button type="button" class="btn btn-outline-secondary" id="display-font-up"
                         aria-label="Increase font size" title="Larger text">
                     <i class="fa-solid fa-plus" aria-hidden="true"></i>
@@ -358,7 +358,18 @@ export class Display {
     /** Update the font size label in the toolbar */
     updateFontLabel() {
         const label = document.getElementById('display-font-label');
-        if (label) label.textContent = Math.round(this.get('fontSize') * 100) + '%';
+        if (!label) return;
+        /* a11y audit M8 (2026-08-28): role="img" on this span means its
+           aria-label is now the ONLY thing assistive tech reads — the
+           visible textContent below is invisible to it. Both must be kept
+           in sync on every change, or a screen-reader user would be told a
+           value that stopped updating the moment the required role was
+           added (the fix would have made this WORSE than the unlabelled-
+           but-role-less span it replaced, which at least fell back to
+           reading the live text). */
+        const pct = Math.round(this.get('fontSize') * 100) + '%';
+        label.textContent = pct;
+        label.setAttribute('aria-label', `Current font size: ${pct}`);
     }
 
     /** Apply line spacing to lyrics element */

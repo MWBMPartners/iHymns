@@ -801,13 +801,13 @@ $csrf = csrfToken();
                     <input type="hidden" name="action" value="member_add">
                     <input type="hidden" name="org_id" value="<?= $orgId ?>">
                     <div class="col-md-5">
-                        <label class="form-label small mb-0">Add member (username or email)</label>
-                        <input type="text" name="user_identifier" class="form-control form-control-sm"
+                        <label class="form-label small mb-0" for="member-identifier-<?= $orgId ?>">Add member (username or email)</label>
+                        <input type="text" name="user_identifier" id="member-identifier-<?= $orgId ?>" class="form-control form-control-sm"
                                placeholder="username or email" required>
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label small mb-0">Role</label>
-                        <select name="member_role" class="form-select form-select-sm">
+                        <label class="form-label small mb-0" for="member-role-<?= $orgId ?>">Role</label>
+                        <select name="member_role" id="member-role-<?= $orgId ?>" class="form-select form-select-sm">
                             <?php foreach ($MEMBER_ROLES as $mr): ?>
                                 <option value="<?= $mr ?>" <?= $mr === 'member' ? 'selected' : '' ?>><?= $mr ?></option>
                             <?php endforeach; ?>
@@ -866,10 +866,11 @@ $csrf = csrfToken();
                                                    style="width: 9rem;">
                                             <div class="form-check form-check-inline mb-0">
                                                 <input class="form-check-input" type="checkbox" name="is_active" value="1"
+                                                       id="licence-active-<?= (int)($l['Id'] ?? 0) ?>"
                                                        <?= !empty($l['IsActive']) ? 'checked' : '' ?>
                                                        title="Licence is currently active"
                                                        aria-label="Licence is currently active">
-                                                <label class="form-check-label small">active</label>
+                                                <label class="form-check-label small" for="licence-active-<?= (int)($l['Id'] ?? 0) ?>">active</label>
                                             </div>
                                             <input type="text" name="notes"
                                                    class="form-control form-control-sm py-0"
@@ -910,8 +911,8 @@ $csrf = csrfToken();
                     <input type="hidden" name="action" value="licence_add">
                     <input type="hidden" name="org_id" value="<?= $orgId ?>">
                     <div class="col-md-2">
-                        <label class="form-label small mb-0">Type</label>
-                        <select name="licence_type" class="form-select form-select-sm" required>
+                        <label class="form-label small mb-0" for="licence-type-<?= $orgId ?>">Type</label>
+                        <select name="licence_type" id="licence-type-<?= $orgId ?>" class="form-select form-select-sm" required>
                             <option value="">— pick —</option>
                             <?php foreach ($LICENCE_TYPES as $lt): ?>
                                 <option value="<?= $lt ?>"><?= $lt ?></option>
@@ -919,21 +920,21 @@ $csrf = csrfToken();
                         </select>
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label small mb-0">Licence number</label>
-                        <input type="text" name="licence_number" class="form-control form-control-sm"
+                        <label class="form-label small mb-0" for="licence-number-<?= $orgId ?>">Licence number</label>
+                        <input type="text" name="licence_number" id="licence-number-<?= $orgId ?>" class="form-control form-control-sm"
                                placeholder="e.g. CCLI 1234567">
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label small mb-0">Expires</label>
-                        <input type="date" name="expires_at" class="form-control form-control-sm">
+                        <label class="form-label small mb-0" for="licence-expires-<?= $orgId ?>">Expires</label>
+                        <input type="date" name="expires_at" id="licence-expires-<?= $orgId ?>" class="form-control form-control-sm">
                     </div>
                     <div class="col-md-1 form-check mb-2">
-                        <input class="form-check-input" type="checkbox" name="is_active" value="1" checked>
-                        <label class="form-check-label small">active</label>
+                        <input class="form-check-input" type="checkbox" name="is_active" id="licence-active-new-<?= $orgId ?>" value="1" checked>
+                        <label class="form-check-label small" for="licence-active-new-<?= $orgId ?>">active</label>
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label small mb-0">Notes</label>
-                        <input type="text" name="notes" class="form-control form-control-sm" placeholder="optional">
+                        <label class="form-label small mb-0" for="licence-notes-<?= $orgId ?>">Notes</label>
+                        <input type="text" name="notes" id="licence-notes-<?= $orgId ?>" class="form-control form-control-sm" placeholder="optional">
                     </div>
                     <div class="col-md-auto">
                         <button type="submit" class="btn btn-sm btn-amber-solid">
@@ -950,8 +951,8 @@ $csrf = csrfToken();
                     <input type="hidden" name="action" value="idle_timeout_update">
                     <input type="hidden" name="org_id" value="<?= $orgId ?>">
                     <div class="col-md-3">
-                        <label class="form-label small mb-0">Minutes <span class="text-muted">(blank = site default)</span></label>
-                        <input type="number" name="live_idle_timeout_mins" class="form-control form-control-sm"
+                        <label class="form-label small mb-0" for="idle-minutes-<?= $orgId ?>">Minutes <span class="text-muted">(blank = site default)</span></label>
+                        <input type="number" name="live_idle_timeout_mins" id="idle-minutes-<?= $orgId ?>" class="form-control form-control-sm"
                                min="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES ?>" max="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES ?>" step="1"
                                placeholder="site default"
                                value="<?= isset($o['LiveIdleTimeoutMins']) && $o['LiveIdleTimeoutMins'] !== null ? (int)$o['LiveIdleTimeoutMins'] : '' ?>">

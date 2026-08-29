@@ -523,19 +523,22 @@ function canManage(array $target, array $actor): bool {
                                 <?php if ($manageable): ?>
                                     <!-- Edit Profile -->
                                     <button class="btn btn-outline-info" title="Edit profile"
+                                            aria-label="Edit profile for <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>"
                                             onclick="openEditModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['display_name'], ENT_QUOTES) ?>', '<?= htmlspecialchars($u['email'] ?? '', ENT_QUOTES) ?>')">
-                                        <i class="bi bi-pencil"></i>
+                                        <i class="bi bi-pencil" aria-hidden="true"></i>
                                     </button>
                                     <!-- Rename (change username) -->
                                     <button class="btn btn-outline-info" title="Rename user"
+                                            aria-label="Rename user <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>"
                                             onclick="openRenameModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['username'], ENT_QUOTES) ?>')">
-                                        <i class="bi bi-at"></i>
+                                        <i class="bi bi-at" aria-hidden="true"></i>
                                     </button>
                                     <!-- Change Role (not for self) -->
                                     <?php if (!$isSelf): ?>
                                     <button class="btn btn-outline-warning" title="Change role"
+                                            aria-label="Change role for <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>"
                                             onclick="openRoleModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['username'], ENT_QUOTES) ?>', '<?= htmlspecialchars((string)$u['role'], ENT_QUOTES) ?>')">
-                                        <i class="bi bi-shield"></i>
+                                        <i class="bi bi-shield" aria-hidden="true"></i>
                                     </button>
                                     <?php endif; ?>
                                     <!-- Change Access Tier -->
@@ -549,8 +552,9 @@ function canManage(array $target, array $actor): bool {
                                     <?php endif; ?>
                                     <!-- Reset Password -->
                                     <button class="btn btn-outline-secondary" title="Reset password"
+                                            aria-label="Reset password for <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>"
                                             onclick="openPasswordModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['username'], ENT_QUOTES) ?>')">
-                                        <i class="bi bi-key"></i>
+                                        <i class="bi bi-key" aria-hidden="true"></i>
                                     </button>
                                     <!-- Disable / Enable (not for self).
                                          #1698 — an ERASED account is a tombstone with no identity
@@ -674,11 +678,11 @@ function canManage(array $target, array $actor): bool {
                     </div>
                     <div class="modal-body">
                         <div class="mb-3">
-                            <label class="form-label">Display Name</label>
+                            <label class="form-label" for="edit-display-name">Display Name</label>
                             <input type="text" class="form-control" name="display_name" id="edit-display-name" required>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Email</label>
+                            <label class="form-label" for="edit-email">Email</label>
                             <input type="email" class="form-control" name="email" id="edit-email" placeholder="Optional">
                         </div>
                     </div>
@@ -739,7 +743,7 @@ function canManage(array $target, array $actor): bool {
                     </div>
                     <div class="modal-body">
                         <div class="mb-3">
-                            <label class="form-label">New username</label>
+                            <label class="form-label" for="rename-new-username">New username</label>
                             <input type="text" class="form-control" name="new_username" id="rename-new-username"
                                    minlength="3" maxlength="100" pattern="[A-Za-z0-9_.\-]+"
                                    autocomplete="off" autocapitalize="none" spellcheck="false" required>
@@ -778,7 +782,7 @@ function canManage(array $target, array $actor): bool {
                         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
-                        <label class="form-label small">Access tier</label>
+                        <label class="form-label small" for="tier-select">Access tier</label>
                         <select class="form-select" name="new_tier" id="tier-select">
                             <?php foreach ($accessTiers as $at): ?>
                                 <option value="<?= htmlspecialchars($at['Name']) ?>">
@@ -818,8 +822,8 @@ function canManage(array $target, array $actor): bool {
                     </div>
                     <div class="modal-body">
                         <div class="mb-3">
-                            <label class="form-label">New Password</label>
-                            <input type="password" class="form-control" name="new_password" minlength="8" required
+                            <label class="form-label" for="pw-new-password">New Password</label>
+                            <input type="password" class="form-control" name="new_password" id="pw-new-password" minlength="8" required
                                    placeholder="Minimum 8 characters">
                         </div>
                         <div class="alert alert-warning py-2 small mb-0">

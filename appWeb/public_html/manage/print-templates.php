@@ -604,11 +604,11 @@ if ($hasSchema) {
                             <label class="form-check-label small" for="pt-active">Active — offer this template in the print dialog</label>
                         </div>
 
-                        <label class="form-label small mb-1">Page options</label>
-                        <div class="row g-2 align-items-end mb-3" id="pt-page-options"><!-- controls injected by JS from PRINT_PAGE_OPTIONS --></div>
+                        <label class="form-label small mb-1" id="pt-page-options-label">Page options</label>
+                        <div class="row g-2 align-items-end mb-3" id="pt-page-options" role="group" aria-labelledby="pt-page-options-label"><!-- controls injected by JS from PRINT_PAGE_OPTIONS --></div>
 
-                        <label class="form-label small mb-1">Add a block</label>
-                        <div class="d-flex flex-wrap gap-2 mb-2" id="pt-palette"><!-- buttons injected by JS --></div>
+                        <label class="form-label small mb-1" id="pt-palette-label">Add a block</label>
+                        <div class="d-flex flex-wrap gap-2 mb-2" id="pt-palette" role="group" aria-labelledby="pt-palette-label"><!-- buttons injected by JS --></div>
                         <div class="alert alert-info py-2 px-3 small mb-3" role="note">
                             <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
                             <strong>Songbook &amp; number blocks are context-aware.</strong>
@@ -619,14 +619,14 @@ if ($hasSchema) {
                             song. Official-hymnal songs print their book and number as normal.
                         </div>
 
-                        <label class="form-label small mb-1">Blocks (in print order)</label>
-                        <div class="vstack gap-2" id="pt-block-list"><!-- rows injected by JS --></div>
+                        <label class="form-label small mb-1" id="pt-block-list-label">Blocks (in print order)</label>
+                        <div class="vstack gap-2" id="pt-block-list" role="group" aria-labelledby="pt-block-list-label"><!-- rows injected by JS --></div>
                     </div>
 
                     <!-- Right column: live preview -->
                     <div class="col-lg-5">
                         <div class="d-flex align-items-center justify-content-between mb-1">
-                            <label class="form-label mb-0">
+                            <label class="form-label mb-0" id="pt-preview-label">
                                 <i class="bi bi-eye me-1"></i>Live preview <span class="text-muted">(sample song)</span>
                             </label>
                             <!-- #1767 remainder P4 (§3.3, "AA") — a TRUE paginated PDF
@@ -641,7 +641,7 @@ if ($hasSchema) {
                                 <i class="bi bi-file-earmark-pdf me-1"></i>Preview as PDF
                             </button>
                         </div>
-                        <div class="pt-preview-paper" id="pt-preview"><!-- renderTemplateBodyHtml output --></div>
+                        <div class="pt-preview-paper" id="pt-preview" role="region" aria-labelledby="pt-preview-label"><!-- renderTemplateBodyHtml output --></div>
                     </div>
                 </div>
 

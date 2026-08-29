@@ -1429,8 +1429,12 @@ export class Router {
                     <span class="song-number-badge">${tr.number || '?'}</span>
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${escapeHtml(toTitleCase(tr.title))}${tr.verified ? ' <i class="fa-solid fa-circle-check text-success small" aria-hidden="true" title="Verified"></i>' : ''}</span>
+                        <!-- a11y audit m3 (2026-08-28): lang on the endonym so a screen
+                             reader pronounces it with the right language's rules rather
+                             than the page's own (mirrors songbook-language-filter.php's
+                             matching fix). -->
                         <small class="text-muted d-block">
-                            <i class="fa-solid fa-language me-1" aria-hidden="true"></i>${escapeHtml(tr.languageNativeName || tr.languageName || tr.language)}${tr.translator ? ` — ${escapeHtml(tr.translator)}` : ''}
+                            <i class="fa-solid fa-language me-1" aria-hidden="true"></i><span${tr.language ? ` lang="${escapeHtml(tr.language)}"` : ''}>${escapeHtml(tr.languageNativeName || tr.languageName || tr.language)}</span>${tr.translator ? ` — ${escapeHtml(tr.translator)}` : ''}
                         </small>
                     </div>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>

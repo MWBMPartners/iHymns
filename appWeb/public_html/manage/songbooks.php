@@ -3540,8 +3540,8 @@ $csrf = csrfToken();
                 <input type="hidden" name="action"     value="family_manifest">
                 <div class="row g-2 align-items-end">
                     <div class="col-sm-6">
-                        <label class="form-label small">Manifest file (JSON, ≤ 1 MB)</label>
-                        <input type="file" name="manifest"
+                        <label class="form-label small" for="family-manifest-file">Manifest file (JSON, ≤ 1 MB)</label>
+                        <input type="file" name="manifest" id="family-manifest-file"
                                class="form-control form-control-sm"
                                accept="application/json,.json" required>
                     </div>
@@ -3757,8 +3757,8 @@ $csrf = csrfToken();
                              rights key yet. Edit-modal only (needs an existing songbook Id);
                              stays outside the shared Add/Edit partial by design (#1765 rule
                              #22 — the create form has no songs to apply defaults to). */ -->
-                        <div class="mb-3 border-top pt-2">
-                            <label class="form-label small text-muted d-block mb-1">
+                        <div class="mb-3 border-top pt-2" role="group" aria-labelledby="edit-default-rights-label">
+                            <label class="form-label small text-muted d-block mb-1" id="edit-default-rights-label">
                                 <i class="bi bi-patch-check me-1"></i>Default rights (prefill hint for songs in this book)
                             </label>
                             <div class="row g-2">
@@ -3843,7 +3843,7 @@ $csrf = csrfToken();
                              at the bottom of the page (search "parent-typeahead"). -->
                         <div class="row g-2 mb-3" id="edit-parent-block">
                             <div class="col-sm-7">
-                                <label class="form-label">Parent songbook (optional)</label>
+                                <label class="form-label" for="edit-parent-search">Parent songbook (optional)</label>
                                 <input type="hidden" name="parent_songbook_id" id="edit-parent-id" value="">
                                 <div class="d-flex gap-1">
                                     <input type="text"
@@ -3871,7 +3871,7 @@ $csrf = csrfToken();
                                 </div>
                             </div>
                             <div class="col-sm-5">
-                                <label class="form-label">Relationship</label>
+                                <label class="form-label" for="edit-parent-relationship">Relationship</label>
                                 <select class="form-select"
                                         name="parent_relationship"
                                         id="edit-parent-relationship">
@@ -3896,13 +3896,13 @@ $csrf = csrfToken();
                              (sort-order, note) curators use the dedicated
                              /manage/songbook-series page. -->
                         <div class="mb-3" id="edit-series-block">
-                            <label class="form-label d-flex justify-content-between align-items-center">
+                            <div class="form-label d-flex justify-content-between align-items-center">
                                 <span>Series memberships</span>
                                 <a href="/manage/songbook-series" class="small text-info"
                                    title="Manage series — names, slugs, sort order, member adds">
                                     <i class="bi bi-collection me-1" aria-hidden="true"></i>Manage series
                                 </a>
-                            </label>
+                            </div>
                             <?php if (!$allSeries): ?>
                                 <div class="form-text small">
                                     No series defined yet. <a href="/manage/songbook-series">Create one</a>
@@ -3943,13 +3943,13 @@ $csrf = csrfToken();
                              compiler_person_ids[] / compiler_notes[] in
                              parallel arrays. -->
                         <div class="mb-3" id="edit-compilers-block">
-                            <label class="form-label d-flex justify-content-between align-items-center">
+                            <div class="form-label d-flex justify-content-between align-items-center">
                                 <span>Compilers / Editors</span>
                                 <a href="/manage/musicians" class="small text-info"
                                    title="Manage credit people — add a person, set bio, slug, …">
                                     <i class="bi bi-person-badge me-1" aria-hidden="true"></i>Manage people
                                 </a>
-                            </label>
+                            </div>
                             <div class="form-text small mb-2">
                                 The person(s) who compiled / edited this hymnal —
                                 e.g. <em>Mission Praise</em> by Peter Horrobin &amp; Greg Leavers.
@@ -4001,13 +4001,13 @@ $csrf = csrfToken();
                              is the primary publisher and re-syncs the free-text
                              Publisher field above on save. -->
                         <div class="mb-3" id="edit-publishers-block">
-                            <label class="form-label d-flex justify-content-between align-items-center">
+                            <div class="form-label d-flex justify-content-between align-items-center">
                                 <span>Publishers <span class="text-muted small">(registry)</span></span>
                                 <a href="/manage/publishers" class="small text-info"
                                    title="Manage publishers — add a company/person, set imprint parent, aliases, …">
                                     <i class="bi bi-building me-1" aria-hidden="true"></i>Manage publishers
                                 </a>
-                            </label>
+                            </div>
                             <div class="form-text small mb-2">
                                 One or more publishers for this book (multi-publisher copyright). The
                                 first-listed publisher becomes the primary and updates the free-text
@@ -4051,8 +4051,8 @@ $csrf = csrfToken();
                              ("vernacular", "older form", "transliteration", …).
                              Reorder via drag handle persists via array index ⇒
                              SortOrder on save. -->
-                        <div class="mb-3" id="edit-alt-names-block">
-                            <label class="form-label">Alternative names <span class="text-muted small">(optional)</span></label>
+                        <div class="mb-3" id="edit-alt-names-block" role="group" aria-labelledby="edit-alt-names-label">
+                            <label class="form-label" id="edit-alt-names-label">Alternative names <span class="text-muted small">(optional)</span></label>
                             <div class="form-text small mb-2">
                                 "Also known as …" — vernacular names, older spellings,
                                 or originals. Searched alongside the canonical name and
@@ -4106,7 +4106,7 @@ $csrf = csrfToken();
 
                         <hr>
                         <div class="mb-3">
-                            <label class="form-label">New abbreviation (optional)</label>
+                            <label class="form-label" for="edit-new-abbr">New abbreviation (optional)</label>
                             <input type="text" class="form-control" name="new_abbreviation" id="edit-new-abbr"
                                    pattern="[A-Za-z0-9]+" maxlength="10"
                                    placeholder="Leave blank to keep current">

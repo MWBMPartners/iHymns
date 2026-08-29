@@ -1204,7 +1204,7 @@ if ($hasSchema) {
             <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a work</h2>
             <div class="row g-2">
                 <div class="col-sm-5">
-                    <label class="form-label small">Title</label>
+                    <label class="form-label small" for="create-title">Title</label>
                     <input type="text" name="title" id="create-title"
                            class="form-control form-control-sm"
                            maxlength="255" required
@@ -1221,8 +1221,8 @@ if ($hasSchema) {
                     ]) ?>
                 </div>
                 <div class="col-sm-4">
-                    <label class="form-label small">ISWC <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="iswc"
+                    <label class="form-label small" for="create-iswc">ISWC <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="iswc" id="create-iswc"
                            class="form-control form-control-sm"
                            maxlength="15"
                            placeholder="T-345.246.800-1">
@@ -1230,8 +1230,8 @@ if ($hasSchema) {
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-6">
-                    <label class="form-label small">Parent work <small class="text-muted">(optional — for nesting)</small></label>
-                    <select name="parent_id" class="form-select form-select-sm">
+                    <label class="form-label small" for="create-parent">Parent work <small class="text-muted">(optional — for nesting)</small></label>
+                    <select name="parent_id" id="create-parent" class="form-select form-select-sm">
                         <option value="">— top-level work —</option>
                         <?php foreach ($rows as $r): ?>
                             <option value="<?= (int)$r['Id'] ?>"><?= htmlspecialchars((string)$r['Title']) ?></option>
@@ -1239,8 +1239,8 @@ if ($hasSchema) {
                     </select>
                 </div>
                 <div class="col-sm-6">
-                    <label class="form-label small">Notes <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="notes"
+                    <label class="form-label small" for="create-notes">Notes <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="notes" id="create-notes"
                            class="form-control form-control-sm"
                            maxlength="500"
                            placeholder="Brief context for curators">
@@ -1248,7 +1248,7 @@ if ($hasSchema) {
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-6">
-                    <label class="form-label small">Composition origin <small class="text-muted">(optional)</small></label>
+                    <label class="form-label small" for="create-work-origin-city">Composition origin <small class="text-muted">(optional)</small></label>
                     <input type="text" id="create-work-origin-city" name="origin_city"
                            class="form-control form-control-sm js-place-search"
                            maxlength="255"
@@ -1264,15 +1264,15 @@ if ($hasSchema) {
                  just not persisted until the migration lands. -->
             <div class="row g-2 mt-2">
                 <div class="col-sm-6">
-                    <label class="form-label small">Subtitle <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="subtitle"
+                    <label class="form-label small" for="create-subtitle">Subtitle <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="subtitle" id="create-subtitle"
                            class="form-control form-control-sm"
                            maxlength="255"
                            placeholder="e.g. A Hymn for the Nativity">
                 </div>
                 <div class="col-sm-6">
-                    <label class="form-label small">Disambiguation <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="disambiguation"
+                    <label class="form-label small" for="create-disambiguation">Disambiguation <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="disambiguation" id="create-disambiguation"
                            class="form-control form-control-sm"
                            maxlength="255"
                            placeholder="Short parenthetical distinguishing same-named works">
@@ -1280,20 +1280,20 @@ if ($hasSchema) {
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-3">
-                    <label class="form-label small">CCLI Work # <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="ccli" inputmode="numeric"
+                    <label class="form-label small" for="create-ccli">CCLI Work # <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="ccli" id="create-ccli" inputmode="numeric"
                            class="form-control form-control-sm"
                            maxlength="50"
                            placeholder="1234567">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">BOWI <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="bowi"
+                    <label class="form-label small" for="create-bowi">BOWI <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="bowi" id="create-bowi"
                            class="form-control form-control-sm"
                            maxlength="30">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Tune name <small class="text-muted">(optional)</small></label>
+                    <label class="form-label small" for="create-work-tune-name">Tune name <small class="text-muted">(optional)</small></label>
                     <input type="text" name="tune_name" id="create-work-tune-name"
                            class="form-control form-control-sm"
                            maxlength="120"
@@ -1306,8 +1306,8 @@ if ($hasSchema) {
                     <input type="hidden" id="create-work-tune-id" value="">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">First published <small class="text-muted">(year, optional)</small></label>
-                    <input type="number" name="first_published_year"
+                    <label class="form-label small" for="create-first-published-year">First published <small class="text-muted">(year, optional)</small></label>
+                    <input type="number" name="first_published_year" id="create-first-published-year"
                            class="form-control form-control-sm"
                            min="500" max="2100"
                            placeholder="1978">
@@ -1315,14 +1315,14 @@ if ($hasSchema) {
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-6">
-                    <label class="form-label small">Copyright years <small class="text-muted">(as printed, optional)</small></label>
-                    <input type="text" name="copyright_years"
+                    <label class="form-label small" for="create-copyright-years">Copyright years <small class="text-muted">(as printed, optional)</small></label>
+                    <input type="text" name="copyright_years" id="create-copyright-years"
                            class="form-control form-control-sm"
                            maxlength="100"
                            placeholder="e.g. 1978, 1987, 2011">
                 </div>
                 <div class="col-sm-6">
-                    <label class="form-label small">Copyright holder <small class="text-muted">(optional)</small></label>
+                    <label class="form-label small" for="create-work-copyright-holder">Copyright holder <small class="text-muted">(optional)</small></label>
                     <input type="text" name="copyright_holder" id="create-work-copyright-holder"
                            class="form-control form-control-sm"
                            maxlength="255">
@@ -1339,8 +1339,8 @@ if ($hasSchema) {
                     <!-- #1741 P4b §2.4.5 rider — the pre-existing #1066
                          MusicBrainzWorkMBID column has never had an editor
                          field before this. -->
-                    <label class="form-label small">MusicBrainz Work MBID <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="musicbrainz_work_mbid"
+                    <label class="form-label small" for="create-musicbrainz-work-mbid">MusicBrainz Work MBID <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="musicbrainz_work_mbid" id="create-musicbrainz-work-mbid"
                            class="form-control form-control-sm"
                            maxlength="50"
                            placeholder="e.g. 0a1b2c3d-...">
@@ -1371,7 +1371,7 @@ if ($hasSchema) {
                         <div class="modal-body">
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">Title</label>
+                                    <label class="form-label" for="edit-work-title">Title</label>
                                     <input type="text" name="title" id="edit-work-title"
                                            class="form-control" maxlength="255" required>
                                 </div>
@@ -1385,7 +1385,7 @@ if ($hasSchema) {
                                     ]) ?>
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">ISWC <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-iswc">ISWC <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="iswc" id="edit-work-iswc"
                                            class="form-control" maxlength="15"
                                            placeholder="T-345.246.800-1">
@@ -1393,7 +1393,7 @@ if ($hasSchema) {
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">Parent work</label>
+                                    <label class="form-label" for="edit-work-parent">Parent work</label>
                                     <select name="parent_id" id="edit-work-parent" class="form-select">
                                         <option value="">— top-level work —</option>
                                         <?php foreach ($rows as $r): ?>
@@ -1403,14 +1403,14 @@ if ($hasSchema) {
                                     <div class="form-text small">Cycles are blocked server-side.</div>
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Notes</label>
+                                    <label class="form-label" for="edit-work-notes">Notes</label>
                                     <input type="text" name="notes" id="edit-work-notes"
                                            class="form-control" maxlength="500">
                                 </div>
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">Composition origin</label>
+                                    <label class="form-label" for="edit-work-origin-city">Composition origin</label>
                                     <input type="text" name="origin_city" id="edit-work-origin-city"
                                            class="form-control js-place-search" maxlength="255"
                                            placeholder="Start typing — e.g. Cardiff, Wales">
@@ -1423,48 +1423,48 @@ if ($hasSchema) {
                                  form above. -->
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">Subtitle <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-subtitle">Subtitle <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="subtitle" id="edit-work-subtitle"
                                            class="form-control" maxlength="255">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Disambiguation <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-disambiguation">Disambiguation <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="disambiguation" id="edit-work-disambiguation"
                                            class="form-control" maxlength="255">
                                 </div>
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-3">
-                                    <label class="form-label">CCLI Work # <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-ccli">CCLI Work # <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="ccli" id="edit-work-ccli" inputmode="numeric"
                                            class="form-control" maxlength="50">
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">BOWI <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-bowi">BOWI <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="bowi" id="edit-work-bowi"
                                            class="form-control" maxlength="30">
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">Tune name <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-tune-name">Tune name <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="tune_name" id="edit-work-tune-name"
                                            class="form-control" maxlength="120" placeholder="e.g. HYFRYDOL">
                                     <!-- #1864 — UI-state only, no name= (see the create-form twin above). -->
                                     <input type="hidden" id="edit-work-tune-id" value="">
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">First published <small class="text-muted">(year, opt.)</small></label>
+                                    <label class="form-label" for="edit-work-first-published-year">First published <small class="text-muted">(year, opt.)</small></label>
                                     <input type="number" name="first_published_year" id="edit-work-first-published-year"
                                            class="form-control" min="500" max="2100">
                                 </div>
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">Copyright years <small class="text-muted">(as printed, opt.)</small></label>
+                                    <label class="form-label" for="edit-work-copyright-years">Copyright years <small class="text-muted">(as printed, opt.)</small></label>
                                     <input type="text" name="copyright_years" id="edit-work-copyright-years"
                                            class="form-control" maxlength="100" placeholder="e.g. 1978, 1987, 2011">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Copyright holder <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-copyright-holder">Copyright holder <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="copyright_holder" id="edit-work-copyright-holder"
                                            class="form-control" maxlength="255">
                                     <!-- #1864 — see the create-form twin above for why the id is submitted. -->
@@ -1474,7 +1474,7 @@ if ($hasSchema) {
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
                                     <!-- #1741 P4b §2.4.5 rider. -->
-                                    <label class="form-label">MusicBrainz Work MBID <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-musicbrainz-work-mbid">MusicBrainz Work MBID <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="musicbrainz_work_mbid" id="edit-work-musicbrainz-work-mbid"
                                            class="form-control" maxlength="50" placeholder="e.g. 0a1b2c3d-...">
                                 </div>
@@ -1507,7 +1507,7 @@ if ($hasSchema) {
 
                             <div class="d-flex gap-2 align-items-end mb-3">
                                 <div class="flex-grow-1">
-                                    <label class="form-label small mb-1">Add a song to this work</label>
+                                    <label class="form-label small mb-1" for="edit-work-add-search">Add a song to this work</label>
                                     <input type="text" id="edit-work-add-search"
                                            class="form-control form-control-sm"
                                            autocomplete="off"
@@ -1559,7 +1559,7 @@ if ($hasSchema) {
 
                             <div class="d-flex gap-2 align-items-end mb-3">
                                 <div class="flex-grow-1">
-                                    <label class="form-label small mb-1">Add a constituent work</label>
+                                    <label class="form-label small mb-1" for="edit-work-constituent-add-search">Add a constituent work</label>
                                     <input type="text" id="edit-work-constituent-add-search"
                                            class="form-control form-control-sm"
                                            autocomplete="off"

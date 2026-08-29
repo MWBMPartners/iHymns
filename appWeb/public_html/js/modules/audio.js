@@ -585,7 +585,16 @@ export class Audio {
     updateProgress(fraction) {
         const bar = document.getElementById('audio-progress-bar');
         const timeEl = document.getElementById('audio-time-current');
-        if (bar) bar.style.width = (fraction * 100) + '%';
+        if (bar) {
+            bar.style.width = (fraction * 100) + '%';
+            /* a11y audit m4 (2026-08-28): aria-valuenow was set once at
+               render time and never touched again — every other progressbar
+               in this codebase updates it on every tick (settings.js,
+               bulk-import-progress.js, reading-progress.js). role="progressbar"
+               lives on the PARENT .progress (audio-progress-bar is the fill
+               child), so the update targets parentElement. */
+            bar.parentElement?.setAttribute('aria-valuenow', String(Math.round(fraction * 100)));
+        }
         if (timeEl) timeEl.textContent = this.formatTime(fraction * this.duration);
     }
 

@@ -33,6 +33,10 @@ import { apiFetch } from '../utils/api-client.js';
    a Service-Mode congregant does (CLAUDE.md modularity rule — see
    presence-identity.js's doc-comment for the full "why"). */
 import { deviceId, setPresenceCookie, clearPresenceCookie } from '../utils/presence-identity.js';
+/* a11y audit M3 — the shared modal-dialog focus contract (aria-modal, focus
+   in/out, Tab trap, Escape-to-close) extracted from present-mode.js's
+   already-correct recipe. See dialog-a11y.js's doc-block for the "why". */
+import { openModalDialog } from '../utils/dialog-a11y.js';
 
 const LF_POLL_MS      = 2500;   // follower poll cadence
 const LF_HEARTBEAT_MS = 30000;  // host keepalive — comfortably inside the 180 s join/poll freshness window (api.php)
@@ -68,6 +72,7 @@ export class LiveFollow {
         this._lastBeatAt        = 0;
         this._activityBound     = null;
         this._hostConsole       = null; // lazily-created LiveHostConsole instance (#1770 C6)
+        this._codeViewClose     = null; // close() returned by openModalDialog() while the code overlay is open (a11y audit M3)
         /* #1798 — the session length the host declared at "Go Live" (or the
            server-resolved default when they didn't pick one), and later
            whatever the "Extend" control most recently applied. Purely
@@ -820,9 +825,28 @@ export class LiveFollow {
         overlay.appendChild(closeBtn);
         overlay.addEventListener('click', (e) => { if (e.target === overlay) { this._removeCodeView(); } });
         document.body.appendChild(overlay);
+
+        /* a11y audit M3 — was role="dialog" with none of the rest of the
+           contract: no aria-modal, focus never moved in, no Escape, no Tab
+           trap, no focus restore on close. openModalDialog() supplies all
+           four; onClose does the DOM removal this function used to do
+           directly, so every dismiss path (Close button, backdrop click,
+           Escape) now goes through the one close() below. */
+        this._codeViewClose = openModalDialog(overlay, {
+            onClose: () => overlay.remove(),
+        });
     }
 
     _removeCodeView() {
+        if (this._codeViewClose) {
+            const close = this._codeViewClose;
+            this._codeViewClose = null;
+            close();
+            return;
+        }
+        /* No modal was ever opened this call (e.g. re-entrant guard in
+           _showCodeView()) — fall back to a plain removal so this stays
+           safe to call unconditionally, as every existing call site does. */
         document.getElementById('live-host-code-overlay')?.remove();
     }
 

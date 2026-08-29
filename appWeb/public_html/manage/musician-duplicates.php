@@ -497,18 +497,18 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <?php if ($showDismissed): ?><input type="hidden" name="show" value="dismissed"><?php endif; ?>
         <div class="row g-2 align-items-end">
             <div class="col-sm-4">
-                <label class="form-label small">Search name</label>
-                <input type="search" name="q" value="<?= htmlspecialchars($searchQ) ?>"
+                <label class="form-label small" for="mdup-filter-q">Search name</label>
+                <input type="search" name="q" id="mdup-filter-q" value="<?= htmlspecialchars($searchQ) ?>"
                        class="form-control form-control-sm" placeholder="e.g. Newton">
             </div>
             <div class="col-sm-3">
-                <label class="form-label small">Fuzzy threshold</label>
-                <input type="number" name="threshold" value="<?= htmlspecialchars((string)$threshold) ?>"
+                <label class="form-label small" for="mdup-filter-threshold">Fuzzy threshold</label>
+                <input type="number" name="threshold" id="mdup-filter-threshold" value="<?= htmlspecialchars((string)$threshold) ?>"
                        min="0.5" max="1.0" step="0.01" class="form-control form-control-sm">
             </div>
             <div class="col-sm-3">
-                <label class="form-label small">Min credits (either side)</label>
-                <input type="number" name="min_uses" value="<?= (int)$minUses ?>" min="0" max="9999"
+                <label class="form-label small" for="mdup-filter-min-uses">Min credits (either side)</label>
+                <input type="number" name="min_uses" id="mdup-filter-min-uses" value="<?= (int)$minUses ?>" min="0" max="9999"
                        class="form-control form-control-sm">
             </div>
             <div class="col-sm-2">
@@ -620,8 +620,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         </td>
                         <td data-col-priority="primary">
                             <div class="d-flex flex-wrap gap-1 align-items-center">
-                                <button type="button" class="btn btn-sm btn-outline-secondary mdup-swap-btn" title="Swap which side survives (s)">
-                                    <i class="bi bi-arrow-left-right"></i>
+                                <button type="button" class="btn btn-sm btn-outline-secondary mdup-swap-btn" title="Swap which side survives (s)"
+                                        aria-label="Swap which side survives, between <?= htmlspecialchars($p['a']['name'], ENT_QUOTES) ?> and <?= htmlspecialchars($p['b']['name'], ENT_QUOTES) ?>">
+                                    <i class="bi bi-arrow-left-right" aria-hidden="true"></i>
                                 </button>
                                 <?php if ($conflict): ?>
                                     <input type="text" class="form-control form-control-sm mdup-confirm-input" style="max-width:7rem" autocomplete="off" spellcheck="false" aria-label="Type MERGE to confirm">

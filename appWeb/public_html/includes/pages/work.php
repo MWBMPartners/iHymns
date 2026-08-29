@@ -373,7 +373,7 @@ foreach ($workCreditGroups as $workCreditGroup) {
                                     <small class="text-muted">— <?= htmlspecialchars($m['memberNote']) ?></small>
                                 <?php endif; ?>
                                 <?php if (!empty($m['isCanonical'])): ?>
-                                    <i class="fa-solid fa-star text-warning" aria-label="Canonical version" title="Canonical version"></i>
+                                    <i class="fa-solid fa-star text-warning" role="img" aria-label="Canonical version" title="Canonical version"></i>
                                 <?php endif; ?>
                                 <i class="fa-solid fa-chevron-right text-muted small" aria-hidden="true"></i>
                             </a>

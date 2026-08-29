@@ -599,7 +599,7 @@ if ($hasSchema) {
             <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a series</h2>
             <div class="row g-2">
                 <div class="col-sm-4">
-                    <label class="form-label small">Name</label>
+                    <label class="form-label small" for="create-name">Name</label>
                     <input type="text" name="name" id="create-name"
                            class="form-control form-control-sm"
                            maxlength="120" required
@@ -616,8 +616,8 @@ if ($hasSchema) {
                     ]) ?>
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Description (optional)</label>
-                    <input type="text" name="description"
+                    <label class="form-label small" for="create-description">Description (optional)</label>
+                    <input type="text" name="description" id="create-description"
                            class="form-control form-control-sm"
                            maxlength="255"
                            placeholder="Brief context for curators">
@@ -626,7 +626,7 @@ if ($hasSchema) {
                     <!-- #1181 — optional shared series colour; the swatch writes
                          its hex into the text field (the submitted value). Blank
                          text = theme default. Auto-contrast (#1179) keeps it readable. -->
-                    <label class="form-label small">Colour <small class="text-muted">(optional, shared)</small></label>
+                    <label class="form-label small" for="create-colour">Colour <small class="text-muted">(optional, shared)</small></label>
                     <div class="input-group input-group-sm">
                         <input type="color" class="form-control form-control-color" value="#888888"
                                title="Pick a colour" aria-label="Series colour swatch"
@@ -692,7 +692,7 @@ if ($hasSchema) {
                         <div class="modal-body">
                             <div class="row g-2 mb-3">
                                 <div class="col-sm-7">
-                                    <label class="form-label">Name</label>
+                                    <label class="form-label" for="edit-name">Name</label>
                                     <input type="text" name="name" id="edit-name"
                                            class="form-control" maxlength="120" required>
                                 </div>
@@ -708,14 +708,14 @@ if ($hasSchema) {
                                 </div>
                             </div>
                             <div class="mb-3">
-                                <label class="form-label">Description (optional)</label>
+                                <label class="form-label" for="edit-description">Description (optional)</label>
                                 <input type="text" name="description" id="edit-description"
                                        class="form-control" maxlength="255">
                             </div>
                             <div class="mb-3">
                                 <!-- #1181 — shared series colour. All member songbooks
                                      inherit it (own songbook colour still wins). -->
-                                <label class="form-label">Colour <small class="text-muted">(optional — shared by all member songbooks)</small></label>
+                                <label class="form-label" for="edit-colour">Colour <small class="text-muted">(optional — shared by all member songbooks)</small></label>
                                 <div class="input-group" style="max-width:18rem">
                                     <input type="color" class="form-control form-control-color" id="edit-colour-swatch"
                                            value="#888888" title="Pick a colour" aria-label="Series colour swatch"
@@ -768,7 +768,7 @@ if ($hasSchema) {
 
                             <div class="d-flex gap-2 align-items-end">
                                 <div class="flex-grow-1">
-                                    <label class="form-label small mb-1">Add a member songbook</label>
+                                    <label class="form-label small mb-1" for="edit-add-search">Add a member songbook</label>
                                     <input type="text" id="edit-add-search"
                                            class="form-control form-control-sm"
                                            list="edit-add-datalist"

@@ -718,13 +718,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <div class="card-body">
             <form method="get" class="row g-2 align-items-end">
                 <div class="col-md-3">
-                    <label class="form-label small">Recipient (username / email / id)</label>
-                    <input type="text" name="user" class="form-control form-control-sm"
+                    <label class="form-label small" for="filter-recipient">Recipient (username / email / id)</label>
+                    <input type="text" name="user" id="filter-recipient" class="form-control form-control-sm"
                            value="<?= htmlspecialchars($filter['user']) ?>" placeholder="any">
                 </div>
                 <div class="col-md-2">
-                    <label class="form-label small">Type</label>
-                    <select name="type" class="form-select form-select-sm">
+                    <label class="form-label small" for="filter-type">Type</label>
+                    <select name="type" id="filter-type" class="form-select form-select-sm">
                         <option value="">All</option>
                         <?php foreach ($existingTypes as $t): ?>
                             <option value="<?= htmlspecialchars($t) ?>" <?= $filter['type'] === $t ? 'selected' : '' ?>>
@@ -734,16 +734,16 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </select>
                 </div>
                 <div class="col-md-2">
-                    <label class="form-label small">Read state</label>
-                    <select name="read" class="form-select form-select-sm">
+                    <label class="form-label small" for="filter-read">Read state</label>
+                    <select name="read" id="filter-read" class="form-select form-select-sm">
                         <option value="">All</option>
                         <option value="unread" <?= $filter['read'] === 'unread' ? 'selected' : '' ?>>Unread</option>
                         <option value="read"   <?= $filter['read'] === 'read'   ? 'selected' : '' ?>>Read</option>
                     </select>
                 </div>
                 <div class="col-md-2">
-                    <label class="form-label small">Since</label>
-                    <input type="date" name="since" class="form-control form-control-sm"
+                    <label class="form-label small" for="filter-since">Since</label>
+                    <input type="date" name="since" id="filter-since" class="form-control form-control-sm"
                            value="<?= htmlspecialchars($filter['since']) ?>">
                 </div>
                 <div class="col-md-3 d-flex gap-2">
@@ -886,12 +886,12 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                     <div class="row g-3 mb-3">
                         <div class="col-md-6" data-aud="user">
-                            <label class="form-label small">Target user (username, email, or id)</label>
-                            <input type="text" name="target_user" class="form-control form-control-sm" placeholder="e.g. lance" autocomplete="off">
+                            <label class="form-label small" for="compose-target-user">Target user (username, email, or id)</label>
+                            <input type="text" name="target_user" id="compose-target-user" class="form-control form-control-sm" placeholder="e.g. lance" autocomplete="off">
                         </div>
                         <div class="col-md-6 d-none" data-aud="role">
-                            <label class="form-label small">Target role</label>
-                            <select name="target_role" class="form-select form-select-sm">
+                            <label class="form-label small" for="compose-target-role">Target role</label>
+                            <select name="target_role" id="compose-target-role" class="form-select form-select-sm">
                                 <option value="user">user</option>
                                 <option value="editor">editor</option>
                                 <option value="admin">admin</option>
@@ -899,8 +899,8 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                             </select>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label small">Type tag</label>
-                            <select name="type" class="form-select form-select-sm">
+                            <label class="form-label small" for="compose-type">Type tag</label>
+                            <select name="type" id="compose-type" class="form-select form-select-sm">
                                 <option value="announcement">announcement</option>
                                 <option value="maintenance">maintenance</option>
                                 <option value="release">release</option>
@@ -910,23 +910,23 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </div>
 
                     <div class="mb-3">
-                        <label class="form-label small">Title <span class="text-danger">*</span></label>
-                        <input type="text" name="title" class="form-control" maxlength="255" required placeholder="Short, scannable headline">
+                        <label class="form-label small" for="compose-title">Title <span class="text-danger">*</span></label>
+                        <input type="text" name="title" id="compose-title" class="form-control" maxlength="255" required placeholder="Short, scannable headline">
                     </div>
                     <div class="mb-3">
-                        <label class="form-label small">Body <span class="text-danger">*</span></label>
-                        <textarea name="body" class="form-control" rows="5" maxlength="2000" required placeholder="Plain-text body. ≤ 2000 characters. No HTML."></textarea>
+                        <label class="form-label small" for="compose-body">Body <span class="text-danger">*</span></label>
+                        <textarea name="body" id="compose-body" class="form-control" rows="5" maxlength="2000" required placeholder="Plain-text body. ≤ 2000 characters. No HTML."></textarea>
                     </div>
                     <div class="mb-1">
-                        <label class="form-label small">Action URL <span class="text-muted">(optional)</span></label>
-                        <input type="text" name="action_url" class="form-control form-control-sm" placeholder="/manage/some-page  or  https://…">
+                        <label class="form-label small" for="compose-action-url">Action URL <span class="text-muted">(optional)</span></label>
+                        <input type="text" name="action_url" id="compose-action-url" class="form-control form-control-sm" placeholder="/manage/some-page  or  https://…">
                         <div class="form-text small">Local /-rooted path or absolute https://. Clicking the row in the bell sends the user here.</div>
                     </div>
 <?php if ($notifHasScope): /* #1238 — only when the columns exist (migration applied) */ ?>
                     <div class="row g-2 mb-1">
                         <div class="col-sm-6">
-                            <label class="form-label small">Environment <span class="text-muted">(optional)</span></label>
-                            <select name="environment" class="form-select form-select-sm">
+                            <label class="form-label small" for="compose-environment">Environment <span class="text-muted">(optional)</span></label>
+                            <select name="environment" id="compose-environment" class="form-select form-select-sm">
                                 <option value="">All environments</option>
                                 <option value="alpha">Alpha only</option>
                                 <option value="beta">Beta only</option>
@@ -935,8 +935,8 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                             <div class="form-text small">The three environments share one database; scope a notice to just one.</div>
                         </div>
                         <div class="col-sm-6">
-                            <label class="form-label small">Expires <span class="text-muted">(optional)</span></label>
-                            <input type="datetime-local" name="expires_at" class="form-control form-control-sm">
+                            <label class="form-label small" for="compose-expires-at">Expires <span class="text-muted">(optional)</span></label>
+                            <input type="datetime-local" name="expires_at" id="compose-expires-at" class="form-control form-control-sm">
                             <div class="form-text small">Leave blank to never expire.</div>
                         </div>
                     </div>

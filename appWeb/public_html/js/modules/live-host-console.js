@@ -36,6 +36,11 @@
  */
 import { ServiceBroadcaster } from './service-broadcast.js';
 import { apiFetch } from '../utils/api-client.js';
+/* a11y audit M3 — shared modal-dialog focus contract, see dialog-a11y.js's
+   doc-block (extracted from present-mode.js's already-correct recipe so
+   this overlay and live-follow.js's code overlay don't each hand-roll a
+   third copy). */
+import { openModalDialog } from '../utils/dialog-a11y.js';
 
 export class LiveHostConsole {
     /** @param {import('./live-follow.js').LiveFollow} liveFollow */
@@ -43,6 +48,7 @@ export class LiveHostConsole {
         this.liveFollow = liveFollow;
         this.broadcaster = null;
         this._overlay = null;
+        this._closeDialog = null; // close() returned by openModalDialog() while open (a11y audit M3)
     }
 
     /** Open (or re-open) the console overlay. No-op once already hosting has ended. */
@@ -53,6 +59,21 @@ export class LiveHostConsole {
 
     /** Tear down the broadcaster + remove the overlay. Idempotent. */
     close() {
+        if (this._closeDialog) {
+            /* Routes through the SAME close() the Escape key and backdrop
+               click use, which calls back into _teardown() below as its
+               onClose — so the broadcaster/overlay cleanup always happens
+               exactly once regardless of which dismiss path triggered it. */
+            const closeDialog = this._closeDialog;
+            this._closeDialog = null;
+            closeDialog();
+            return;
+        }
+        this._teardown();
+    }
+
+    /** The actual cleanup, shared by every dismiss path via openModalDialog()'s onClose. */
+    _teardown() {
         if (this.broadcaster) { this.broadcaster.destroy(); this.broadcaster = null; }
         if (this._overlay && this._overlay.parentNode) { this._overlay.parentNode.removeChild(this._overlay); }
         this._overlay = null;
@@ -93,6 +114,16 @@ export class LiveHostConsole {
         overlay.addEventListener('click', (e) => { if (e.target === overlay) { this.close(); } });
         document.body.appendChild(overlay);
         this._overlay = overlay;
+
+        /* a11y audit M3 — was role="dialog" with none of the rest of the
+           contract (no aria-modal, no focus management, no Escape, no Tab
+           trap, no focus restore). onClose funnels the actual teardown
+           through this ONE close path regardless of how the dialog was
+           dismissed. */
+        this._closeDialog = openModalDialog(overlay, {
+            initialFocus: closeBtn,
+            onClose: () => this._teardown(),
+        });
 
         this.broadcaster = new ServiceBroadcaster({
             apiCall: this._adapterApiCall(),

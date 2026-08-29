@@ -732,8 +732,8 @@ $csrf = csrfToken();
                 <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add an organisation</h2>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-5">
-                        <label class="form-label small">Name</label>
-                        <input type="text" name="name" class="form-control form-control-sm" maxlength="255" required>
+                        <label class="form-label small" for="create-org-name">Name</label>
+                        <input type="text" name="name" id="create-org-name" class="form-control form-control-sm" maxlength="255" required>
                     </div>
                     <div class="col-sm-3">
                         <?= ihymns_slug_advanced_field([
@@ -744,8 +744,8 @@ $csrf = csrfToken();
                         ]) ?>
                     </div>
                     <div class="col-sm-4">
-                        <label class="form-label small">Parent organisation</label>
-                        <select name="parent_org_id" class="form-select form-select-sm">
+                        <label class="form-label small" for="create-org-parent">Parent organisation</label>
+                        <select name="parent_org_id" id="create-org-parent" class="form-select form-select-sm">
                             <option value="">— None —</option>
                             <?php foreach ($orgs as $o): ?>
                                 <option value="<?= (int)$o['Id'] ?>"><?= htmlspecialchars($o['Name']) ?></option>
@@ -754,11 +754,11 @@ $csrf = csrfToken();
                     </div>
                 </div>
                 <div class="mb-2">
-                    <label class="form-label small">Description</label>
-                    <input type="text" name="description" class="form-control form-control-sm">
+                    <label class="form-label small" for="create-org-description">Description</label>
+                    <input type="text" name="description" id="create-org-description" class="form-control form-control-sm">
                 </div>
                 <div class="mb-2">
-                    <label class="form-label small">Physical city <small class="text-muted">(optional)</small></label>
+                    <label class="form-label small" for="create-physical-city">Physical city <small class="text-muted">(optional)</small></label>
                     <input type="text" id="create-physical-city" name="physical_city"
                            class="form-control form-control-sm js-place-search"
                            maxlength="255"
@@ -767,14 +767,14 @@ $csrf = csrfToken();
                 </div>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
-                        <label class="form-label small">Licence type</label>
+                        <label class="form-label small" for="create-org-licence-type">Licence type</label>
                         <?php /* Disabled, not hidden, when the admin lacks
                            manage_org_licences: a control that vanishes teaches
                            nobody why. A disabled <select> submits nothing, and
                            the handler independently preserves/defaults the
                            value, so the UI and the server agree without the
                            form being the thing enforcing it. */ ?>
-                        <select name="licence_type" class="form-select form-select-sm"
+                        <select name="licence_type" id="create-org-licence-type" class="form-select form-select-sm"
                                 <?= $canEditOrgLicences ? '' : 'disabled' ?>>
                             <?php foreach ($LICENCE_TYPES as $key => $info): ?>
                                 <option value="<?= htmlspecialchars($key) ?>"
@@ -785,8 +785,8 @@ $csrf = csrfToken();
                         </select>
                     </div>
                     <div class="col-sm-4">
-                        <label class="form-label small">Licence number</label>
-                        <input type="text" name="licence_number" class="form-control form-control-sm" maxlength="100"
+                        <label class="form-label small" for="create-org-licence-number">Licence number</label>
+                        <input type="text" name="licence_number" id="create-org-licence-number" class="form-control form-control-sm" maxlength="100"
                                <?= $canEditOrgLicences ? '' : 'disabled' ?>>
                     </div>
                     <div class="col-sm-4 d-flex align-items-end">
@@ -816,8 +816,8 @@ $csrf = csrfToken();
                 <h2 class="h6 mb-3"><i class="bi bi-sliders me-2"></i>Settings — <?= htmlspecialchars($editOrg['Name']) ?></h2>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-5">
-                        <label class="form-label small">Name</label>
-                        <input type="text" name="name" class="form-control form-control-sm" maxlength="255" required
+                        <label class="form-label small" for="edit-org-name">Name</label>
+                        <input type="text" name="name" id="edit-org-name" class="form-control form-control-sm" maxlength="255" required
                                value="<?= htmlspecialchars($editOrg['Name']) ?>">
                     </div>
                     <div class="col-sm-3">
@@ -836,8 +836,8 @@ $csrf = csrfToken();
                         ]) ?>
                     </div>
                     <div class="col-sm-4">
-                        <label class="form-label small">Parent organisation</label>
-                        <select name="parent_org_id" class="form-select form-select-sm">
+                        <label class="form-label small" for="edit-org-parent">Parent organisation</label>
+                        <select name="parent_org_id" id="edit-org-parent" class="form-select form-select-sm">
                             <option value="">— None —</option>
                             <?php foreach ($orgs as $o): ?>
                                 <?php if ((int)$o['Id'] === (int)$editOrg['Id']) continue; /* no self-parent */ ?>
@@ -849,12 +849,12 @@ $csrf = csrfToken();
                     </div>
                 </div>
                 <div class="mb-2">
-                    <label class="form-label small">Description</label>
-                    <input type="text" name="description" class="form-control form-control-sm"
+                    <label class="form-label small" for="edit-org-description">Description</label>
+                    <input type="text" name="description" id="edit-org-description" class="form-control form-control-sm"
                            value="<?= htmlspecialchars($editOrg['Description']) ?>">
                 </div>
                 <div class="mb-2">
-                    <label class="form-label small">Physical city <small class="text-muted">(optional)</small></label>
+                    <label class="form-label small" for="edit-physical-city">Physical city <small class="text-muted">(optional)</small></label>
                     <input type="text" id="edit-physical-city" name="physical_city"
                            class="form-control form-control-sm js-place-search"
                            maxlength="255"
@@ -865,8 +865,8 @@ $csrf = csrfToken();
                 </div>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
-                        <label class="form-label small">Primary licence</label>
-                        <select name="licence_type" class="form-select form-select-sm"
+                        <label class="form-label small" for="edit-org-licence-type">Primary licence</label>
+                        <select name="licence_type" id="edit-org-licence-type" class="form-select form-select-sm"
                                 <?= $canEditOrgLicences ? '' : 'disabled' ?>>
                             <?php foreach ($LICENCE_TYPES as $key => $info): ?>
                                 <option value="<?= htmlspecialchars($key) ?>"
@@ -878,8 +878,8 @@ $csrf = csrfToken();
                         </select>
                     </div>
                     <div class="col-sm-4">
-                        <label class="form-label small">Licence number</label>
-                        <input type="text" name="licence_number" class="form-control form-control-sm" maxlength="100"
+                        <label class="form-label small" for="edit-org-licence-number">Licence number</label>
+                        <input type="text" name="licence_number" id="edit-org-licence-number" class="form-control form-control-sm" maxlength="100"
                                value="<?= htmlspecialchars($editOrg['LicenceNumber']) ?>"
                                <?= $canEditOrgLicences ? '' : 'disabled' ?>>
                     </div>
@@ -901,8 +901,8 @@ $csrf = csrfToken();
                      join table too so neither side can drift. -->
                 <?php if ($multiLicenceTableExists): ?>
                 <div class="mb-2">
-                    <label class="form-label small mb-1">Additional licences <small class="text-muted">(beyond the primary above)</small></label>
-                    <div class="d-flex flex-wrap gap-3">
+                    <label class="form-label small mb-1" id="edit-org-additional-licences-label">Additional licences <small class="text-muted">(beyond the primary above)</small></label>
+                    <div class="d-flex flex-wrap gap-3" role="group" aria-labelledby="edit-org-additional-licences-label">
                         <?php foreach ($LICENCE_TYPES as $key => $info): ?>
                             <?php if ($key === 'none') continue; ?>
                             <div class="form-check small">
@@ -933,11 +933,12 @@ $csrf = csrfToken();
                      this org's default, then the site-wide default. -->
                 <?php if (serviceMode_orgIdleColumnsExist($db)): ?>
                 <div class="mb-2">
-                    <label class="form-label small mb-1">Live Follow idle-timeout override <small class="text-muted">(optional)</small></label>
-                    <div class="row g-2 align-items-center">
+                    <label class="form-label small mb-1" id="edit-org-idle-timeout-label">Live Follow idle-timeout override <small class="text-muted">(optional)</small></label>
+                    <div class="row g-2 align-items-center" role="group" aria-labelledby="edit-org-idle-timeout-label">
                         <div class="col-sm-4">
-                            <input type="number" name="live_idle_timeout_mins" class="form-control form-control-sm"
+                            <input type="number" name="live_idle_timeout_mins" id="edit-org-idle-timeout-mins" class="form-control form-control-sm"
                                    min="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES ?>" max="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES ?>" step="1"
+                                   aria-label="Idle-timeout minutes override"
                                    placeholder="site default"
                                    value="<?= isset($editOrg['LiveIdleTimeoutMins']) && $editOrg['LiveIdleTimeoutMins'] !== null ? (int)$editOrg['LiveIdleTimeoutMins'] : '' ?>">
                         </div>

@@ -374,13 +374,13 @@ $csrf = csrfToken();
                 <h2 class="h6 mb-3"><i class="bi bi-sliders me-2"></i>Settings — <?= htmlspecialchars($editGroup['Name']) ?></h2>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
-                        <label class="form-label small">Name</label>
-                        <input type="text" name="name" class="form-control form-control-sm" maxlength="100" required
+                        <label class="form-label small" for="edit-group-name">Name</label>
+                        <input type="text" name="name" id="edit-group-name" class="form-control form-control-sm" maxlength="100" required
                                value="<?= htmlspecialchars($editGroup['Name']) ?>">
                     </div>
                     <div class="col-sm-8">
-                        <label class="form-label small">Description</label>
-                        <input type="text" name="description" class="form-control form-control-sm"
+                        <label class="form-label small" for="edit-group-description">Description</label>
+                        <input type="text" name="description" id="edit-group-description" class="form-control form-control-sm"
                                value="<?= htmlspecialchars($editGroup['Description']) ?>">
                     </div>
                 </div>

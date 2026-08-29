@@ -701,8 +701,14 @@ export class Search {
             if (!append) {
                 /* Fresh search — reset pagination + scaffold the container. */
                 this._search = { query, songbook, offset: 0, loaded: 0 };
+                /* a11y audit M10 — role="status" (not the container's old blanket
+                   aria-live) so only THIS summary line is announced per search,
+                   not the whole re-rendered results list. Created empty and
+                   filled below (after the awaited fetch) so the mutation happens
+                   to a region assistive tech is already watching — the same
+                   "empty now, fill next tick" shape announce.js documents. */
                 container.innerHTML = `
-                    <p class="text-muted small mb-2" id="search-count"></p>
+                    <p class="text-muted small mb-2" id="search-count" role="status"></p>
                     <div class="list-group" id="search-results-list"></div>
                     <div id="search-loadmore" class="text-center mt-3"></div>`;
             }
@@ -713,7 +719,7 @@ export class Search {
             /* No results on a fresh search → friendly empty state. */
             if (!append && (!results || results.length === 0)) {
                 container.innerHTML = `
-                    <div class="text-center text-muted py-4">
+                    <div class="text-center text-muted py-4" role="status">
                         <i class="fa-solid fa-face-sad-tear fa-2x mb-2 opacity-50" aria-hidden="true"></i>
                         <p>No results found for "<strong>${escapeHtml(query)}</strong>"</p>
                         <small>Try different keywords or check your spelling</small>
@@ -937,7 +943,7 @@ export class Search {
                 You're offline — searching cached song titles only. Songs you've
                 opened before will still open; others need a connection.
             </div>
-            <p class="text-muted small mb-2">${results.length} match${results.length !== 1 ? 'es' : ''} in the offline index</p>
+            <p class="text-muted small mb-2" role="status">${results.length} match${results.length !== 1 ? 'es' : ''} in the offline index</p>
             <div class="list-group">${this._renderResultItems(results)}</div>`;
         return true;
     }

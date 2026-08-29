@@ -522,7 +522,13 @@ declare(strict_types=1);
             <!-- Theme selection -->
             <div class="mb-3">
                 <label class="form-label fw-semibold">Theme</label>
-                <div class="d-flex flex-wrap gap-2" role="radiogroup" aria-label="Theme selection">
+                <?php /* a11y audit M5 (2026-08-28): role="radiogroup" requires role="radio"
+                         children with aria-checked — these are plain aria-pressed toggle
+                         buttons, so AT announced a radio group whose members weren't radios
+                         (broken group-position + selection semantics, arrow-key nav expected
+                         but absent). role="group" is the valid ARIA pattern for a set of
+                         aria-pressed buttons — no change to the JS state-syncing below. */ ?>
+                <div class="d-flex flex-wrap gap-2" role="group" aria-label="Theme selection">
                     <button type="button" class="btn btn-theme-option" data-setting-theme="light" aria-pressed="false">
                         <i class="fa-solid fa-sun me-1" aria-hidden="true"></i> Light
                     </button>

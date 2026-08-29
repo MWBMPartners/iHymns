@@ -268,8 +268,8 @@ $coverageKinds = LICENCE_COVERAGE_KINDS; // slug => human label
                         <label class="form-label small" for="lt-description">Description</label>
                         <input type="text" class="form-control form-control-sm" id="lt-description" name="description" maxlength="255">
                     </div>
-                    <div class="col-md-6">
-                        <label class="form-label small d-block">Covers</label>
+                    <div class="col-md-6" role="group" aria-labelledby="lt-covers-label">
+                        <label class="form-label small d-block" id="lt-covers-label">Covers</label>
                         <?php foreach ($coverageKinds as $slug => $human): ?>
                             <div class="form-check form-check-inline">
                                 <input class="form-check-input lt-cover" type="checkbox" name="covers[]"

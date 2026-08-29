@@ -467,8 +467,8 @@ if ($hasSchema) {
             <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a publisher</h2>
             <div class="row g-2">
                 <div class="col-sm-5">
-                    <label class="form-label small">Name</label>
-                    <input type="text" name="name" class="form-control form-control-sm" maxlength="255" required placeholder="e.g. Praise Trust">
+                    <label class="form-label small" for="create-publisher-name">Name</label>
+                    <input type="text" name="name" id="create-publisher-name" class="form-control form-control-sm" maxlength="255" required placeholder="e.g. Praise Trust">
                 </div>
                 <div class="col-sm-3">
                     <?= ihymns_slug_advanced_field([
@@ -480,8 +480,8 @@ if ($hasSchema) {
                     ]) ?>
                 </div>
                 <div class="col-sm-4">
-                    <label class="form-label small">Kind</label>
-                    <select name="kind" class="form-select form-select-sm">
+                    <label class="form-label small" for="create-publisher-kind">Kind</label>
+                    <select name="kind" id="create-publisher-kind" class="form-select form-select-sm">
                         <?php foreach (IHYMNS_PUBLISHER_KINDS as $k => $label): ?>
                             <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($label) ?></option>
                         <?php endforeach; ?>
@@ -490,22 +490,22 @@ if ($hasSchema) {
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-6">
-                    <label class="form-label small">Subtitle <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="subtitle" class="form-control form-control-sm" maxlength="255">
+                    <label class="form-label small" for="create-publisher-subtitle">Subtitle <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="subtitle" id="create-publisher-subtitle" class="form-control form-control-sm" maxlength="255">
                 </div>
                 <div class="col-sm-6">
-                    <label class="form-label small">Disambiguation <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="disambiguation" class="form-control form-control-sm" maxlength="255" placeholder="Distinguish same-named publishers">
+                    <label class="form-label small" for="create-publisher-disambiguation">Disambiguation <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="disambiguation" id="create-publisher-disambiguation" class="form-control form-control-sm" maxlength="255" placeholder="Distinguish same-named publishers">
                 </div>
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-3">
-                    <label class="form-label small">IPI <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="ipi" class="form-control form-control-sm" maxlength="20">
+                    <label class="form-label small" for="create-publisher-ipi">IPI <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="ipi" id="create-publisher-ipi" class="form-control form-control-sm" maxlength="20">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">ISNI <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="isni" class="form-control form-control-sm" maxlength="20">
+                    <label class="form-label small" for="create-publisher-isni">ISNI <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="isni" id="create-publisher-isni" class="form-control form-control-sm" maxlength="20">
                 </div>
                 <div class="col-sm-6 d-flex align-items-end">
                     <div class="form-check">
@@ -516,8 +516,8 @@ if ($hasSchema) {
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-12">
-                    <label class="form-label small">Notes <small class="text-muted">(optional)</small></label>
-                    <textarea name="notes" class="form-control form-control-sm" rows="2" maxlength="2000"></textarea>
+                    <label class="form-label small" for="create-publisher-notes">Notes <small class="text-muted">(optional)</small></label>
+                    <textarea name="notes" id="create-publisher-notes" class="form-control form-control-sm" rows="2" maxlength="2000"></textarea>
                 </div>
             </div>
             <button type="submit" class="btn btn-amber btn-sm mt-3">
@@ -543,7 +543,7 @@ if ($hasSchema) {
                         <div class="modal-body">
                             <div class="row g-2 mb-3">
                                 <div class="col-md-5">
-                                    <label class="form-label">Name</label>
+                                    <label class="form-label" for="edit-publisher-name">Name</label>
                                     <input type="text" name="name" id="edit-publisher-name" class="form-control" maxlength="255" required>
                                 </div>
                                 <div class="col-md-3">
@@ -557,7 +557,7 @@ if ($hasSchema) {
                                     ]) ?>
                                 </div>
                                 <div class="col-md-4">
-                                    <label class="form-label">Kind</label>
+                                    <label class="form-label" for="edit-publisher-kind">Kind</label>
                                     <select name="kind" id="edit-publisher-kind" class="form-select">
                                         <?php foreach (IHYMNS_PUBLISHER_KINDS as $k => $label): ?>
                                             <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($label) ?></option>
@@ -567,21 +567,21 @@ if ($hasSchema) {
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">Subtitle <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-subtitle">Subtitle <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="subtitle" id="edit-publisher-subtitle" class="form-control" maxlength="255">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Disambiguation <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-disambiguation">Disambiguation <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="disambiguation" id="edit-publisher-disambiguation" class="form-control" maxlength="255">
                                 </div>
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-3">
-                                    <label class="form-label">IPI <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-ipi">IPI <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="ipi" id="edit-publisher-ipi" class="form-control" maxlength="20">
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">ISNI <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-isni">ISNI <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="isni" id="edit-publisher-isni" class="form-control" maxlength="20">
                                 </div>
                                 <div class="col-md-6 d-flex align-items-end">
@@ -595,7 +595,7 @@ if ($hasSchema) {
                             <div class="row g-2 mb-3">
                                 <?php if ($gates['hasMusicians']): ?>
                                 <div class="col-md-6">
-                                    <label class="form-label">Link to person <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-musician-name">Link to person <small class="text-muted">(opt.)</small></label>
                                     <input type="text" id="edit-publisher-musician-name" class="form-control"
                                            list="edit-publisher-musician-datalist" autocomplete="off"
                                            placeholder="Type a musician's name…">
@@ -605,7 +605,7 @@ if ($hasSchema) {
                                 </div>
                                 <?php endif; ?>
                                 <div class="col-md-6">
-                                    <label class="form-label">Parent publisher / imprint of <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-parent-name">Parent publisher / imprint of <small class="text-muted">(opt.)</small></label>
                                     <input type="text" id="edit-publisher-parent-name" class="form-control"
                                            list="edit-publisher-parent-datalist" autocomplete="off"
                                            placeholder="Type a parent publisher's name…">
@@ -618,7 +618,7 @@ if ($hasSchema) {
                             <?php if ($gates['hasPlaces']): ?>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">City <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-city">City <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="city_name" id="edit-publisher-city" class="form-control js-place-search" autocomplete="off" maxlength="255" placeholder="e.g. London">
                                     <input type="hidden" name="city_id" id="edit-publisher-city-id">
                                     <div class="form-text small">Place of publication.</div>
@@ -628,7 +628,7 @@ if ($hasSchema) {
 
                             <div class="row g-2 mb-3">
                                 <div class="col-12">
-                                    <label class="form-label">Notes <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-notes">Notes <small class="text-muted">(opt.)</small></label>
                                     <textarea name="notes" id="edit-publisher-notes" class="form-control" rows="2" maxlength="2000"></textarea>
                                 </div>
                             </div>
@@ -699,7 +699,7 @@ if ($hasSchema) {
                                 target; the source is deleted. This cannot be undone.
                             </p>
                             <div class="mb-3">
-                                <label class="form-label small">Source (merged away)</label>
+                                <label class="form-label small" for="merge-source-id">Source (merged away)</label>
                                 <select name="source_id" id="merge-source-id" class="form-select form-select-sm" required>
                                     <option value="">— choose —</option>
                                     <?php foreach ($rows as $r): ?>
@@ -720,7 +720,7 @@ if ($hasSchema) {
                                  the merge continues through the EXISTING
                                  publisherAdminMerge() unchanged (below). -->
                             <div class="mb-3">
-                                <label class="form-label small">Target (survives)</label>
+                                <label class="form-label small" for="merge-target-name">Target (survives)</label>
                                 <input type="hidden" name="target_id" id="merge-target-id" value="">
                                 <input type="text" id="merge-target-name" class="form-control form-control-sm"
                                        placeholder="Search publishers by name…" autocomplete="off" required

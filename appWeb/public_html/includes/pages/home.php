@@ -388,7 +388,12 @@ $homeCardEnd = '</div>';
     <!-- Recently Viewed Songs (#304) — shown for authenticated users -->
     <div class="mb-4" id="recent-songs-section" style="display:none">
         <h2 class="h5"><i class="fa-solid fa-clock-rotate-left me-2" aria-hidden="true"></i>Recently Viewed</h2>
-        <div id="recent-songs-list" class="list-group list-group-flush" aria-live="polite"></div>
+        <?php /* a11y audit M10 (2026-08-28): aria-live removed — this whole list is
+                 injected once per visit to Home, so it queued dozens of song rows for
+                 announcement on every navigation here, competing with the router's own
+                 one-line route announcement (#1645). The <h2> above already makes this
+                 section discoverable via normal heading navigation once it loads. */ ?>
+        <div id="recent-songs-list" class="list-group list-group-flush"></div>
     </div>
     <?= $homeCardEnd ?>
 
@@ -396,7 +401,8 @@ $homeCardEnd = '</div>';
     <!-- Popular Songs (#303) -->
     <div class="mb-4" id="popular-songs-section">
         <h2 class="h5"><i class="fa-solid fa-fire me-2 text-warning" aria-hidden="true"></i>Popular Songs</h2>
-        <div id="popular-songs-list" class="list-group list-group-flush" aria-live="polite">
+        <?php /* a11y audit M10 — see the matching comment on Recently Viewed above. */ ?>
+        <div id="popular-songs-list" class="list-group list-group-flush">
             <div class="text-muted small p-2">Loading...</div>
         </div>
     </div>
@@ -410,7 +416,8 @@ $homeCardEnd = '</div>';
          inline; the dedicated searchable /themes index is the follow-on. -->
     <div class="mb-4" id="tags-section">
         <h2 class="h5"><i class="fa-solid fa-tags me-2" aria-hidden="true"></i>Popular Themes</h2>
-        <div id="tags-list" class="d-flex flex-wrap gap-2 align-items-center" aria-live="polite">
+        <?php /* a11y audit M10 — see the matching comment on Recently Viewed above. */ ?>
+        <div id="tags-list" class="d-flex flex-wrap gap-2 align-items-center">
             <span class="text-muted small">Loading...</span>
         </div>
     </div>

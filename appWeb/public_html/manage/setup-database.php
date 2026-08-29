@@ -2469,32 +2469,32 @@ if ($hasCredentials && defined('DB_HOST')) {
                     <input type="hidden" name="action" value="save-credentials">
                     <div class="row g-3">
                         <div class="col-md-8">
-                            <label class="form-label small">MySQL Host</label>
-                            <input type="text" name="host" class="form-control form-control-sm"
+                            <label class="form-label small" for="db-cred-host">MySQL Host</label>
+                            <input type="text" name="host" id="db-cred-host" class="form-control form-control-sm"
                                    required value="<?= htmlspecialchars($credFormValues['host']) ?>"
                                    placeholder="127.0.0.1 or mysql.example.com">
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label small">Port</label>
-                            <input type="number" name="port" class="form-control form-control-sm"
+                            <label class="form-label small" for="db-cred-port">Port</label>
+                            <input type="number" name="port" id="db-cred-port" class="form-control form-control-sm"
                                    min="1" max="65535" required
                                    value="<?= htmlspecialchars($credFormValues['port']) ?>">
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label small">Database Name</label>
-                            <input type="text" name="name" class="form-control form-control-sm"
+                            <label class="form-label small" for="db-cred-name">Database Name</label>
+                            <input type="text" name="name" id="db-cred-name" class="form-control form-control-sm"
                                    required value="<?= htmlspecialchars($credFormValues['name']) ?>"
                                    placeholder="ihymns">
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label small">Username</label>
-                            <input type="text" name="user" class="form-control form-control-sm"
+                            <label class="form-label small" for="db-cred-user">Username</label>
+                            <input type="text" name="user" id="db-cred-user" class="form-control form-control-sm"
                                    required value="<?= htmlspecialchars($credFormValues['user']) ?>"
                                    placeholder="ihymns_user">
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label small">Password</label>
-                            <input type="password" name="pass" class="form-control form-control-sm"
+                            <label class="form-label small" for="db-cred-pass">Password</label>
+                            <input type="password" name="pass" id="db-cred-pass" class="form-control form-control-sm"
                                    autocomplete="new-password"
                                    placeholder="<?= $hasCredentials ? '(leave blank to keep existing)' : '' ?>">
                             <?php if ($hasCredentials): ?>
@@ -2504,8 +2504,8 @@ if ($hasCredentials && defined('DB_HOST')) {
                             <?php endif; ?>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label small">Table Prefix <span class="text-secondary">(optional)</span></label>
-                            <input type="text" name="prefix" class="form-control form-control-sm"
+                            <label class="form-label small" for="db-cred-prefix">Table Prefix <span class="text-secondary">(optional)</span></label>
+                            <input type="text" name="prefix" id="db-cred-prefix" class="form-control form-control-sm"
                                    value="<?= htmlspecialchars($credFormValues['prefix']) ?>"
                                    placeholder="e.g. ih_">
                         </div>
@@ -3131,13 +3131,13 @@ if ($hasCredentials && defined('DB_HOST')) {
                                  web root) via the gated download-backup handler at the top
                                  of this page. No DB connection needed, so it stays enabled
                                  even when credentials are unset. -->
-                            <label class="form-label small text-secondary mb-1">
+                            <label class="form-label small text-secondary mb-1" for="backup-download-file">
                                 <i class="bi bi-download me-1"></i>Download a backup (to archive off-site):
                             </label>
                             <form action="" method="post" class="d-flex gap-2 flex-wrap mb-3">
                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
                                 <input type="hidden" name="action" value="download-backup">
-                                <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
+                                <select name="file" id="backup-download-file" class="form-select form-select-sm" style="flex:1 1 200px">
                                     <?php foreach ($backupFiles as $f): ?>
                                         <option value="<?= htmlspecialchars($f) ?>"><?= htmlspecialchars($f) ?></option>
                                     <?php endforeach; ?>
@@ -3147,12 +3147,12 @@ if ($hasCredentials && defined('DB_HOST')) {
                                 </button>
                             </form>
 
-                            <label class="form-label small text-secondary mb-1">
+                            <label class="form-label small text-secondary mb-1" for="backup-restore-file">
                                 <i class="bi bi-arrow-counterclockwise me-1"></i>Restore the database from a backup:
                             </label>
                             <form action="" method="get" class="d-flex gap-2 flex-wrap mb-2">
                                 <input type="hidden" name="action" value="restore">
-                                <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
+                                <select name="file" id="backup-restore-file" class="form-select form-select-sm" style="flex:1 1 200px">
                                     <?php foreach ($backupFiles as $f): ?>
                                         <option value="<?= htmlspecialchars($f) ?>"><?= htmlspecialchars($f) ?></option>
                                     <?php endforeach; ?>
@@ -3184,14 +3184,14 @@ if ($hasCredentials && defined('DB_HOST')) {
                                  credentials are unset. The typed "DELETE" prompt below is a
                                  client-side speed bump only, matching the Restore form's own
                                  onclick convention just above; the real gates are server-side. -->
-                            <label class="form-label small text-secondary mb-1">
+                            <label class="form-label small text-secondary mb-1" for="backup-delete-file">
                                 <i class="bi bi-trash me-1"></i>Delete a backup (permanent — cannot be undone):
                             </label>
                             <form action="" method="post" class="d-flex gap-2 flex-wrap mb-2">
                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
                                 <input type="hidden" name="action" value="delete-backup">
                                 <input type="hidden" name="confirm" value="1">
-                                <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
+                                <select name="file" id="backup-delete-file" class="form-select form-select-sm" style="flex:1 1 200px">
                                     <?php foreach ($backupFiles as $f): ?>
                                         <option value="<?= htmlspecialchars($f) ?>"><?= htmlspecialchars($f) ?></option>
                                     <?php endforeach; ?>
@@ -3216,6 +3216,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
                             <input type="hidden" name="action" value="upload-backup">
                             <input type="file" name="backup" accept=".sql,.sql.gz,.gz" required
+                                   aria-label="Backup file to upload"
                                    class="form-control form-control-sm" style="flex:1 1 200px">
                             <button type="submit" class="btn btn-sm btn-outline-secondary <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Upload

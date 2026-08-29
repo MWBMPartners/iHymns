@@ -381,20 +381,20 @@ if (!empty($registryByName)) {
         <form method="GET" class="card-admin p-3 mb-3">
             <div class="row g-2 align-items-end">
                 <div class="col-sm-4">
-                    <label class="form-label small">Search candidate name</label>
-                    <input type="search" name="q" value="<?= htmlspecialchars($searchQ) ?>"
+                    <label class="form-label small" for="mbp-filter-q">Search candidate name</label>
+                    <input type="search" name="q" id="mbp-filter-q" value="<?= htmlspecialchars($searchQ) ?>"
                            class="form-control form-control-sm" placeholder="e.g. Newton, J">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Match threshold</label>
-                    <input type="number" name="threshold" value="<?= htmlspecialchars((string)$threshold) ?>"
+                    <label class="form-label small" for="mbp-filter-threshold">Match threshold</label>
+                    <input type="number" name="threshold" id="mbp-filter-threshold" value="<?= htmlspecialchars((string)$threshold) ?>"
                            min="0.5" max="1.0" step="0.01"
                            class="form-control form-control-sm">
                     <div class="form-text small">Higher = stricter. Default 0.85.</div>
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Min total uses</label>
-                    <input type="number" name="min_uses" value="<?= (int)$minUses ?>"
+                    <label class="form-label small" for="mbp-filter-min-uses">Min total uses</label>
+                    <input type="number" name="min_uses" id="mbp-filter-min-uses" value="<?= (int)$minUses ?>"
                            min="1" max="9999"
                            class="form-control form-control-sm">
                 </div>

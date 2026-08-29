@@ -157,11 +157,15 @@ $songbooks = $songData->getSongbooks();
             <!-- Recent search history chips (#110) -->
             <div id="search-history-container" class="mb-3"></div>
 
-            <!-- Search results container -->
+            <!-- Search results container.
+                 a11y audit M10 (2026-08-28): this used to be aria-live="polite",
+                 wrapping the WHOLE results list — every re-render (typing another
+                 character, "Load more") queued the entire batch of song rows for
+                 screen-reader announcement. search.js's own #search-count summary
+                 line ("N results found") is now the thing marked role="status"
+                 instead, so only the summary is announced, not the list. -->
             <div id="text-search-results"
-                 class="search-results"
-                 aria-live="polite"
-                 aria-atomic="false">
+                 class="search-results">
                 <!-- Placeholder shown before search -->
                 <div class="text-center text-muted py-5" id="search-placeholder">
                     <i class="fa-solid fa-magnifying-glass fa-3x mb-3 opacity-25" aria-hidden="true"></i>

@@ -1851,7 +1851,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <div class="form-text">Server-side only. Encrypted at rest; never sent to a browser.</div>
                 </div>
                 <div class="col-12">
-                    <label class="form-label mb-1">Guard these forms</label>
+                    <label class="form-label mb-1" id="captcha-guard-forms-label">Guard these forms</label>
                     <p class="form-text small mt-0 mb-2">
                         If the provider ever goes down, a guarded form normally falls back to the ordinary
                         rate limits rather than locking people out &mdash; automatically, and only while
@@ -1859,7 +1859,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         &ldquo;keep strict&rdquo; on a form you would rather see fail than let through
                         during such an outage.
                     </p>
-                    <div class="row g-2">
+                    <div class="row g-2" role="group" aria-labelledby="captcha-guard-forms-label">
                         <?php foreach (captchaFormKeys() as $fKey): ?>
                             <?php
                             $fMeta   = $captchaFormMeta[$fKey] ?? ['label' => $fKey, 'caption' => ''];
@@ -1962,8 +1962,8 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="action" value="save_webhooks">
                 <div class="mb-3">
-                    <label class="form-label mb-1">Enabled channels</label>
-                    <div class="d-flex flex-wrap gap-3">
+                    <label class="form-label mb-1" id="webhook-channels-label">Enabled channels</label>
+                    <div class="d-flex flex-wrap gap-3" role="group" aria-labelledby="webhook-channels-label">
                         <?php foreach (['alpha', 'beta', 'production'] as $chOpt): ?>
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" name="webhooks_channels[]"
@@ -1987,8 +1987,8 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         Allow <code>http://127.0.0.1</code> targets (local testing only)
                     </label>
                 </div>
-                <div class="mb-3">
-                    <label class="form-label mb-1">
+                <div class="mb-3" role="group" aria-labelledby="webhook-drain-key-label">
+                    <label class="form-label mb-1" id="webhook-drain-key-label">
                         Drain key
                         <?= $webhookDrainKeySet ? '<span class="badge bg-success">set</span>' : '<span class="badge bg-secondary">not set</span>' ?>
                     </label>
@@ -2072,8 +2072,8 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <form method="post" class="mb-3">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="action" value="save_language_registry_refresh">
-                <div class="mb-3">
-                    <label class="form-label mb-1">
+                <div class="mb-3" role="group" aria-labelledby="lang-refresh-key-label">
+                    <label class="form-label mb-1" id="lang-refresh-key-label">
                         Refresh key
                         <?= $langRefreshKeySet ? '<span class="badge bg-success">set</span>' : '<span class="badge bg-secondary">not set</span>' ?>
                     </label>

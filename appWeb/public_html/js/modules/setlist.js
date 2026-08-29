@@ -1634,13 +1634,25 @@ export class SetList {
                first, so the bar is correct on arrival. */
         });
 
-        /* Move up/down buttons */
+        /* Move up/down buttons.
+         *
+         * a11y audit M10 (2026-08-28): #setlist-container used to be a blanket
+         * aria-live="polite" region (setlist.php), so every move/remove queued
+         * the ENTIRE re-rendered song list for announcement instead of saying
+         * what changed. The container's aria-live is gone now; these two
+         * handlers announce the actual change directly, the same pattern
+         * moveStripEntry() already uses for the arrangement-chip editor
+         * elsewhere in this file. Title + count are read from `list` BEFORE
+         * moveSong() mutates it. */
         container.querySelectorAll('.btn-move-up').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const idx = parseInt(btn.dataset.index, 10);
+                const movedTitle = list.songs[idx] ? toTitleCase(list.songs[idx].title) : 'Song';
+                const total = list.songs.length;
                 this.moveSong(listId, idx, idx - 1);
                 this.renderSetListDetail(listId);
+                this._announce(`${movedTitle} moved to position ${idx} of ${total}`);
             });
         });
 
@@ -1648,8 +1660,11 @@ export class SetList {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 const idx = parseInt(btn.dataset.index, 10);
+                const movedTitle = list.songs[idx] ? toTitleCase(list.songs[idx].title) : 'Song';
+                const total = list.songs.length;
                 this.moveSong(listId, idx, idx + 1);
                 this.renderSetListDetail(listId);
+                this._announce(`${movedTitle} moved to position ${idx + 2} of ${total}`);
             });
         });
 

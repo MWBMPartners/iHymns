@@ -94,6 +94,17 @@ $_avatarUrlSmall = userAvatarUrl($_userEmail, 32, $_userAvatarSvc);
 $_avatarUrlLarge = userAvatarUrl($_userEmail, 64, $_userAvatarSvc);
 
 ?>
+<!-- Skip link (a11y audit M7, 2026-08-28) — mirrors index.php's public-site
+     skip link exactly (same classes, same target id) so keyboard users get
+     an identical first Tab stop on every admin page, regardless of which
+     one they land on. Emitted here (the shared chrome every /manage/*.php
+     page requires) rather than per-page — the admin surface never had a
+     skip link at all before this. -->
+<a href="#main-content"
+   class="visually-hidden-focusable position-absolute top-0 start-0 p-3 bg-primary text-white z-3"
+   id="skip-nav">
+    Skip to main content
+</a>
 <header class="app-header navbar-admin" role="banner">
     <nav class="navbar navbar-expand" aria-label="Admin navigation">
         <div class="container-fluid px-3">
@@ -376,4 +387,11 @@ $GLOBALS['_adminLayoutOpen'] = true;
 ?>
 <div class="admin-layout">
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'admin-sidebar.php'; ?>
-    <main class="admin-main" role="main">
+    <?php /* a11y audit M7 — id="main-content" is the skip link's target above;
+             tabindex="-1" matches index.php's public <main> so activating the
+             skip link actually MOVES keyboard focus onto this landmark, not
+             just scrolls the viewport to it (a fragment link only focuses a
+             target that is itself focusable). admin-footer.php closes this
+             </main>, guarded by the SAME $_adminLayoutOpen flag this file
+             already sets below. */ ?>
+    <main id="main-content" class="admin-main" role="main" tabindex="-1">

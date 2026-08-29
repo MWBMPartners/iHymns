@@ -51,7 +51,7 @@ declare(strict_types=1);
                  guard: tests/php/test-fragment-inline-scripts.php. -->
             <div class="dropdown d-inline-block d-none" id="template-dropdown">
                 <button class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown">
-                    <i class="fa-solid fa-file-lines me-1"></i>From Template
+                    <i class="fa-solid fa-file-lines me-1" aria-hidden="true"></i>From Template
                 </button>
                 <ul class="dropdown-menu" id="template-list">
                     <li><span class="dropdown-item-text text-muted small">Loading templates...</span></li>
@@ -80,10 +80,14 @@ declare(strict_types=1);
     <!-- Set list schedule (#300) -->
     <div class="card mb-3" id="setlist-schedule-card" style="display:none">
         <div class="card-body">
-            <h6><i class="fa-solid fa-calendar-days me-2"></i>Schedule This Set List</h6>
+            <h6><i class="fa-solid fa-calendar-days me-2" aria-hidden="true"></i>Schedule This Set List</h6>
             <div class="input-group input-group-sm">
-                <input type="date" class="form-control" id="schedule-date">
-                <input type="text" class="form-control" id="schedule-notes" placeholder="Notes (optional)">
+                <?php /* a11y audit M6 (2026-08-28): neither input had an accessible name —
+                         #schedule-date had none at all, and #schedule-notes' placeholder
+                         disappears the moment the user types, so it isn't a name a screen
+                         reader can rely on. The <h6> above gives sighted-only context. */ ?>
+                <input type="date" class="form-control" id="schedule-date" aria-label="Service date">
+                <input type="text" class="form-control" id="schedule-notes" placeholder="Notes (optional)" aria-label="Notes (optional)">
                 <button class="btn btn-primary" id="btn-schedule-save" type="button">Schedule</button>
             </div>
             <div id="schedule-result" class="mt-2 small"></div>
@@ -91,7 +95,14 @@ declare(strict_types=1);
     </div>
 
     <!-- Set list container (populated by JS) -->
-    <div id="setlist-container" aria-live="polite">
+    <?php /* a11y audit M10 (2026-08-28): this was aria-live="polite" wrapping the
+             WHOLE set-list management UI, so every re-render (move/remove/add,
+             including the very first render on page load) queued the entire song
+             list for screen-reader announcement instead of just the one change
+             that happened. setlist.js now announces each move directly
+             (this._announce(), see renderSetListDetail()); removal already
+             surfaces via the toast region. */ ?>
+    <div id="setlist-container">
         <!-- JS module renders content here -->
     </div>
 

@@ -1264,9 +1264,13 @@ if (!empty($breadcrumbItems)) {
          Offers to install the app or redirects to native app stores.
          Dismissible by user; remembers dismissal in localStorage.
          ================================================================ -->
+    <?php /* a11y audit m1 (2026-08-28): role="banner" here creates a SECOND
+             banner landmark — the real page header below is already the one
+             banner landmark a page should have. role="region" is the correct
+             landmark for a named, non-banner chunk of UI like this. */ ?>
     <div id="pwa-install-banner"
          class="pwa-install-banner d-none"
-         role="banner"
+         role="region"
          aria-label="Install application">
         <div class="container-fluid d-flex align-items-center justify-content-between py-2 px-3">
             <div class="d-flex align-items-center gap-2 flex-grow-1">
@@ -1883,9 +1887,16 @@ if (!empty($breadcrumbItems)) {
 
     <!-- ================================================================
          TOAST NOTIFICATIONS — For non-intrusive user feedback
+         a11y audit m7 (2026-08-28): this container used to carry its own
+         aria-live="polite" aria-atomic="true" WHILE app.js's showToast()
+         also stamps aria-live on each individual toast it appends —
+         aria-atomic="true" on the ANCESTOR makes assistive tech re-read
+         every currently-open toast whenever a new one lands, on top of
+         each toast's own live-region announcement. Per-toast is the
+         correct grain (a toast is itself a discrete status message), so
+         only the container-level pair is dropped here.
          ================================================================ -->
-    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container"
-         aria-live="polite" aria-atomic="true">
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container">
     </div>
 
     <!-- ================================================================
@@ -1901,7 +1912,14 @@ if (!empty($breadcrumbItems)) {
         $needsConsent = ($hasGa4 || $hasClarity) && !USER_DNT;
     ?>
     <?php if ($needsConsent): ?>
-    <div id="analytics-consent-banner" class="analytics-consent-banner d-none" role="dialog"
+    <?php /* a11y audit m6 (2026-08-28): this is revealed via a class toggle (no
+             focus management, nothing traps Tab, nothing prevents interacting
+             with the page behind it) — role="dialog" claimed a modal contract
+             it never implemented. role="region" matches what this actually is:
+             a non-blocking, dismissible strip. settings.js now announces its
+             appearance since it's revealed silently, at the end of the DOM,
+             with no other signal that it exists. */ ?>
+    <div id="analytics-consent-banner" class="analytics-consent-banner d-none" role="region"
          aria-label="Analytics consent"
          data-has-ga4="<?= $hasGa4 ? '1' : '0' ?>"
          data-has-clarity="<?= $hasClarity ? '1' : '0' ?>"

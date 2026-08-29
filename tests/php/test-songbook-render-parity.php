@@ -308,11 +308,20 @@ if ($blockTB1 !== null) {
     ok('TB-0001 href points at /song/TB-0001', str_contains($blockTB1, 'href="/song/TB-0001"'));
     ok('TB-0001 data-navigate="song"', str_contains($blockTB1, 'data-navigate="song"'));
     ok('TB-0001 title-cased', str_contains($blockTB1, 'Amazing Grace'));
-    ok('TB-0001 aria-label includes the song number', str_contains($blockTB1, 'aria-label="Song 1: Amazing Grace"'));
+    /* a11y audit M2 (2026-08-28): the row <a> no longer carries an
+       aria-label — that used to REPLACE all descendant content in the
+       accessible name (writers/verified/audio/sheet-music never reached a
+       screen reader). The number is now conveyed by a visually-hidden
+       "Song N: " prefix instead, so the rest of the row's real content —
+       asserted below — flows through untouched. */
+    ok('TB-0001 row <a> carries no aria-label (M2 — was suppressing descendant content)', !str_contains($blockTB1, 'aria-label="Song 1: Amazing Grace"'));
+    ok('TB-0001 sr-only "Song 1:" prefix renders in place of the old aria-label', str_contains($blockTB1, '<span class="visually-hidden">Song 1: </span>'));
     ok('TB-0001 number badge shows 1', str_contains($blockTB1, '<span class="song-number-badge" data-songbook="TB" aria-hidden="true">1</span>'));
     ok('TB-0001 verified badge renders (Verified=1)', str_contains($blockTB1, 'verified-badge'));
+    ok('TB-0001 verified badge carries role="img" (M8 — aria-label on a bare <span>)', str_contains($blockTB1, 'class="verified-badge" role="img"'));
     ok('TB-0001 writer byline renders "John Newton"', str_contains($blockTB1, 'song-writers') && str_contains($blockTB1, 'John Newton'));
     ok('TB-0001 has-audio icon renders', str_contains($blockTB1, 'fa-headphones'));
+    ok('TB-0001 has-audio icon carries role="img" (M8)', str_contains($blockTB1, 'role="img" aria-label="Has audio"'));
     ok('TB-0001 has-sheet-music icon absent', !str_contains($blockTB1, 'fa-file-pdf'));
 }
 
@@ -326,7 +335,11 @@ if ($blockTB2 !== null) {
 
 if ($blockTB3 !== null) {
     ok('TB-0003 title-cased with minor-word lowercasing', str_contains($blockTB3, 'Christ the Lord Is Risen Today'));
-    ok('TB-0003 aria-label has NO "Song N:" prefix (Number IS NULL)', str_contains($blockTB3, 'aria-label="Christ the Lord Is Risen Today"'));
+    /* a11y audit M2 — no row aria-label at all now (see TB-0001 above), and
+       an unnumbered song (Number IS NULL) correctly emits no sr-only
+       "Song N:" prefix either — there is no number to announce. */
+    ok('TB-0003 row <a> carries no aria-label', !str_contains($blockTB3, 'aria-label="Christ the Lord Is Risen Today"'));
+    ok('TB-0003 no "Song N:" prefix renders (Number IS NULL)', !str_contains($blockTB3, 'visually-hidden">Song'));
     ok('TB-0003 number badge is empty (no songbook position)', str_contains($blockTB3, '<span class="song-number-badge" data-songbook="TB" aria-hidden="true"></span>'));
     ok('TB-0003 verified badge renders', str_contains($blockTB3, 'verified-badge'));
     ok('TB-0003 writer byline joins multiple writers with ", "', str_contains($blockTB3, 'Charles Wesley, Michael Praetorius'));

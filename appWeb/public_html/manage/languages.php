@@ -541,16 +541,17 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                 <?php endif; ?>
                             </td>
                         </tr>
+                        <?php $rowIdSuffix = preg_replace('/[^A-Za-z0-9]/', '-', $tag); ?>
                         <tr class="unk-remap-row d-none">
                             <td colspan="5">
                                 <div class="d-flex flex-wrap align-items-end gap-2 bg-body-secondary p-2 rounded">
                                     <div>
-                                        <label class="form-label small text-muted mb-1">Remap to (BCP 47 tag)</label>
-                                        <input type="text" class="form-control form-control-sm unk-to-tag" placeholder="e.g. en-GB" style="max-width:12rem">
+                                        <label class="form-label small text-muted mb-1" for="unk-to-tag-<?= htmlspecialchars($rowIdSuffix, ENT_QUOTES, 'UTF-8') ?>">Remap to (BCP 47 tag)</label>
+                                        <input type="text" class="form-control form-control-sm unk-to-tag" id="unk-to-tag-<?= htmlspecialchars($rowIdSuffix, ENT_QUOTES, 'UTF-8') ?>" placeholder="e.g. en-GB" style="max-width:12rem">
                                     </div>
                                     <div>
-                                        <label class="form-label small text-muted mb-1">Type <strong><?= (int)$total ?></strong> to confirm</label>
-                                        <input type="text" class="form-control form-control-sm unk-confirm" placeholder="<?= (int)$total ?>" style="max-width:8rem" autocomplete="off">
+                                        <label class="form-label small text-muted mb-1" for="unk-confirm-<?= htmlspecialchars($rowIdSuffix, ENT_QUOTES, 'UTF-8') ?>">Type <strong><?= (int)$total ?></strong> to confirm</label>
+                                        <input type="text" class="form-control form-control-sm unk-confirm" id="unk-confirm-<?= htmlspecialchars($rowIdSuffix, ENT_QUOTES, 'UTF-8') ?>" placeholder="<?= (int)$total ?>" style="max-width:8rem" autocomplete="off">
                                     </div>
                                     <button type="button" class="btn btn-sm btn-warning unk-remap-submit" disabled>
                                         <i class="bi bi-arrow-left-right me-1"></i>Remap now

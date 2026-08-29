@@ -416,23 +416,23 @@ $tierTableCols = 3 + count(tierCapsEffective()) + 2;
             <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a tier</h2>
             <div class="row g-2 mb-2">
                 <div class="col-sm-3">
-                    <label class="form-label small">Name (machine)</label>
-                    <input type="text" name="name" class="form-control form-control-sm" maxlength="30" required
+                    <label class="form-label small" for="create-tier-name">Name (machine)</label>
+                    <input type="text" name="name" id="create-tier-name" class="form-control form-control-sm" maxlength="30" required
                            placeholder="e.g. premium_plus, mwbm-insiders" pattern="[A-Za-z0-9_\-]+"
                            title="Letters, digits, hyphen or underscore">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Display name</label>
-                    <input type="text" name="display_name" class="form-control form-control-sm" maxlength="50" required
+                    <label class="form-label small" for="create-tier-display">Display name</label>
+                    <input type="text" name="display_name" id="create-tier-display" class="form-control form-control-sm" maxlength="50" required
                            placeholder="e.g. Premium Plus">
                 </div>
                 <div class="col-sm-2">
-                    <label class="form-label small">Level</label>
-                    <input type="number" name="level" class="form-control form-control-sm" min="0" max="1000" value="50">
+                    <label class="form-label small" for="create-tier-level">Level</label>
+                    <input type="number" name="level" id="create-tier-level" class="form-control form-control-sm" min="0" max="1000" value="50">
                 </div>
                 <div class="col-sm-4">
-                    <label class="form-label small">Description</label>
-                    <input type="text" name="description" class="form-control form-control-sm"
+                    <label class="form-label small" for="create-tier-description">Description</label>
+                    <input type="text" name="description" id="create-tier-description" class="form-control form-control-sm"
                            placeholder="What does this tier unlock?">
                 </div>
             </div>
@@ -473,16 +473,16 @@ $tierTableCols = 3 + count(tierCapsEffective()) + 2;
                     <div class="modal-body">
                         <div class="row g-2 mb-3">
                             <div class="col-sm-6">
-                                <label class="form-label small">Display name</label>
+                                <label class="form-label small" for="edit-tier-display">Display name</label>
                                 <input type="text" name="display_name" id="edit-tier-display" class="form-control form-control-sm" required>
                             </div>
                             <div class="col-sm-3">
-                                <label class="form-label small">Level</label>
+                                <label class="form-label small" for="edit-tier-level">Level</label>
                                 <input type="number" name="level" id="edit-tier-level" class="form-control form-control-sm" min="0" max="1000">
                             </div>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label small">Description</label>
+                            <label class="form-label small" for="edit-tier-description">Description</label>
                             <input type="text" name="description" id="edit-tier-description" class="form-control form-control-sm">
                         </div>
                         <div class="d-flex flex-wrap gap-3">

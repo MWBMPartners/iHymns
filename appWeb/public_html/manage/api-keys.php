@@ -477,7 +477,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
               <strong>Copy this key now — it is shown only once</strong> and cannot be retrieved later.
             </div>
             <div class="input-group mb-2">
-              <input type="text" class="form-control font-monospace" id="keyResultValue" readonly>
+              <input type="text" class="form-control font-monospace" id="keyResultValue" aria-label="Newly minted API key — copy this now" readonly>
               <button type="button" class="btn btn-outline-secondary" id="keyResultCopy" aria-label="Copy API key to clipboard"><i class="bi bi-clipboard" aria-hidden="true"></i></button>
             </div>
             <p class="small text-secondary">Send it as <code>Authorization: Bearer &lt;key&gt;</code> (or <code>X-API-Key: &lt;key&gt;</code>) to <code>/api?action=lyrics_ingest</code>.</p>

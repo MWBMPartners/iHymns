@@ -563,7 +563,7 @@ if ($hasSchema) {
             <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a tune</h2>
             <div class="row g-2">
                 <div class="col-sm-5">
-                    <label class="form-label small">Name</label>
+                    <label class="form-label small" for="create-tune-name">Name</label>
                     <input type="text" name="name" id="create-tune-name"
                            class="form-control form-control-sm"
                            maxlength="120" required
@@ -579,8 +579,8 @@ if ($hasSchema) {
                     ]) ?>
                 </div>
                 <div class="col-sm-4">
-                    <label class="form-label small">Meter <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="meter_code"
+                    <label class="form-label small" for="create-tune-meter">Meter <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="meter_code" id="create-tune-meter"
                            class="form-control form-control-sm"
                            maxlength="60"
                            placeholder="87.87 D">
@@ -589,15 +589,15 @@ if ($hasSchema) {
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-4">
-                    <label class="form-label small">MusicBrainz Work MBID <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="musicbrainz_work_mbid"
+                    <label class="form-label small" for="create-tune-musicbrainz-work-mbid">MusicBrainz Work MBID <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="musicbrainz_work_mbid" id="create-tune-musicbrainz-work-mbid"
                            class="form-control form-control-sm"
                            maxlength="50"
                            placeholder="e.g. 0a1b2c3d-...">
                 </div>
                 <div class="col-sm-4">
-                    <label class="form-label small">Hymnary.org tune id <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="hymnary_tune_id"
+                    <label class="form-label small" for="create-tune-hymnary-id">Hymnary.org tune id <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="hymnary_tune_id" id="create-tune-hymnary-id"
                            class="form-control form-control-sm"
                            maxlength="64">
                 </div>
@@ -609,14 +609,14 @@ if ($hasSchema) {
             <?php if ($gates['hasTuneEnrichCols']): ?>
             <div class="row g-2 mt-2">
                 <div class="col-sm-6">
-                    <label class="form-label small">Subtitle <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="subtitle"
+                    <label class="form-label small" for="create-tune-subtitle">Subtitle <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="subtitle" id="create-tune-subtitle"
                            class="form-control form-control-sm"
                            maxlength="255">
                 </div>
                 <div class="col-sm-6">
-                    <label class="form-label small">Disambiguation <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="disambiguation"
+                    <label class="form-label small" for="create-tune-disambiguation">Disambiguation <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="disambiguation" id="create-tune-disambiguation"
                            class="form-control form-control-sm"
                            maxlength="255"
                            placeholder="Short parenthetical distinguishing same-named tunes">
@@ -625,8 +625,8 @@ if ($hasSchema) {
             <?php endif; ?>
             <div class="row g-2 mt-2">
                 <div class="col-12">
-                    <label class="form-label small">Notes <small class="text-muted">(optional)</small></label>
-                    <textarea name="notes" class="form-control form-control-sm" rows="2" maxlength="2000"></textarea>
+                    <label class="form-label small" for="create-tune-notes">Notes <small class="text-muted">(optional)</small></label>
+                    <textarea name="notes" id="create-tune-notes" class="form-control form-control-sm" rows="2" maxlength="2000"></textarea>
                 </div>
             </div>
             <button type="submit" class="btn btn-amber btn-sm mt-3">
@@ -654,7 +654,7 @@ if ($hasSchema) {
                         <div class="modal-body">
                             <div class="row g-2 mb-3">
                                 <div class="col-md-5">
-                                    <label class="form-label">Name</label>
+                                    <label class="form-label" for="edit-tune-name">Name</label>
                                     <input type="text" name="name" id="edit-tune-name"
                                            class="form-control" maxlength="120" required>
                                 </div>
@@ -669,19 +669,19 @@ if ($hasSchema) {
                                     ]) ?>
                                 </div>
                                 <div class="col-md-4">
-                                    <label class="form-label">Meter</label>
+                                    <label class="form-label" for="edit-tune-meter-code">Meter</label>
                                     <input type="text" name="meter_code" id="edit-tune-meter-code"
                                            class="form-control" maxlength="60" placeholder="87.87 D">
                                 </div>
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">MusicBrainz Work MBID <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-tune-musicbrainz-work-mbid">MusicBrainz Work MBID <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="musicbrainz_work_mbid" id="edit-tune-musicbrainz-work-mbid"
                                            class="form-control" maxlength="50">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Hymnary.org tune id <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-tune-hymnary-tune-id">Hymnary.org tune id <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="hymnary_tune_id" id="edit-tune-hymnary-tune-id"
                                            class="form-control" maxlength="64">
                                 </div>
@@ -689,12 +689,12 @@ if ($hasSchema) {
                             <?php if ($gates['hasTuneEnrichCols']): /* #1748 — see the create-form note above (rule #9) */ ?>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">Subtitle <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-tune-subtitle">Subtitle <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="subtitle" id="edit-tune-subtitle"
                                            class="form-control" maxlength="255">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Disambiguation <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-tune-disambiguation">Disambiguation <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="disambiguation" id="edit-tune-disambiguation"
                                            class="form-control" maxlength="255">
                                 </div>
@@ -702,7 +702,7 @@ if ($hasSchema) {
                             <?php endif; ?>
                             <div class="row g-2 mb-3">
                                 <div class="col-12">
-                                    <label class="form-label">Notes <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-tune-notes">Notes <small class="text-muted">(opt.)</small></label>
                                     <textarea name="notes" id="edit-tune-notes" class="form-control" rows="2" maxlength="2000"></textarea>
                                 </div>
                             </div>

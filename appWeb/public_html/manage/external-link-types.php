@@ -287,8 +287,8 @@ $categoryLabels = [
                                          list here. Save intersects the posted set against the const
                                          and preserves any legacy token (e.g. 'person') not in it. -->
                                     <div class="mb-3">
-                                        <label class="form-label small mb-1">Applies to</label>
-                                        <div class="d-flex flex-wrap gap-3">
+                                        <label class="form-label small mb-1" id="applies-to-label-<?= (int)$t['id'] ?>">Applies to</label>
+                                        <div class="d-flex flex-wrap gap-3" role="group" aria-labelledby="applies-to-label-<?= (int)$t['id'] ?>">
                                             <?php
                                                 $curApplies = array_map('trim', explode(',', $t['appliesTo']));
                                                 foreach (IHYMNS_LINK_ENTITY_TYPES as $entTok):
@@ -323,35 +323,39 @@ $categoryLabels = [
                                     </p>
 
                                     <div class="vstack gap-2 patterns-rows" data-rows>
-                                        <?php foreach ($t['patterns'] as $p): ?>
+                                        <?php foreach ($t['patterns'] as $pIdx => $p): ?>
+                                            <?php $pFieldPrefix = 'pattern-' . (int)$t['id'] . '-' . (int)$pIdx; ?>
                                             <div class="card bg-secondary-subtle border-secondary">
                                                 <div class="card-body py-2">
                                                     <div class="row g-2 align-items-center">
                                                         <div class="col-md-4">
-                                                            <label class="form-label small mb-0">Host</label>
+                                                            <label class="form-label small mb-0" for="<?= $pFieldPrefix ?>-host">Host</label>
                                                             <input type="text" class="form-control form-control-sm" name="pattern_host[]"
+                                                                   id="<?= $pFieldPrefix ?>-host"
                                                                    value="<?= htmlspecialchars($p['host']) ?>"
                                                                    placeholder="wikipedia.org" required maxlength="255">
                                                         </div>
                                                         <div class="col-md-3">
-                                                            <label class="form-label small mb-0">Path prefix</label>
+                                                            <label class="form-label small mb-0" for="<?= $pFieldPrefix ?>-path">Path prefix</label>
                                                             <input type="text" class="form-control form-control-sm" name="pattern_path[]"
+                                                                   id="<?= $pFieldPrefix ?>-path"
                                                                    value="<?= htmlspecialchars($p['pathPrefix']) ?>"
                                                                    placeholder="/work/  (optional)" maxlength="255">
                                                         </div>
                                                         <div class="col-md-2">
-                                                            <label class="form-label small mb-0">Priority</label>
+                                                            <label class="form-label small mb-0" for="<?= $pFieldPrefix ?>-priority">Priority</label>
                                                             <input type="number" class="form-control form-control-sm" name="pattern_priority[]"
+                                                                   id="<?= $pFieldPrefix ?>-priority"
                                                                    value="<?= (int)$p['priority'] ?>" min="0" max="65535">
                                                         </div>
                                                         <div class="col-md-3 d-flex flex-column align-items-start gap-1 mt-3">
                                                             <div class="form-check small">
-                                                                <input class="form-check-input" type="checkbox" name="pattern_subdomain[]" value="1" <?= $p['matchSubdomains'] ? 'checked' : '' ?>>
-                                                                <label class="form-check-label">Match sub-domains</label>
+                                                                <input class="form-check-input" type="checkbox" name="pattern_subdomain[]" value="1" id="<?= $pFieldPrefix ?>-subdomain" <?= $p['matchSubdomains'] ? 'checked' : '' ?>>
+                                                                <label class="form-check-label" for="<?= $pFieldPrefix ?>-subdomain">Match sub-domains</label>
                                                             </div>
                                                             <div class="form-check small">
-                                                                <input class="form-check-input" type="checkbox" name="pattern_active[]" value="1" <?= $p['isActive'] ? 'checked' : '' ?>>
-                                                                <label class="form-check-label">Active</label>
+                                                                <input class="form-check-input" type="checkbox" name="pattern_active[]" value="1" id="<?= $pFieldPrefix ?>-active" <?= $p['isActive'] ? 'checked' : '' ?>>
+                                                                <label class="form-check-label" for="<?= $pFieldPrefix ?>-active">Active</label>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -403,20 +407,20 @@ $categoryLabels = [
             '<div class="card-body py-2">' +
               '<div class="row g-2 align-items-center">' +
                 '<div class="col-md-4">' +
-                  '<label class="form-label small mb-0">Host</label>' +
-                  '<input type="text" class="form-control form-control-sm" name="pattern_host[]" placeholder="wikipedia.org" required maxlength="255">' +
+                  '<label class="form-label small mb-0" aria-hidden="true">Host</label>' +
+                  '<input type="text" class="form-control form-control-sm" name="pattern_host[]" aria-label="New pattern host" placeholder="wikipedia.org" required maxlength="255">' +
                 '</div>' +
                 '<div class="col-md-3">' +
-                  '<label class="form-label small mb-0">Path prefix</label>' +
-                  '<input type="text" class="form-control form-control-sm" name="pattern_path[]" placeholder="/work/  (optional)" maxlength="255">' +
+                  '<label class="form-label small mb-0" aria-hidden="true">Path prefix</label>' +
+                  '<input type="text" class="form-control form-control-sm" name="pattern_path[]" aria-label="New pattern path prefix" placeholder="/work/  (optional)" maxlength="255">' +
                 '</div>' +
                 '<div class="col-md-2">' +
-                  '<label class="form-label small mb-0">Priority</label>' +
-                  '<input type="number" class="form-control form-control-sm" name="pattern_priority[]" value="100" min="0" max="65535">' +
+                  '<label class="form-label small mb-0" aria-hidden="true">Priority</label>' +
+                  '<input type="number" class="form-control form-control-sm" name="pattern_priority[]" aria-label="New pattern priority" value="100" min="0" max="65535">' +
                 '</div>' +
                 '<div class="col-md-3 d-flex flex-column align-items-start gap-1 mt-3">' +
-                  '<div class="form-check small"><input class="form-check-input" type="checkbox" name="pattern_subdomain[]" value="1" checked><label class="form-check-label">Match sub-domains</label></div>' +
-                  '<div class="form-check small"><input class="form-check-input" type="checkbox" name="pattern_active[]" value="1" checked><label class="form-check-label">Active</label></div>' +
+                  '<div class="form-check small"><input class="form-check-input" type="checkbox" name="pattern_subdomain[]" value="1" aria-label="New pattern — match sub-domains" checked><label class="form-check-label" aria-hidden="true">Match sub-domains</label></div>' +
+                  '<div class="form-check small"><input class="form-check-input" type="checkbox" name="pattern_active[]" value="1" aria-label="New pattern — active" checked><label class="form-check-label" aria-hidden="true">Active</label></div>' +
                 '</div>' +
               '</div>' +
               '<div class="row g-2 mt-1">' +

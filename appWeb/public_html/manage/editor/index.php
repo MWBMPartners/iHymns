@@ -778,8 +778,8 @@ try {
 
                         <!-- Status & Copyright Flags (#222, #225) -->
                         <hr style="border-color: var(--ih-border);">
-                        <div class="mb-3">
-                            <label class="form-label d-block">
+                        <div class="mb-3" role="group" aria-labelledby="edit-status-copyright-label">
+                            <label class="form-label d-block" id="edit-status-copyright-label">
                                 <i class="bi bi-flag me-1"></i>Status &amp; Copyright
                             </label>
 
@@ -929,9 +929,9 @@ try {
                              STRIP = the ordered sequence; drag to reorder, click
                              × on a chip to remove. -->
                         <div class="mb-2">
-                            <label class="form-label small text-muted mb-1">
+                            <span class="form-label small text-muted mb-1 d-block">
                                 Components <small class="text-muted">(click to add)</small>
-                            </label>
+                            </span>
                             <div id="arrangement-pool"
                                  class="d-flex flex-wrap gap-1 p-2 rounded"
                                  style="min-height: 44px; background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);"
@@ -940,9 +940,9 @@ try {
                         </div>
 
                         <div class="mb-2">
-                            <label class="form-label small text-muted mb-1">
+                            <span class="form-label small text-muted mb-1 d-block">
                                 Sequence <small class="text-muted">(drag to reorder, × to remove)</small>
-                            </label>
+                            </span>
                             <div id="arrangement-strip"
                                  class="d-flex flex-wrap gap-1 p-2 rounded"
                                  style="min-height: 44px; background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);"
@@ -1074,8 +1074,8 @@ try {
                         aria-labelledby="tab-credits"
                     >
                         <!-- Writers Section — list of lyricist names -->
-                        <div class="mb-4">
-                            <label class="form-label">
+                        <div class="mb-4" role="group" aria-labelledby="credit-writers-label">
+                            <label class="form-label" id="credit-writers-label">
                                 <i class="bi bi-pen me-1"></i>Writers (Lyricists)
                             </label>
 
@@ -1095,8 +1095,8 @@ try {
                         </div>
 
                         <!-- Composers Section — list of music composer names -->
-                        <div class="mb-4">
-                            <label class="form-label">
+                        <div class="mb-4" role="group" aria-labelledby="credit-composers-label">
+                            <label class="form-label" id="credit-composers-label">
                                 <i class="bi bi-music-note me-1"></i>Composers
                             </label>
 
@@ -1116,32 +1116,32 @@ try {
                         </div>
 
                         <!-- Arrangers Section (#497) — who re-arranged the music for this setting -->
-                        <div class="mb-4">
-                            <label class="form-label">
+                        <div class="mb-4" role="group" aria-labelledby="credit-arrangers-label">
+                            <label class="form-label" id="credit-arrangers-label">
                                 <i class="bi bi-sliders me-1"></i>Arrangers
                             </label>
                             <div id="arrangers-container"></div>
                         </div>
 
                         <!-- Adaptors Section (#497) — who adapted the lyrics or melody -->
-                        <div class="mb-4">
-                            <label class="form-label">
+                        <div class="mb-4" role="group" aria-labelledby="credit-adaptors-label">
+                            <label class="form-label" id="credit-adaptors-label">
                                 <i class="bi bi-vinyl me-1"></i>Adaptors
                             </label>
                             <div id="adaptors-container"></div>
                         </div>
 
                         <!-- Translators Section (#497) — who translated the lyrics (distinct from the #352 translation-link list below) -->
-                        <div class="mb-4">
-                            <label class="form-label">
+                        <div class="mb-4" role="group" aria-labelledby="credit-translators-label">
+                            <label class="form-label" id="credit-translators-label">
                                 <i class="bi bi-translate me-1"></i>Translators
                             </label>
                             <div id="translators-container"></div>
                         </div>
 
                         <!-- Artists Section (#587) — recording / release artist -->
-                        <div class="mb-4">
-                            <label class="form-label">
+                        <div class="mb-4" role="group" aria-labelledby="credit-artists-label">
+                            <label class="form-label" id="credit-artists-label">
                                 <i class="bi bi-mic me-1"></i>Artists
                                 <small class="text-muted ms-1">(recording / release artist — useful for contemporary worship songs)</small>
                             </label>
@@ -1149,8 +1149,8 @@ try {
                         </div>
 
                         <!-- Translations Section — linked translations in other languages (#352) -->
-                        <div class="mb-4">
-                            <label class="form-label">
+                        <div class="mb-4" role="group" aria-labelledby="credit-translations-label">
+                            <label class="form-label" id="credit-translations-label">
                                 <i class="bi bi-translate me-1"></i>Translations
                             </label>
                             <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
@@ -1177,8 +1177,8 @@ try {
                              Distinct from Translations: counterparts are typically the same
                              language, different songbook, unrelated number — e.g. Amazing Grace
                              as MP-031 and CH-376 and SDAH-108. -->
-                        <div class="mb-4">
-                            <label class="form-label">
+                        <div class="mb-4" role="group" aria-labelledby="credit-crossbook-label">
+                            <label class="form-label" id="credit-crossbook-label">
                                 <i class="bi bi-link-45deg me-1"></i>Cross-book counterparts
                             </label>
                             <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
@@ -1312,8 +1312,9 @@ try {
 
                             <!-- Current assignments — chip list, one per tag.
                                  Rendered by editor.js renderSongTags(). -->
-                            <label class="form-label">Assigned tags</label>
+                            <label class="form-label" id="song-tags-label">Assigned tags</label>
                             <div id="song-tags-container"
+                                 role="group" aria-labelledby="song-tags-label"
                                  class="d-flex flex-wrap gap-1 p-2 rounded mb-3"
                                  style="min-height: 44px; background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);">
                                 <span class="text-muted small">Loading…</span>
@@ -1522,24 +1523,27 @@ try {
                                 type="button"
                                 class="btn btn-sm btn-outline-secondary btn-move-up"
                                 title="Move component up"
+                                aria-label="Move this component up"
                             >
-                                <i class="bi bi-arrow-up"></i>
+                                <i class="bi bi-arrow-up" aria-hidden="true"></i>
                             </button>
                             <!-- Move Down — shifts this component one position later -->
                             <button
                                 type="button"
                                 class="btn btn-sm btn-outline-secondary btn-move-down"
                                 title="Move component down"
+                                aria-label="Move this component down"
                             >
-                                <i class="bi bi-arrow-down"></i>
+                                <i class="bi bi-arrow-down" aria-hidden="true"></i>
                             </button>
                             <!-- Remove — deletes this component entirely -->
                             <button
                                 type="button"
                                 class="btn btn-sm btn-outline-danger btn-remove-component"
                                 title="Remove this component"
+                                aria-label="Remove this component"
                             >
-                                <i class="bi bi-trash"></i>
+                                <i class="bi bi-trash" aria-hidden="true"></i>
                             </button>
                         </div>
                     </div>
@@ -1570,8 +1574,8 @@ try {
                 placeholder="Writer name"
                 aria-label="Writer name"
             >
-            <button type="button" class="btn-remove-row" title="Remove this writer">
-                <i class="bi bi-x-lg"></i>
+            <button type="button" class="btn-remove-row" title="Remove this writer" aria-label="Remove this writer">
+                <i class="bi bi-x-lg" aria-hidden="true"></i>
             </button>
         </div>
     </template>
@@ -1590,8 +1594,8 @@ try {
                 placeholder="Composer name"
                 aria-label="Composer name"
             >
-            <button type="button" class="btn-remove-row" title="Remove this composer">
-                <i class="bi bi-x-lg"></i>
+            <button type="button" class="btn-remove-row" title="Remove this composer" aria-label="Remove this composer">
+                <i class="bi bi-x-lg" aria-hidden="true"></i>
             </button>
         </div>
     </template>

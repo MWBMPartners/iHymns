@@ -152,6 +152,75 @@ function a11yImagesMissingAlt(string $src): array
     return $lines;
 }
 
+/**
+ * @return int[] 1-based line numbers of every bare `<i>`/`<span>` that carries
+ * `aria-label` with no `role` attribute anywhere on the same opening tag
+ * (a11y audit M8, 2026-08-28 — ARIA 1.2 prohibits naming a generic element;
+ * `role="img"` is what the codebase's own correct model, song.php's verified
+ * badge, already uses).
+ */
+function a11yBareGenericAriaLabel(string $src): array
+{
+    $lines = [];
+    // Same interpolated-close-tag hazard a11yImagesMissingAlt() documents —
+    // strip PHP blocks to their own newlines first so a PHP short-echo inside
+    // an attribute value can't truncate the `[^>]*` match early.
+    $src = preg_replace_callback('~<\?(?:php|=)?[\s\S]*?\?>~', static function (array $mm): string {
+        return str_repeat("\n", substr_count($mm[0], "\n"));
+    }, $src) ?? $src;
+    if (preg_match_all('~<(?:i|span)\b([^>]*)>~i', $src, $m, PREG_OFFSET_CAPTURE) !== false) {
+        foreach ($m[1] as $idx => [$attrs, $_offset]) {
+            if (preg_match('~\baria-label\s*=~i', $attrs) === 1
+                && preg_match('~\brole\s*=~i', $attrs) !== 1
+            ) {
+                $wholeOffset = $m[0][$idx][1];
+                $lines[] = substr_count(substr($src, 0, $wholeOffset), "\n") + 1;
+            }
+        }
+    }
+    return $lines;
+}
+
+/**
+ * @return int[] 1-based line numbers of every `<h1>`-`<h6>` that carries
+ * `role="button"` with no `tabindex` attribute on the same tag (a11y audit
+ * M1, 2026-08-28 — never focusable, and Bootstrap's collapse data-API only
+ * listens for `click`, so Enter/Space can never trigger it from the
+ * keyboard). Deliberately scoped to HEADINGS, not every `role="button"` in
+ * the tree — a real `<a href role="button">` (song.php's own correction-
+ * form toggle) is natively focusable already and is the correct pattern,
+ * not a variant of this bug.
+ */
+function a11yHeadingRoleButtonWithoutTabindex(string $src): array
+{
+    $lines = [];
+    if (preg_match_all('~<h[1-6]\b([^>]*)>~i', $src, $m, PREG_OFFSET_CAPTURE) !== false) {
+        foreach ($m[1] as $idx => [$attrs, $_offset]) {
+            if (preg_match('~\brole\s*=\s*"button"~i', $attrs) === 1
+                && preg_match('~\btabindex\s*=~i', $attrs) !== 1
+            ) {
+                $wholeOffset = $m[0][$idx][1];
+                $lines[] = substr_count(substr($src, 0, $wholeOffset), "\n") + 1;
+            }
+        }
+    }
+    return $lines;
+}
+
+/**
+ * True when `$src` (already comment-stripped) both emits the "Skip to main
+ * content" link targeting `#main-content` AND opens a `<main id="main-
+ * content">` landmark — the two-part M7 fix. Both live in the same file
+ * (manage/includes/admin-nav.php), so one boolean check is enough; a real
+ * scan below also proves admin-footer.php closes what this opens.
+ */
+function a11yHasSkipLinkAndMainLandmark(string $src): bool
+{
+    $hasSkipLink = preg_match('~<a\s[^>]*href="#main-content"~', $src) === 1;
+    $hasMain     = preg_match('~<main\b[^>]*\bid="main-content"~', $src) === 1;
+    return $hasSkipLink && $hasMain;
+}
+
 /* ---------------------------------------------------------------------------
  * SELF-TEST — prove the scanners can actually fail (rule #34) before
  * trusting them against the real tree.
@@ -209,6 +278,65 @@ if (a11yImagesMissingAlt($altInterpOk) !== []) {
 $altInterpMissing = '<img src="' . $phpOpen . ' h($u) ' . $phpClose . '">';
 if (a11yImagesMissingAlt($altInterpMissing) === []) {
     $selfTestFailures[] = 'a11yImagesMissingAlt() missed an interpolated <img> with NO alt — the PHP-strip over-stripped the tag.';
+}
+
+// M8 — a11yBareGenericAriaLabel() must catch a bare <i>/<span> aria-label
+// with no role, must NOT flag one that already has role="img", and must NOT
+// flag an aria-hidden icon (no aria-label at all) or a REAL element (e.g.
+// <button aria-label="…">, which is a valid target for naming).
+$bareFixture = '<i class="fa-solid fa-star" aria-label="Canonical version" title="x"></i>' . "\n"
+    . '<span class="badge" aria-label="Has audio"></span>';
+$bareLines = a11yBareGenericAriaLabel($bareFixture);
+if ($bareLines !== [1, 2]) {
+    $selfTestFailures[] = 'a11yBareGenericAriaLabel() did not flag both the bare <i> (line 1) and <span> '
+        . '(line 2) with aria-label and no role — got line(s): ' . implode(',', $bareLines);
+}
+$roleOkFixture = '<i class="fa-solid fa-star" role="img" aria-label="Canonical version"></i>'
+    . '<span aria-hidden="true"></span>'
+    . '<button aria-label="Close"></button>';
+if (a11yBareGenericAriaLabel($roleOkFixture) !== []) {
+    $selfTestFailures[] = 'a11yBareGenericAriaLabel() false-flagged an <i role="img">, an aria-hidden <span> with '
+        . 'no aria-label, or a real <button aria-label> — only a BARE i/span missing role should ever be flagged.';
+}
+// Interpolated attribute (PHP short-echo) must not truncate the tag match
+// early and produce a false negative on a real defect two lines down.
+$bareInterpFixture = '<i class="' . $phpOpen . ' h($c) ' . $phpClose . '"></i>' . "\n"
+    . "\n"
+    . '<i class="fa-solid fa-star" aria-label="Canonical version"></i>';
+if (a11yBareGenericAriaLabel($bareInterpFixture) !== [3]) {
+    $selfTestFailures[] = 'a11yBareGenericAriaLabel() mishandled a PHP-interpolated <i> attribute — expected only '
+        . 'line 3 flagged, got: ' . implode(',', a11yBareGenericAriaLabel($bareInterpFixture));
+}
+
+// M7 — a11yHasSkipLinkAndMainLandmark() must require BOTH halves of the fix,
+// not either alone (a skip link with no target, or a <main id> nobody can
+// reach by keyboard, are each individually still the bug).
+if (a11yHasSkipLinkAndMainLandmark('<a href="#main-content">Skip</a><main id="main-content">') !== true) {
+    $selfTestFailures[] = 'a11yHasSkipLinkAndMainLandmark() did not accept a fixture with both the skip link '
+        . 'and the id="main-content" landmark present.';
+}
+if (a11yHasSkipLinkAndMainLandmark('<a href="#main-content">Skip</a><main class="admin-main">') !== false) {
+    $selfTestFailures[] = 'a11yHasSkipLinkAndMainLandmark() accepted a <main> with no id="main-content" — '
+        . 'the skip link would target nothing.';
+}
+if (a11yHasSkipLinkAndMainLandmark('<main id="main-content">') !== false) {
+    $selfTestFailures[] = 'a11yHasSkipLinkAndMainLandmark() accepted a page with the landmark but no skip link.';
+}
+
+// M1 — a11yHeadingRoleButtonWithoutTabindex() must catch a heading used as a
+// click target with no tabindex (never keyboard-reachable, Bootstrap's
+// collapse data-API is click-only), and must NOT flag one that already
+// carries tabindex, nor a non-heading element (e.g. the real <a role=
+// "button"> pattern this codebase correctly uses elsewhere).
+$h2ButtonFixture = '<h2 role="button" data-bs-toggle="collapse">Translations</h2>';
+if (a11yHeadingRoleButtonWithoutTabindex($h2ButtonFixture) !== [1]) {
+    $selfTestFailures[] = 'a11yHeadingRoleButtonWithoutTabindex() did not flag <h2 role="button"> with no tabindex.';
+}
+$h2ButtonOkFixture = '<h2 role="button" tabindex="0" data-bs-toggle="collapse">Translations</h2>'
+    . '<a role="button" href="#x">Fine</a>';
+if (a11yHeadingRoleButtonWithoutTabindex($h2ButtonOkFixture) !== []) {
+    $selfTestFailures[] = 'a11yHeadingRoleButtonWithoutTabindex() false-flagged a heading WITH tabindex, or a '
+        . 'non-heading <a role="button"> (a real focusable element — correct usage elsewhere in this codebase).';
 }
 
 if ($selfTestFailures) {
@@ -288,18 +416,107 @@ foreach ($targets as $file) {
             $line
         );
     }
+
+    /* --- Assertion 4 (M1, a11y audit 2026-08-28): a collapsible heading
+       never regrows role="button" with no tabindex — the exact shape that
+       made song.php's Translations/Related-Songs toggles keyboard-
+       unreachable. Runs over the same $targets every other check here
+       does (pages/partials/manage) since no legitimate use of this
+       pattern exists anywhere in the tree today (a real clickable heading
+       uses a real <button> INSIDE the heading, song.php's own fix). */
+    foreach (a11yHeadingRoleButtonWithoutTabindex($src) as $line) {
+        $failures[] = sprintf(
+            '%s:%d — a heading (<h1>-<h6>) carries role="button" with no tabindex, so it is never keyboard-'
+            . 'focusable and Bootstrap\'s collapse data-API (click-only) can never be triggered from a keyboard '
+            . '(WCAG 2.1.1/4.1.2). Put a real <button> INSIDE the heading instead (song.php\'s Translations/'
+            . 'Related-Songs toggles are the reference pattern) rather than adding tabindex here.',
+            $rel,
+            $line
+        );
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Assertion 5 (M7, a11y audit 2026-08-28) — the admin skip link + <main
+ * id="main-content"> landmark, and its matching </main> close, stay wired
+ * into the two shared partials every /manage/*.php page requires. Losing
+ * either half here silently removes the skip link (or its target) from
+ * ALL ~39+ admin pages at once, which is exactly the shape M7 found and
+ * exactly why the fix lives in the shared chrome rather than per-page.
+ * ------------------------------------------------------------------------- */
+$adminNavPath    = $public . '/manage/includes/admin-nav.php';
+$adminFooterPath = $public . '/manage/includes/admin-footer.php';
+if (!is_file($adminNavPath) || !is_file($adminFooterPath)) {
+    $failures[] = 'manage/includes/admin-nav.php or admin-footer.php not found — cannot check the admin '
+        . 'skip-link + <main> landmark (M7).';
+} else {
+    $adminNavSrc = a11yStripComments((string) file_get_contents($adminNavPath));
+    if (!a11yHasSkipLinkAndMainLandmark($adminNavSrc)) {
+        $failures[] = 'manage/includes/admin-nav.php no longer emits BOTH the "Skip to main content" link '
+            . '(href="#main-content") AND the <main id="main-content"> landmark it targets — this shared '
+            . 'partial is the ONE place that fixes the skip link on every /manage/*.php page at once (WCAG '
+            . '2.4.1); losing either half here silently removes it everywhere.';
+    }
+    $adminFooterSrc = a11yStripComments((string) file_get_contents($adminFooterPath));
+    if (!str_contains($adminFooterSrc, '</main>')) {
+        $failures[] = 'manage/includes/admin-footer.php no longer closes </main> — admin-nav.php opens the '
+            . 'landmark, so every page using both partials would be left with an unclosed <main>.';
+    }
+}
+
+/* ---------------------------------------------------------------------------
+ * Assertion 6 (M8, a11y audit 2026-08-28) — no bare <i>/<span> carries
+ * aria-label without role="img" (or another naming-capable role) across the
+ * PUBLIC surface. Deliberately scoped to includes/pages, includes/partials,
+ * js/modules and js/utils (all glob-derived, rule #34) — NOT manage/*.php,
+ * which is a separate, larger, tracked sweep (this guard would otherwise
+ * fail on pre-existing admin-only instances this pass never touched).
+ * ------------------------------------------------------------------------- */
+$publicScanTargets = [];
+foreach ([
+    $public . '/includes/pages',
+    $public . '/includes/partials',
+    $public . '/js/modules',
+    $public . '/js/utils',
+] as $dir) {
+    if (!is_dir($dir)) { continue; }
+    foreach (array_merge(glob($dir . '/*.php') ?: [], glob($dir . '/*.js') ?: []) as $f) {
+        $publicScanTargets[] = $f;
+    }
+}
+sort($publicScanTargets);
+
+if (!$publicScanTargets) {
+    $failures[] = 'no public-surface .php/.js files found under includes/pages, includes/partials, '
+        . 'js/modules or js/utils — the tree moved and this guard\'s glob needs updating.';
+}
+
+foreach ($publicScanTargets as $file) {
+    $rel = substr($file, strlen($public) + 1);
+    $src = a11yStripComments((string) file_get_contents($file));
+    foreach (a11yBareGenericAriaLabel($src) as $line) {
+        $failures[] = sprintf(
+            '%s:%d — a bare <i>/<span> carries aria-label with no role attribute. ARIA 1.2 prohibits naming a '
+            . 'generic element this way (screen readers largely ignore it) — add role="img" (the codebase\'s '
+            . 'own correct model: song.php\'s verified badge).',
+            $rel,
+            $line
+        );
+    }
 }
 
 /* ------------------------------------------------------------------------- */
 if ($failures) {
-    fwrite(STDERR, "FAIL: static WCAG 2.2 AA checks (#1150/#1151):\n\n");
+    fwrite(STDERR, "FAIL: static WCAG 2.1/2.2 AA checks (#1150/#1151, a11y audit 2026-08-28 M1/M7/M8):\n\n");
     foreach ($failures as $f) { fwrite(STDERR, "  - {$f}\n"); }
     exit(1);
 }
 
 printf(
-    "PASS: %d template(s) scanned under includes/pages, includes/partials and manage/ — "
-    . "no duplicate static ids, no <img> missing alt, home.php's card-layout-handle stays perceivable.\n",
-    count($targets)
+    "PASS: %d template(s) scanned under includes/pages, includes/partials and manage/ (ids/alt/heading-"
+    . "role-button), %d public-surface file(s) scanned for bare aria-label (M8), admin skip-link + <main> "
+    . "landmark wired (M7), home.php's card-layout-handle stays perceivable.\n",
+    count($targets),
+    count($publicScanTargets)
 );
 exit(0);

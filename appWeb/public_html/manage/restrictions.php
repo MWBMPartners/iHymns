@@ -353,8 +353,8 @@ $csrf = csrfToken();
         <form method="GET" class="card-admin p-3 mb-3">
             <div class="row g-2 align-items-end">
                 <div class="col-sm-4">
-                    <label class="form-label small mb-1">Entity type</label>
-                    <select name="entity_type" class="form-select form-select-sm">
+                    <label class="form-label small mb-1" for="filter-entity-type">Entity type</label>
+                    <select name="entity_type" id="filter-entity-type" class="form-select form-select-sm">
                         <option value="">All</option>
                         <?php foreach (RESTRICTIONS_ENTITY_TYPES as $et): ?>
                             <option value="<?= htmlspecialchars($et) ?>" <?= $filterEntity === $et ? 'selected' : '' ?>>
@@ -364,8 +364,8 @@ $csrf = csrfToken();
                     </select>
                 </div>
                 <div class="col-sm-5">
-                    <label class="form-label small mb-1">Restriction type</label>
-                    <select name="restriction_type" class="form-select form-select-sm">
+                    <label class="form-label small mb-1" for="filter-restriction-type">Restriction type</label>
+                    <select name="restriction_type" id="filter-restriction-type" class="form-select form-select-sm">
                         <option value="">All</option>
                         <?php foreach (RESTRICTIONS_TYPES as $k => $lbl): ?>
                             <option value="<?= htmlspecialchars($k) ?>" <?= $filterType === $k ? 'selected' : '' ?>>
@@ -470,7 +470,7 @@ $csrf = csrfToken();
 
             <div class="row g-2 mb-2">
                 <div class="col-sm-3">
-                    <label class="form-label small">Entity type</label>
+                    <label class="form-label small" for="rx-entity-type">Entity type</label>
                     <!-- data-picker-canonical points the shared helper at
                          the hidden canonical input this type-select feeds. -->
                     <select name="entity_type" id="rx-entity-type"
@@ -481,14 +481,15 @@ $csrf = csrfToken();
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div class="col-sm-5" data-picker-group-for="#rx-entity-id">
-                    <label class="form-label small">Entity</label>
+                <div class="col-sm-5" data-picker-group-for="#rx-entity-id" role="group" aria-labelledby="rx-entity-label">
+                    <label class="form-label small" id="rx-entity-label">Entity</label>
 
                     <!-- song picker: live-search combobox -->
                     <div class="rx-picker" data-picker-for="song">
                         <div class="position-relative">
                             <input type="text" class="form-control form-control-sm rx-picker-input"
                                    data-picker-source="song" autocomplete="off"
+                                   aria-label="Search for a song"
                                    placeholder="Type a song title or number — e.g. Amazing Grace">
                             <div class="rx-picker-popover list-group position-absolute w-100 shadow d-none"
                                  style="z-index: 1050; max-height: 240px; overflow-y: auto;"></div>
@@ -498,7 +499,7 @@ $csrf = csrfToken();
 
                     <!-- songbook picker: server-rendered select -->
                     <div class="rx-picker d-none" data-picker-for="songbook">
-                        <select class="form-select form-select-sm rx-picker-select">
+                        <select class="form-select form-select-sm rx-picker-select" aria-label="Select a songbook">
                             <option value="*">* — every songbook</option>
                             <?php foreach ($picker_songbooks as $sb): ?>
                                 <option value="<?= htmlspecialchars($sb['Abbreviation']) ?>">
@@ -511,7 +512,7 @@ $csrf = csrfToken();
 
                     <!-- feature picker: hard-coded select -->
                     <div class="rx-picker d-none" data-picker-for="feature">
-                        <select class="form-select form-select-sm rx-picker-select">
+                        <select class="form-select form-select-sm rx-picker-select" aria-label="Select a feature">
                             <option value="*">* — every feature</option>
                             <?php foreach (RESTRICTIONS_FEATURES as $k => $lbl): ?>
                                 <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
@@ -520,7 +521,7 @@ $csrf = csrfToken();
                     </div>
                 </div>
                 <div class="col-sm-2">
-                    <label class="form-label small">Restriction type</label>
+                    <label class="form-label small" for="rx-restriction-type">Restriction type</label>
                     <select name="restriction_type" id="rx-restriction-type" class="form-select form-select-sm" required>
                         <?php foreach (RESTRICTIONS_TYPES as $k => $lbl): ?>
                             <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
@@ -533,7 +534,7 @@ $csrf = csrfToken();
                      the server normalises those to 'deny' regardless, so the
                      control can never store a policy the engine won't honour. -->
                 <div class="col-sm-2" id="rx-effect-group">
-                    <label class="form-label small">Effect</label>
+                    <label class="form-label small" for="rx-effect">Effect</label>
                     <select name="effect" id="rx-effect" class="form-select form-select-sm">
                         <option value="deny" selected>deny</option>
                         <option value="allow">allow</option>
@@ -543,7 +544,7 @@ $csrf = csrfToken();
 
             <div class="row g-2 mb-2">
                 <div class="col-sm-3">
-                    <label class="form-label small">Target type</label>
+                    <label class="form-label small" for="rx-target-type">Target type</label>
                     <select name="target_type" id="rx-target-type"
                             class="form-select form-select-sm"
                             data-picker-canonical="#rx-target-id">
@@ -554,12 +555,12 @@ $csrf = csrfToken();
                         <option value="licence_type">Licence type</option>
                     </select>
                 </div>
-                <div class="col-sm-5" data-picker-group-for="#rx-target-id">
-                    <label class="form-label small">Target</label>
+                <div class="col-sm-5" data-picker-group-for="#rx-target-id" role="group" aria-labelledby="rx-target-label">
+                    <label class="form-label small" id="rx-target-label">Target</label>
 
                     <!-- platform picker: hard-coded select -->
                     <div class="rx-picker" data-picker-for="platform">
-                        <select class="form-select form-select-sm rx-picker-select">
+                        <select class="form-select form-select-sm rx-picker-select" aria-label="Select a platform">
                             <option value="">— (any platform)</option>
                             <?php foreach (RESTRICTIONS_PLATFORMS as $k => $lbl): ?>
                                 <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
@@ -572,6 +573,7 @@ $csrf = csrfToken();
                         <div class="position-relative">
                             <input type="text" class="form-control form-control-sm rx-picker-input"
                                    data-picker-source="user" autocomplete="off"
+                                   aria-label="Search for a user"
                                    placeholder="Type a display name or @username">
                             <div class="rx-picker-popover list-group position-absolute w-100 shadow d-none"
                                  style="z-index: 1050; max-height: 240px; overflow-y: auto;"></div>
@@ -580,7 +582,7 @@ $csrf = csrfToken();
 
                     <!-- organisation picker: server-rendered select + live-search fallback -->
                     <div class="rx-picker d-none" data-picker-for="organisation">
-                        <select class="form-select form-select-sm rx-picker-select">
+                        <select class="form-select form-select-sm rx-picker-select" aria-label="Select an organisation">
                             <option value="">— (any organisation)</option>
                             <?php foreach ($picker_organisations as $org): ?>
                                 <option value="<?= (int)$org['Id'] ?>">
@@ -593,7 +595,7 @@ $csrf = csrfToken();
 
                     <!-- licence type picker -->
                     <div class="rx-picker d-none" data-picker-for="licence_type">
-                        <select class="form-select form-select-sm rx-picker-select">
+                        <select class="form-select form-select-sm rx-picker-select" aria-label="Select a licence type">
                             <?php foreach ($RESTRICTIONS_LICENCE_TYPES as $k => $lbl): ?>
                                 <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
                             <?php endforeach; ?>
@@ -606,13 +608,13 @@ $csrf = csrfToken();
                     </div>
                 </div>
                 <div class="col-sm-2">
-                    <label class="form-label small">Priority</label>
-                    <input type="number" name="priority" class="form-control form-control-sm"
+                    <label class="form-label small" for="rx-priority">Priority</label>
+                    <input type="number" name="priority" id="rx-priority" class="form-control form-control-sm"
                            min="0" max="1000" value="100">
                 </div>
                 <div class="col-sm-2">
-                    <label class="form-label small">Reason (shown to user)</label>
-                    <input type="text" name="reason" class="form-control form-control-sm" maxlength="255"
+                    <label class="form-label small" for="rx-reason">Reason (shown to user)</label>
+                    <input type="text" name="reason" id="rx-reason" class="form-control form-control-sm" maxlength="255"
                            placeholder="e.g. Subscription required">
                 </div>
             </div>

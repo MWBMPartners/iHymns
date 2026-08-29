@@ -719,24 +719,24 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
             <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a capability</h2>
             <div class="row g-2 mb-2">
                 <div class="col-sm-3">
-                    <label class="form-label small">Key (machine)</label>
-                    <input type="text" name="cap_key" class="form-control form-control-sm" maxlength="40" required
+                    <label class="form-label small" for="create-cap-key">Key (machine)</label>
+                    <input type="text" name="cap_key" id="create-cap-key" class="form-control form-control-sm" maxlength="40" required
                            placeholder="e.g. CanRequestSongs" pattern="Can[A-Z][A-Za-z0-9]{1,29}"
                            title="PascalCase, starts 'Can' + an uppercase letter, letters/digits only">
                     <div class="form-text small">Cannot be changed after creation.</div>
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Label</label>
-                    <input type="text" name="label" class="form-control form-control-sm" maxlength="30" required
+                    <label class="form-label small" for="create-cap-label">Label</label>
+                    <input type="text" name="label" id="create-cap-label" class="form-control form-control-sm" maxlength="30" required
                            placeholder="e.g. Requests">
                 </div>
                 <div class="col-sm-2">
-                    <label class="form-label small">Sort order</label>
-                    <input type="number" name="sort_order" class="form-control form-control-sm" min="0" max="100000" value="0">
+                    <label class="form-label small" for="create-cap-sort">Sort order</label>
+                    <input type="number" name="sort_order" id="create-cap-sort" class="form-control form-control-sm" min="0" max="100000" value="0">
                 </div>
                 <div class="col-sm-4">
-                    <label class="form-label small">Description</label>
-                    <input type="text" name="description" class="form-control form-control-sm" maxlength="255"
+                    <label class="form-label small" for="create-cap-description">Description</label>
+                    <input type="text" name="description" id="create-cap-description" class="form-control form-control-sm" maxlength="255"
                            placeholder="What does this capability unlock?">
                 </div>
             </div>
@@ -869,15 +869,15 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                     <h3 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a rule</h3>
                     <div class="row g-2 mb-2">
                         <div class="col-sm-4">
-                            <label class="form-label small">Capability</label>
-                            <select name="cap_key" class="form-select form-select-sm" required>
+                            <label class="form-label small" for="rule-cap-key">Capability</label>
+                            <select name="cap_key" id="rule-cap-key" class="form-select form-select-sm" required>
                                 <?php foreach ($dbCapKeysForRules as $ck): ?>
                                     <option value="<?= htmlspecialchars($ck) ?>"><?= htmlspecialchars($ck) ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </div>
                         <div class="col-sm-4">
-                            <label class="form-label small">Behaviour kind</label>
+                            <label class="form-label small" for="rule-kind-select">Behaviour kind</label>
                             <select name="behavior_kind" id="rule-kind-select" class="form-select form-select-sm" required
                                     onchange="ihymnsGatingRuleKindChanged(this.value)">
                                 <?php foreach (GATING_BEHAVIOR_KINDS as $kindKey => $kindTuple): ?>
@@ -888,14 +888,14 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                             </select>
                         </div>
                         <div class="col-sm-2">
-                            <label class="form-label small">Sort order</label>
-                            <input type="number" name="sort_order" class="form-control form-control-sm" min="0" max="100000" value="0">
+                            <label class="form-label small" for="rule-sort-order">Sort order</label>
+                            <input type="number" name="sort_order" id="rule-sort-order" class="form-control form-control-sm" min="0" max="100000" value="0">
                         </div>
                     </div>
 
                     <div id="rule-params-strip_payload_keys" class="mb-2">
-                        <label class="form-label small d-block">Keys to strip</label>
-                        <div class="d-flex flex-wrap gap-3">
+                        <label class="form-label small d-block" id="rule-strip-keys-label">Keys to strip</label>
+                        <div class="d-flex flex-wrap gap-3" role="group" aria-labelledby="rule-strip-keys-label">
                             <?php foreach (GATING_STRIPPABLE_KEYS as $keyId => $keyLabel): ?>
                                 <div class="form-check" title="<?= htmlspecialchars($keyLabel) ?>">
                                     <input class="form-check-input" type="checkbox" name="strip_keys[]"
@@ -907,8 +907,8 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                     </div>
 
                     <div id="rule-params-drop_media_kinds" class="mb-2" style="display:none;">
-                        <label class="form-label small d-block">Media kinds to drop</label>
-                        <div class="d-flex flex-wrap gap-3">
+                        <label class="form-label small d-block" id="rule-drop-kinds-label">Media kinds to drop</label>
+                        <div class="d-flex flex-wrap gap-3" role="group" aria-labelledby="rule-drop-kinds-label">
                             <?php foreach (GATING_DROPPABLE_MEDIA_KINDS as $kindId => $kindLbl): ?>
                                 <div class="form-check">
                                     <input class="form-check-input" type="checkbox" name="drop_kinds[]"
@@ -963,16 +963,16 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                     <div class="modal-body">
                         <div class="row g-2 mb-3">
                             <div class="col-sm-6">
-                                <label class="form-label small">Label</label>
+                                <label class="form-label small" for="edit-cap-label">Label</label>
                                 <input type="text" name="label" id="edit-cap-label" class="form-control form-control-sm" maxlength="30" required>
                             </div>
                             <div class="col-sm-3">
-                                <label class="form-label small">Sort order</label>
+                                <label class="form-label small" for="edit-cap-sort">Sort order</label>
                                 <input type="number" name="sort_order" id="edit-cap-sort" class="form-control form-control-sm" min="0" max="100000">
                             </div>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label small">Description</label>
+                            <label class="form-label small" for="edit-cap-description">Description</label>
                             <input type="text" name="description" id="edit-cap-description" class="form-control form-control-sm" maxlength="255">
                         </div>
                         <div class="d-flex flex-wrap gap-3">

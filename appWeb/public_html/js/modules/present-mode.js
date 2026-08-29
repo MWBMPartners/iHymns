@@ -90,7 +90,7 @@ export function initPresentMode() {
             <div class="present-lyrics"></div>
             <div class="present-nav">
                 <button class="present-prev" aria-label="Previous"><i class="fa-solid fa-chevron-left me-1"></i>Prev</button>
-                <button class="present-counter"></button>
+                <span class="present-counter"></span>
                 <button class="present-next" aria-label="Next">Next<i class="fa-solid fa-chevron-right ms-1"></i></button>
             </div>
         `;
@@ -184,6 +184,12 @@ export function initPresentMode() {
         overlay.querySelector('.present-close').addEventListener('click', close);
         prevBtn.addEventListener('click', (e) => { e.stopPropagation(); prev(); });
         nextBtn.addEventListener('click', (e) => { e.stopPropagation(); next(); });
+        /* a11y audit m5 — .present-counter is a <span>, not a <button>: this
+           listener only stops a tap on the "N / M" readout from ALSO
+           triggering the lyrics-area advance behind it (line ~190). It never
+           had a keyboard interaction of its own, so — unlike prev/next — it
+           was a focusable control with nothing to operate; slide changes are
+           already announced via render()'s announce() call above. */
         counterEl.addEventListener('click', (e) => e.stopPropagation());
 
         /* Click on lyrics area advances */

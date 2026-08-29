@@ -81,7 +81,15 @@
     /* Text */
     --text-primary: #1e293b;        /* Slate 800 */
     --text-secondary: #64748b;      /* Slate 500 */
-    --text-muted: #94a3b8;          /* Slate 400 */
+    --text-muted: #64748b;          /* Slate 500 — WCAG 1.4.3/1.4.11 (a11y audit S2, 2026-08-28):
+                                        Slate 400 (#94a3b8) computed to 2.56:1 on the footer's
+                                        near-white glass background, failing both the 4.5:1 text
+                                        floor (.footer-nav-item/.footer-info/.footer-link,
+                                        app.css) and the 3:1 non-text floor (the footer icons) —
+                                        and the same token feeds 11 muted-copy uses in admin.css.
+                                        Slate 500 is 4.76:1 on white; reusing it here (matching
+                                        --text-secondary) is the token-level fix that clears every
+                                        consumer at once instead of re-pointing each call site. */
 
     /* Header & footer */
     --header-bg: var(--glass-bg);
@@ -126,12 +134,19 @@
     --songbook-SDAH-shadow: 245, 158, 11;
     --songbook-CH-shadow: 239, 68, 68;
     --songbook-Misc-shadow: 139, 92, 246;
-    /* Badge text colours — WCAG contrast-safe per songbook (#152) */
+    /* Badge text colours — WCAG contrast-safe per songbook (#152).
+       a11y audit M9 (2026-08-28): white text on the JP/MP/CH light-theme
+       gradients computed below the 4.5:1 floor at their LIGHTER gradient
+       stop (JP #f472b6 ~2.65:1, MP #2dd4bf ~1.86:1, CH #f87171 ~2.77:1) —
+       badges are aria-hidden and the number also lives in the row's
+       accessible name, so this is a 1.4.3 visual-only fix, same as SDAH's
+       existing dark-text token. #1a1a1a clears 4.5:1 against BOTH stops
+       of all three (worst case CH's darker #ef4444 stop, ~4.63:1). */
     --songbook-CP-text: #ffffff;
-    --songbook-JP-text: #ffffff;
-    --songbook-MP-text: #ffffff;
+    --songbook-JP-text: #1a1a1a;
+    --songbook-MP-text: #1a1a1a;
     --songbook-SDAH-text: #1a1a1a;
-    --songbook-CH-text: #ffffff;
+    --songbook-CH-text: #1a1a1a;
     --songbook-Misc-text: #ffffff;
 }
 
@@ -157,7 +172,11 @@
     /* Text */
     --text-primary: #f1f5f9;
     --text-secondary: #94a3b8;
-    --text-muted: #64748b;
+    --text-muted: #94a3b8;          /* WCAG 1.4.3/1.4.11 (a11y audit S2): Slate 500 (#64748b) was
+                                        only 3.75:1 on the dark surface bg (#0f172a) — fails the
+                                        4.5:1 text floor. Slate 400 is 6.96:1; matches
+                                        --text-secondary, same token-level fix as the light theme
+                                        above. */
 
     /* Header & footer */
     --header-bg: var(--glass-bg);
@@ -2895,14 +2914,29 @@ body.reduce-motion .offline-banner {
 }
 
 /* =========================================================================
- * SONG TRANSLATIONS — Collapsible section on song pages (#352)
- * ========================================================================= */
-
-.song-translations h2 {
+ * SECTION TOGGLE BUTTON — a real <button> living inside an <h2> so a
+ * collapsible section header stays keyboard-operable and keeps its heading
+ * semantics (a11y audit M1, 2026-08-28; replaces the old <h2 role="button">
+ * with no tabindex, which Bootstrap's collapse data-API — click-only — never
+ * made reachable or operable from a keyboard). Strips the browser's native
+ * button chrome so it reads as plain heading text; layout (flex row, icon
+ * gap) comes from the h6/d-flex/gap-2 utility classes alongside it in the
+ * markup, not from this class. Used by .song-translations and .related-songs
+ * below, and by any future collapsible section header. */
+.section-toggle-btn {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    text-align: left;
     cursor: pointer;
 }
 
-.song-translations h2[aria-expanded="false"] i.fa-chevron-down {
+/* =========================================================================
+ * SONG TRANSLATIONS — Collapsible section on song pages (#352)
+ * ========================================================================= */
+
+.song-translations .section-toggle-btn[aria-expanded="false"] i.fa-chevron-down {
     transform: rotate(-90deg);
 }
 
@@ -2918,11 +2952,7 @@ body.reduce-motion .song-translations i.fa-chevron-down {
  * RELATED SONGS — Collapsible section on song pages (#118)
  * ========================================================================= */
 
-.related-songs h2 {
-    cursor: pointer;
-}
-
-.related-songs h2[aria-expanded="false"] .related-songs-chevron {
+.related-songs .section-toggle-btn[aria-expanded="false"] .related-songs-chevron {
     transform: rotate(-90deg);
 }
 
@@ -3217,7 +3247,15 @@ body.reduce-motion .related-songs-chevron {
     gap: 1rem;
 }
 
-.presentation-overlay .present-nav button {
+/* a11y audit m5 (2026-08-28): .present-counter ("2 / 7") is now a <span>, not
+   a <button> — it never did anything but read out the position (click just
+   stopPropagation()s so it doesn't also trigger the lyrics-area advance
+   behind it), so a focusable control with no operable purpose was in the Tab
+   order for no reason. Shares this base rule with the two real nav buttons
+   so its look is unchanged; the interactive-only :hover/:disabled states
+   below stay scoped to `button`. */
+.presentation-overlay .present-nav button,
+.presentation-overlay .present-nav .present-counter {
     background: rgba(255, 255, 255, 0.1);
     border: 1px solid rgba(255, 255, 255, 0.3);
     color: #fff;

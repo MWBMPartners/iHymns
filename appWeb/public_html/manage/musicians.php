@@ -2635,7 +2635,7 @@ try {
                     </div>
                     <div class="modal-body">
                         <div class="mb-2">
-                            <label class="form-label small">Current name</label>
+                            <label class="form-label small" for="mus-rename-current">Current name</label>
                             <input type="text" class="form-control form-control-sm" id="mus-rename-current" readonly>
                         </div>
                         <div class="mb-2">
@@ -2687,7 +2687,7 @@ try {
                     <div class="modal-body">
                         <div class="row g-2 mb-3">
                             <div class="col-6">
-                                <label class="form-label small">Source (will be removed)</label>
+                                <label class="form-label small" for="mus-merge-source-name">Source (will be removed)</label>
                                 <input type="text" class="form-control form-control-sm" id="mus-merge-source-name" readonly>
                             </div>
                             <div class="col-6">
@@ -2976,9 +2976,9 @@ try {
             </div>
 
             <!-- External links — repeating sub-form -->
-            <div>
+            <div role="group" aria-labelledby="mus-links-label">
                 <div class="d-flex justify-content-between align-items-center mb-1">
-                    <label class="form-label small mb-0">External links</label>
+                    <label class="form-label small mb-0" id="mus-links-label">External links</label>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="mus-add-link-btn">
                         <i class="bi bi-plus me-1"></i>Add link
                     </button>
@@ -2988,9 +2988,9 @@ try {
             </div>
 
             <!-- IPI numbers — repeating sub-form -->
-            <div data-flag-section="ipi">
+            <div data-flag-section="ipi" role="group" aria-labelledby="mus-ipi-label">
                 <div class="d-flex justify-content-between align-items-center mb-1">
-                    <label class="form-label small mb-0">IPI Name Numbers</label>
+                    <label class="form-label small mb-0" id="mus-ipi-label">IPI Name Numbers</label>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="mus-add-ipi-btn">
                         <i class="bi bi-plus me-1"></i>Add IPI
                     </button>
@@ -3008,9 +3008,9 @@ try {
                  IdentifierType discriminator. Most people will have one
                  ISNI, but the schema mirrors IPI's "multiple rows allowed"
                  shape so we never have to migrate again. -->
-            <div data-flag-section="isni">
+            <div data-flag-section="isni" role="group" aria-labelledby="mus-isni-label">
                 <div class="d-flex justify-content-between align-items-center mb-1">
-                    <label class="form-label small mb-0">ISNI</label>
+                    <label class="form-label small mb-0" id="mus-isni-label">ISNI</label>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="mus-add-isni-btn">
                         <i class="bi bi-plus me-1"></i>Add ISNI
                     </button>
@@ -3025,9 +3025,9 @@ try {
                  unchanged). Each row stores its IdentifierType discriminator
                  in tblMusicianIdentifiers alongside IPI/ISNI; the type
                  is allow-list-validated server-side ($normaliseOtherId). -->
-            <div>
+            <div role="group" aria-labelledby="mus-otherid-label">
                 <div class="d-flex justify-content-between align-items-center mb-1">
-                    <label class="form-label small mb-0">Other identifiers</label>
+                    <label class="form-label small mb-0" id="mus-otherid-label">Other identifiers</label>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="mus-add-otherid-btn">
                         <i class="bi bi-plus me-1"></i>Add identifier
                     </button>
@@ -3044,9 +3044,9 @@ try {
                  (ja, ru-Latn, …). Surfaced as JSON-LD alternateName on
                  /people/<slug> and searched alongside the canonical
                  Name in editor typeahead + the admin filter. -->
-            <div>
+            <div role="group" aria-labelledby="mus-aliases-label">
                 <div class="d-flex justify-content-between align-items-center mb-1">
-                    <label class="form-label small mb-0">AKA / Aliases</label>
+                    <label class="form-label small mb-0" id="mus-aliases-label">AKA / Aliases</label>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="mus-add-alias-btn">
                         <i class="bi bi-plus me-1"></i>Add alias
                     </button>
@@ -3070,8 +3070,8 @@ try {
                  already have a real Id (i.e. Edit mode, not Add) since
                  SubjectMusicianId is a NOT NULL FK — the "unsaved" note
                  below covers that case. -->
-            <div data-flag-section="group-members" class="d-none">
-                <label class="form-label small mb-1">Members</label>
+            <div data-flag-section="group-members" class="d-none" role="group" aria-labelledby="mus-members-label">
+                <label class="form-label small mb-1" id="mus-members-label">Members</label>
                 <div id="mus-members-unsaved" class="alert alert-secondary py-2 small mb-2 d-none">
                     <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
                     Save this person first — members can only be added once the group itself has been registered.
@@ -3079,7 +3079,7 @@ try {
                 <div id="mus-members-container" class="d-flex flex-column gap-1 mb-2"></div>
                 <div class="input-group input-group-sm" id="mus-members-add-row">
                     <input type="text" class="form-control" id="mus-member-search" list="mus-member-datalist"
-                           autocomplete="off" placeholder="Type a registered person's name…">
+                           autocomplete="off" aria-label="Search for a person to add as a member" placeholder="Type a registered person's name…">
                     <datalist id="mus-member-datalist"></datalist>
                     <button type="button" class="btn btn-outline-secondary" id="mus-add-member-btn">
                         <i class="bi bi-plus me-1"></i>Add
@@ -3123,8 +3123,8 @@ try {
                  when RelationType exists — a 'portrays' relation cannot
                  be represented on an un-migrated install. -->
             <?php if ($relationColsExist['RelationType']): ?>
-                <div data-flag-section="portrayed-by" class="d-none">
-                    <label class="form-label small mb-1">
+                <div data-flag-section="portrayed-by" class="d-none" role="group" aria-labelledby="mus-portrayedby-label">
+                    <label class="form-label small mb-1" id="mus-portrayedby-label">
                         <i class="bi bi-person-video2 me-1" aria-hidden="true"></i>Portrayed by
                     </label>
                     <div id="mus-portrayedby-unsaved" class="alert alert-secondary py-2 small mb-2 d-none">
@@ -3134,7 +3134,7 @@ try {
                     <div id="mus-portrayedby-container" class="d-flex flex-column gap-1 mb-2"></div>
                     <div class="input-group input-group-sm" id="mus-portrayedby-add-row">
                         <input type="text" class="form-control" id="mus-portrayedby-search" list="mus-portrayedby-datalist"
-                               autocomplete="off" placeholder="Type a registered person's name…">
+                               autocomplete="off" aria-label="Search for a person to add as a portrayer" placeholder="Type a registered person's name…">
                         <datalist id="mus-portrayedby-datalist"></datalist>
                         <button type="button" class="btn btn-outline-secondary" id="mus-add-portrayedby-btn">
                             <i class="bi bi-plus me-1"></i>Add

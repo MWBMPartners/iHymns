@@ -31,6 +31,10 @@ import { escapeHtml } from '../utils/html.js';
 /* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
    on every same-origin request, replacing the old global fetch monkey-patch. */
 import { apiFetch } from '../utils/api-client.js';
+/* a11y audit m6 — the consent banner is revealed silently (a class toggle at
+   the end of the DOM); this is how initConsentBanner() tells a screen-reader
+   user it just appeared. */
+import { announce } from '../utils/announce.js';
 /* Offline-download behaviour is owned by offline-ui.js (CLAUDE.md rule #7) —
    Settings drives it, it does not re-implement it (#1597). */
 import {
@@ -585,6 +589,12 @@ export class Settings {
             /* Force reflow before adding .show for CSS transition */
             banner.offsetHeight; // eslint-disable-line no-unused-expressions
             banner.classList.add('show');
+            /* a11y audit m6 — role="region" (index.php) has no aria-live of
+               its own, and this banner sits at the end of the DOM with no
+               focus move into it (it's a non-blocking strip, not a modal),
+               so a screen-reader user would otherwise never learn it
+               appeared at all. */
+            announce('We use analytics — choose Accept or Decline in the banner');
         });
 
         /* Accept button */
