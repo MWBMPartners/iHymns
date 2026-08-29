@@ -6061,11 +6061,35 @@ class SongData
         ));
         $extraSelect = $extraSelected ? (', ' . implode(', ', $extraSelected)) : '';
 
+        /* #1988 (API-coverage — Works "extras") — the two later-added
+           tblWorks riders (MusicBrainzWorkMBID #1066, CopyrightHolderId
+           #1864) plus the places-adoption OriginCity/OriginCityId mirror,
+           so a client can round-trip what admin_work_create/_update just
+           wrote (rule #33 — a replace API whose read can't seed it is a
+           half-ship). Deliberately NOT folded into $extraColNames /
+           _worksExtraCols() above — that probe is the #1741 P1/D5 family
+           ONLY (see that method's own doc-block and
+           tests/test-native-identity-contract.js, which derives its
+           Work-identity-key FLOOR from that exact array literal; adding
+           these two riders there would misattribute them to that family
+           and corrupt the derived camelCase key list). Uses the generic
+           placeColumnExists() column probe (includes/places.php) instead —
+           the same one this class already uses for OriginCity/OriginCityId
+           on tblSongs elsewhere in this file. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'places.php';
+        $hasMbWork     = placeColumnExists($this->db, 'tblWorks', 'MusicBrainzWorkMBID');
+        $hasCopyHldId  = placeColumnExists($this->db, 'tblWorks', 'CopyrightHolderId');
+        $hasOriginCity = placeColumnExists($this->db, 'tblWorks', 'OriginCityId');
+        $ridersSelect  = '';
+        if ($hasMbWork)     { $ridersSelect .= ', MusicBrainzWorkMBID'; }
+        if ($hasCopyHldId)  { $ridersSelect .= ', CopyrightHolderId'; }
+        if ($hasOriginCity) { $ridersSelect .= ', OriginCity, OriginCityId'; }
+
         try {
             if ($isInt) {
                 $stmt = $this->db->prepare(
                     'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt'
-                    . $extraSelect . '
+                    . $extraSelect . $ridersSelect . '
                        FROM tblWorks WHERE Id = ? LIMIT 1'
                 );
                 $id = (int)$slugOrId;
@@ -6073,7 +6097,7 @@ class SongData
             } else {
                 $stmt = $this->db->prepare(
                     'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt'
-                    . $extraSelect . '
+                    . $extraSelect . $ridersSelect . '
                        FROM tblWorks WHERE Slug = ? LIMIT 1'
                 );
                 $slug = (string)$slugOrId;
@@ -6111,6 +6135,13 @@ class SongData
                 'firstPublishedYear' => (isset($extraPresent['FirstPublishedYear']) && $row['FirstPublishedYear'] !== null) ? (int)$row['FirstPublishedYear'] : null,
                 'copyrightYears'     => isset($extraPresent['CopyrightYears'])     ? (string)($row['CopyrightYears'] ?? '')     : '',
                 'copyrightHolder'    => isset($extraPresent['CopyrightHolder'])    ? (string)($row['CopyrightHolder'] ?? '')    : '',
+                /* #1988 — the two later riders + the places-adoption
+                   composition-origin mirror (shape-blind defaults, same
+                   idiom as the block above). */
+                'musicBrainzWorkMbid' => $hasMbWork ? (string)($row['MusicBrainzWorkMBID'] ?? '') : '',
+                'copyrightHolderId'   => ($hasCopyHldId && $row['CopyrightHolderId'] !== null) ? (int)$row['CopyrightHolderId'] : null,
+                'originCity'          => $hasOriginCity ? (string)($row['OriginCity'] ?? '') : '',
+                'originCityId'        => ($hasOriginCity && $row['OriginCityId'] !== null) ? (int)$row['OriginCityId'] : null,
                 'tune'               => null,
                 'credits'            => ['writers' => [], 'composers' => [], 'arrangers' => []],
             ];
@@ -6203,6 +6234,10 @@ class SongData
                     'songbook'     => (string)$mrow['SongbookAbbr'],
                     'songbookName' => (string)($mrow['SongbookName'] ?? ''),
                     'isCanonical'  => (bool)$mrow['IsCanonical'],
+                    /* #1988 — round-trips admin_work_members_replace's own
+                       sort_order input (rule #33). ws.SortOrder was already
+                       selected above; only the output key was missing. */
+                    'sortOrder'    => (int)$mrow['SortOrder'],
                     'memberNote'   => (string)($mrow['Note'] ?? ''),
                 ];
             }
@@ -6313,7 +6348,7 @@ class SongData
             }
             if ($hasWorkLinks) {
                 $stmt = $this->db->prepare(
-                    "SELECT t.Slug, t.Name, t.Category, t.IconClass,
+                    "SELECT el.LinkTypeId, t.Slug, t.Name, t.Category, t.IconClass,
                             el.Url, el.Note, el.Verified, el.SortOrder
                        FROM tblWorkExternalLinks el
                        JOIN tblExternalLinkTypes t ON t.Id = el.LinkTypeId
@@ -6327,6 +6362,10 @@ class SongData
                 $lres = $stmt->get_result();
                 while ($lrow = $lres->fetch_assoc()) {
                     $work['links'][] = [
+                        /* #1988 — round-trips admin_work_external_links_replace's
+                           own type_id input (rule #33); the SAME key name
+                           loadExternalLinksForRow() already uses. */
+                        'typeId'    => (int)$lrow['LinkTypeId'],
                         'slug'      => (string)$lrow['Slug'],
                         'name'      => (string)$lrow['Name'],
                         'category'  => (string)$lrow['Category'],

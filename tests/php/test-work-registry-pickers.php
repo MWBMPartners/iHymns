@@ -503,12 +503,20 @@ $helpersFile     = $web . '/includes/publisher_helpers.php';
 $worksFile       = $web . '/manage/works.php';
 $publishersFile  = $web . '/manage/publishers.php';
 $songbooksFile   = $web . '/manage/songbooks.php';
+/* #1988 — manage/works.php's $persistWorkExtraFields (and the other #1741
+   P4b closures) now one-line-delegate to includes/work_admin.php (the
+   $slugFor -> workSlugify() precedent, rule #22) so the API-coverage
+   admin_work_create/_update actions reuse the SAME write core. B1 below
+   follows the delegation to check the CopyrightHolder<->CopyrightHolderId
+   lockstep where it now actually lives. */
+$workAdminFile   = $web . '/includes/work_admin.php';
 
 foreach ([
     'includes/publisher_helpers.php' => $helpersFile,
     'manage/works.php'               => $worksFile,
     'manage/publishers.php'          => $publishersFile,
     'manage/songbooks.php'           => $songbooksFile,
+    'includes/work_admin.php'        => $workAdminFile,
 ] as $label => $path) {
     if (!is_readable($path)) {
         fwrite(STDERR, "FATAL: could not read {$label} at {$path}\n");
@@ -587,9 +595,12 @@ $reqPhpRaw         = (string)file_get_contents($reqPhpFile);
    applied to songbooks.php for §F, to groups.php/publishers.php for §G, and
    to catalogues.php for §H (all have picker wiring living inside a plain
    <script> tag — the identical T_INLINE_HTML trap). */
-$helpersPhpView = wrpStripPhpComments($helpersRaw);
-$worksPhpView   = wrpStripPhpComments($worksRaw);
-$worksAllView   = wrpStripAllComments($worksRaw);
+$workAdminRaw = (string)file_get_contents($workAdminFile);
+
+$helpersPhpView   = wrpStripPhpComments($helpersRaw);
+$worksPhpView     = wrpStripPhpComments($worksRaw);
+$worksAllView     = wrpStripAllComments($worksRaw);
+$workAdminPhpView = wrpStripPhpComments($workAdminRaw);
 $songbooksPhpView = wrpStripPhpComments($songbooksRaw);
 $songbooksAllView = wrpStripAllComments($songbooksRaw);
 $groupsPhpView     = wrpStripPhpComments($groupsRaw);
@@ -661,18 +672,29 @@ if ($gateHandlerCount < 3) {
 /* ---- B1: works.php's $persistWorkExtraFields closure writes
    CopyrightHolder and CopyrightHolderId TOGETHER, resolving the latter
    through publisherResolvePickedOrCreate() — the TuneName/TuneId lockstep
-   shape (rule #37/#43), never a raw client-supplied id. PHP-comment-
-   stripped view: this file's OWN doc-comment right above the write
-   deliberately names publisherResolvePickedOrCreate() beside the real
-   call (rule #34's wrong-but-green trap), so an unstripped scan would
-   stay green even if the real call were deleted. ---- */
+   shape (rule #37/#43), never a raw client-supplied id.
+   #1988 — the closure now one-line-delegates to the shared
+   workPersistExtraFields() (includes/work_admin.php, rule #22) so
+   admin_work_create/_update (api.php) write the SAME lockstep; B1 follows
+   the delegation and checks the three literals at their new home instead
+   of expecting them inside the (now one-line) closure body. PHP-comment-
+   stripped view throughout: this file's OWN doc-comment right above the
+   write deliberately names publisherResolvePickedOrCreate() beside the
+   real call (rule #34's wrong-but-green trap), so an unstripped scan
+   would stay green even if the real call were deleted. ---- */
 $persistBlock = wrpSliceAssignedClosure($worksPhpView, 'persistWorkExtraFields');
 if ($persistBlock === '') {
     $failures[] = 'could not locate $persistWorkExtraFields = static function (...) { ... }; in manage/works.php';
+} elseif (strpos($persistBlock, 'workPersistExtraFields(') === false) {
+    $failures[] = '$persistWorkExtraFields no longer delegates to the shared workPersistExtraFields() (includes/work_admin.php) — either re-forked inline, or the #1988 extraction was reverted';
+}
+$workPersistExtraFieldsFn = wrpSliceFunctionDecl($workAdminPhpView, 'workPersistExtraFields');
+if ($workPersistExtraFieldsFn === '') {
+    $failures[] = 'includes/work_admin.php does not declare function workPersistExtraFields() — the #1988 extraction target is missing';
 } else {
     foreach (['CopyrightHolder = ?', 'CopyrightHolderId = ?', 'publisherResolvePickedOrCreate('] as $needle) {
-        if (strpos($persistBlock, $needle) === false) {
-            $failures[] = "\$persistWorkExtraFields no longer contains '{$needle}' — the CopyrightHolder<->CopyrightHolderId lockstep write is broken (#1864, rule #37/#43)";
+        if (strpos($workPersistExtraFieldsFn, $needle) === false) {
+            $failures[] = "workPersistExtraFields() (includes/work_admin.php) no longer contains '{$needle}' — the CopyrightHolder<->CopyrightHolderId lockstep write is broken (#1864/#1988, rule #37/#43)";
         }
     }
 }
@@ -755,12 +777,27 @@ if (strpos($worksAllView, 'FROM tblTunes') !== false) {
    $parseWorkExtraFields closure parameter, called with $_POST at both the
    create and update call sites). Raw markup (not comment-stripped — an
    HTML attribute is never inside a comment in the real file) + the
-   PHP-comment-stripped view for the read side. ---- */
+   PHP-comment-stripped view for the read side.
+   #1988 — $parseWorkExtraFields now one-line-delegates to the shared
+   workParseExtraFields() (includes/work_admin.php, rule #22), which is
+   where the ACTUAL $post['copyright_holder_id'] read now lives (the SAME
+   function admin_work_create/_update in api.php call with their JSON
+   body). Checked at BOTH ends of the delegation: the closure genuinely
+   delegates, AND the shared function still does the read. ---- */
 if (substr_count($worksRaw, 'name="copyright_holder_id"') < 2) {
     $failures[] = 'works.php emits name="copyright_holder_id" fewer than 2 times (expected at least 2: the create form + the edit modal) — the picker\'s hidden id is not wired into both forms';
 }
-if (!preg_match('/\$(?:_POST|post)\[\s*\'copyright_holder_id\'\s*\]/', $worksPhpView)) {
-    $failures[] = 'works.php never reads $post[\'copyright_holder_id\'] (or $_POST[...]) — the markup emits the field but nothing consumes it server-side (rule #33: a param nobody reads)';
+$parseBlock = wrpSliceAssignedClosure($worksPhpView, 'parseWorkExtraFields');
+if ($parseBlock === '') {
+    $failures[] = 'could not locate $parseWorkExtraFields = static function (...) { ... }; in manage/works.php';
+} elseif (strpos($parseBlock, 'workParseExtraFields(') === false) {
+    $failures[] = '$parseWorkExtraFields no longer delegates to the shared workParseExtraFields() (includes/work_admin.php) — either re-forked inline, or the #1988 extraction was reverted';
+}
+$workParseExtraFieldsFn = wrpSliceFunctionDecl($workAdminPhpView, 'workParseExtraFields');
+if ($workParseExtraFieldsFn === '') {
+    $failures[] = 'includes/work_admin.php does not declare function workParseExtraFields() — the #1988 extraction target is missing';
+} elseif (!preg_match('/\$(?:_POST|post)\[\s*\'copyright_holder_id\'\s*\]/', $workParseExtraFieldsFn)) {
+    $failures[] = 'workParseExtraFields() (includes/work_admin.php) never reads $post[\'copyright_holder_id\'] (or $_POST[...]) — the markup emits the field but nothing consumes it server-side (rule #33: a param nobody reads)';
 }
 
 /* =========================================================================

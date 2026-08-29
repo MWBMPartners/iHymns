@@ -505,17 +505,25 @@ tags:
       **Admin — Tunes** already applies to tune external links.
   - name: Admin — Works
     description: |
-      Work-registry CRUD + medley composition (#840/#1860 Phase 5,
-      API-coverage batch 4a A2) — `tblWorks`' core scalar fields
-      (title/slug/ISWC/notes/parent) plus the ordered `tblWorkComponents`
-      constituent list, the latter delegating entirely to the
-      cycle-guarded `workMedley*()` family in `includes/work_admin.php`
-      (rule #45 — never forked). The #1741 P4b "extra" fields (subtitle /
-      CCLI / BOWI / tune name / copyright / MusicBrainz Work MBID),
-      `OriginCity`, external links, and song-membership (`tblWorkSongs`)
-      reconciliation are page-only for now — `/manage/works` covers them
-      inline; song⇄work linking from the SONG side already has its own
-      API path (`manage/editor/api2.php`'s `song_work_set` /
+      Work-registry CRUD + medley composition + extras/membership/links
+      (#840/#1860 Phase 5/#1988, API-coverage batch 4a A2 + epic #1983) —
+      `tblWorks`' core scalar fields (title/slug/ISWC/notes/parent) PLUS
+      (#1988) the #1741 P1/D5 "extra" fields (subtitle/disambiguation/
+      CCLI/BOWI/tune name/first-published-year/copyright years+holder),
+      the MusicBrainz Work MBID rider and the places-adoption
+      `OriginCity`/`OriginCityId` mirror on `admin_work_create`/
+      `admin_work_update`; the ordered `tblWorkComponents` medley
+      constituent list on `admin_work_medley_replace`; the ordered
+      `tblWorkSongs` membership list on `admin_work_members_replace`; and
+      the `tblWorkExternalLinks` list on
+      `admin_work_external_links_replace`. Medley/membership/links all
+      delegate to shared write cores (`workMedley*()`/`workSongsReplace()`
+      in `includes/work_admin.php`, rule #45; `saveExternalLinksForRow()`/
+      `loadExternalLinksForRow()` in `includes/external_link_helpers.php`)
+      — never a forked SQL path. `admin_work_update`'s extras are
+      key-present-preserve (see `AdminWorkInput`'s own description);
+      song⇄work linking from the SONG side already has its own,
+      independent API path (`manage/editor/api2.php`'s `song_work_set` /
       `song_work_autolink`, #1860 Phase 3).
   - name: Admin — Licence Types
     description: |
@@ -12628,13 +12636,15 @@ paths:
           description: Publishers registry not migrated on this environment yet
 
   # ===========================================================================
-  # ADMIN — WORKS + MEDLEY COMPOSITION  (#840/#1860 Phase 5, API-coverage
-  # batch 4a A2)
+  # ADMIN — WORKS + MEDLEY COMPOSITION + EXTRAS/MEMBERSHIP/LINKS  (#840/
+  # #1860 Phase 5 / #1988, API-coverage batch 4a A2 + epic #1983)
   #
-  # CRUD over tblWorks' core scalar fields, plus the ordered medley
-  # constituent list (tblWorkComponents). See the "Admin — Works" tag
-  # description above for exactly which fields are IN vs page-only.
-  # Gated on manage_works.
+  # CRUD over tblWorks' core scalar fields (#1988: PLUS the #1741 P1/D5
+  # "extra" fields, MusicBrainz Work MBID, places-adoption origin), the
+  # ordered medley constituent list (tblWorkComponents), the ordered
+  # tblWorkSongs membership list, and the tblWorkExternalLinks list. See
+  # the "Admin — Works" tag description above for exactly which fields
+  # are IN vs page-only. Gated on manage_works.
   # ===========================================================================
   /api.php?action=admin_work_create:
     post:
@@ -12668,11 +12678,11 @@ paths:
                   slug:  { type: string }
                   iswc:  { type: string }
         "400":
-          description: Validation error (missing title, unusable slug, bad ISWC shape, unknown parent_id)
+          description: Validation error (missing title, unusable slug, bad ISWC/MusicBrainz-MBID shape, non-numeric CCLI, out-of-range first_published_year, unknown parent_id)
         "403":
           description: Admin access required
         "409":
-          description: Slug or ISWC already used by another Work
+          description: Slug, ISWC, CCLI, BOWI or MusicBrainz Work MBID already used by another Work
         "503":
           description: Works registry not migrated on this environment yet
 
@@ -12680,10 +12690,17 @@ paths:
     post:
       operationId: adminWorkUpdate
       tags: [Admin — Works]
-      summary: Update a Work's core scalar fields
+      summary: Update a Work's core scalar fields + extras
       description: |
         `parent_id` is cycle-checked against the `ParentWorkId` self-FK
         chain — refused with `409` rather than corrupting the tree.
+
+        The #1988 "extra" fields (see `AdminWorkInput`'s own description)
+        are **key-present-preserve**: omit a key to leave it unchanged,
+        send an explicit `null`/`""` to clear it. The core fields
+        (`title`/`slug`/`iswc`/`notes`/`parent_id`) are NOT
+        key-present-preserve — they are always required/re-derived on
+        every update, matching `/manage/works`'s own full-form save.
       security:
         - bearerAuth: []
       parameters:
@@ -12716,13 +12733,13 @@ paths:
                   slug:  { type: string }
                   iswc:  { type: string }
         "400":
-          description: Validation error, missing id, or unknown parent_id
+          description: Validation error, missing id, bad ISWC/MusicBrainz-MBID shape, non-numeric CCLI, out-of-range first_published_year, or unknown parent_id
         "403":
           description: Admin access required
         "404":
           description: Work not found
         "409":
-          description: Slug/ISWC already used by another Work, or the parent_id would create a cycle
+          description: Slug, ISWC, CCLI, BOWI or MusicBrainz Work MBID already used by another Work, or the parent_id would create a cycle
         "503":
           description: Works registry not migrated on this environment yet
 
@@ -12843,6 +12860,163 @@ paths:
           description: Work not found
         "503":
           description: Works registry or medley composition not migrated on this environment yet
+
+  /api.php?action=admin_work_members_replace:
+    post:
+      operationId: adminWorkMembersReplace
+      tags: [Admin — Works]
+      summary: Replace a Work's entire ordered tblWorkSongs membership list
+      description: |
+        DELETE-then-reinsert via the shared `workSongsReplace()` write
+        core (`includes/work_admin.php`), the same SQL shape
+        `/manage/works`'s own update action uses (rule #22). Posting an
+        empty `members` array is a valid, deliberate "clear membership"
+        edit — mirrors `admin_work_medley_replace`'s own posture for
+        `constituents`.
+
+        Every `song_id` is pre-validated to exist in `tblSongs` before
+        anything is written — an unknown id is a `400` naming the
+        offender, never a raw foreign-key failure. Not visibility-filtered:
+        a song from a disabled/hidden songbook can still be linked (the
+        same admin-surface posture `/manage/works`'s own membership picker
+        uses).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_work_members_replace] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: integer
+                  description: The Work's tblWorks.Id
+                members:
+                  type: array
+                  items:
+                    type: object
+                    required: [song_id]
+                    properties:
+                      song_id:      { type: string, maxLength: 20 }
+                      is_canonical: { type: boolean, default: false }
+                      sort_order:   { type: integer, description: 'Defaults to array position * 10 when omitted; clamped 0..65535.' }
+                      note:         { type: string, nullable: true, maxLength: 255 }
+      responses:
+        "200":
+          description: Membership replaced — echoes the STORED list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:       { type: boolean, example: true }
+                  id:       { type: integer }
+                  inserted: { type: integer }
+                  members:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        songId:       { type: string }
+                        title:        { type: string }
+                        songbook:     { type: string }
+                        number:       { type: integer, nullable: true }
+                        isCanonical:  { type: boolean }
+                        sortOrder:    { type: integer }
+                        note:         { type: string }
+        "400":
+          description: Missing id, members is not an array, or one or more song_id values are unknown (the response names them)
+        "403":
+          description: Admin access required
+        "404":
+          description: Work not found
+        "503":
+          description: Works registry not migrated on this environment yet
+
+  /api.php?action=admin_work_external_links_replace:
+    post:
+      operationId: adminWorkExternalLinksReplace
+      tags: [Admin — Works]
+      summary: Replace a Work's entire tblWorkExternalLinks list
+      description: |
+        DELETE-then-reinsert via the ONE shared external-links saver
+        (`saveExternalLinksForRow()`/`loadExternalLinksForRow()`,
+        `includes/external_link_helpers.php`, rule #22) — the SAME core
+        `/manage/works`'s update action and the editor's `link_save_all`
+        already delegate to. `tblWorkExternalLinks` is probed for
+        existence FIRST (the shared saver does not self-probe and would
+        throw on an un-migrated install), so a missing table is a clean
+        `503`, not a `500`.
+
+        Keeps the shared saver's existing, deliberate quirks: an invalid
+        row (`type_id<=0`, non-http(s) `url`, or a `url` over 2048 chars)
+        is silently skipped rather than failing the whole call, and
+        `LinkTypeId.AppliesTo='work'` is never independently re-validated
+        here — page parity, not a gap to "fix" from this new caller.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_work_external_links_replace] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: integer
+                  description: The Work's tblWorks.Id
+                links:
+                  type: array
+                  items:
+                    type: object
+                    required: [type_id, url]
+                    properties:
+                      type_id:  { type: integer, description: tblExternalLinkTypes.Id }
+                      url:      { type: string, maxLength: 2048, description: 'Must start http:// or https://.' }
+                      note:     { type: string, nullable: true, maxLength: 255 }
+                      verified: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Links replaced — echoes the STORED list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:    { type: boolean, example: true }
+                  id:    { type: integer }
+                  count: { type: integer, description: Rows actually inserted (invalid rows are silently skipped, not counted). }
+                  links:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        typeId:    { type: integer }
+                        url:       { type: string }
+                        note:      { type: string }
+                        verified:  { type: integer }
+                        sortOrder: { type: integer }
+        "400":
+          description: Missing id, or links is not an array
+        "403":
+          description: Admin access required
+        "404":
+          description: Work not found
+        "503":
+          description: Works registry not migrated, or tblWorkExternalLinks not available on this environment yet
 
   # ===========================================================================
   # ADMIN — TAGS/THEMES  (#770/#1152/#1222, API-coverage batch 4b-i A3)
@@ -24128,9 +24302,29 @@ components:
       type: object
       description: |
         Shared input for `admin_work_create` and `admin_work_update`
-        (#840/#1860 Phase 5, API-coverage batch 4a A2). Covers the CORE
-        scalar fields only — see the "Admin — Works" tag description for
-        which fields stay page-only in `/manage/works` for now.
+        (#840/#1860 Phase 5 / #1988, API-coverage batch 4a A2). Covers the
+        core scalar fields PLUS (#1988) the #1741 P1/D5 "extra" fields,
+        the MusicBrainz Work MBID rider, and the places-adoption
+        composition-origin mirror — see the "Admin — Works" tag
+        description for which fields stay page-only for now (membership
+        and external links now have their OWN replace actions below;
+        medley composition already did).
+
+        **Omitted-key semantics differ between create and update.** On
+        `admin_work_create` an absent key simply defaults (there is
+        nothing to preserve on a brand-new row). On `admin_work_update`
+        every field below is **key-present-preserve**: the server reads
+        what is currently stored, then overlays ONLY the keys your
+        request body actually names (via a JSON presence check, not a
+        falsy check) — an explicit `null`/`""` CLEARS that field, but an
+        OMITTED key leaves the stored value untouched. Send only the
+        fields you are changing; you never need to resend the whole
+        object to avoid wiping the rest.
+
+        Every one of these columns is an INDEPENDENTLY-migrated, optional
+        `tblWorks` column (rule #19) — an un-migrated column is silently
+        skipped on write (never a 503; `workAdminReady()` already gates
+        the CORE `tblWorks`/`tblWorkSongs` schema those two actions need).
       required: [title]
       properties:
         title:
@@ -24151,6 +24345,60 @@ components:
           type: integer
           nullable: true
           description: tblWorks.Id this Work is-a-variant-of (ParentWorkId self-FK, NOT the medley "contains" relationship). Must exist and must not create a cycle.
+        subtitle:
+          type: string
+          maxLength: 255
+          nullable: true
+          description: '#1988 — key-present-preserve on update (see this schema''s own description).'
+        disambiguation:
+          type: string
+          maxLength: 255
+          nullable: true
+          description: '#1988 — key-present-preserve on update.'
+        ccli:
+          type: string
+          nullable: true
+          description: 'CCLI Work Number — numeric shape, validated via mediaIdentifierWorkValidate(). Unique when set (409 on collision). #1988 — key-present-preserve on update.'
+        bowi:
+          type: string
+          maxLength: 30
+          nullable: true
+          description: 'Best Open Work Identifier (Luminate Data) — length-checked only, no documented shape. Unique when set (409 on collision). #1988 — key-present-preserve on update.'
+        tune_name:
+          type: string
+          maxLength: 120
+          nullable: true
+          description: '#1988 — key-present-preserve on update. Written in LOCKSTEP with the internal TuneId via tuneFindOrCreateByName() — never TuneName alone.'
+        first_published_year:
+          type: integer
+          nullable: true
+          description: 'Year 500-2100 (SMALLINT UNSIGNED; the generous floor accommodates hymn works predating MySQL YEAR''s 1901 floor). #1988 — key-present-preserve on update.'
+        copyright_years:
+          type: string
+          maxLength: 100
+          nullable: true
+          description: 'As-printed copyright year(s), free text e.g. "1978, 1987, 2011". #1988 — key-present-preserve on update.'
+        copyright_holder:
+          type: string
+          maxLength: 255
+          nullable: true
+          description: '#1988 — key-present-preserve on update. Written in LOCKSTEP with the internal copyright_holder_id via publisherResolvePickedOrCreate() — never the bare name alone.'
+        copyright_holder_id:
+          type: integer
+          nullable: true
+          description: 'Optional tblPublishers.Id picker hint — verified server-side against copyright_holder before being trusted (rule #37); an unverified/mismatched id falls back to find-or-create by name. #1988 — key-present-preserve on update.'
+        musicbrainz_work_mbid:
+          type: string
+          nullable: true
+          description: 'UUID shape (8-4-4-4-12 hex digits). Unique when set (409 on collision). #1988 — key-present-preserve on update.'
+        origin_city:
+          type: string
+          nullable: true
+          description: 'Composition-origin display string (places adoption). #1988 — key-present-preserve on update.'
+        origin_city_id:
+          type: integer
+          nullable: true
+          description: 'Optional tblPlaces.Id for origin_city. #1988 — key-present-preserve on update.'
 
     AdminLicenceTypeInput:
       type: object

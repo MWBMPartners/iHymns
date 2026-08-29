@@ -328,6 +328,12 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    rule #22/#45, never a forked medley write. Also pulls in
    identifier_normalize.php (ihymns_canonical_iswc()) transitively. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';
+/* #1988 — admin_work_external_links_replace's shared saver/loader
+   (saveExternalLinksForRow()/loadExternalLinksForRow()). Explicit here
+   rather than relying on the transitive pull-in via
+   external_link_type_admin.php below (rule #22 — the dependency this
+   action actually needs should be named, not accidental). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
 /* #1969 API-coverage batch 4b-i (A3/A4/A5) — the tag/catalogue/songbook-series
    admin CRUD shared cores. The admin_tag_..., admin_catalogue_... and
    admin_songbook_series_... actions below call these SAME functions
@@ -19898,6 +19904,9 @@ if ($action !== null) {
                 sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
                 break;
             }
+            /* #1988 — the 11-column extras probe (includes/work_admin.php),
+               the SAME one manage/works.php's create action uses. */
+            $worksExtraCols = workExtraColumnsPresent($db);
 
             $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
             $title  = trim((string)($body['title'] ?? ''));
@@ -19905,6 +19914,10 @@ if ($action !== null) {
             $iswcIn = trim((string)($body['iswc']  ?? ''));
             $notes  = trim((string)($body['notes'] ?? ''));
             $parent = (int)($body['parent_id'] ?? 0);
+            /* #1988 — places adoption: composition origin (page parity —
+               manage/works.php's own create action). */
+            $originCity   = trim((string)($body['origin_city']    ?? '')) ?: null;
+            $originCityId = (int)($body['origin_city_id'] ?? 0) ?: null;
 
             if ($title === '') { sendJson(['error' => 'Title is required.'], 400); break; }
             $slug = $slugIn !== '' ? $slugIn : workSlugify($title);
@@ -19914,6 +19927,15 @@ if ($action !== null) {
             $title = mb_substr($title, 0, 255);
             $slug  = mb_substr($slug,  0, 80);
             $notes = mb_substr($notes, 0, 65000);
+
+            /* #1988 — the #1741 P4b "extra" scalar fields + the
+               MusicBrainzWorkMBID rider, parsed + shape-validated BEFORE any
+               write (workParseExtraFields() — the SAME core
+               manage/works.php's create action delegates to, rule #22). No
+               carry-forward needed on CREATE — an absent key simply defaults
+               (page parity: a brand-new row has nothing to preserve). */
+            [$extraFields, $extraError] = workParseExtraFields($body);
+            if ($extraError !== null) { sendJson(['error' => $extraError], 400); break; }
 
             $parentBind = $parent > 0 ? $parent : null;
             if ($parentBind !== null && !workExists($db, $parentBind)) {
@@ -19938,6 +19960,11 @@ if ($action !== null) {
                     if ($iswcTaken) { sendJson(['error' => "ISWC '{$iswc}' is already on another Work."], 409); break; }
                 }
 
+                /* #1988 — Ccli/Bowi/MusicBrainzWorkMBID uniqueness (page
+                   parity: manage/works.php's own create action). */
+                $extraUniqError = workCheckExtraUniqueness($db, $worksExtraCols, $extraFields, null);
+                if ($extraUniqError !== null) { sendJson(['error' => $extraUniqError], 409); break; }
+
                 $stmt = $db->prepare(
                     'INSERT INTO tblWorks (ParentWorkId, Iswc, Title, Slug, Notes)
                      VALUES (?, NULLIF(?, ""), ?, ?, NULLIF(?, ""))'
@@ -19951,11 +19978,26 @@ if ($action !== null) {
                    the same funnel manage/works.php's create action uses. */
                 ilidStampNewRow($db, 'work', $newId);
 
+                /* #1988 — place columns + the #1741 P4b extra fields, ONE
+                   separate column-gated UPDATE each (page parity — create
+                   has no explicit transaction on the page either, so this
+                   stays un-transacted here too). An un-migrated column
+                   degrades silently, never a 503 for extras —
+                   workAdminReady() above already gated the CORE
+                   tblWorks/tblWorkSongs schema. */
+                workPersistOriginCity($db, $newId, $originCity, $originCityId);
+                workPersistExtraFields($db, $worksExtraCols, $newId, $extraFields);
+
                 logActivity('api.admin.work.create', 'work', (string)$newId, [
-                    'title'     => $title,
-                    'slug'      => $slug,
-                    'iswc'      => $iswc,
-                    'parent_id' => $parentBind,
+                    'title'       => $title,
+                    'slug'        => $slug,
+                    'iswc'        => $iswc,
+                    'parent_id'   => $parentBind,
+                    'origin_city' => $originCity,
+                    'subtitle'    => $extraFields['subtitle'],
+                    'ccli'        => $extraFields['ccli'],
+                    'bowi'        => $extraFields['bowi'],
+                    'tune_name'   => $extraFields['tuneName'],
                 ]);
 
                 sendJson(['ok' => true, 'id' => $newId, 'title' => $title, 'slug' => $slug, 'iswc' => $iswc], 201);
@@ -19993,6 +20035,9 @@ if ($action !== null) {
                 sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
                 break;
             }
+            /* #1988 — the 11-column extras probe (includes/work_admin.php),
+               the SAME one manage/works.php's update action uses. */
+            $worksExtraCols = workExtraColumnsPresent($db);
 
             $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
             $id     = (int)($body['id'] ?? 0);
@@ -20001,6 +20046,10 @@ if ($action !== null) {
             $iswcIn = trim((string)($body['iswc']  ?? ''));
             $notes  = trim((string)($body['notes'] ?? ''));
             $parent = (int)($body['parent_id'] ?? 0);
+            /* #1988 — places adoption: composition origin (page parity —
+               manage/works.php's own update action). */
+            $originCity   = trim((string)($body['origin_city']    ?? '')) ?: null;
+            $originCityId = (int)($body['origin_city_id'] ?? 0) ?: null;
 
             if ($id <= 0)       { sendJson(['error' => 'Work id required.'], 400); break; }
             if ($title === '')  { sendJson(['error' => 'Title is required.'], 400); break; }
@@ -20012,7 +20061,82 @@ if ($action !== null) {
             $slug  = mb_substr($slug,  0, 80);
             $notes = mb_substr($notes, 0, 65000);
 
+            /* #1988 — the #1741 P4b "extra" scalar fields + the
+               MusicBrainzWorkMBID rider, parsed + shape-validated BEFORE any
+               write (workParseExtraFields() — the SAME core
+               manage/works.php's update action delegates to, rule #22). */
+            [$extraFields, $extraError] = workParseExtraFields($body);
+            if ($extraError !== null) { sendJson(['error' => $extraError], 400); break; }
+
             if (!workExists($db, $id)) { sendJson(['error' => 'Work not found.'], 404); break; }
+
+            /* #1988 decision — key-present-preserve carry for the NEW
+               extra/origin_city keys (never on create — an absent key
+               there simply defaults, page parity). A native client sending
+               only {id, ccli} must not silently wipe every other extra
+               field the way a full HTML form re-submitting every field
+               never has to worry about: read what is CURRENTLY stored
+               (column-gated — never a raw SELECT of an absent column, rule
+               #19), then overlay ONLY the keys the caller's body actually
+               NAMED via array_key_exists — an explicit null/"" clears a
+               field; an OMITTED key leaves the stored value untouched. */
+            $storedExtra = [
+                'subtitle' => '', 'disambiguation' => '', 'ccli' => '', 'bowi' => '',
+                'tuneName' => '', 'firstPublishedYear' => null, 'copyrightYears' => '',
+                'copyrightHolder' => '', 'copyrightHolderId' => null, 'musicBrainzWorkMbid' => '',
+            ];
+            $extraColMap = [
+                'Subtitle' => 'subtitle', 'Disambiguation' => 'disambiguation',
+                'Ccli' => 'ccli', 'Bowi' => 'bowi', 'TuneName' => 'tuneName',
+                'FirstPublishedYear' => 'firstPublishedYear', 'CopyrightYears' => 'copyrightYears',
+                'CopyrightHolder' => 'copyrightHolder', 'CopyrightHolderId' => 'copyrightHolderId',
+                'MusicBrainzWorkMBID' => 'musicBrainzWorkMbid',
+            ];
+            $selCols = [];
+            foreach ($extraColMap as $col => $key) {
+                if (isset($worksExtraCols[$col])) { $selCols[] = $col; }
+            }
+            if ($selCols) {
+                $selList = implode(', ', $selCols);
+                $stmt = $db->prepare("SELECT {$selList} FROM tblWorks WHERE Id = ? LIMIT 1");
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $rrow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if ($rrow) {
+                    foreach ($extraColMap as $col => $key) {
+                        if (isset($worksExtraCols[$col])) {
+                            $storedExtra[$key] = $rrow[$col];
+                        }
+                    }
+                }
+            }
+            $storedOriginCity   = null;
+            $storedOriginCityId = null;
+            if (placeColumnExists($db, 'tblWorks', 'OriginCityId')) {
+                $stmt = $db->prepare('SELECT OriginCity, OriginCityId FROM tblWorks WHERE Id = ? LIMIT 1');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $rrow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if ($rrow) {
+                    $storedOriginCity   = $rrow['OriginCity'];
+                    $storedOriginCityId = $rrow['OriginCityId'] !== null ? (int)$rrow['OriginCityId'] : null;
+                }
+            }
+            $carryMap = [
+                'subtitle' => 'subtitle', 'disambiguation' => 'disambiguation', 'ccli' => 'ccli',
+                'bowi' => 'bowi', 'tune_name' => 'tuneName', 'first_published_year' => 'firstPublishedYear',
+                'copyright_years' => 'copyrightYears', 'copyright_holder' => 'copyrightHolder',
+                'copyright_holder_id' => 'copyrightHolderId', 'musicbrainz_work_mbid' => 'musicBrainzWorkMbid',
+            ];
+            foreach ($carryMap as $bodyKey => $fieldKey) {
+                if (!array_key_exists($bodyKey, $body)) {
+                    $extraFields[$fieldKey] = $storedExtra[$fieldKey];
+                }
+            }
+            if (!array_key_exists('origin_city', $body))    { $originCity   = $storedOriginCity; }
+            if (!array_key_exists('origin_city_id', $body)) { $originCityId = $storedOriginCityId; }
 
             $parentBind = $parent > 0 ? $parent : null;
             if ($parentBind !== null && !workExists($db, $parentBind)) {
@@ -20020,24 +20144,11 @@ if ($action !== null) {
                 break;
             }
 
-            $workCycleSafe = static function (int $workId, ?int $candidateParent) use ($db): bool {
-                if ($candidateParent === null) return true;
-                if ($candidateParent === $workId) return false;
-                $cur = $candidateParent;
-                $maxDepth = 64;
-                while ($cur !== null && $maxDepth-- > 0) {
-                    if ($cur === $workId) return false;
-                    $stmt = $db->prepare('SELECT ParentWorkId FROM tblWorks WHERE Id = ?');
-                    $stmt->bind_param('i', $cur);
-                    $stmt->execute();
-                    $row = $stmt->get_result()->fetch_assoc();
-                    $stmt->close();
-                    if (!$row) return true;
-                    $cur = $row['ParentWorkId'] !== null ? (int)$row['ParentWorkId'] : null;
-                }
-                return false;
-            };
-            if (!$workCycleSafe($id, $parentBind)) {
+            /* #1988 — consolidated into the shared workParentCycleSafe()
+               (includes/work_admin.php, rule #22): this closure and
+               manage/works.php's own $cycleSafe closure had independently
+               grown the exact same walk; both now delegate to the ONE core. */
+            if (!workParentCycleSafe($db, $id, $parentBind)) {
                 sendJson(['error' => 'Cannot set that parent — it would create a cycle.'], 409);
                 break;
             }
@@ -20059,21 +20170,45 @@ if ($action !== null) {
                     if ($iswcTaken) { sendJson(['error' => "ISWC '{$iswc}' already on another Work."], 409); break; }
                 }
 
-                $stmt = $db->prepare(
-                    'UPDATE tblWorks
-                        SET ParentWorkId = ?, Iswc = NULLIF(?, ""),
-                            Title = ?, Slug = ?, Notes = NULLIF(?, "")
-                      WHERE Id = ?'
-                );
-                $stmt->bind_param('issssi', $parentBind, $iswc, $title, $slug, $notes, $id);
-                $stmt->execute();
-                $stmt->close();
+                /* #1988 — Ccli/Bowi/MusicBrainzWorkMBID uniqueness, excluding
+                   self (page parity: manage/works.php's own update action). */
+                $extraUniqError = workCheckExtraUniqueness($db, $worksExtraCols, $extraFields, $id);
+                if ($extraUniqError !== null) { sendJson(['error' => $extraUniqError], 409); break; }
+
+                /* #1988 — wrap the multi-statement write in ONE transaction
+                   (page parity, manage/works.php's update action) so a
+                   mid-way failure rolls everything back together. */
+                $db->begin_transaction();
+                try {
+                    $stmt = $db->prepare(
+                        'UPDATE tblWorks
+                            SET ParentWorkId = ?, Iswc = NULLIF(?, ""),
+                                Title = ?, Slug = ?, Notes = NULLIF(?, "")
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('issssi', $parentBind, $iswc, $title, $slug, $notes, $id);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    workPersistOriginCity($db, $id, $originCity, $originCityId);
+                    workPersistExtraFields($db, $worksExtraCols, $id, $extraFields);
+
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
 
                 logActivity('api.admin.work.update', 'work', (string)$id, [
-                    'title'     => $title,
-                    'slug'      => $slug,
-                    'iswc'      => $iswc,
-                    'parent_id' => $parentBind,
+                    'title'       => $title,
+                    'slug'        => $slug,
+                    'iswc'        => $iswc,
+                    'parent_id'   => $parentBind,
+                    'origin_city' => $originCity,
+                    'subtitle'    => $extraFields['subtitle'],
+                    'ccli'        => $extraFields['ccli'],
+                    'bowi'        => $extraFields['bowi'],
+                    'tune_name'   => $extraFields['tuneName'],
                 ]);
 
                 sendJson(['ok' => true, 'id' => $id, 'title' => $title, 'slug' => $slug, 'iswc' => $iswc]);
@@ -20222,6 +20357,258 @@ if ($action !== null) {
                 logActivityError('api.admin.work.medley_replace', 'work', (string)$medleyId, $e);
                 error_log('[admin_work_medley_replace] ' . $e->getMessage());
                 sendJson(['error' => 'Could not replace medley constituents.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: replace a Work's ENTIRE tblWorkSongs membership list
+         * (#1988, API-coverage epic #1983). Ordered, curator-authoritative
+         * — DELETE-then-reinsert via the shared workSongsReplace() core
+         * (includes/work_admin.php), the exact SQL shape
+         * manage/works.php's own update action delegates to (rule #22).
+         * Posting an empty `members` array is a valid, deliberate
+         * "clear membership" edit — mirrors admin_work_medley_replace's own
+         * posture for `constituents`.
+         * POST body: { id (required — the Work's id),
+         *   members: [{ song_id (required, <=20 chars), is_canonical?,
+         *              sort_order?, note? }] }
+         * ----------------------------------------------------------------- */
+        case 'admin_work_members_replace': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_works', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!workAdminReady($db)) {
+                sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $workId = (int)($body['id'] ?? 0);
+            if ($workId <= 0) { sendJson(['error' => 'Work id required.'], 400); break; }
+            if (!workExists($db, $workId)) { sendJson(['error' => 'Work not found.'], 404); break; }
+
+            $rawRows = $body['members'] ?? [];
+            if (!is_array($rawRows)) { sendJson(['error' => 'members must be an array.'], 400); break; }
+
+            /* Parse + clamp — byte-parity with manage/works.php's own
+               member reconciliation (trim/cap-20 song id, sort default
+               idx*10 clamped 0..65535, note cap 255). The parse/clamp
+               stays HERE per caller, same as the page — workSongsReplace()
+               owns only the DELETE+INSERT shape (rule #22). Deduped by
+               song id: the LAST row for a given id wins its
+               canonical/sort/note, but the POSITION (and so the default
+               sort order) is that of its FIRST occurrence — an assoc-array
+               key's iteration position doesn't move on re-assignment. */
+            $memberMap = [];
+            foreach ($rawRows as $idx => $r) {
+                if (!is_array($r)) { continue; }
+                $sid = mb_substr(trim((string)($r['song_id'] ?? '')), 0, 20);
+                if ($sid === '') { continue; }
+                $memberMap[$sid] = [
+                    'songId'      => $sid,
+                    'isCanonical' => !empty($r['is_canonical']),
+                    'sortOrder'   => isset($r['sort_order']) ? max(0, min(65535, (int)$r['sort_order'])) : ($idx * 10),
+                    'note'        => isset($r['note']) ? mb_substr((string)$r['note'], 0, 255) : '',
+                ];
+            }
+            $memberRows = array_values($memberMap);
+
+            /* Pre-validate every song id exists — a clean 400 naming the
+               offender, mirroring admin_work_create's parent-existence
+               check above, rather than letting the tblWorkSongs FK throw
+               a raw mysqli_sql_exception under STRICT (rule #19).
+               @disabled-visible: admin surface (#1765) — mirrors
+               manage/works.php's own song_search handler; a curator can
+               still link a song from a disabled/hidden songbook into a
+               Work through this API action. */
+            if ($memberRows) {
+                $songIds = array_column($memberRows, 'songId');
+                $ph      = implode(',', array_fill(0, count($songIds), '?'));
+                $stmt    = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ph)");
+                $types   = str_repeat('s', count($songIds));
+                $stmt->bind_param($types, ...$songIds);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $present = [];
+                while ($row = $res->fetch_assoc()) { $present[(string)$row['SongId']] = true; }
+                $stmt->close();
+                $missing = array_values(array_diff($songIds, array_keys($present)));
+                if ($missing) {
+                    sendJson(['error' => 'Unknown song id(s): ' . implode(', ', $missing) . '.'], 400);
+                    break;
+                }
+            }
+
+            try {
+                $db->begin_transaction();
+                try {
+                    $inserted = workSongsReplace($db, $workId, $memberRows);
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                /* Read the STORED list back (rule #35) — the page member-
+                   read shape (manage/works.php), scoped to this one Work. */
+                $stmt = $db->prepare(
+                    'SELECT ws.SongId, ws.IsCanonical, ws.SortOrder, ws.Note,
+                            s.Title AS SongTitle, s.SongbookAbbr, s.Number
+                       FROM tblWorkSongs ws
+                       JOIN tblSongs s ON s.SongId = ws.SongId
+                      WHERE ws.WorkId = ? AND ' . songVisibleSql($db, 's') . '
+                      ORDER BY ws.SortOrder ASC, s.SongbookAbbr ASC, s.Number ASC'
+                );
+                $stmt->bind_param('i', $workId);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $members = [];
+                while ($row = $res->fetch_assoc()) {
+                    $members[] = [
+                        'songId'      => (string)$row['SongId'],
+                        'title'       => (string)$row['SongTitle'],
+                        'songbook'    => (string)$row['SongbookAbbr'],
+                        'number'      => $row['Number'] !== null ? (int)$row['Number'] : null,
+                        'isCanonical' => (bool)$row['IsCanonical'],
+                        'sortOrder'   => (int)$row['SortOrder'],
+                        'note'        => (string)($row['Note'] ?? ''),
+                    ];
+                }
+                $stmt->close();
+
+                logActivity('api.admin.work.members_replace', 'work', (string)$workId, [
+                    'requested' => count($memberRows),
+                    'inserted'  => $inserted,
+                    'stored'    => count($members),
+                ]);
+
+                sendJson([
+                    'ok'       => true,
+                    'id'       => $workId,
+                    'inserted' => $inserted,
+                    'members'  => $members,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.work.members_replace', 'work', (string)$workId, $e);
+                error_log('[admin_work_members_replace] ' . $e->getMessage());
+                sendJson(['error' => 'Could not replace work members.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: replace a Work's ENTIRE tblWorkExternalLinks list
+         * (#1988, API-coverage epic #1983). DELETE-then-reinsert via the
+         * ONE shared external-links saver (includes/external_link_helpers.php
+         * — saveExternalLinksForRow()/loadExternalLinksForRow(), rule #22),
+         * the same core manage/works.php's update action and api2.php's
+         * link_save_all already delegate to — NO new saver here. The
+         * shared saver does NOT self-probe table existence (unlike
+         * loadExternalLinksForRow(), which does) and would throw under
+         * STRICT on an un-migrated install, so this action probes
+         * tblWorkExternalLinks itself first (page parity —
+         * manage/works.php's own $hasExtLinksSchema probe) and 503s rather
+         * than letting that throw surface as a raw 500. KEEPS the shared
+         * saver's existing quirks (silently skips an invalid row — bad
+         * type_id/url/length; never validates LinkTypeId.AppliesTo='work')
+         * — page parity, not "fixed" here (rule #35 applies to CROSS-FILE
+         * agreement, not to re-litigating an existing shared core's
+         * behaviour from a new caller).
+         * POST body: { id (required — the Work's id),
+         *   links: [{ type_id (required), url (required, http(s), <=2048),
+         *            note?, verified? }] }
+         * ----------------------------------------------------------------- */
+        case 'admin_work_external_links_replace': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_works', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!workAdminReady($db)) {
+                sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $workId = (int)($body['id'] ?? 0);
+            if ($workId <= 0) { sendJson(['error' => 'Work id required.'], 400); break; }
+            if (!workExists($db, $workId)) { sendJson(['error' => 'Work not found.'], 404); break; }
+
+            $hasExtLinksSchema = false;
+            try {
+                $r = $db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblWorkExternalLinks' LIMIT 1"
+                );
+                $hasExtLinksSchema = $r && $r->fetch_row() !== null;
+                if ($r) $r->close();
+            } catch (\Throwable $_e) { /* treated as absent below */ }
+            if (!$hasExtLinksSchema) {
+                sendJson(['error' => 'External links are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $rawLinks = $body['links'] ?? [];
+            if (!is_array($rawLinks)) { sendJson(['error' => 'links must be an array.'], 400); break; }
+
+            /* Unzip rows into the parallel arrays the shared helper
+               expects (api2.php's link_save_all shape) — the helper
+               itself validates each row and skips invalid ones. */
+            $typeIds = []; $urls = []; $notes = []; $verified = [];
+            foreach ($rawLinks as $ln) {
+                if (!is_array($ln)) { continue; }
+                $typeIds[]  = (int)($ln['type_id'] ?? 0);
+                $urls[]     = (string)($ln['url'] ?? '');
+                $notes[]    = (string)($ln['note'] ?? '');
+                $verified[] = !empty($ln['verified']) ? 1 : 0;
+            }
+
+            try {
+                $db->begin_transaction();
+                try {
+                    $count = saveExternalLinksForRow(
+                        $db, 'tblWorkExternalLinks', 'WorkId', $workId,
+                        $typeIds, $urls, $notes, $verified
+                    );
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                $links = loadExternalLinksForRow($db, 'tblWorkExternalLinks', 'WorkId', $workId);
+
+                logActivity('api.admin.work.external_links_replace', 'work', (string)$workId, [
+                    'requested' => count($rawLinks),
+                    'count'     => $count,
+                ]);
+
+                sendJson([
+                    'ok'    => true,
+                    'id'    => $workId,
+                    'count' => $count,
+                    'links' => $links,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.work.external_links_replace', 'work', (string)$workId, $e);
+                error_log('[admin_work_external_links_replace] ' . $e->getMessage());
+                sendJson(['error' => 'Could not replace work external links.'], 500);
             }
             break;
         }

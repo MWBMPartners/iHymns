@@ -224,6 +224,17 @@ return [
         'admin_work_update'                     => 'deliberate API-first surface #1969 (API-coverage batch 4a, A2); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_publisher families; manage/works.php\'s update handler writes the same core tblWorks columns (never a fork), so nothing first-party calls the JSON twin yet',
         'admin_work_delete'                     => 'deliberate API-first surface #1969 (API-coverage batch 4a, A2); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_publisher families; manage/works.php\'s delete handler is the same DELETE (never a fork), so nothing first-party calls the JSON twin yet',
         'admin_work_medley_replace'             => 'deliberate API-first surface #1969 (API-coverage batch 4a, A2); Swagger console consumer; same D1-default-A posture as the families above; delegates to the SAME shared workMedleyReplace() core (includes/work_admin.php, rule #45) manage/works.php\'s update action already calls, so nothing first-party calls the JSON twin yet',
+        /* #1988 (API-coverage epic #1983) — Works "extras": admin_work_create/
+           _update grew the #1741 P1/D5 extra fields + origin_city; these two
+           are the NEW replace actions for the membership/external-links
+           parts of the page's own update action that were still page-only.
+           Same D1-default-A posture as the families above; both delegate
+           entirely to the SAME shared cores manage/works.php's update action
+           now ALSO one-line-delegates to (workSongsReplace() /
+           saveExternalLinksForRow(), rule #22) — never a forked write — so
+           nothing first-party calls either JSON twin yet. */
+        'admin_work_members_replace'            => 'deliberate API-first surface #1988 (API-coverage epic #1983); Swagger console consumer; same D1-default-A posture as the admin_work_* family above; delegates to the SAME shared workSongsReplace() core (includes/work_admin.php, rule #22) manage/works.php\'s update action now also calls, so nothing first-party calls the JSON twin yet',
+        'admin_work_external_links_replace'     => 'deliberate API-first surface #1988 (API-coverage epic #1983); Swagger console consumer; same D1-default-A posture as the admin_work_* family above; delegates to the SAME shared saveExternalLinksForRow()/loadExternalLinksForRow() cores (includes/external_link_helpers.php, rule #22) manage/works.php\'s update action already calls, so nothing first-party calls the JSON twin yet',
 
         /* #1969 (API-coverage plan §4.3, batch 4a, A9) — admin
            notification-broadcast API parity for manage/notifications.php's
