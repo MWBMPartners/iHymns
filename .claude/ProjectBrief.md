@@ -4,6 +4,31 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-29 (guided-wizard program — shared admin-wizard.js + 5 wizards)
+
+Same branch, head **`8cb189e8`**, suite **245 PHP / 83 JS**. Owner asked for a
+guided wizard to add External Link Types, then approved four more, under two hard
+rules: every wizard is STRICTLY ADDITIVE (the manual method always stays, and is
+mechanically guarded) and they share ONE stepper (rule #1, never 5 copies). Model
+routing per directive: Fable deep analysis → Sonnet implementation → Opus
+verification + commit.
+
+Shared **`js/modules/admin-wizard.js`** (`createWizard`, markup-derived steps,
+`validateStep` gate, bootstrap-modal/overlay hosts, zero domain knowledge) + five
+consumers: **#1992** External Link Type (`c971c3d3`, also added the missing manual
+create), **#1993** Songbook (`d24f4a7b`, extracted `songbook_admin.php`, permanent-
+abbreviation step), **#1995** Live Service HYBRID (`0093960b`, zero new endpoints,
+teaches LF-vs-Service-Mode), **#1996** Organisation+licence (`2a192d0e`, extracted
+`organisation_admin.php` + `admin_organisation_create` twin, the finer
+`manage_org_licences` gate enforced server-side), **#1997** New-song in Editor2
+(`8cb189e8`, fits Editor2 as-is, seeds via `lyricLinesWriteComponents`). Each has a
+tree-derived mutation-proven guard incl. the manual-path assertion. Follow-ups
+filed: **#1994** (MARCXML fold), **#1998** (org licence join-row gap) — both open.
+**In progress:** #37 empty-state "Get started" launchers. Full record:
+`.claude/sessions/2026-08-29-HANDOFF.md` (Guided-wizard program section).
+
+---
+
 ## 📌 Continuation note — 2026-08-29 (follow-ups pass — all five owner-answered items landed; queue empty)
 
 Same branch `claude/dormant-features-settings-1sdw4t`, head **`b5ba5a36`**, suite **239 PHP / 82 JS**.
