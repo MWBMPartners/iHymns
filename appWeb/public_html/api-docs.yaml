@@ -57,7 +57,13 @@ info:
       (NOT a session-token field — chosen to survive the cross-subdomain
       adopted-token admin session, #1307; **#1677**, P0, fixed the v2 CLIENT
       to actually send it — every v2 write returned `403` until then, since
-      only the GET helper sent the header). `action` travels via query string
+      only the GET helper sent the header). **Native-app auth (API-coverage,
+      2026-08-29):** the editor API now ALSO accepts `Authorization: Bearer
+      <token>` — the same `tblApiTokens` credential the public `api.php` uses,
+      resolved via `apiTokenResolveBearerUser()`. A Bearer-authenticated
+      request is CSRF-immune, so it skips the `X-Requested-With` requirement;
+      the cookie path is byte-identical to before. `action` travels via query
+      string
       on GET reads or JSON body on POST writes; two endpoints
       (`media_upload`, `import_file`/`import_zip`) are `multipart/form-data`.
       Every response is `{ok: bool, …}`; an unknown `action` is `400`; an
