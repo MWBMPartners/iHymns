@@ -549,6 +549,50 @@ tags:
       ever reaches storage). Block/page-option validation stays the ONE
       rulebook `includes/print_template_schema.php`, also shared with
       `manage/print-pdf.php`. Gated on `manage_songbooks`.
+  - name: Admin — API Keys
+    description: |
+      Machine-to-machine API-key administration (#1064 Phase D, API-coverage
+      batch 6a A18, owner decision Q5 — `.claude/api-coverage-2026-08-28.md`
+      §4.3). Mirrors `/manage/api-keys`'s management actions (mint / toggle /
+      delete / set rate limits / approve / reject a self-serve request) plus
+      the self-serve `api_key_request` action. Both surfaces call the SAME
+      shared core, `includes/api_keys.php`'s Admin CRUD section (extracted
+      from the page's own inline logic in this batch — nothing to drift on).
+      Gated on `manage_api_keys` (management actions) / `request_api_keys`
+      (self-serve request only).
+
+      **⚠️ Show-once secret discipline**: the raw key is generated
+      server-side and appears in the JSON response ONLY from
+      `admin_api_key_create` and `admin_api_key_approve_request` — the two
+      actions that MINT a key. Every other action in this tag returns
+      metadata only (id / label / scope / prefix / active / limits), NEVER
+      key material. There is deliberately no "reveal an existing key"
+      action anywhere in the API (or the page): only the key's SHA-256 hash
+      is ever persisted, so the plaintext is architecturally unrecoverable
+      after the mint response — there is no column to read it back from.
+  - name: Admin — Webhooks
+    description: |
+      Outbound partner-event webhook administration (#1909, API-coverage
+      batch 6a A19, owner decision Q5 — `.claude/api-coverage-2026-08-28.md`
+      §4.3). Mirrors `/manage/webhooks`'s action set — create / update /
+      verify / pause / resume / rotate the signing secret / send a test
+      delivery / delete / re-drive a failed delivery — EXCEPT
+      `reveal_secret`, which is deliberately NOT exposed here (see below).
+      Both surfaces call the SAME shared core, the pre-existing
+      `includes/webhook_admin.php` (manage/webhooks.php already delegated
+      to it; this batch only added the API twin, no extraction needed).
+      Gated on `manage_webhooks` for every action.
+
+      **⚠️ Show-once secret discipline**: the signing secret is generated
+      server-side and appears in the JSON response ONLY from
+      `admin_webhook_create` (the new subscription's first secret) and
+      `admin_webhook_rotate_secret` (its replacement — the previous secret
+      keeps signing for a 24h grace window, dual-signed, so a partner can
+      roll over without a hard cutover). Every other action in this tag
+      returns metadata only, NEVER key material. `/manage/webhooks`'s own
+      `reveal_secret` action — which reads the CURRENT secret back out for
+      an admin who lost it — is intentionally NOT ported to this API: it
+      stays a web-only, session-authenticated, admin-eyes-on action.
   - name: Analytics
     description: |
       First-party, anonymous, consent-gated client analytics event
@@ -14550,6 +14594,701 @@ paths:
           description: The view_activity_log entitlement is required
         "503":
           description: Activity-log observability columns not migrated on this install
+
+  # ===========================================================================
+  # API-COVERAGE BATCH 6a — API-key + webhook administration (#1064/#1909,
+  # `.claude/api-coverage-2026-08-28.md` §4.3 A18/A19, owner decision Q5).
+  # See the "Admin — API Keys" / "Admin — Webhooks" tag descriptions above
+  # for the show-once secret discipline that applies to every path item
+  # below — repeated per-action here only where the response actually
+  # carries key material.
+  # ===========================================================================
+
+  /api.php?action=admin_api_key_create:
+    post:
+      operationId: adminApiKeyCreate
+      tags: [Admin — API Keys]
+      summary: Mint a new API key (show-once secret)
+      description: |
+        Mirrors `/manage/api-keys`'s "create" action. Delegates to
+        `apiKeyAdminCreate()` (`includes/api_keys.php`). The raw key is
+        generated server-side and returned in `rawKey` — this response is
+        the ONLY place it ever appears; only its SHA-256 hash + a short
+        non-secret prefix are persisted (see `apiKeyGenerate()`'s
+        doc-block). Store it immediately — it cannot be retrieved again.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_api_key_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties:
+                label: { type: string, maxLength: 120, description: "Human-readable label for the key." }
+                scope: { type: string, default: "lyrics:ingest", description: "Space-separated scope tokens, e.g. \"lyrics:ingest catalogue:read\"." }
+      responses:
+        "201":
+          description: Key minted — `rawKey` is shown ONCE
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean, example: true }
+                  id:     { type: integer }
+                  rawKey: { type: string, description: "SHOW-ONCE plaintext key (e.g. ihk_live_<40 hex>) — never retrievable again." }
+                  label:  { type: string }
+                  scope:  { type: string }
+                  prefix: { type: string, description: "Short non-secret prefix (e.g. ihk_live_xxxx), safe to display in a list." }
+        "400":
+          description: Missing/invalid label or scope
+        "403":
+          description: The manage_api_keys entitlement is required
+
+  /api.php?action=admin_api_key_toggle:
+    post:
+      operationId: adminApiKeyToggle
+      tags: [Admin — API Keys]
+      summary: Activate or revoke an existing key
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_api_key_toggle] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, active]
+              properties:
+                id:     { type: integer }
+                active: { type: boolean }
+      responses:
+        "200":
+          description: Toggled — metadata only, never key material
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean, example: true }
+                  id:     { type: integer }
+                  active: { type: integer, description: "The new Active state (0 or 1)." }
+        "400":
+          description: Invalid id
+        "403":
+          description: The manage_api_keys entitlement is required
+
+  /api.php?action=admin_api_key_delete:
+    post:
+      operationId: adminApiKeyDelete
+      tags: [Admin — API Keys]
+      summary: Permanently delete an API key
+      description: |
+        Any client still using the deleted key stops working immediately
+        (the key row — and its hash — is gone; there was never a
+        soft-delete for this table).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_api_key_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  id: { type: integer }
+        "400":
+          description: Invalid id
+        "403":
+          description: The manage_api_keys entitlement is required
+
+  /api.php?action=admin_api_key_set_limits:
+    post:
+      operationId: adminApiKeySetLimits
+      tags: [Admin — API Keys]
+      summary: Set (or clear) a key's per-minute / per-day rate limits
+      description: |
+        `per_min`/`per_day` omitted, `null`, or `""` clears that limit (no
+        cap). Enforced by `apiKeyEnforceRateLimit()` — a no-op until the
+        rate-limit usage table is migrated on this environment.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_api_key_set_limits] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:      { type: integer }
+                per_min: { type: integer, nullable: true }
+                per_day: { type: integer, nullable: true }
+      responses:
+        "200":
+          description: Limits saved — metadata only, never key material
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean, example: true }
+                  id:     { type: integer }
+                  perMin: { type: integer, nullable: true }
+                  perDay: { type: integer, nullable: true }
+        "400":
+          description: Invalid id
+        "403":
+          description: The manage_api_keys entitlement is required
+
+  /api.php?action=admin_api_key_approve_request:
+    post:
+      operationId: adminApiKeyApproveRequest
+      tags: [Admin — API Keys]
+      summary: Approve a pending self-serve key request (show-once secret)
+      description: |
+        Mints the key with the REQUEST's own fixed, safe scope
+        (`catalogue:read`) — never a caller-supplied scope. The raw key is
+        returned in `rawKey` ONCE, for the approver to relay to the
+        requester out-of-band; it is never stored anywhere.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_api_key_approve_request] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer, description: "The tblApiKeyRequests row id." }
+      responses:
+        "200":
+          description: Approved and minted — `rawKey` is shown ONCE
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean, example: true }
+                  id:     { type: integer, description: "The request id." }
+                  keyId:  { type: integer, description: "The newly minted tblApiKeys row id." }
+                  rawKey: { type: string, description: "SHOW-ONCE plaintext key — never retrievable again." }
+                  label:  { type: string }
+        "400":
+          description: Invalid id
+        "403":
+          description: The manage_api_keys entitlement is required
+        "409":
+          description: Request is not pending
+        "503":
+          description: The self-serve requests table is not migrated on this environment
+
+  /api.php?action=admin_api_key_reject_request:
+    post:
+      operationId: adminApiKeyRejectRequest
+      tags: [Admin — API Keys]
+      summary: Reject a pending self-serve key request
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_api_key_reject_request] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:   { type: integer, description: "The tblApiKeyRequests row id." }
+                note: { type: string, maxLength: 500, description: "Optional note shown back to the requester." }
+      responses:
+        "200":
+          description: Rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  id: { type: integer }
+        "400":
+          description: Invalid id
+        "403":
+          description: The manage_api_keys entitlement is required
+        "409":
+          description: Request is not pending
+        "503":
+          description: The self-serve requests table is not migrated on this environment
+
+  /api.php?action=api_key_request:
+    post:
+      operationId: apiKeyRequest
+      tags: [Admin — API Keys]
+      summary: Self-serve request for a catalogue:read API key
+      description: |
+        No key material anywhere in this action — it only writes a pending
+        `tblApiKeyRequests` row for a manager to review
+        (`admin_api_key_approve_request` / `admin_api_key_reject_request`).
+        Scope is FIXED to `catalogue:read`; sensitive scopes stay
+        direct-mint/approval-only. Gate is `request_api_keys`, distinct from
+        every `admin_api_key_*` action above (`manage_api_keys`).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [api_key_request] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties:
+                label:         { type: string, maxLength: 120 }
+                justification: { type: string, maxLength: 1000 }
+      responses:
+        "201":
+          description: Request submitted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  id: { type: integer, description: "The new tblApiKeyRequests row id." }
+        "400":
+          description: Missing/invalid label
+        "403":
+          description: The request_api_keys entitlement is required
+        "503":
+          description: The self-serve requests table is not migrated on this environment
+
+  /api.php?action=admin_webhook_create:
+    post:
+      operationId: adminWebhookCreate
+      tags: [Admin — Webhooks]
+      summary: Register a new outbound webhook subscription (show-once secret)
+      description: |
+        Mirrors `/manage/webhooks`'s "create" action. Delegates to
+        `webhookSubscriptionCreate()` (`includes/webhook_admin.php`) — SSRF-
+        validates the target URL (https-only, public address, not this app
+        itself), mints a 192-bit signing secret, and starts the subscription
+        life as `pending_verification` (it receives nothing until
+        `admin_webhook_verify` succeeds). The secret is returned in `secret`
+        ONCE — it is stored enc:v1-enveloped, never in plaintext.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_webhook_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, target_url, events]
+              properties:
+                label:      { type: string, maxLength: 120 }
+                target_url: { type: string, format: uri, maxLength: 500, description: "https:// only (a loopback http:// carve-out exists for local testing when explicitly enabled)." }
+                events:     { type: string, description: "Space-separated event selectors — exact types, a family wildcard like \"song.*\", or \"*\" for everything." }
+      responses:
+        "201":
+          description: Subscription created (pending_verification) — `secret` is shown ONCE
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean, example: true }
+                  id:     { type: integer }
+                  secret: { type: string, description: "SHOW-ONCE plaintext signing secret — never retrievable again via this API." }
+        "400":
+          description: Validation error (label/target_url/events) or the per-host subscription cap reached
+        "403":
+          description: The manage_webhooks entitlement is required
+        "409":
+          description: Webhook tables are not migrated on this environment
+
+  /api.php?action=admin_webhook_update:
+    post:
+      operationId: adminWebhookUpdate
+      tags: [Admin — Webhooks]
+      summary: Update a subscription's label / target URL / events
+      description: |
+        A changed `target_url` re-opens verification (`url_changed: true`
+        in the response) — call `admin_webhook_verify` again once the new
+        endpoint is ready, exactly like the page.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_webhook_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, label, target_url, events]
+              properties:
+                id:         { type: integer }
+                label:      { type: string, maxLength: 120 }
+                target_url: { type: string, format: uri, maxLength: 500 }
+                events:     { type: string }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:          { type: boolean, example: true }
+                  url_changed: { type: boolean }
+        "400":
+          description: Missing id, or validation error
+        "403":
+          description: The manage_webhooks entitlement is required
+        "409":
+          description: Webhook tables are not migrated on this environment
+
+  /api.php?action=admin_webhook_verify:
+    post:
+      operationId: adminWebhookVerify
+      tags: [Admin — Webhooks]
+      summary: Prove control of the target endpoint (echo-challenge handshake)
+      description: |
+        Sends a signed challenge to the subscription's target URL; the
+        endpoint must echo it back in its response body. Any 2xx that does
+        NOT echo the challenge fails — proving control of the endpoint's
+        RESPONSE, not merely that some URL returns 2xx. On success, `Status`
+        becomes `active`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_webhook_verify] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Verified — subscription is now active
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean, example: true }
+                  status: { type: integer, nullable: true, description: "The target endpoint's own HTTP status." }
+        "400":
+          description: Missing id
+        "403":
+          description: The manage_webhooks entitlement is required
+        "409":
+          description: Webhook tables are not migrated on this environment
+        "422":
+          description: Verification failed (endpoint unreachable, non-2xx, or did not echo the challenge)
+
+  /api.php?action=admin_webhook_pause:
+    post:
+      operationId: adminWebhookPause
+      tags: [Admin — Webhooks]
+      summary: Pause a subscription (cancels its queued deliveries)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_webhook_pause] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Paused
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "400":
+          description: Missing id, or could not pause
+        "403":
+          description: The manage_webhooks entitlement is required
+        "409":
+          description: Webhook tables are not migrated on this environment
+
+  /api.php?action=admin_webhook_resume:
+    post:
+      operationId: adminWebhookResume
+      tags: [Admin — Webhooks]
+      summary: Resume a paused/disabled subscription
+      description: |
+        Resuming re-opens verification (`Status` becomes
+        `pending_verification`, NOT `active`) — call `admin_webhook_verify`
+        next, exactly like the page.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_webhook_resume] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Resuming — verification re-opened
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "400":
+          description: Missing id, or could not resume
+        "403":
+          description: The manage_webhooks entitlement is required
+        "409":
+          description: Webhook tables are not migrated on this environment
+
+  /api.php?action=admin_webhook_rotate_secret:
+    post:
+      operationId: adminWebhookRotateSecret
+      tags: [Admin — Webhooks]
+      summary: Mint a new signing secret (show-once, 24h dual-signing grace window)
+      description: |
+        The previous secret keeps signing deliveries for a 24-hour grace
+        window (both signatures ride along) so a partner can roll over
+        without a hard cutover. The new secret is returned in `secret`
+        ONCE.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_webhook_rotate_secret] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Rotated — `secret` is shown ONCE
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean, example: true }
+                  secret: { type: string, description: "SHOW-ONCE plaintext signing secret — never retrievable again via this API." }
+        "400":
+          description: Missing id
+        "403":
+          description: The manage_webhooks entitlement is required
+        "404":
+          description: Subscription not found
+        "409":
+          description: Webhook tables are not migrated on this environment
+
+  /api.php?action=admin_webhook_send_test:
+    post:
+      operationId: adminWebhookSendTest
+      tags: [Admin — Webhooks]
+      summary: Queue a one-off webhook.test delivery to this subscription
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_webhook_send_test] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Test event queued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:          { type: boolean, example: true }
+                  delivery_id: { type: integer, nullable: true }
+        "400":
+          description: Missing id, or could not queue a test event
+        "403":
+          description: The manage_webhooks entitlement is required
+        "409":
+          description: Webhook tables are not migrated on this environment
+
+  /api.php?action=admin_webhook_delete:
+    post:
+      operationId: adminWebhookDelete
+      tags: [Admin — Webhooks]
+      summary: Permanently delete a subscription (its deliveries CASCADE away)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_webhook_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "400":
+          description: Missing id
+        "403":
+          description: The manage_webhooks entitlement is required
+        "404":
+          description: Subscription not found
+        "409":
+          description: Webhook tables are not migrated on this environment
+
+  /api.php?action=admin_webhook_redrive:
+    post:
+      operationId: adminWebhookRedrive
+      tags: [Admin — Webhooks]
+      summary: Re-queue a failed/dead/cancelled delivery for immediate retry
+      description: |
+        Resets `AttemptCount` to 0 (history is preserved in
+        `AttemptLogJson`) and `NextAttemptAt` to now. Only a delivery
+        currently `failed`/`dead`/`cancelled` is eligible.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_webhook_redrive] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [delivery_id]
+              properties:
+                delivery_id: { type: integer }
+      responses:
+        "200":
+          description: Re-queued for immediate retry
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "400":
+          description: Missing delivery_id
+        "403":
+          description: The manage_webhooks entitlement is required
+        "409":
+          description: Webhook tables are not migrated on this environment, or the delivery is not in a retryable state
 
   # ===========================================================================
   # PAGES  (HTML renderers for SPA page-fragment hydration)

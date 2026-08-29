@@ -408,6 +408,42 @@ return [
            ALSO re-pointed at in the same commit (never a fork). */
         'admin_ip_geolocate'                    => 'deliberate API-first surface #1969 (API-coverage batch 5, A16); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/activity-log.php\'s ?action=geo handler calls the SAME shared includes/activity_log_geo.php activityLogGeoResolveIps() core (never a fork), so nothing first-party calls the JSON twin yet',
 
+        /* .claude/api-coverage-2026-08-28.md §4.3 (API-coverage batch 6a,
+           A18) — API-key admin JSON parity for manage/api-keys.php's own
+           management actions. Owner decision Q5 approved exposing these
+           ONLY under a strict SHOW-ONCE secret discipline (see
+           includes/api_keys.php's Admin CRUD section + api.php's own
+           batch-6a doc-block); tests/php/test-api-coverage-batch6a.php
+           proves that discipline. Same D1-default-A posture as the
+           admin_publisher / admin_tag families above; every action
+           delegates to the SAME shared includes/api_keys.php core
+           manage/api-keys.php was ALSO re-pointed at in this same commit
+           (never a fork), so nothing first-party calls the JSON twin yet. */
+        'admin_api_key_create'                  => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s create action calls the SAME shared includes/api_keys.php apiKeyAdminCreate() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_api_key_toggle'                  => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s toggle action calls the SAME shared includes/api_keys.php apiKeyAdminToggle() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_api_key_delete'                  => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s delete action calls the SAME shared includes/api_keys.php apiKeyAdminDelete() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_api_key_set_limits'              => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s set_limits action calls the SAME shared includes/api_keys.php apiKeyAdminSetLimits() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_api_key_approve_request'         => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s approve_request action calls the SAME shared includes/api_keys.php apiKeyAdminRequestApprove() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_api_key_reject_request'          => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s reject_request action calls the SAME shared includes/api_keys.php apiKeyAdminRequestReject() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'api_key_request'                       => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s self-serve request action calls the SAME shared includes/api_keys.php apiKeyAdminRequestCreate() core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* .claude/api-coverage-2026-08-28.md §4.3 (API-coverage batch 6a,
+           A19) — webhook admin JSON parity for manage/webhooks.php's own
+           action set (EXCEPT reveal_secret — deliberately NOT ported, see
+           the show-once discipline note on A18 above). manage/webhooks.php
+           already delegated to includes/webhook_admin.php before this
+           batch (no extraction needed) — this batch only added the API
+           twin, which calls the SAME pre-existing core, never a fork. */
+        'admin_webhook_create'                  => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s create action calls the SAME pre-existing includes/webhook_admin.php webhookSubscriptionCreate() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_update'                  => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s update action calls the SAME pre-existing includes/webhook_admin.php webhookSubscriptionUpdate() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_verify'                  => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s verify action calls the SAME pre-existing includes/webhook_admin.php webhookSendVerification() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_pause'                   => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s pause action calls the SAME pre-existing includes/webhook_admin.php webhookSubscriptionSetStatus() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_resume'                  => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s resume action calls the SAME pre-existing includes/webhook_admin.php webhookSubscriptionSetStatus() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_rotate_secret'           => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s rotate_secret action calls the SAME pre-existing includes/webhook_admin.php webhookSubscriptionRotateSecret() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_send_test'               => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s send_test action calls the SAME pre-existing includes/webhook_admin.php webhookEnqueueForSubscription() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_delete'                  => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s delete action calls the SAME pre-existing includes/webhook_admin.php webhookSubscriptionDelete() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_redrive'                 => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s redrive action calls the SAME pre-existing includes/webhook_admin.php webhookDeliveryRedrive() core (never a fork), so nothing first-party calls the JSON twin yet',
+
         /* ---------------------------------------------------------------
          * 1b. Content-gating / licensing family — 12 (§2.2 + `tier_check`).
          *

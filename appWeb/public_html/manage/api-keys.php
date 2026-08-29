@@ -40,17 +40,14 @@ if (!$currentUser || (!$canManage && !$canRequest)) {
 $activePage = 'api-keys';
 
 /* Self-serve requests only offer the safe read scope; sensitive scopes
-   (lyrics:ingest, content:gated) stay approval-only via direct minting. */
-const API_KEY_SELF_SERVE_SCOPE = 'catalogue:read';
+   (lyrics:ingest, content:gated) stay approval-only via direct minting.
+   The scope constant now lives in includes/api_keys.php (API_KEY_SELF_SERVE_SCOPE)
+   so this page and the admin_api_key_* / api_key_request API actions
+   (API-coverage Batch 6a) can never drift on it independently. */
 
-/** Is the self-serve requests table migrated on this env? (STRICT-safe gate.) */
-$apiKeyRequestsTable = (function (): bool {
-    try {
-        $db = getDbMysqli();
-        $r = $db->query("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblApiKeyRequests' LIMIT 1");
-        return $r && $r->fetch_row() !== null;
-    } catch (\Throwable $_e) { return false; }
-})();
+/* Is the self-serve requests table migrated on this env? (STRICT-safe gate,
+   shared with the API actions via apiKeyRequestsTableReady().) */
+$apiKeyRequestsTable = apiKeyRequestsTableReady(getDbMysqli());
 
 $db   = getDbMysqli();
 $csrf = csrfToken();
@@ -103,41 +100,36 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
     try {
         switch ($action) {
+            /* Every case below delegates to includes/api_keys.php's admin CRUD
+               core (rule #22) — see that file's "Admin CRUD core" section
+               doc-block for the full show-once secret discipline this page
+               and api.php's admin_api_key_* / api_key_request actions both
+               honour. This page's own response shape (`success`, matching its
+               front-end JS which reads `res.j.success`) is unchanged from
+               before extraction — only the internals moved. */
             case 'create': {
                 $label = trim((string)($_POST['label'] ?? ''));
                 $scope = trim((string)($_POST['scope'] ?? 'lyrics:ingest'));
-                if ($label === '' || strlen($label) > 120) {
-                    http_response_code(400);
-                    echo json_encode(['error' => 'Label is required (max 120 chars).', 'fields' => ['label' => 'Required.']]);
-                    exit;
-                }
-                if ($scope === '' || strlen($scope) > 255 || !preg_match('/^[a-z0-9:_\- ]+$/i', $scope)) {
-                    http_response_code(400);
-                    echo json_encode(['error' => 'Scope is invalid.', 'fields' => ['scope' => 'Use space-separated scope tokens.']]);
-                    exit;
-                }
-
-                $gen = apiKeyGenerate();
                 $createdBy = (int)($currentUser['id'] ?? 0) ?: null;
-                $stmt = $db->prepare(
-                    'INSERT INTO tblApiKeys (Label, KeyHash, KeyPrefix, Scope, Active, CreatedBy)
-                     VALUES (?, ?, ?, ?, 1, ?)'
-                );
-                $stmt->bind_param('ssssi', $label, $gen['hash'], $gen['prefix'], $scope, $createdBy);
-                $stmt->execute();
-                $newId = (int)$db->insert_id;
-                $stmt->close();
+                $result = apiKeyAdminCreate($db, $label, $scope, $createdBy);
+                if (!$result['ok']) {
+                    http_response_code($result['status'] ?? 400);
+                    $resp = ['error' => $result['error']];
+                    if (isset($result['field'])) { $resp['fields'] = [$result['field'] => ($result['field'] === 'label' ? 'Required.' : 'Use space-separated scope tokens.')]; }
+                    echo json_encode($resp);
+                    exit;
+                }
 
-                $logKey('create', (string)$newId, ['label' => $label, 'scope' => $scope, 'prefix' => $gen['prefix']]);
+                $logKey('create', (string)$result['id'], ['label' => $result['label'], 'scope' => $result['scope'], 'prefix' => $result['prefix']]);
 
                 /* The raw key is returned ONCE — never retrievable again. */
                 echo json_encode([
                     'success' => true,
-                    'id'      => $newId,
-                    'rawKey'  => $gen['raw'],
-                    'label'   => $label,
-                    'scope'   => $scope,
-                    'prefix'  => $gen['prefix'],
+                    'id'      => $result['id'],
+                    'rawKey'  => $result['rawKey'],
+                    'label'   => $result['label'],
+                    'scope'   => $result['scope'],
+                    'prefix'  => $result['prefix'],
                 ]);
                 exit;
             }
@@ -145,119 +137,66 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             case 'toggle': {
                 $id     = (int)($_POST['id'] ?? 0);
                 $active = !empty($_POST['active']) ? 1 : 0;
-                if ($id <= 0) { http_response_code(400); echo json_encode(['error' => 'Invalid id.']); exit; }
-                $stmt = $db->prepare('UPDATE tblApiKeys SET Active = ? WHERE Id = ?');
-                $stmt->bind_param('ii', $active, $id);
-                $stmt->execute();
-                $stmt->close();
-                $logKey($active ? 'reactivate' : 'revoke', (string)$id, ['active' => $active]);
-                echo json_encode(['success' => true, 'id' => $id, 'active' => $active]);
+                $result = apiKeyAdminToggle($db, $id, $active);
+                if (!$result['ok']) { http_response_code($result['status']); echo json_encode(['error' => $result['error']]); exit; }
+                $logKey($result['active'] ? 'reactivate' : 'revoke', (string)$result['id'], ['active' => $result['active']]);
+                echo json_encode(['success' => true, 'id' => $result['id'], 'active' => $result['active']]);
                 exit;
             }
 
             case 'delete': {
                 $id = (int)($_POST['id'] ?? 0);
-                if ($id <= 0) { http_response_code(400); echo json_encode(['error' => 'Invalid id.']); exit; }
-                $stmt = $db->prepare('DELETE FROM tblApiKeys WHERE Id = ?');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
-                $stmt->close();
-                $logKey('delete', (string)$id, []);
-                echo json_encode(['success' => true, 'id' => $id]);
+                $result = apiKeyAdminDelete($db, $id);
+                if (!$result['ok']) { http_response_code($result['status']); echo json_encode(['error' => $result['error']]); exit; }
+                $logKey('delete', (string)$result['id'], []);
+                echo json_encode(['success' => true, 'id' => $result['id']]);
                 exit;
             }
 
             case 'set_limits': {
                 $id = (int)($_POST['id'] ?? 0);
-                if ($id <= 0) { http_response_code(400); echo json_encode(['error' => 'Invalid id.']); exit; }
                 /* Empty string → NULL (no limit). Otherwise a non-negative int.
                    mysqli binds a NULL PHP var as SQL NULL even on an 'i' slot. */
                 $perMin = (($_POST['per_min'] ?? '') === '') ? null : max(0, (int)$_POST['per_min']);
                 $perDay = (($_POST['per_day'] ?? '') === '') ? null : max(0, (int)$_POST['per_day']);
-                $stmt = $db->prepare('UPDATE tblApiKeys SET RateLimitPerMin = ?, RateLimitPerDay = ? WHERE Id = ?');
-                $stmt->bind_param('iii', $perMin, $perDay, $id);
-                $stmt->execute();
-                $stmt->close();
-                $logKey('set_limits', (string)$id, ['perMin' => $perMin, 'perDay' => $perDay]);
-                echo json_encode(['success' => true, 'id' => $id, 'perMin' => $perMin, 'perDay' => $perDay]);
+                $result = apiKeyAdminSetLimits($db, $id, $perMin, $perDay);
+                if (!$result['ok']) { http_response_code($result['status']); echo json_encode(['error' => $result['error']]); exit; }
+                $logKey('set_limits', (string)$result['id'], ['perMin' => $result['perMin'], 'perDay' => $result['perDay']]);
+                echo json_encode(['success' => true, 'id' => $result['id'], 'perMin' => $result['perMin'], 'perDay' => $result['perDay']]);
                 exit;
             }
 
             /* ---- Self-serve key requests (Phase D) ---- */
             case 'request': {
-                if (!$apiKeyRequestsTable) {
-                    http_response_code(503);
-                    echo json_encode(['error' => 'Requests are not available yet — a global admin must run the Self-Serve API-Key Requests migration.']);
-                    exit;
-                }
                 $label = trim((string)($_POST['label'] ?? ''));
                 $just  = trim((string)($_POST['justification'] ?? ''));
-                if ($label === '' || strlen($label) > 120) {
-                    http_response_code(400); echo json_encode(['error' => 'Label is required (max 120 chars).']); exit;
-                }
-                if (strlen($just) > 1000) { $just = substr($just, 0, 1000); }
                 $reqUserId = (int)($currentUser['id'] ?? 0);
-                /* Self-serve scope is FIXED to the safe read scope — requesters can't
-                   request sensitive scopes (those stay direct-mint, approval-only). */
-                $reqScope = API_KEY_SELF_SERVE_SCOPE;
-                $stmt = $db->prepare(
-                    "INSERT INTO tblApiKeyRequests (RequesterId, Label, Scope, Justification, Status)
-                     VALUES (?, ?, ?, ?, 'pending')"
-                );
-                $stmt->bind_param('isss', $reqUserId, $label, $reqScope, $just);
-                $stmt->execute();
-                $newReqId = (int)$db->insert_id;
-                $stmt->close();
-                $logKey('request', (string)$newReqId, ['label' => $label, 'scope' => $reqScope]);
-                echo json_encode(['success' => true, 'id' => $newReqId]);
+                $result = apiKeyAdminRequestCreate($db, $reqUserId, $label, $just);
+                if (!$result['ok']) { http_response_code($result['status']); echo json_encode(['error' => $result['error']]); exit; }
+                $logKey('request', (string)$result['id'], ['label' => $result['label'], 'scope' => $result['scope']]);
+                echo json_encode(['success' => true, 'id' => $result['id']]);
                 exit;
             }
 
             case 'approve_request': {
-                if (!$apiKeyRequestsTable) { http_response_code(503); echo json_encode(['error' => 'Requests table missing.']); exit; }
                 $reqId = (int)($_POST['id'] ?? 0);
-                if ($reqId <= 0) { http_response_code(400); echo json_encode(['error' => 'Invalid id.']); exit; }
-                $sel = $db->prepare("SELECT Id, Label, Scope, Status FROM tblApiKeyRequests WHERE Id = ? LIMIT 1");
-                $sel->bind_param('i', $reqId);
-                $sel->execute();
-                $req = $sel->get_result()->fetch_assoc();
-                $sel->close();
-                if (!$req || $req['Status'] !== 'pending') {
-                    http_response_code(409); echo json_encode(['error' => 'Request is not pending.']); exit;
-                }
-                /* Mint the key with the requested (safe) scope. */
-                $gen = apiKeyGenerate();
                 $approver = (int)($currentUser['id'] ?? 0) ?: null;
-                $ins = $db->prepare('INSERT INTO tblApiKeys (Label, KeyHash, KeyPrefix, Scope, Active, CreatedBy) VALUES (?, ?, ?, ?, 1, ?)');
-                $ins->bind_param('ssssi', $req['Label'], $gen['hash'], $gen['prefix'], $req['Scope'], $approver);
-                $ins->execute();
-                $keyId = (int)$db->insert_id;
-                $ins->close();
-                $upd = $db->prepare("UPDATE tblApiKeyRequests SET Status = 'approved', ReviewedBy = ?, ReviewedAt = UTC_TIMESTAMP(), ApiKeyId = ? WHERE Id = ?");
-                $upd->bind_param('iii', $approver, $keyId, $reqId);
-                $upd->execute();
-                $upd->close();
-                $logKey('approve_request', (string)$reqId, ['keyId' => $keyId, 'label' => $req['Label']]);
+                $result = apiKeyAdminRequestApprove($db, $reqId, $approver);
+                if (!$result['ok']) { http_response_code($result['status']); echo json_encode(['error' => $result['error']]); exit; }
+                $logKey('approve_request', (string)$result['id'], ['keyId' => $result['keyId'], 'label' => $result['label']]);
                 /* Raw key shown ONCE to the approver to relay to the requester. */
-                echo json_encode(['success' => true, 'id' => $reqId, 'keyId' => $keyId, 'rawKey' => $gen['raw'], 'label' => $req['Label']]);
+                echo json_encode(['success' => true, 'id' => $result['id'], 'keyId' => $result['keyId'], 'rawKey' => $result['rawKey'], 'label' => $result['label']]);
                 exit;
             }
 
             case 'reject_request': {
-                if (!$apiKeyRequestsTable) { http_response_code(503); echo json_encode(['error' => 'Requests table missing.']); exit; }
                 $reqId = (int)($_POST['id'] ?? 0);
                 $note  = trim((string)($_POST['note'] ?? ''));
-                if ($reqId <= 0) { http_response_code(400); echo json_encode(['error' => 'Invalid id.']); exit; }
-                if (strlen($note) > 500) { $note = substr($note, 0, 500); }
                 $reviewer = (int)($currentUser['id'] ?? 0) ?: null;
-                $upd = $db->prepare("UPDATE tblApiKeyRequests SET Status = 'rejected', ReviewedBy = ?, ReviewedAt = UTC_TIMESTAMP(), ReviewNote = ? WHERE Id = ? AND Status = 'pending'");
-                $upd->bind_param('isi', $reviewer, $note, $reqId);
-                $upd->execute();
-                $affected = $upd->affected_rows;
-                $upd->close();
-                if ($affected < 1) { http_response_code(409); echo json_encode(['error' => 'Request is not pending.']); exit; }
-                $logKey('reject_request', (string)$reqId, ['note' => $note]);
-                echo json_encode(['success' => true, 'id' => $reqId]);
+                $result = apiKeyAdminRequestReject($db, $reqId, $reviewer, $note);
+                if (!$result['ok']) { http_response_code($result['status']); echo json_encode(['error' => $result['error']]); exit; }
+                $logKey('reject_request', (string)$result['id'], ['note' => $result['note']]);
+                echo json_encode(['success' => true, 'id' => $result['id']]);
                 exit;
             }
 

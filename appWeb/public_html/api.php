@@ -21742,6 +21742,636 @@ if ($action !== null) {
             break;
         }
 
+        /* =================================================================
+         * API-COVERAGE BATCH 6a — API-key + webhook administration (plan
+         * `.claude/api-coverage-2026-08-28.md` §4.3 A18/A19). Owner decision
+         * (Q5): expose the MANAGEMENT actions, under a strict SHOW-ONCE
+         * secret discipline — the one condition attached to approval.
+         *
+         * ⚠️ SHOW-ONCE SECRET DISCIPLINE (non-negotiable — read before
+         * touching anything in this section): a plaintext secret (an API
+         * key's value, a webhook signing secret) is returned by this API
+         * ONLY from the action that MINTS or ROTATES it — `admin_api_key_
+         * create`, `admin_api_key_approve_request`, `admin_webhook_create`,
+         * `admin_webhook_rotate_secret`. No other action below returns key
+         * material, and there is deliberately NO `admin_api_key_reveal*` /
+         * `admin_webhook_reveal*` action — `/manage/webhooks`'s own
+         * `reveal_secret` action is INTENTIONALLY NOT ported here; it stays
+         * web-only (session-auth, admin-eyes-on). Every write below
+         * delegates to the SAME shared core its sibling `manage/*.php` page
+         * already uses (rule #22) — `includes/api_keys.php`'s Admin CRUD
+         * core (A18, extracted from manage/api-keys.php's own inline logic
+         * in this batch — see that section's doc-block for why
+         * apiKeyAdminCreate()/apiKeyAdminRequestApprove() are the only two
+         * functions in the whole file capable of returning `rawKey`) and
+         * `includes/webhook_admin.php` (A19, pre-existing — manage/
+         * webhooks.php already delegated to it, so no extraction was
+         * needed; this batch only adds the API twin, never touches
+         * webhookSubscriptionRevealSecret() from here).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * A18 — API-key admin (mirrors manage/api-keys.php's manage-only
+         * actions). Gate = manage_api_keys — the page's own "$canManage"
+         * gate (its self-serve `request_api_keys` gate belongs to
+         * `api_key_request` below, not here). Delegates entirely to
+         * includes/api_keys.php's Admin CRUD core.
+         *
+         * POST body (JSON): { label, scope? } (scope defaults to
+         * 'lyrics:ingest', matching the page's own form default).
+         * ----------------------------------------------------------------- */
+        case 'admin_api_key_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb    = getDbMysqli();
+            $akBody  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $akActor = isset($authUser['Id']) ? (int)$authUser['Id'] : null;
+
+            try {
+                $result = apiKeyAdminCreate(
+                    $akDb,
+                    (string)($akBody['label'] ?? ''),
+                    (string)($akBody['scope'] ?? 'lyrics:ingest'),
+                    $akActor
+                );
+                if (!$result['ok']) {
+                    sendJson(['error' => $result['error'], 'field' => $result['field'] ?? null], $result['status'] ?? 400);
+                    break;
+                }
+                logActivity('api.admin.apikey.create', 'api_key', (string)$result['id'], [
+                    'label' => $result['label'], 'scope' => $result['scope'], 'prefix' => $result['prefix'],
+                ]);
+                /* The raw key is returned ONCE — never retrievable again (show-once). */
+                sendJson([
+                    'ok'     => true,
+                    'id'     => $result['id'],
+                    'rawKey' => $result['rawKey'],
+                    'label'  => $result['label'],
+                    'scope'  => $result['scope'],
+                    'prefix' => $result['prefix'],
+                ], 201);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.create', 'api_key', '0', $te);
+                sendJson(['error' => 'Could not create the API key.'], 500);
+            }
+            break;
+        }
+
+        /* POST body (JSON): { id, active: bool } */
+        case 'admin_api_key_toggle': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb   = getDbMysqli();
+            $akBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $akId   = (int)($akBody['id'] ?? 0);
+
+            try {
+                $result = apiKeyAdminToggle($akDb, $akId, !empty($akBody['active']) ? 1 : 0);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], $result['status'] ?? 400); break; }
+                logActivity('api.admin.apikey.toggle', 'api_key', (string)$result['id'], ['active' => $result['active']]);
+                sendJson(['ok' => true, 'id' => $result['id'], 'active' => $result['active']]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.toggle', 'api_key', (string)$akId, $te);
+                sendJson(['error' => 'Could not toggle the API key.'], 500);
+            }
+            break;
+        }
+
+        /* POST body (JSON): { id } */
+        case 'admin_api_key_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb   = getDbMysqli();
+            $akBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $akId   = (int)($akBody['id'] ?? 0);
+
+            try {
+                $result = apiKeyAdminDelete($akDb, $akId);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], $result['status'] ?? 400); break; }
+                logActivity('api.admin.apikey.delete', 'api_key', (string)$result['id'], []);
+                sendJson(['ok' => true, 'id' => $result['id']]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.delete', 'api_key', (string)$akId, $te);
+                sendJson(['error' => 'Could not delete the API key.'], 500);
+            }
+            break;
+        }
+
+        /* POST body (JSON): { id, per_min?: int|null, per_day?: int|null }
+           Omitted / null / '' clears the limit (no cap). */
+        case 'admin_api_key_set_limits': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb   = getDbMysqli();
+            $akBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $akId   = (int)($akBody['id'] ?? 0);
+            $perMinRaw = $akBody['per_min'] ?? null;
+            $perDayRaw = $akBody['per_day'] ?? null;
+            $akPerMin  = ($perMinRaw === null || $perMinRaw === '') ? null : max(0, (int)$perMinRaw);
+            $akPerDay  = ($perDayRaw === null || $perDayRaw === '') ? null : max(0, (int)$perDayRaw);
+
+            try {
+                $result = apiKeyAdminSetLimits($akDb, $akId, $akPerMin, $akPerDay);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], $result['status'] ?? 400); break; }
+                logActivity('api.admin.apikey.set_limits', 'api_key', (string)$result['id'], [
+                    'perMin' => $result['perMin'], 'perDay' => $result['perDay'],
+                ]);
+                sendJson(['ok' => true, 'id' => $result['id'], 'perMin' => $result['perMin'], 'perDay' => $result['perDay']]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.set_limits', 'api_key', (string)$akId, $te);
+                sendJson(['error' => 'Could not save the rate limits.'], 500);
+            }
+            break;
+        }
+
+        /* Self-serve request review — approve. POST body (JSON): { id }.
+           Mints the key with the request's own (fixed, safe) scope. */
+        case 'admin_api_key_approve_request': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb   = getDbMysqli();
+            $akBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $akId   = (int)($akBody['id'] ?? 0);
+            $akActor = isset($authUser['Id']) ? (int)$authUser['Id'] : null;
+
+            try {
+                $result = apiKeyAdminRequestApprove($akDb, $akId, $akActor);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], $result['status'] ?? 400); break; }
+                logActivity('api.admin.apikey.approve_request', 'api_key_request', (string)$result['id'], [
+                    'keyId' => $result['keyId'], 'label' => $result['label'],
+                ]);
+                /* The raw key is returned ONCE — never retrievable again (show-once). */
+                sendJson([
+                    'ok'     => true,
+                    'id'     => $result['id'],
+                    'keyId'  => $result['keyId'],
+                    'rawKey' => $result['rawKey'],
+                    'label'  => $result['label'],
+                ]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.approve_request', 'api_key_request', (string)$akId, $te);
+                sendJson(['error' => 'Could not approve the request.'], 500);
+            }
+            break;
+        }
+
+        /* Self-serve request review — reject. POST body (JSON): { id, note? } */
+        case 'admin_api_key_reject_request': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb    = getDbMysqli();
+            $akBody  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $akId    = (int)($akBody['id'] ?? 0);
+            $akActor = isset($authUser['Id']) ? (int)$authUser['Id'] : null;
+
+            try {
+                $result = apiKeyAdminRequestReject($akDb, $akId, $akActor, (string)($akBody['note'] ?? ''));
+                if (!$result['ok']) { sendJson(['error' => $result['error']], $result['status'] ?? 400); break; }
+                logActivity('api.admin.apikey.reject_request', 'api_key_request', (string)$result['id'], ['note' => $result['note']]);
+                sendJson(['ok' => true, 'id' => $result['id']]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.reject_request', 'api_key_request', (string)$akId, $te);
+                sendJson(['error' => 'Could not reject the request.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A18 self-service — submit a request for a `catalogue:read` key.
+         * Gate = request_api_keys (DIFFERENT from every action above — the
+         * page's own two-tier manage/request split). No key material
+         * anywhere in this action; it only writes a pending review row.
+         * POST body (JSON): { label, justification? }
+         * ----------------------------------------------------------------- */
+        case 'api_key_request': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('request_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The request_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb   = getDbMysqli();
+            $akBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+
+            try {
+                $result = apiKeyAdminRequestCreate(
+                    $akDb,
+                    (int)($authUser['Id'] ?? 0),
+                    (string)($akBody['label'] ?? ''),
+                    (string)($akBody['justification'] ?? '')
+                );
+                if (!$result['ok']) { sendJson(['error' => $result['error']], $result['status'] ?? 400); break; }
+                logActivity('api.admin.apikey.request', 'api_key_request', (string)$result['id'], [
+                    'label' => $result['label'], 'scope' => $result['scope'],
+                ]);
+                sendJson(['ok' => true, 'id' => $result['id']], 201);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.request', 'api_key_request', '0', $te);
+                sendJson(['error' => 'Could not submit the request.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A19 — Webhook admin (mirrors manage/webhooks.php's real action
+         * set, EXCEPT `reveal_secret` — deliberately not ported, see the
+         * show-once banner above this section). Gate = manage_webhooks —
+         * the page's single-tier gate (no request/manage split, unlike
+         * A18). Delegates entirely to the PRE-EXISTING includes/
+         * webhook_admin.php core the page already used (no extraction
+         * needed here — only api-keys.php's page inlined its logic).
+         *
+         * Every action first checks webhookSchemaReady($db), exactly like
+         * the page's own pre-dispatch guard (webhooks.php line ~313) —
+         * most of the core's functions issue a raw SELECT/UPDATE against
+         * tblWebhookSubscriptions and would throw under mysqli's STRICT
+         * mode on an un-migrated install otherwise (rule #9).
+         * ----------------------------------------------------------------- */
+
+        /* POST body (JSON): { label, target_url, events } — events is the
+           SAME space-separated selector string webhookEventSelectorValid()
+           validates (a family wildcard like "song.*" or the literal "*"
+           matches everything). */
+        case 'admin_webhook_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whUserId = isset($authUser['Id']) ? (int)$authUser['Id'] : null;
+
+            try {
+                $result = webhookSubscriptionCreate($whDb, [
+                    'label'      => (string)($whBody['label'] ?? ''),
+                    'target_url' => (string)($whBody['target_url'] ?? ''),
+                    'events'     => (string)($whBody['events'] ?? ''),
+                ], $whUserId);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], 400); break; }
+                logActivity('api.admin.webhook.create', 'webhook', (string)$result['id'], [
+                    'label' => $whBody['label'] ?? '', 'events' => $whBody['events'] ?? '',
+                ]);
+                /* New signing secret returned ONCE — never retrievable again (show-once). */
+                sendJson(['ok' => true, 'id' => $result['id'], 'secret' => $result['secret']], 201);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.create', 'webhook', '0', $te);
+                sendJson(['error' => 'Could not create the subscription.'], 500);
+            }
+            break;
+        }
+
+        /* POST body (JSON): { id, label, target_url, events } — a changed
+           target_url re-opens verification, exactly like the page. */
+        case 'admin_webhook_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whUserId = isset($authUser['Id']) ? (int)$authUser['Id'] : null;
+            $whId     = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $result = webhookSubscriptionUpdate($whDb, $whId, [
+                    'label'      => (string)($whBody['label'] ?? ''),
+                    'target_url' => (string)($whBody['target_url'] ?? ''),
+                    'events'     => (string)($whBody['events'] ?? ''),
+                ], $whUserId);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], 400); break; }
+                logActivity('api.admin.webhook.update', 'webhook', (string)$whId, [
+                    'label' => $whBody['label'] ?? '', 'events' => $whBody['events'] ?? '',
+                    'url_changed' => !empty($result['url_changed']),
+                ]);
+                sendJson(['ok' => true, 'url_changed' => !empty($result['url_changed'])]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.update', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Could not update the subscription.'], 500);
+            }
+            break;
+        }
+
+        /* Prove control of the target endpoint (echo-challenge handshake).
+           POST body (JSON): { id } */
+        case 'admin_webhook_verify': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whId   = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $result = webhookSendVerification($whDb, $whId);
+                if (!$result['ok']) {
+                    sendJson(['error' => (string)($result['error'] ?? 'Verification failed.'), 'status' => $result['status'] ?? null], 422);
+                    break;
+                }
+                logActivity('api.admin.webhook.verify', 'webhook', (string)$whId, ['http_status' => $result['status'] ?? null]);
+                sendJson(['ok' => true, 'status' => $result['status'] ?? null]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.verify', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Verification failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST body (JSON): { id } — cancels the subscription's queued deliveries. */
+        case 'admin_webhook_pause': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whId   = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $result = webhookSubscriptionSetStatus($whDb, $whId, 'paused');
+                if (!$result['ok']) { sendJson(['error' => $result['error'] ?? 'Could not pause the subscription.'], 400); break; }
+                logActivity('api.admin.webhook.pause', 'webhook', (string)$whId, []);
+                sendJson(['ok' => true]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.pause', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Could not pause the subscription.'], 500);
+            }
+            break;
+        }
+
+        /* POST body (JSON): { id } — resuming re-opens verification
+           (Status becomes 'pending_verification', not 'active', exactly
+           like the page — call admin_webhook_verify next). */
+        case 'admin_webhook_resume': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whId   = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $result = webhookSubscriptionSetStatus($whDb, $whId, 'active');
+                if (!$result['ok']) { sendJson(['error' => $result['error'] ?? 'Could not resume the subscription.'], 400); break; }
+                logActivity('api.admin.webhook.resume', 'webhook', (string)$whId, []);
+                sendJson(['ok' => true]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.resume', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Could not resume the subscription.'], 500);
+            }
+            break;
+        }
+
+        /* Mint a NEW signing secret; the previous one keeps working for the
+           #1909 24h grace window. POST body (JSON): { id } */
+        case 'admin_webhook_rotate_secret': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whId   = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $result = webhookSubscriptionRotateSecret($whDb, $whId);
+                if (!$result['ok']) { sendJson(['error' => $result['error'] ?? 'Subscription not found.'], 404); break; }
+                /* NEVER the secret itself in the audit log Details. */
+                logActivity('api.admin.webhook.secret_rotate', 'webhook', (string)$whId, []);
+                /* New signing secret returned ONCE — never retrievable again (show-once). */
+                sendJson(['ok' => true, 'secret' => $result['secret']]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.secret_rotate', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Could not rotate the secret.'], 500);
+            }
+            break;
+        }
+
+        /* Queue a one-off `webhook.test` delivery. POST body (JSON): { id } */
+        case 'admin_webhook_send_test': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whId   = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $note = 'Test delivery triggered by ' . (string)($authUser['Username'] ?? 'an admin') . ' via the API.';
+                $result = webhookEnqueueForSubscription($whDb, $whId, 'webhook.test', ['note' => $note], ['source' => 'api']);
+                if (!$result['ok']) { sendJson(['error' => $result['error'] ?? 'Could not queue a test event.'], 400); break; }
+                logActivity('api.admin.webhook.test', 'webhook', (string)$whId, ['delivery_id' => $result['delivery_id'] ?? null]);
+                sendJson(['ok' => true, 'delivery_id' => $result['delivery_id'] ?? null]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.test', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Could not queue a test event.'], 500);
+            }
+            break;
+        }
+
+        /* Permanently delete a subscription (its deliveries CASCADE away).
+           POST body (JSON): { id } */
+        case 'admin_webhook_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whId   = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $row = webhookSubscriptionGet($whDb, $whId);
+                if ($row === null) { sendJson(['error' => 'Subscription not found.'], 404); break; }
+                $result = webhookSubscriptionDelete($whDb, $whId);
+                if (!$result['ok']) { sendJson(['error' => 'Could not delete the subscription.'], 400); break; }
+                logActivity('api.admin.webhook.delete', 'webhook', (string)$whId, ['label' => $row['Label']]);
+                sendJson(['ok' => true]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.delete', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Could not delete the subscription.'], 500);
+            }
+            break;
+        }
+
+        /* Put a failed/dead/cancelled delivery back in the queue to retry
+           now. POST body (JSON): { delivery_id } */
+        case 'admin_webhook_redrive': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody       = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whDeliveryId = (int)($whBody['delivery_id'] ?? 0);
+            if ($whDeliveryId <= 0) { sendJson(['error' => 'delivery_id is required.'], 400); break; }
+
+            try {
+                $result = webhookDeliveryRedrive($whDb, $whDeliveryId);
+                if (!$result['ok']) {
+                    sendJson(['error' => 'Could not re-drive — the delivery may no longer be in a retryable state.'], 409);
+                    break;
+                }
+                logActivity('api.admin.webhook.delivery_redrive', 'webhook', (string)$whDeliveryId, []);
+                sendJson(['ok' => true]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.delivery_redrive', 'webhook', (string)$whDeliveryId, $te);
+                sendJson(['error' => 'Could not re-drive the delivery.'], 500);
+            }
+            break;
+        }
+
         /* -----------------------------------------------------------------
          * Live Follow (#1268) — web/PWA real-time multi-device follow.
          * DB-relayed short-poll over tblLiveFollowSessions (no SSE — shared

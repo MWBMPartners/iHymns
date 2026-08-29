@@ -275,3 +275,226 @@ function apiKeyIdempotencyStore(\mysqli $db, int $keyId, string $idemKey, string
         $st->close();
     } catch (\Throwable $_) { /* best-effort cache write */ }
 }
+
+/* ---------------------------------------------------------------------------
+ * Admin CRUD core (#1064 Phase D self-serve + API-coverage Batch 6a / A18,
+ * .claude/api-coverage-2026-08-28.md §4.3).
+ *
+ * ELI5: this is the "business logic" behind /manage/api-keys — mint a key,
+ * flip it active/inactive, delete it, set its rate limits, and review
+ * self-serve requests (submit / approve / reject). It used to live inline in
+ * the page's POST dispatcher; extracted here so `api.php`'s new
+ * `admin_api_key_*` / `api_key_request` actions can share the EXACT SAME
+ * validation + writes (CLAUDE.md rule #22) instead of re-typing the
+ * INSERT/UPDATE/DELETE a second time. manage/api-keys.php was re-pointed at
+ * these functions in the same commit — its own response shape
+ * (`{success:true,...}`, matching its existing front-end JS which reads
+ * `res.j.success`) is unchanged; only the internals moved.
+ *
+ * WHY THIS SHAPE: every function returns a result array —
+ * `{ok:bool, ..., error?, status?, field?}` — never throws for a validation
+ * failure, mirroring the `includes/webhook_admin.php` house style this
+ * batch's sibling core (A19) already follows. `status` is the HTTP status
+ * the caller should answer with (rule #35 — status is the contract, never a
+ * prose match); `field` (create only) names which input the validation
+ * error is about, matching the page's pre-extraction `fields: {...}` shape.
+ *
+ * ⚠️ SHOW-ONCE SECRET DISCIPLINE (owner directive, API-coverage plan §4.3
+ * Q5 — a condition of exposing this surface over the API at all):
+ * `apiKeyAdminCreate()` and `apiKeyAdminRequestApprove()` are the ONLY two
+ * functions in this entire file that return a plaintext key (`rawKey`).
+ * Every other function here returns metadata ONLY (id / label / scope /
+ * prefix / active / limits) — NEVER key material. There is deliberately NO
+ * "reveal an existing key" function anywhere in this file: once minted, a
+ * key's plaintext is unrecoverable from the server's own storage (only
+ * `KeyHash` — a one-way SHA-256 digest — is ever persisted; see
+ * `apiKeyGenerate()`'s doc-block at the top of this file). That is an
+ * architectural fact, not a policy choice a future function could route
+ * around — there is no column to read it back from.
+ * ------------------------------------------------------------------------- */
+
+/** The self-serve request's scope is fixed to a safe read scope — requesters
+ *  can never request sensitive scopes (`lyrics:ingest`, `content:gated`);
+ *  those stay direct-mint / approval-only. Named const (not a magic string
+ *  re-typed at each call site) so the page + the `api_key_request` /
+ *  `admin_api_key_approve_request` API actions can never drift on it
+ *  independently (rule #35 — cross-file agreement needs a mechanism). */
+const API_KEY_SELF_SERVE_SCOPE = 'catalogue:read';
+
+/**
+ * Is the self-serve `tblApiKeyRequests` table migrated on this environment?
+ * STRICT-safe existence gate (reuses the memoised `_apiKeyTableExists()`
+ * probe above) — both the page's GET render and every POST writer that
+ * touches the requests table call this FIRST so an un-migrated install
+ * degrades to a clean 503, never a STRICT-mode throw on a missing table.
+ */
+function apiKeyRequestsTableReady(\mysqli $db): bool
+{
+    return _apiKeyTableExists($db, 'tblApiKeyRequests');
+}
+
+/**
+ * Mint a brand-new API key (direct admin mint — manage_api_keys entitlement).
+ * The raw key is generated server-side and returned ONCE in `rawKey`; only
+ * its SHA-256 hash + a short non-secret prefix are persisted (see
+ * `apiKeyGenerate()`). Never call this on a request whose response you do
+ * not control — the caller is responsible for making sure `rawKey` reaches
+ * the admin exactly once and nowhere else (never a log line, never
+ * `logActivity()`'s Details column).
+ *
+ * @return array{ok:bool, id?:int, rawKey?:string, label?:string, scope?:string,
+ *               prefix?:string, error?:string, status?:int, field?:string}
+ */
+function apiKeyAdminCreate(\mysqli $db, string $label, string $scope, ?int $createdBy): array
+{
+    $label = trim($label);
+    if ($label === '' || strlen($label) > 120) {
+        return ['ok' => false, 'status' => 400, 'error' => 'Label is required (max 120 chars).', 'field' => 'label'];
+    }
+    $scope = trim($scope);
+    if ($scope === '' || strlen($scope) > 255 || !preg_match('/^[a-z0-9:_\- ]+$/i', $scope)) {
+        return ['ok' => false, 'status' => 400, 'error' => 'Scope is invalid.', 'field' => 'scope'];
+    }
+
+    $gen = apiKeyGenerate();
+    $stmt = $db->prepare(
+        'INSERT INTO tblApiKeys (Label, KeyHash, KeyPrefix, Scope, Active, CreatedBy)
+         VALUES (?, ?, ?, ?, 1, ?)'
+    );
+    $stmt->bind_param('ssssi', $label, $gen['hash'], $gen['prefix'], $scope, $createdBy);
+    $stmt->execute();
+    $newId = (int)$db->insert_id;
+    $stmt->close();
+
+    /* The raw key is returned ONCE — never retrievable again (show-once). */
+    return ['ok' => true, 'id' => $newId, 'rawKey' => $gen['raw'], 'label' => $label, 'scope' => $scope, 'prefix' => $gen['prefix']];
+}
+
+/** Activate / revoke an existing key. Returns metadata only — never key material. */
+function apiKeyAdminToggle(\mysqli $db, int $id, int $active): array
+{
+    if ($id <= 0) { return ['ok' => false, 'status' => 400, 'error' => 'Invalid id.']; }
+    $active = $active ? 1 : 0;
+    $stmt = $db->prepare('UPDATE tblApiKeys SET Active = ? WHERE Id = ?');
+    $stmt->bind_param('ii', $active, $id);
+    $stmt->execute();
+    $stmt->close();
+    return ['ok' => true, 'id' => $id, 'active' => $active];
+}
+
+/** Permanently delete a key. Returns metadata only — never key material. */
+function apiKeyAdminDelete(\mysqli $db, int $id): array
+{
+    if ($id <= 0) { return ['ok' => false, 'status' => 400, 'error' => 'Invalid id.']; }
+    $stmt = $db->prepare('DELETE FROM tblApiKeys WHERE Id = ?');
+    $stmt->bind_param('i', $id);
+    $stmt->execute();
+    $stmt->close();
+    return ['ok' => true, 'id' => $id];
+}
+
+/**
+ * Set (or clear, when null) a key's per-minute / per-day rate limits.
+ * Returns metadata only — never key material.
+ */
+function apiKeyAdminSetLimits(\mysqli $db, int $id, ?int $perMin, ?int $perDay): array
+{
+    if ($id <= 0) { return ['ok' => false, 'status' => 400, 'error' => 'Invalid id.']; }
+    $stmt = $db->prepare('UPDATE tblApiKeys SET RateLimitPerMin = ?, RateLimitPerDay = ? WHERE Id = ?');
+    $stmt->bind_param('iii', $perMin, $perDay, $id);
+    $stmt->execute();
+    $stmt->close();
+    return ['ok' => true, 'id' => $id, 'perMin' => $perMin, 'perDay' => $perDay];
+}
+
+/**
+ * Self-serve: submit a request for a `catalogue:read` key (request_api_keys
+ * entitlement — no key material involved; this only writes a pending row for
+ * a manager to review). Returns metadata only.
+ */
+function apiKeyAdminRequestCreate(\mysqli $db, int $requesterId, string $label, string $justification): array
+{
+    if (!apiKeyRequestsTableReady($db)) {
+        return ['ok' => false, 'status' => 503, 'error' => 'Requests are not available yet — a global admin must run the Self-Serve API-Key Requests migration.'];
+    }
+    $label = trim($label);
+    if ($label === '' || strlen($label) > 120) {
+        return ['ok' => false, 'status' => 400, 'error' => 'Label is required (max 120 chars).'];
+    }
+    $just = trim($justification);
+    if (strlen($just) > 1000) { $just = substr($just, 0, 1000); }
+    $scope = API_KEY_SELF_SERVE_SCOPE;
+
+    $stmt = $db->prepare(
+        "INSERT INTO tblApiKeyRequests (RequesterId, Label, Scope, Justification, Status)
+         VALUES (?, ?, ?, ?, 'pending')"
+    );
+    $stmt->bind_param('isss', $requesterId, $label, $scope, $just);
+    $stmt->execute();
+    $newReqId = (int)$db->insert_id;
+    $stmt->close();
+    return ['ok' => true, 'id' => $newReqId, 'label' => $label, 'scope' => $scope];
+}
+
+/**
+ * Approve a pending self-serve request: mints the key with the request's
+ * (safe, fixed) scope and marks the request approved. The raw key is
+ * returned ONCE in `rawKey` — the approver relays it to the requester
+ * out-of-band (it is never stored, never re-derivable).
+ *
+ * @return array{ok:bool, id?:int, keyId?:int, rawKey?:string, label?:string, error?:string, status?:int}
+ */
+function apiKeyAdminRequestApprove(\mysqli $db, int $reqId, ?int $approverId): array
+{
+    if (!apiKeyRequestsTableReady($db)) {
+        return ['ok' => false, 'status' => 503, 'error' => 'Requests table missing.'];
+    }
+    if ($reqId <= 0) { return ['ok' => false, 'status' => 400, 'error' => 'Invalid id.']; }
+
+    $sel = $db->prepare('SELECT Id, Label, Scope, Status FROM tblApiKeyRequests WHERE Id = ? LIMIT 1');
+    $sel->bind_param('i', $reqId);
+    $sel->execute();
+    $req = $sel->get_result()->fetch_assoc();
+    $sel->close();
+    if (!$req || $req['Status'] !== 'pending') {
+        return ['ok' => false, 'status' => 409, 'error' => 'Request is not pending.'];
+    }
+
+    /* Mint the key with the requested (safe) scope — never a caller-supplied one. */
+    $gen = apiKeyGenerate();
+    $ins = $db->prepare('INSERT INTO tblApiKeys (Label, KeyHash, KeyPrefix, Scope, Active, CreatedBy) VALUES (?, ?, ?, ?, 1, ?)');
+    $ins->bind_param('ssssi', $req['Label'], $gen['hash'], $gen['prefix'], $req['Scope'], $approverId);
+    $ins->execute();
+    $keyId = (int)$db->insert_id;
+    $ins->close();
+
+    $upd = $db->prepare("UPDATE tblApiKeyRequests SET Status = 'approved', ReviewedBy = ?, ReviewedAt = UTC_TIMESTAMP(), ApiKeyId = ? WHERE Id = ?");
+    $upd->bind_param('iii', $approverId, $keyId, $reqId);
+    $upd->execute();
+    $upd->close();
+
+    /* The raw key is returned ONCE — never retrievable again (show-once). */
+    return ['ok' => true, 'id' => $reqId, 'keyId' => $keyId, 'rawKey' => $gen['raw'], 'label' => $req['Label']];
+}
+
+/** Reject a pending self-serve request. Returns metadata only. */
+function apiKeyAdminRequestReject(\mysqli $db, int $reqId, ?int $reviewerId, string $note): array
+{
+    if (!apiKeyRequestsTableReady($db)) {
+        return ['ok' => false, 'status' => 503, 'error' => 'Requests table missing.'];
+    }
+    if ($reqId <= 0) { return ['ok' => false, 'status' => 400, 'error' => 'Invalid id.']; }
+    $note = trim($note);
+    if (strlen($note) > 500) { $note = substr($note, 0, 500); }
+
+    $upd = $db->prepare(
+        "UPDATE tblApiKeyRequests SET Status = 'rejected', ReviewedBy = ?, ReviewedAt = UTC_TIMESTAMP(), ReviewNote = ?
+          WHERE Id = ? AND Status = 'pending'"
+    );
+    $upd->bind_param('isi', $reviewerId, $note, $reqId);
+    $upd->execute();
+    $affected = $upd->affected_rows;
+    $upd->close();
+    if ($affected < 1) { return ['ok' => false, 'status' => 409, 'error' => 'Request is not pending.']; }
+    return ['ok' => true, 'id' => $reqId, 'note' => $note];
+}
