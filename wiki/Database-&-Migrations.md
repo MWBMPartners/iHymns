@@ -177,7 +177,8 @@ The serving gate (`includes/song_media_visibility.php`) is the ONE place that de
 | `tblUserGroups` | Groups with version channel access flags (Alpha/Beta/RC/RTW) |
 | `tblUsers` | Accounts with role, group link, EmailVerified, LastLoginAt, LoginCount, AccessTier, CcliNumber, CcliVerified, and the `Status` / `StatusChangedAt` lifecycle pair (#1698 — `active` / `disabled` / `deleted`; see [[User Accounts & Roles]]) |
 | `tblSessions` | Server-side admin panel sessions |
-| `tblApiTokens` | Bearer tokens for PWA/native app auth (64-char hex, 30-day expiry) |
+| `tblApiTokens` | Bearer tokens for PWA/native app auth (64-char hex, 30-day expiry). As of the 2026-08-28/29 API-coverage program, the same token also authenticates against the song-editor API (`manage/editor/api2.php` + the legacy `api.php` shim), `manage/places-api.php`, and `manage/print-pdf.php` — see [[Architecture]] § API coverage. |
+| `tblPushTokens` | (API-coverage plan C1, 2026-08-28) Android/FireOS push registration tokens — `Provider` (`fcm` \| `adm`, `VARCHAR` not `ENUM`, rule #20) discriminates ordinary-Android Google FCM from Fire-OS-only Amazon ADM in one table rather than forking a near-identical second one. `UNIQUE(Provider, Token)`; `UserId` FK, `CASCADE` on delete. Distinct from the existing (undocumented-here) `tblApnsTokens` (Apple) and `tblPushSubscriptions` (Web Push/VAPID, keyed by browser endpoint URL). **Entirely dormant** until `includes/fcm.php` is keyed AND a live trigger calls its `fcmSend()` — neither is true yet; see [[Native Apps (Apple & Android)]] § Push notifications. Migration: `migrate-add-push-tokens.php`. |
 | `tblPasswordResetTokens` | Single-use password reset tokens (48-char hex, 1-hour expiry) |
 | `tblEmailLoginTokens` | Magic link tokens + 6-digit codes for passwordless email login (10-min expiry) |
 | `tblUserGroupMembers` | Many-to-many user-to-group membership |

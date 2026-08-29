@@ -4,6 +4,77 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-29 (API-coverage program complete — every admin/curator action reachable over the API; redo security audit clean bar one Medium IDOR, fixed)
+
+Branch `claude/dormant-features-settings-1sdw4t` (continuation of the 2026-08-28 session below).
+Plan: `.claude/api-coverage-2026-08-28.md` — a from-code gap analysis (not a guess) of every
+`/manage/*.php` state-changing action against `api.php`/`api2.php`, batched into a priority-ordered
+implementation plan. All six batches landed, plus a close-out batch (F2) for the last 8 gaps the
+standing guard surfaced. Full CI-faithful gate green at the final commit (per its own message):
+**node 82/82, php 235/235**.
+
+**Headline: the API now covers *all* functionality.** The Web/PWA, and both native apps
+(Apple, Android/FireOS), can interact with the backend exclusively through `api.php` and the
+song-editor API — no admin/curator capability exists only as a browser-session-only
+`/manage/*.php` form-POST. Two pieces made this true:
+
+1. **~90 new `admin_*`/`org_admin_*` actions** (`api.php` grew from 223 → **312** public actions),
+   each delegating to the SAME shared core its `/manage/*.php` page uses (rule #22) — extracting
+   that core first, and re-pointing the page at it, where none existed yet. Covers: registry CRUD
+   (publishers, works + medley, tags + canonicalisation, catalogues, songbook series, languages,
+   external-link types, print templates, API keys, webhooks — all show-once secret discipline),
+   org self-service (Live-Follow idle timeout + set-list edit-audience defaults, logo upload incl.
+   SVG sanitiser, brand colour, venues + recurring schedules), curator workflows (duplicate-song
+   merge/link/dismiss, deleted-song restore/purge, musician-duplicate dismiss, data-health fix,
+   activity-log geo), MARCXML + IA-reconcile imports, a handful of consumer reads (`tune`,
+   `publisher_detail`, `org_ccli_report`, `org_venues`), and a **dormant** Android/FireOS push
+   scaffold (`fcm_register`/`fcm_unregister`, new `tblPushTokens`, `includes/fcm.php` — registers
+   tokens only, `fcmSend()` is a structural no-op until FCM/ADM credentials are provisioned).
+2. **Bearer auth on the editor API (#1968-adjacent).** `manage/editor/api2.php` (66 actions),
+   the legacy `manage/editor/api.php` shim, `manage/places-api.php`, and `manage/print-pdf.php`
+   previously accepted only the `/manage` session cookie. All four now resolve
+   `Authorization: Bearer <token>` through ONE shared verifier, `apiTokenResolveBearerUser()`
+   (`includes/api_tokens.php`), falling through to the exact pre-existing cookie check when no
+   Bearer header verifies. A Bearer write is CSRF-immune by construction, so the
+   `X-Requested-With` gate now applies only to the cookie path; per-action entitlement checks are
+   unchanged. Owner-approved (native curator editing).
+
+**The mechanism that keeps this true going forward:** `tests/php/test-manage-action-api-coverage.php`
+— a tree-derived, mutation-proven standing guard (not a one-off audit) that enumerates every
+state-changing `manage/*.php` action from the source and asserts each maps to a real API action,
+an explicit `web_only:<reason>` entry, or a `native:<reason>` marker. It now reports **zero**
+uncovered actions (140 api-mapped / 44 web-only-with-reason / 2 native-marker, per the close-out
+commit). A new admin button without a mapping fails this guard the next time it runs.
+
+**Redo security audit (2026-08-29), scoped to the new surface.** Checked the Bearer seam, secrets
+handling, uploads, and injection across the whole batch. Found one genuine issue and two
+Low/hardening items, all fixed same-session:
+- **Medium — cross-tenant IDOR in `org_admin_schedule_save`** (Batch 3): the action authorised
+  against the org derived from the *posted* `venue_id` but never re-checked the *existing*
+  schedule row's own owning org, so an org-A admin could re-parent org B's schedule via a crafted
+  `schedule_id`. Fixed by mirroring `org_admin_venue_save`'s existing-row double-check. Guard:
+  `tests/php/test-security-schedule-idor.php` (mutation-proven).
+- **Low — `print-pdf.php` `copies` unclamped at the endpoint** before reaching the CCLI usage log
+  (defence-in-depth; `printUsageLog()` already clamped it downstream, so never externally
+  exploitable).
+- **Low/hardening — entitlement-gate cleanup (F2):** several new `admin_*` actions moved off a
+  bare role check onto the `userHasEntitlement()` call their own page already uses
+  (behaviour-neutral today; a future entitlement revocation now reaches the API too).
+Everything else the redo pass checked came back clean.
+
+**Docs refreshed to match** (this pass): `wiki/API-Reference.md` (auth model — Bearer-or-cookie,
+editor-API Bearer seam, new action families, the standing coverage guard; also corrected a
+now-stale claim that IA-reconcile has no public API — it does, `admin_ia_reconcile_run`),
+`wiki/Architecture.md` (new "API coverage — everything through the API" section + security-summary
+addendum for the redo audit), `wiki/Native-Apps-(Apple-&-Android).md` (Bearer-capable editor API
+= a native curator app is now technically possible; new Push Notifications section for the FCM/ADM
+scaffold), `wiki/Database-&-Migrations.md` (`tblPushTokens`), `README.md` (Administration section).
+`appWeb/public_html/api-docs.yaml` was updated action-by-action inside each implementation commit
+except the Bearer-auth-on-editor-API commit, which explicitly deferred its OpenAPI/security-scheme
+write-up ("docs land in the OpenAPI pass") — **that top-of-file Editor API v2 description block
+still reads session-cookie-only as of this note; flagged, not yet corrected** (out of scope for
+this docs-only pass, which was told not to touch `api-docs.yaml`).
+
 ## 📌 Continuation note — 2026-08-28 (ProPresenter interop epic #1968 complete through P6; multi-licence orgs; device management; docs + security + a11y sweep in flight)
 
 Branch `claude/dormant-features-settings-1sdw4t` (the long-running ProPresenter interop
