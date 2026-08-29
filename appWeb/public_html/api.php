@@ -14541,6 +14541,140 @@ if ($action !== null) {
             break;
         }
 
+        /* -----------------------------------------------------------------
+         * Admin: create a songbook from an uploaded MARCXML file
+         * (#1765 Feature 5, ported to the API by API-coverage batch 6b —
+         * .claude/api-coverage-2026-08-28.md §4.3 A17, owner-confirmed
+         * native-curator-app surface, Q1=yes)
+         *
+         * POST multipart/form-data:
+         *   marcxml_file  (required file field, <= 2 MB)
+         *   abbreviation  (required — MARCXML carries no Abbreviation; it
+         *                  IS the SongId prefix, rule #27, so the curator
+         *                  supplies it)
+         * Title (245 $a) + bibliographic fields/identifiers come from the
+         * file. MIRRORS manage/songbooks.php's `marcxml_import` POST
+         * handler exactly: parses via the shared includes/marcxml.php core
+         * through manage/includes/marcxml_admin.php's thin wiring — never a
+         * forked parser (rule #22). Songbooks has no extracted row-write
+         * core (admin_songbook_create above already inlines its own INSERT
+         * for the same reason — see that case's own doc-block), so this
+         * mirrors the page's INSERT the same way. A slightly-off identifier
+         * is skipped, not fatal — reported back in `skipped`/`unmapped`
+         * rather than failing the whole import.
+         * Returns 201 + new id/abbreviation/name/colour + any notes.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_marcxml_import': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+
+            $parsed = marcxmlAdmin_parseUpload($_FILES['marcxml_file'] ?? [], 'songbook');
+            if (!$parsed['ok']) {
+                sendJson(['error' => $parsed['error']], 400);
+                break;
+            }
+            $abbr = strtoupper(trim((string)($_POST['abbreviation'] ?? '')));
+            $name = mb_substr(trim((string)($parsed['fields']['Name'] ?? '')), 0, 255);
+            if ($name === '') {
+                sendJson(['error' => 'The MARCXML record has no title (245 $a) to create a songbook from.'], 422);
+                break;
+            }
+            if ($e = validateSongbookAbbr($abbr)) {
+                sendJson(['error' => $e], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+
+                /* @disabled-visible: admin surface (#1765) — same uniqueness
+                   pre-check as admin_songbook_create / the page's own import
+                   handler: a disabled book's Abbreviation is still taken. */
+                $chk = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ?');
+                $chk->bind_param('s', $abbr);
+                $chk->execute();
+                $dupe = $chk->get_result()->fetch_row() !== null;
+                $chk->close();
+                if ($dupe) {
+                    sendJson(['error' => "Abbreviation '{$abbr}' already exists."], 409);
+                    break;
+                }
+
+                [$ids, $skipped] = marcxmlAdmin_cleanPublicationIdentifiers($parsed['fields'], [
+                    'Isbn' => 'isbn', 'ArkId' => 'ark',
+                    'OpenLibraryWorkId' => 'openlibrary-work', 'OpenLibraryEditionId' => 'openlibrary-edition',
+                ]);
+                $imPublisher = mb_substr((string)($parsed['fields']['Publisher'] ?? ''), 0, 255) ?: null;
+                $imYear      = mb_substr((string)($parsed['fields']['PublicationYear'] ?? ''), 0, 50) ?: null;
+                $imLang      = mb_substr((string)($parsed['fields']['Language'] ?? ''), 0, 35) ?: null;
+                $imLccn      = mb_substr((string)($parsed['fields']['Lccn'] ?? ''), 0, 20) ?: null;
+                $imOclc      = mb_substr((string)($parsed['fields']['OclcNumber'] ?? ''), 0, 30) ?: null;
+                $imIsbn      = $ids['Isbn']; $imArk = $ids['ArkId'];
+
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                           . 'includes'  . DIRECTORY_SEPARATOR . 'songbook-palette.php';
+                $colour = pickAutoSongbookColour($db, $abbr);
+                $ins = $db->prepare('INSERT INTO tblSongbooks (Abbreviation, Name, DisplayOrder, Colour) VALUES (?, ?, 0, ?)');
+                $ins->bind_param('sss', $abbr, $name, $colour);
+                $ins->execute();
+                $newSongbookId = (int)$db->insert_id;
+                $ins->close();
+                /* #1860 go-live — mint this songbook's permanent IL-id (ILB…). */
+                ilidStampNewRow($db, 'songbook', $newSongbookId);
+
+                $upd = $db->prepare(
+                    'UPDATE tblSongbooks
+                        SET Publisher = ?, PublicationYear = ?, Language = ?, Isbn = ?, ArkId = ?, Lccn = ?, OclcNumber = ?
+                      WHERE Abbreviation = ?'
+                );
+                $upd->bind_param('ssssssss', $imPublisher, $imYear, $imLang, $imIsbn, $imArk, $imLccn, $imOclc, $abbr);
+                $upd->execute();
+                $upd->close();
+
+                $hasOpenLibraryCols = placeColumnExists($db, 'tblSongbooks', 'OpenLibraryWorkId')
+                    && placeColumnExists($db, 'tblSongbooks', 'OpenLibraryEditionId');
+                if ($hasOpenLibraryCols) {
+                    $imOlW = $ids['OpenLibraryWorkId']; $imOlE = $ids['OpenLibraryEditionId'];
+                    $upd2 = $db->prepare('UPDATE tblSongbooks SET OpenLibraryWorkId = ?, OpenLibraryEditionId = ? WHERE Abbreviation = ?');
+                    $upd2->bind_param('sss', $imOlW, $imOlE, $abbr);
+                    $upd2->execute();
+                    $upd2->close();
+                }
+
+                logActivity('api.admin.songbook.marcxml_import', 'songbook', $abbr, [
+                    'name' => $name, 'abbreviation' => $abbr,
+                ]);
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                songbookMaintenanceRun($db, 'songbooks.marcxml_import');
+
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $newSongbookId,
+                    'abbreviation' => $abbr,
+                    'name'         => $name,
+                    'colour'       => $colour,
+                    'skipped'      => $skipped,
+                    'unmapped'     => array_slice($parsed['unmapped'], 0, 12),
+                ], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.marcxml_import', 'songbook', $abbr, $e);
+                error_log('[admin_songbook_marcxml_import] ' . $e->getMessage());
+                sendJson(['error' => 'Could not import songbook from MARCXML.'], 500);
+            }
+            break;
+        }
+
         /* =================================================================
          * USERS — admin CRUD parity (#719 PR 2b)
          *
@@ -19637,9 +19771,14 @@ if ($action !== null) {
          * includes/catalogue_admin.php (rule #22). `tblCatalogues`/
          * `tblCatalogueSongs`/the `catalogue` entity-type string stay
          * `catalogue` INTERNALLY — the Catalogue→Collection relabel is UI
-         * copy only (rule #24). The page's `marcxml_import` wizard is OUT
-         * OF SCOPE (deferred — a file-upload flow, see
-         * includes/catalogue_admin.php's doc-block). Gate:
+         * copy only (rule #24). The page's `marcxml_import` action is now
+         * ALSO covered here (API-coverage batch 6b, .claude/
+         * api-coverage-2026-08-28.md §4.3 A17 — owner-confirmed
+         * native-curator surface, Q1=yes) as `admin_catalogue_marcxml_import`
+         * below, written through this SAME catalogueAdminCreate()/
+         * catalogueAdminPersistPublicationIds() core; the page's own
+         * marcxml_import POST handler is unchanged (still self-contained,
+         * not re-pointed at this file — out of scope for this batch). Gate:
          * userHasEntitlement('manage_songbooks') — identical to
          * manage/catalogues.php's own page gate (rule #1587).
          * ================================================================= */
@@ -19895,6 +20034,98 @@ if ($action !== null) {
             break;
         }
 
+        /* -----------------------------------------------------------------
+         * Admin: create a catalogue ("Collection") from an uploaded MARCXML
+         * file (#1765 Feature 5, ported to the API by API-coverage batch
+         * 6b — .claude/api-coverage-2026-08-28.md §4.3 A17, owner-confirmed
+         * native-curator surface, Q1=yes)
+         *
+         * POST multipart/form-data: marcxml_file (required file field).
+         * Imported HIDDEN (Visibility=admin_only) so a curator reviews it
+         * before it goes public — mirrors manage/catalogues.php's
+         * `marcxml_import` POST handler exactly. Parses via the shared
+         * includes/marcxml.php core through manage/includes/
+         * marcxml_admin.php's thin wiring (rule #22); writes via the SAME
+         * catalogueAdminCreate()/catalogueAdminPersistPublicationIds() cores
+         * admin_catalogue_create/update already use above — never a forked
+         * INSERT. A slightly-off identifier is skipped, not fatal.
+         * Returns 201 + new id/slug/title + any skip/unmapped notes.
+         * ----------------------------------------------------------------- */
+        case 'admin_catalogue_marcxml_import': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!catalogueAdminTableExists($db)) {
+                sendJson(['error' => 'Collections registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+
+            $parsed = marcxmlAdmin_parseUpload($_FILES['marcxml_file'] ?? [], 'catalogue');
+            if (!$parsed['ok']) {
+                sendJson(['error' => $parsed['error']], 400);
+                break;
+            }
+            $title = trim((string)($parsed['fields']['Title'] ?? ''));
+            if ($title === '') {
+                sendJson(['error' => 'The MARCXML record has no title (245 $a) to create a Collection from.'], 422);
+                break;
+            }
+            $title = mb_substr($title, 0, 255);
+            [$ids, $skipped] = marcxmlAdmin_cleanPublicationIdentifiers($parsed['fields'], [
+                'ArkId' => 'ark', 'OpenLibraryWorkId' => 'openlibrary-work', 'OpenLibraryEditionId' => 'openlibrary-edition',
+            ]);
+
+            try {
+                $base = catalogueAdminSlugify($title); if ($base === '') { $base = 'collection'; }
+                $base = mb_substr($base, 0, 250);
+                $slug = $base; $suffix = 1;
+                while (catalogueAdminSlugTaken($db, $slug)) {
+                    $suffix++; $slug = $base . '-' . $suffix;
+                }
+
+                /* catalogueAdminCreate() pairs the INSERT with minting this
+                   Collection's permanent IL-id (ILC…, #1860 go-live). */
+                $newId = catalogueAdminCreate($db, [
+                    'title' => $title, 'slug' => $slug, 'description' => null,
+                    'visibility' => 'admin_only', 'sortOrder' => 0, 'colour' => '',
+                ]);
+                if (catalogueAdminPubIdColumnsReady($db)) {
+                    catalogueAdminPersistPublicationIds($db, $newId, [
+                        'ark' => $ids['ArkId'], 'olWork' => $ids['OpenLibraryWorkId'], 'olEdition' => $ids['OpenLibraryEditionId'],
+                    ]);
+                }
+
+                logActivity('api.admin.catalogue.marcxml_import', 'catalogue', (string)$newId, [
+                    'title' => $title, 'slug' => $slug,
+                ]);
+                sendJson([
+                    'ok'         => true,
+                    'id'         => $newId,
+                    'slug'       => $slug,
+                    'title'      => $title,
+                    'visibility' => 'admin_only',
+                    'skipped'    => $skipped,
+                    'unmapped'   => array_slice($parsed['unmapped'], 0, 12),
+                ], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.catalogue.marcxml_import', 'catalogue', '', $e, ['title' => $title]);
+                error_log('[admin_catalogue_marcxml_import] ' . $e->getMessage());
+                sendJson(['error' => 'Could not import Collection from MARCXML.'], 500);
+            }
+            break;
+        }
+
         /* =================================================================
          * ADMIN — SONGBOOK SERIES CRUD (#782/#1765, API-coverage batch
          * 4b-i A5)
@@ -19902,9 +20133,15 @@ if ($action !== null) {
          * Mirrors /manage/songbook-series.php's `create`/`update`/`delete`
          * POST handlers, via the shared core
          * includes/songbook_series_admin.php (rule #22). The page's
-         * `marcxml_import` wizard is OUT OF SCOPE (deferred — a
-         * file-upload flow, see includes/songbook_series_admin.php's
-         * doc-block). Gate: userHasEntitlement('manage_songbooks') —
+         * `marcxml_import` action is now ALSO covered here (API-coverage
+         * batch 6b, .claude/api-coverage-2026-08-28.md §4.3 A17 —
+         * owner-confirmed native-curator surface, Q1=yes) as
+         * `admin_songbook_series_marcxml_import` below, written through
+         * this SAME songbookSeriesAdminCreate()/
+         * songbookSeriesAdminPersistPublicationIds() core; the page's own
+         * marcxml_import POST handler is unchanged (still self-contained,
+         * not re-pointed at this file — out of scope for this batch).
+         * Gate: userHasEntitlement('manage_songbooks') —
          * identical to manage/songbook-series.php's own page gate (rule
          * #1587).
          * ================================================================= */
@@ -20101,6 +20338,95 @@ if ($action !== null) {
                 logActivityError('api.admin.songbook_series.delete', 'songbook_series', (string)$id, $e);
                 error_log('[admin_songbook_series_delete] ' . $e->getMessage());
                 sendJson(['error' => 'Could not delete songbook series.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: create a songbook series from an uploaded MARCXML file
+         * (#1765 Feature 5, ported to the API by API-coverage batch 6b —
+         * .claude/api-coverage-2026-08-28.md §4.3 A17, owner-confirmed
+         * native-curator surface, Q1=yes)
+         *
+         * POST multipart/form-data: marcxml_file (required file field).
+         * Mirrors manage/songbook-series.php's `marcxml_import` POST
+         * handler exactly. Parses via the shared includes/marcxml.php core
+         * through manage/includes/marcxml_admin.php's thin wiring
+         * (rule #22); writes via the SAME songbookSeriesAdminCreate()/
+         * songbookSeriesAdminPersistPublicationIds() cores
+         * admin_songbook_series_create/update already use above — never a
+         * forked INSERT. A slightly-off identifier is skipped, not fatal.
+         * Returns 201 + new id/name/slug + any skip/unmapped notes.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_series_marcxml_import': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!songbookSeriesAdminTableExists($db)) {
+                sendJson(['error' => 'Songbook Series registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+
+            $parsed = marcxmlAdmin_parseUpload($_FILES['marcxml_file'] ?? [], 'series');
+            if (!$parsed['ok']) {
+                sendJson(['error' => $parsed['error']], 400);
+                break;
+            }
+            $name = trim((string)($parsed['fields']['Name'] ?? ''));
+            if ($name === '') {
+                sendJson(['error' => 'The MARCXML record has no title (245 $a) to create a series from.'], 422);
+                break;
+            }
+            $name = mb_substr($name, 0, 120);
+            [$ids, $skipped] = marcxmlAdmin_cleanPublicationIdentifiers($parsed['fields'], [
+                'Isbn' => 'isbn', 'Issn' => 'issn', 'ArkId' => 'ark',
+                'OpenLibraryWorkId' => 'openlibrary-work', 'OpenLibraryEditionId' => 'openlibrary-edition',
+            ]);
+
+            try {
+                $base = songbookSeriesAdminSlugify($name); if ($base === '') { $base = 'series'; }
+                $base = mb_substr($base, 0, 112);
+                $slug = $base; $suffix = 1;
+                while (songbookSeriesAdminSlugTaken($db, $slug)) {
+                    $suffix++; $slug = $base . '-' . $suffix;
+                }
+
+                $newId = songbookSeriesAdminCreate($db, [
+                    'name' => $name, 'slug' => $slug, 'description' => '', 'colour' => '',
+                ]);
+                if (songbookSeriesAdminPubIdColumnsReady($db)) {
+                    songbookSeriesAdminPersistPublicationIds($db, $newId, [
+                        'isbn' => $ids['Isbn'], 'issn' => $ids['Issn'], 'ark' => $ids['ArkId'],
+                        'olWork' => $ids['OpenLibraryWorkId'], 'olEdition' => $ids['OpenLibraryEditionId'],
+                    ]);
+                }
+
+                logActivity('api.admin.songbook_series.marcxml_import', 'songbook_series', (string)$newId, [
+                    'name' => $name, 'slug' => $slug,
+                ]);
+                sendJson([
+                    'ok'       => true,
+                    'id'       => $newId,
+                    'name'     => $name,
+                    'slug'     => $slug,
+                    'skipped'  => $skipped,
+                    'unmapped' => array_slice($parsed['unmapped'], 0, 12),
+                ], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook_series.marcxml_import', 'songbook_series', '', $e, ['name' => $name]);
+                error_log('[admin_songbook_series_marcxml_import] ' . $e->getMessage());
+                sendJson(['error' => 'Could not import songbook series from MARCXML.'], 500);
             }
             break;
         }
@@ -22368,6 +22694,146 @@ if ($action !== null) {
             } catch (\Throwable $te) {
                 logActivityError('api.admin.webhook.delivery_redrive', 'webhook', (string)$whDeliveryId, $te);
                 sendJson(['error' => 'Could not re-drive the delivery.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — INTERNET ARCHIVE OCR RECONCILE (#94 Phase 1, ported to
+         * the API by API-coverage batch 6b — .claude/
+         * api-coverage-2026-08-28.md §4.3 A17, owner-confirmed
+         * native-curator surface, Q1=yes)
+         *
+         * Assessed alongside the MARCXML imports above as one of A17's
+         * "genuinely multi-step / interactive tools" — UNLIKE the
+         * bulk-promote wizard (manage/musicians-bulk-promote.php, deferred
+         * — see this batch's report) and the family_manifest wizard
+         * (manage/songbooks.php, also deferred), this one turned out to be
+         * a genuinely clean single POST -> JSON-report call: an
+         * archive.org identifier + a songbook abbreviation in, a scored
+         * candidate report out, with no per-row human correction step and
+         * no server-side stored wizard state (every call recomputes the
+         * plan from the current DB, exactly like force_refresh does for
+         * the cache). Mirrors manage/ia-reconcile.php's POST 'run' handler
+         * exactly, delegating end-to-end to the SAME pure pipeline the
+         * page calls — includes/ia_client.php's iaCachedMetadata()/
+         * iaCachedFulltext() (SSRF-hardened archive.org fetch + DB cache)
+         * and includes/ia_reconcile.php's iaRecSegmentOcr()/
+         * iaRecSongFeatures()/iaRecScoreCandidates()/iaRecPersistRun()
+         * (rule #22) — never a forked fetch/segment/score copy.
+         *
+         * ZERO WRITES TO SONG CONTENT — the only write is audit
+         * bookkeeping (iaRecPersistRun(), itself table-existence-gated and
+         * best-effort: a pre-migration install still gets the report, just
+         * with `persisted: false`). Gate: edit_songs — identical to the
+         * page's own gate (curators who work the gap list can run audits
+         * themselves; there is no destructive action to gate more
+         * tightly, mirroring the page's own doc-block rationale).
+         *
+         * POST body: { identifier (required — an archive.org item id or a
+         *   details/download URL), songbook_abbr (required),
+         *   force_refresh? (bypass the DB cache) }
+         * ================================================================= */
+        case 'admin_ia_reconcile_run': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_songs entitlement is required.'], 403);
+                break;
+            }
+
+            /* Required explicitly rather than leaning on a transitive pull
+               from elsewhere in this file (this file's own top-of-file
+               precedent, #1698's user_status.php comment) — a transitive
+               require is a dependency nothing states and nothing enforces. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ia_client.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ia_reconcile.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'title_normalize.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_similarity.php';
+
+            $body         = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $identifier   = ihymns_canonical_ia_identifier((string)($body['identifier'] ?? ''));
+            $songbookAbbr = trim((string)($body['songbook_abbr'] ?? ''));
+            $forceRefresh = !empty($body['force_refresh']);
+
+            if ($identifier === null || $identifier === '') {
+                sendJson(['error' => 'That does not look like a valid archive.org identifier or URL.'], 400);
+                break;
+            }
+            if ($songbookAbbr === '') {
+                sendJson(['error' => 'songbook_abbr is required.'], 400);
+                break;
+            }
+
+            $db = getDbMysqli();
+
+            /* @disabled-visible: admin surface (#94/#1765) — mirrors the
+               page's own doc-block: a disabled songbook stays fully
+               auditable here (owner decision); a curator reconciling a
+               disabled songbook against an archive.org scan is exactly as
+               legitimate as reconciling any other book. Validate songbook
+               existence via a bound lookup — never trust the posted
+               abbreviation blindly (rule #5); mirrors the page's own
+               against-the-picker-list check. */
+            $sbChk = $db->prepare('SELECT 1 FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1');
+            $sbChk->bind_param('s', $songbookAbbr);
+            $sbChk->execute();
+            $songbookValid = $sbChk->get_result()->fetch_row() !== null;
+            $sbChk->close();
+            if (!$songbookValid) {
+                sendJson(['error' => 'Unknown songbook_abbr.'], 400);
+                break;
+            }
+
+            try {
+                /* A cold fetch + segment + score of a large book can exceed
+                   the default 30s on shared hosting; cached re-runs are
+                   seconds — same rationale as the page's own
+                   set_time_limit() call. */
+                @set_time_limit(300);
+
+                $metadata = iaCachedMetadata($db, $identifier, $forceRefresh);
+                $fulltext = $metadata !== null ? iaCachedFulltext($db, $identifier, $forceRefresh) : null;
+                if ($metadata === null || $fulltext === null) {
+                    sendJson(['error' => 'archive.org did not answer for "' . $identifier . '", the item has no OCR '
+                        . 'text file (_djvu.txt), or the response exceeded the size cap.'], 502);
+                    break;
+                }
+
+                $candidates = iaRecSegmentOcr($fulltext['text']);
+                if (!$candidates) {
+                    sendJson(['error' => 'The OCR text was fetched (' . strlen($fulltext['text']) . ' bytes) but could '
+                        . 'not be segmented into any hymn-shaped candidates.'], 422);
+                    break;
+                }
+
+                $songFeatures = iaRecSongFeatures($db, $songbookAbbr);
+                $reportResult = iaRecScoreCandidates($candidates, $songFeatures);
+                $persisted    = iaRecPersistRun($db, $identifier, $songbookAbbr, $fulltext['sha256'], $reportResult['candidates']);
+
+                logActivity('api.admin.ia_reconcile.run', 'songbook', $songbookAbbr, [
+                    'identifier' => $identifier,
+                    'candidates' => count($reportResult['candidates']),
+                    'gaps'       => $reportResult['summary']['counts']['gap'] ?? 0,
+                ]);
+                sendJson([
+                    'ok'           => true,
+                    'identifier'   => $identifier,
+                    'songbookAbbr' => $songbookAbbr,
+                    'fileName'     => $fulltext['fileName'],
+                    'fetchedAt'    => $fulltext['fetchedAt'],
+                    'persisted'    => $persisted,
+                    'summary'      => $reportResult['summary'],
+                    'candidates'   => $reportResult['candidates'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.ia_reconcile.run', 'songbook', $songbookAbbr, $e);
+                error_log('[admin_ia_reconcile_run] ' . $e->getMessage());
+                sendJson(['error' => 'Could not run the reconcile audit.'], 500);
             }
             break;
         }

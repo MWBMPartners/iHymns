@@ -19,12 +19,20 @@ declare(strict_types=1);
  *
  * SCOPE (deliberate)
  * ----------------------------------------------------------------------------
- * The page's `marcxml_import` action (a file-upload wizard) and its two
- * read-only GET handlers (`song_search` typeahead, `marcxml_export`) are
- * OUT OF SCOPE for this extraction — `.claude/api-coverage-2026-08-28.md`
- * §4.3 A4/A17 explicitly defers wizard-shaped MARCXML flows pending a
- * confirmed native-curator surface (§8 Q1). They are untouched by this file
- * and by the page's re-pointing.
+ * The page's two read-only GET handlers (`song_search` typeahead,
+ * `marcxml_export`) stay page-only — no API twin, nothing to extract.
+ * `marcxml_import` (a file-upload flow) was ALSO out of scope at first
+ * extraction, deferred by `.claude/api-coverage-2026-08-28.md` §4.3 A4/A17
+ * pending a confirmed native-curator surface (§8 Q1). Q1 came back yes, and
+ * API-coverage batch 6b ported it as `admin_catalogue_marcxml_import` in
+ * api.php — it calls `catalogueAdminCreate()` / `catalogueAdminSlugify()` /
+ * `catalogueAdminSlugTaken()` / `catalogueAdminPersistPublicationIds()` right
+ * here, the SAME functions `create`/`update` already used, so the API side
+ * never forked the row write. The PAGE's own `marcxml_import` POST handler
+ * (`manage/catalogues.php`) is UNCHANGED — it still does its own inline
+ * INSERT rather than calling this file (that pre-dates this batch and was
+ * out of this batch's scope; a future pass could re-point it at
+ * `catalogueAdminCreate()` too, eliminating the last duplicate INSERT).
  *
  * `tblCatalogues`/`tblCatalogueSongs`/the `/manage/catalogues` route/the
  * `admin.catalogues.*` activity-log key prefix/the `catalogue` entity-type

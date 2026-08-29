@@ -9,8 +9,10 @@ declare(strict_types=1);
  * tool honest — its URL-building is proven safe against a truth table (not
  * just eyeballed), it never re-invents the shared duplicate-scoring maths,
  * it never writes a byte of song content, its outbound client is reachable
- * from nowhere but the one admin page (+ tests), and its OCR segmenter
- * behaves exactly as pinned against a hand-built fixture.
+ * from nowhere but the one admin page and its API twin (+ tests — API-
+ * coverage batch 6b added api.php's admin_ia_reconcile_run as a SECOND
+ * deliberate entry point, delegating to the identical pure pipeline), and
+ * its OCR segmenter behaves exactly as pinned against a hand-built fixture.
  *
  * DERIVATION (rule #34 — tree-derived, not a hand-typed list): the
  * "read-only" scan (§4) walks the THREE new files by name (there are only
@@ -281,7 +283,17 @@ function requiringFiles(array $files, string $needle, string $selfPath): array
 $clientRequirers    = requiringFiles($allPublicPhp, 'ia_client.php', $clientFile);
 $reconcileRequirers = requiringFiles($allPublicPhp, 'ia_reconcile.php', $reconcileFile);
 
-$allowedRel = ['manage/ia-reconcile.php', 'includes/ia_reconcile.php'];
+/* API-coverage batch 6b (.claude/api-coverage-2026-08-28.md §4.3 A17,
+   owner-confirmed native-curator surface) added a SECOND first-party
+   consumer: api.php's admin_ia_reconcile_run delegates to the SAME pure
+   pipeline manage/ia-reconcile.php calls (never a forked fetch/segment/
+   score — tests/php/test-api-coverage-batch6b.php proves the delegation),
+   so both files are now legitimately in the allow-list. Phase 1's
+   "reachable from nowhere else" property still holds in spirit — it is
+   still exactly the two DELIBERATE entry points into this feature (one
+   session-auth web page, one Bearer-auth API twin of the SAME page), not
+   an uncontrolled sprawl. */
+$allowedRel = ['manage/ia-reconcile.php', 'includes/ia_reconcile.php', 'api.php'];
 function relPath(string $repoRoot, string $abs): string
 {
     return ltrim(str_replace($repoRoot . '/appWeb/public_html/', '', $abs), '/');
@@ -292,15 +304,15 @@ foreach ($clientRequirers as $f) {
     $rel = relPath($repoRoot, $f);
     if (!in_array($rel, $allowedRel, true)) { $clientBad[] = $rel; }
 }
-check('ia_client.php is required ONLY from manage/ia-reconcile.php and includes/ia_reconcile.php within public_html', $clientBad === []);
+check('ia_client.php is required ONLY from manage/ia-reconcile.php, includes/ia_reconcile.php and api.php within public_html', $clientBad === []);
 if ($clientBad) { echo "       unexpected requirer(s): " . implode(', ', $clientBad) . "\n"; }
 
 $reconcileBad = [];
 foreach ($reconcileRequirers as $f) {
     $rel = relPath($repoRoot, $f);
-    if ($rel !== 'manage/ia-reconcile.php') { $reconcileBad[] = $rel; }
+    if (!in_array($rel, ['manage/ia-reconcile.php', 'api.php'], true)) { $reconcileBad[] = $rel; }
 }
-check('ia_reconcile.php is required ONLY from manage/ia-reconcile.php within public_html', $reconcileBad === []);
+check('ia_reconcile.php is required ONLY from manage/ia-reconcile.php and api.php within public_html', $reconcileBad === []);
 if ($reconcileBad) { echo "       unexpected requirer(s): " . implode(', ', $reconcileBad) . "\n"; }
 
 /* Also check the tests/ tree itself doesn't smuggle a requirer in from

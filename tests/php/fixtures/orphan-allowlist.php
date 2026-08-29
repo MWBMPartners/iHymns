@@ -444,6 +444,35 @@ return [
         'admin_webhook_delete'                  => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s delete action calls the SAME pre-existing includes/webhook_admin.php webhookSubscriptionDelete() core (never a fork), so nothing first-party calls the JSON twin yet',
         'admin_webhook_redrive'                 => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s redrive action calls the SAME pre-existing includes/webhook_admin.php webhookDeliveryRedrive() core (never a fork), so nothing first-party calls the JSON twin yet',
 
+        /* .claude/api-coverage-2026-08-28.md §4.3 A17 (API-coverage batch
+           6b) — the three MARCXML-file-upload imports the earlier
+           4b-i/4b-ii batches deliberately deferred, ported once the owner
+           confirmed a native-curator-app surface (Q1=yes). Each delegates
+           to the shared MARCXML parse core (manage/includes/
+           marcxml_admin.php, itself wrapping includes/marcxml.php) and, for
+           catalogues/songbook-series, the SAME row-write core the sibling
+           `admin_*_create` action already uses (never a fork). Songbooks
+           has no extracted row-write core (admin_songbook_create itself
+           still inlines its own INSERT — a pre-existing condition, not
+           introduced by this batch), so admin_songbook_marcxml_import
+           mirrors the page's own two-step INSERT+UPDATE shape instead.
+           tests/php/test-api-coverage-batch6b.php proves the delegation +
+           the three pages' own marcxml_import handlers staying untouched. */
+        'admin_songbook_marcxml_import'         => 'deliberate API-first surface (API-coverage batch 6b, §4.3 A17); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/songbooks.php\'s marcxml_import action does the SAME uniqueness-check + INSERT + UPDATE + IL-id-mint + maintenance-hook sequence (never a fork of the MARCXML parse core), so nothing first-party calls the JSON twin yet',
+        'admin_catalogue_marcxml_import'        => 'deliberate API-first surface (API-coverage batch 6b, §4.3 A17); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; delegates to the SAME shared includes/catalogue_admin.php catalogueAdminCreate() core admin_catalogue_create already uses (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_songbook_series_marcxml_import'  => 'deliberate API-first surface (API-coverage batch 6b, §4.3 A17); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; delegates to the SAME shared includes/songbook_series_admin.php songbookSeriesAdminCreate() core admin_songbook_series_create already uses (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* .claude/api-coverage-2026-08-28.md §4.3 A17 (API-coverage batch
+           6b) — after individually assessing A17's other "genuinely
+           multi-step / interactive tools" (bulk-promote wizards,
+           `ia-reconcile` run, `family_manifest`), this one turned out to be
+           a genuinely clean single POST -> JSON-report call (unlike the
+           other two, both deferred — see this batch's implementation
+           report). Delegates end-to-end to the SAME pipeline
+           manage/ia-reconcile.php calls (includes/ia_client.php +
+           includes/ia_reconcile.php), never a forked fetch/segment/score. */
+        'admin_ia_reconcile_run'                => 'deliberate API-first surface (API-coverage batch 6b, §4.3 A17); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; delegates to the SAME shared includes/ia_client.php + includes/ia_reconcile.php pipeline manage/ia-reconcile.php\'s own POST run handler calls (never a fork), so nothing first-party calls the JSON twin yet',
+
         /* ---------------------------------------------------------------
          * 1b. Content-gating / licensing family — 12 (§2.2 + `tier_check`).
          *

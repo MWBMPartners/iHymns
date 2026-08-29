@@ -628,6 +628,13 @@ tags:
     description: Review pending song revisions
   - name: Admin — Maintenance
     description: Cleanup, export, and songbook-health utilities
+  - name: Admin — IA Reconcile
+    description: |
+      Internet Archive OCR reconcile audit (#94 Phase 1). Compares a
+      scanned songbook from archive.org against an existing iHymns
+      songbook and reports likely matches / gaps / unmatched songs.
+      Read-only w.r.t. song content — the only write is audit
+      bookkeeping so a curator can revisit the same run later.
   - name: Editor API
     description: |
       Admin-only endpoints under `/manage/editor/api.php`, protected by the
@@ -10042,6 +10049,65 @@ paths:
         "403":
           description: Admin / global_admin role required
 
+  /api.php?action=admin_songbook_marcxml_import:
+    post:
+      operationId: adminSongbookMarcxmlImport
+      tags: [Admin — Songbooks]
+      summary: Create a songbook from an uploaded MARCXML file
+      description: |
+        Ported from `manage/songbooks.php`'s `marcxml_import` POST handler
+        by API-coverage batch 6b (§4.3 A17, owner-confirmed native-curator
+        surface). MARCXML carries no Abbreviation (it IS the SongId prefix,
+        rule #27), so the caller supplies it; the title (245 $a) and
+        bibliographic fields/identifiers come from the file. A slightly-off
+        identifier is skipped, not fatal — reported back in `skipped` /
+        `unmapped` rather than failing the whole import.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_marcxml_import] }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [marcxml_file, abbreviation]
+              properties:
+                marcxml_file:
+                  type: string
+                  format: binary
+                  description: A MARCXML (.xml) file, <= 2 MB, with at least one <record>.
+                abbreviation:
+                  type: string
+                  description: The new songbook's Abbreviation (the SongId prefix) — MARCXML has no equivalent field.
+      responses:
+        "201":
+          description: Songbook created from MARCXML
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer }
+                  abbreviation: { type: string }
+                  name:         { type: string, description: Title from MARC field 245 $a. }
+                  colour:       { type: string, description: Auto-picked from the songbook palette. }
+                  skipped:      { type: array, items: { type: string }, description: Identifiers dropped for failing validation. }
+                  unmapped:     { type: array, items: { type: string }, description: MARC tags the mapper did not recognise (first 12). }
+        "400":
+          description: No/invalid file upload, or the abbreviation fails validation
+        "403":
+          description: Admin access required
+        "409":
+          description: Abbreviation already exists
+        "422":
+          description: The MARCXML record has no title (245 $a)
+
   /api.php?action=admin_pending_revisions:
     get:
       operationId: adminPendingRevisions
@@ -12632,8 +12698,9 @@ paths:
   # INTERNALLY — the Catalogue→Collection relabel is UI copy only (rule
   # #24). Gated on the manage_songbooks entitlement (same coarse
   # entitlement the page uses — catalogues are a flavour of catalogue-level
-  # metadata, not a separate domain). The page's `marcxml_import` wizard
-  # (file-upload) is intentionally NOT covered here — see
+  # metadata, not a separate domain). The page's `marcxml_import` action is
+  # now ALSO covered here as admin_catalogue_marcxml_import (API-coverage
+  # batch 6b, §4.3 A17, owner-confirmed native-curator surface) — see
   # includes/catalogue_admin.php's doc-block.
   # ===========================================================================
   /api.php?action=admin_catalogue_create:
@@ -12873,6 +12940,62 @@ paths:
         "503":
           description: Collections registry not migrated on this environment yet
 
+  /api.php?action=admin_catalogue_marcxml_import:
+    post:
+      operationId: adminCatalogueMarcxmlImport
+      tags: [Admin — Catalogues]
+      summary: Create a catalogue ("Collection") from an uploaded MARCXML file
+      description: |
+        Ported from `manage/catalogues.php`'s `marcxml_import` POST handler
+        by API-coverage batch 6b (§4.3 A17, owner-confirmed native-curator
+        surface). Imported HIDDEN (`visibility: admin_only`) so a curator
+        reviews it before it goes public. The slug is auto-derived from the
+        title and auto-suffixed on a collision. A slightly-off identifier is
+        skipped, not fatal — reported back in `skipped` / `unmapped` rather
+        than failing the whole import.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_catalogue_marcxml_import] }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [marcxml_file]
+              properties:
+                marcxml_file:
+                  type: string
+                  format: binary
+                  description: A MARCXML (.xml) file, <= 2 MB, with at least one <record>.
+      responses:
+        "201":
+          description: Collection created from MARCXML (hidden — admin_only visibility)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  id:         { type: integer }
+                  slug:       { type: string }
+                  title:      { type: string, description: Title from MARC field 245 $a. }
+                  visibility: { type: string, enum: [admin_only] }
+                  skipped:    { type: array, items: { type: string }, description: Identifiers dropped for failing validation. }
+                  unmapped:   { type: array, items: { type: string }, description: MARC tags the mapper did not recognise (first 12). }
+        "400":
+          description: No/invalid file upload
+        "403":
+          description: Admin access required
+        "422":
+          description: The MARCXML record has no title (245 $a)
+        "503":
+          description: Collections registry not migrated on this environment yet
+
   # ===========================================================================
   # ADMIN — SONGBOOK SERIES  (#782/#1765, API-coverage batch 4b-i A5)
   #
@@ -12880,8 +13003,10 @@ paths:
   # table. The web page /manage/songbook-series and these JSON twins share
   # ONE core (includes/songbook_series_admin.php). Gated on the
   # manage_songbooks entitlement — same as /manage/songbooks. The page's
-  # `marcxml_import` wizard (file-upload) is intentionally NOT covered
-  # here — see includes/songbook_series_admin.php's doc-block.
+  # `marcxml_import` action is now ALSO covered here as
+  # admin_songbook_series_marcxml_import (API-coverage batch 6b, §4.3 A17,
+  # owner-confirmed native-curator surface) — see
+  # includes/songbook_series_admin.php's doc-block.
   # ===========================================================================
   /api.php?action=admin_songbook_series_create:
     post:
@@ -13051,6 +13176,60 @@ paths:
           description: Admin access required
         "404":
           description: Series not found
+        "503":
+          description: Songbook Series registry not migrated on this environment yet
+
+  /api.php?action=admin_songbook_series_marcxml_import:
+    post:
+      operationId: adminSongbookSeriesMarcxmlImport
+      tags: [Admin — Songbook Series]
+      summary: Create a songbook series from an uploaded MARCXML file
+      description: |
+        Ported from `manage/songbook-series.php`'s `marcxml_import` POST
+        handler by API-coverage batch 6b (§4.3 A17, owner-confirmed
+        native-curator surface). The slug is auto-derived from the name and
+        auto-suffixed on a collision. A slightly-off identifier is skipped,
+        not fatal — reported back in `skipped` / `unmapped` rather than
+        failing the whole import.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_songbook_series_marcxml_import] }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [marcxml_file]
+              properties:
+                marcxml_file:
+                  type: string
+                  format: binary
+                  description: A MARCXML (.xml) file, <= 2 MB, with at least one <record>.
+      responses:
+        "201":
+          description: Songbook series created from MARCXML
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:       { type: boolean, example: true }
+                  id:       { type: integer }
+                  name:     { type: string, description: Title from MARC field 245 $a. }
+                  slug:     { type: string }
+                  skipped:  { type: array, items: { type: string }, description: Identifiers dropped for failing validation. }
+                  unmapped: { type: array, items: { type: string }, description: MARC tags the mapper did not recognise (first 12). }
+        "400":
+          description: No/invalid file upload
+        "403":
+          description: Admin access required
+        "422":
+          description: The MARCXML record has no title (245 $a)
         "503":
           description: Songbook Series registry not migrated on this environment yet
 
@@ -15289,6 +15468,91 @@ paths:
           description: The manage_webhooks entitlement is required
         "409":
           description: Webhook tables are not migrated on this environment, or the delivery is not in a retryable state
+
+  # ===========================================================================
+  # ADMIN — INTERNET ARCHIVE OCR RECONCILE  (#94 Phase 1, API-coverage
+  # batch 6b — §4.3 A17, owner-confirmed native-curator surface)
+  #
+  # A single run mirrors manage/ia-reconcile.php's POST 'run' handler:
+  # fetches + caches an archive.org scan's OCR text (includes/ia_client.php),
+  # segments + scores it against an existing songbook's songs
+  # (includes/ia_reconcile.php), and persists the run for later re-fetch.
+  # Read-only w.r.t. song content — the only write is audit bookkeeping.
+  # Gated on the edit_songs entitlement — same as /manage/ia-reconcile.
+  # Assessed alongside the MARCXML imports above as one of A17's
+  # "genuinely multi-step / interactive tools"; unlike the deferred
+  # bulk-promote and family_manifest wizards (both stay web-only — see
+  # this batch's implementation report), this one turned out to be a
+  # clean single POST -> JSON-report call.
+  # ===========================================================================
+  /api.php?action=admin_ia_reconcile_run:
+    post:
+      operationId: adminIaReconcileRun
+      tags: [Admin — IA Reconcile]
+      summary: Run an Internet Archive OCR reconcile audit against a songbook
+      description: |
+        Fetches (or re-uses the cached) OCR fulltext for an archive.org
+        item, segments it into hymn-shaped candidates, and scores each
+        against the given songbook's existing songs. Every call recomputes
+        the report from the current DB state — there is no server-side
+        stored wizard state to manage. `persisted: false` in the response
+        means the audit-bookkeeping tables aren't migrated yet on this
+        environment; the report itself is still returned in full.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_ia_reconcile_run] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, songbook_abbr]
+              properties:
+                identifier:
+                  type: string
+                  description: An archive.org item identifier, or a details/download URL (canonicalised server-side).
+                songbook_abbr:
+                  type: string
+                  description: An existing songbook's Abbreviation to score candidates against.
+                force_refresh:
+                  type: boolean
+                  default: false
+                  description: Bypass the DB-cached metadata/fulltext and re-fetch from archive.org.
+      responses:
+        "200":
+          description: Reconcile report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:            { type: boolean, example: true }
+                  identifier:    { type: string }
+                  songbookAbbr:  { type: string }
+                  fileName:      { type: string, nullable: true, description: The OCR text file matched on archive.org. }
+                  fetchedAt:     { type: string, nullable: true, format: date-time }
+                  persisted:     { type: boolean, description: false when the audit-bookkeeping tables aren't migrated yet — the report is still returned. }
+                  summary:
+                    type: object
+                    description: Verdict counts (exact/strong/review/gap/unscorable) + coverage percentage.
+                  candidates:
+                    type: array
+                    items:
+                      type: object
+                      description: One OCR candidate — heading number, raw title, first line, best iHymns match (if any), score, verdict.
+        "400":
+          description: Invalid/missing identifier or songbook_abbr, or an unknown songbook_abbr
+        "403":
+          description: The edit_songs entitlement is required
+        "422":
+          description: OCR text fetched but could not be segmented into any hymn-shaped candidates
+        "502":
+          description: archive.org did not answer, the item has no OCR text file, or the response exceeded the size cap
 
   # ===========================================================================
   # PAGES  (HTML renderers for SPA page-fragment hydration)

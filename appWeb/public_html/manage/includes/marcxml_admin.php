@@ -34,10 +34,22 @@ declare(strict_types=1);
  *   in columns, slug/abbreviation derivation, and dedup), so this helper
  *   returns the mapped fields and lets the caller create the row.
  *
+ * API-coverage batch 6b (.claude/api-coverage-2026-08-28.md §4.3 A17,
+ * owner-confirmed native-curator surface, Q1=yes) added a FOURTH consumer:
+ * `api.php`'s `admin_songbook_marcxml_import` / `admin_catalogue_
+ * marcxml_import` / `admin_songbook_series_marcxml_import` actions call
+ * `marcxmlAdmin_parseUpload()` / `marcxmlAdmin_cleanPublicationIdentifiers()`
+ * exactly as the three pages do — this file's parse-only contract (never
+ * touches the DB) is what makes that safe: the API side just has a
+ * different caller for the resulting fields. `marcxmlAdmin_sendExport()`
+ * stays page-only (no API twin — export is a page-rendered download link,
+ * not something a native client currently needs).
+ *
  * @link appWeb/public_html/includes/marcxml.php  the pure parse/map/generate core
  * @link appWeb/public_html/manage/songbooks.php        export + import call sites
  * @link appWeb/public_html/manage/songbook-series.php   export + import call sites
  * @link appWeb/public_html/manage/catalogues.php        export + import call sites
+ * @link appWeb/public_html/api.php                      admin_*_marcxml_import API call sites (batch 6b)
  */
 
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'marcxml.php';
