@@ -532,6 +532,19 @@ if (!is_readable($sbFormFieldsFile)) {
     exit(1);
 }
 
+/* #1993 — songbooks.php's 'create' case was re-pointed onto the shared
+   songbookAdminValidateCreate()/…Create() core (rule #22, same posture as
+   #1988's work_admin.php extraction above): the field-parsing + the
+   publisher-resolve-and-link block §F polices moved OUT of the case body
+   and into this file. §F below now follows that ONE level of delegation,
+   the same way B1 already follows works.php's delegation into
+   work_admin.php. */
+$songbookAdminFile = $web . '/includes/songbook_admin.php';
+if (!is_readable($songbookAdminFile)) {
+    fwrite(STDERR, "FATAL: could not read includes/songbook_admin.php at {$songbookAdminFile}\n");
+    exit(1);
+}
+
 /* #1868 §G — the two search-select-only surfaces. manage/publishers.php is
    already read via $publishersFile above (declared for §A/§B's tree sweep);
    groups.php is new to this file. */
@@ -596,6 +609,7 @@ $reqPhpRaw         = (string)file_get_contents($reqPhpFile);
    to catalogues.php for §H (all have picker wiring living inside a plain
    <script> tag — the identical T_INLINE_HTML trap). */
 $workAdminRaw = (string)file_get_contents($workAdminFile);
+$songbookAdminRaw = (string)file_get_contents($songbookAdminFile);
 
 $helpersPhpView   = wrpStripPhpComments($helpersRaw);
 $worksPhpView     = wrpStripPhpComments($worksRaw);
@@ -603,6 +617,7 @@ $worksAllView     = wrpStripAllComments($worksRaw);
 $workAdminPhpView = wrpStripPhpComments($workAdminRaw);
 $songbooksPhpView = wrpStripPhpComments($songbooksRaw);
 $songbooksAllView = wrpStripAllComments($songbooksRaw);
+$songbookAdminPhpView = wrpStripPhpComments($songbookAdminRaw);
 $groupsPhpView     = wrpStripPhpComments($groupsRaw);
 $groupsAllView     = wrpStripAllComments($groupsRaw);
 $publishersPhpView = wrpStripPhpComments($publishersRaw);
@@ -810,52 +825,78 @@ if ($workParseExtraFieldsFn === '') {
    contract rule #37/#43 requires) and seeds tblSongbookPublishers — the SAME
    funnel + the SAME table the Edit arm's own richer multi-publisher
    reconciliation writes, so there is exactly one write path per table
-   (rule #37's "never a second sync path"). Bounded to the 'create' case ONLY
-   via wrpSliceCaseBlock() — the sibling 'update' case legitimately contains
-   neither of these (it goes through the multi-publisher picker instead), so
-   an unbounded whole-file scan could not tell "the create arm is wired"
-   apart from "this text appears somewhere in a 5000-line file". ---- */
+   (rule #37's "never a second sync path"). #1993 moved this block out of
+   the case body and into includes/songbook_admin.php's songbookAdminCreate()
+   (rule #22 — the SAME extraction B1 above already follows one level deep
+   for works.php/work_admin.php) — so this now (a) confirms the case body
+   DELEGATES via songbookAdminCreate(, then (b) follows that ONE level of
+   indirection into the core function's own body for the actual
+   resolve-and-link assertions, rather than expecting them inline. Bounded
+   to the 'create' case ONLY via wrpSliceCaseBlock() — the sibling 'update'
+   case legitimately contains neither of these (it goes through the
+   multi-publisher picker instead). */
 $sbCreateBlock = wrpSliceCaseBlock($songbooksPhpView, 'create');
+$sbAdminCreateFn = wrpSliceFunctionDecl($songbookAdminPhpView, 'songbookAdminCreate');
 if ($sbCreateBlock === '') {
     $failures[] = "could not locate case 'create': { ... } in manage/songbooks.php (slicer or file shape changed)";
+} elseif (strpos($sbCreateBlock, 'songbookAdminCreate(') === false) {
+    $failures[] = "songbooks.php's 'create' case never calls songbookAdminCreate() — the #1993 delegation to includes/songbook_admin.php is broken (rule #22)";
+}
+if ($sbAdminCreateFn === '') {
+    $failures[] = 'could not locate function songbookAdminCreate() in includes/songbook_admin.php (slicer or file shape changed)';
 } else {
-    if (strpos($sbCreateBlock, 'publisherResolvePickedOrCreate(') === false) {
-        $failures[] = "songbooks.php's 'create' case never calls publisherResolvePickedOrCreate() — the Publisher field's find-or-create-on-commit is broken (#1865, rule #37/#43)";
+    if (strpos($sbAdminCreateFn, 'publisherResolvePickedOrCreate(') === false) {
+        $failures[] = "includes/songbook_admin.php's songbookAdminCreate() never calls publisherResolvePickedOrCreate() — the Publisher field's find-or-create-on-commit is broken (#1865, rule #37/#43)";
     }
     /* Word-boundary, not strpos: rule #34's own documented trap —
        'tblSongbookPublishersXXX' still contains 'tblSongbookPublishers' as
        a bare substring, so a table-name typo/rename would stay wrong-but-
        green under a plain strpos() (see test-publisher-registry.php's
        pubHas() doc-comment for the identical lesson, applied here). */
-    if (!preg_match('/INSERT INTO tblSongbookPublishers\b/', $sbCreateBlock)) {
-        $failures[] = "songbooks.php's 'create' case never writes INSERT INTO tblSongbookPublishers — a brand-new songbook's Publisher field stops short of the registry link (#1865, rule #37)";
+    if (!preg_match('/INSERT INTO tblSongbookPublishers\b/', $sbAdminCreateFn)) {
+        $failures[] = "includes/songbook_admin.php's songbookAdminCreate() never writes INSERT INTO tblSongbookPublishers — a brand-new songbook's Publisher field stops short of the registry link (#1865, rule #37)";
     }
-    if (strpos($sbCreateBlock, 'publisherFindOrCreateByName(') !== false) {
-        $failures[] = "songbooks.php's 'create' case calls publisherFindOrCreateByName() directly — it must go through publisherResolvePickedOrCreate() so a verified picker claim is trusted over a blind name resolve (rule #37/#43)";
+    if (strpos($sbAdminCreateFn, 'publisherFindOrCreateByName(') !== false) {
+        $failures[] = "includes/songbook_admin.php's songbookAdminCreate() calls publisherFindOrCreateByName() directly — it must go through publisherResolvePickedOrCreate() so a verified picker claim is trusted over a blind name resolve (rule #37/#43)";
     }
 }
 
 /* ---- F2: no bare free-text write becomes authoritative over the registry
    — the create INSERT's Publisher column is fed by $publisher (the typed
-   string) as always, but the SAME case must ALSO resolve+link it; F1 above
-   already proves the link exists. This assertion additionally locks in that
-   the resolver call is gated on $hasPublishersSchema (pre-migration safety —
-   rule #9), so an un-migrated install degrades to "display-string-only"
-   instead of a fatal on a missing table. ---- */
-if ($sbCreateBlock !== '' && !preg_match('/hasPublishersSchema[\s\S]{0,400}publisherResolvePickedOrCreate\(/', $sbCreateBlock)) {
-    $failures[] = "songbooks.php's 'create' case calls publisherResolvePickedOrCreate() without gating it on \$hasPublishersSchema first — a pre-migration install (no tblSongbookPublishers yet) would risk a fatal instead of degrading gracefully (rule #9)";
+   string) as always, but the SAME function must ALSO resolve+link it; F1
+   above already proves the link exists. This assertion additionally locks
+   in that the resolver call is gated on the caller's hasPublishersSchema
+   flag (pre-migration safety — rule #9), so an un-migrated install
+   degrades to "display-string-only" instead of a fatal on a missing table.
+   #1993: the flag arrives as $flags['hasPublishersSchema'] (an array key
+   the caller's own hoisted $hasPublishersSchema is passed in as), not the
+   bare local variable §F2 checked for pre-#1993 — same gating discipline,
+   new call shape. ---- */
+if ($sbAdminCreateFn !== '' && !preg_match('/hasPublishersSchema[\s\S]{0,400}publisherResolvePickedOrCreate\(/', $sbAdminCreateFn)) {
+    $failures[] = "includes/songbook_admin.php's songbookAdminCreate() calls publisherResolvePickedOrCreate() without gating it on hasPublishersSchema first — a pre-migration install (no tblSongbookPublishers yet) would risk a fatal instead of degrading gracefully (rule #9)";
+}
+if ($sbCreateBlock !== '' && !preg_match('/songbookAdminCreate\([\s\S]{0,400}hasPublishersSchema/', $sbCreateBlock)) {
+    $failures[] = "songbooks.php's 'create' case never passes hasPublishersSchema through to songbookAdminCreate() — the pre-migration gate in F2 above would never actually engage";
 }
 
 /* ---- F3: the publisher_id wire contract is honoured at BOTH ends
    (rule #33) — the shared form-fields partial EMITS name="publisher_id" and
-   the songbooks.php 'create' case READS $_POST['publisher_id']. Raw markup
-   (an HTML attribute is never inside a comment in the real file) + the
-   PHP-comment-stripped create-block view for the read side. ---- */
+   includes/songbook_admin.php's songbookAdminValidateCreate() READS
+   $in['publisher_id'] (#1993 — the read moved from the page's own
+   $_POST[...] to the shared core's $in[...] parameter, which the case body
+   populates by passing $_POST straight through; both halves are checked
+   below so a delegation that silently drops the field on either side goes
+   red). Raw markup (an HTML attribute is never inside a comment in the
+   real file) + comment-stripped views for the read side. ---- */
 if (strpos($sbFormFieldsRaw, 'name="publisher_id"') === false) {
     $failures[] = 'manage/includes/songbook-form-fields.php no longer emits name="publisher_id" — the create-form Publisher picker\'s hidden id is not wired';
 }
-if ($sbCreateBlock === '' || !preg_match('/\$_POST\[\s*\'publisher_id\'\s*\]/', $sbCreateBlock)) {
-    $failures[] = 'songbooks.php\'s \'create\' case never reads $_POST[\'publisher_id\'] — the partial emits the field but nothing consumes it server-side (rule #33: a param nobody reads)';
+$sbAdminValidateFn = wrpSliceFunctionDecl($songbookAdminPhpView, 'songbookAdminValidateCreate');
+if ($sbAdminValidateFn === '' || !preg_match('/\$in\[\s*\'publisher_id\'\s*\]/', $sbAdminValidateFn)) {
+    $failures[] = 'includes/songbook_admin.php\'s songbookAdminValidateCreate() never reads $in[\'publisher_id\'] — the partial emits the field but nothing consumes it server-side (rule #33: a param nobody reads)';
+}
+if ($sbCreateBlock === '' || !preg_match('/songbookAdminValidateCreate\(\s*\$db\s*,\s*\$_POST\s*\)/', $sbCreateBlock)) {
+    $failures[] = "songbooks.php's 'create' case never calls songbookAdminValidateCreate(\$db, \$_POST) — the page's raw POST body must reach the core's \$in[...] reads for F3's publisher_id wire (and every other field) to actually arrive";
 }
 
 /* ---- F4: the client wiring actually attaches the create-only picker with

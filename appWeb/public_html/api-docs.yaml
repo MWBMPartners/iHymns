@@ -9858,7 +9858,10 @@ paths:
       tags: [Admin — Songbooks]
       summary: Create a songbook
       description: |
-        Mirrors the `create` POST on /manage/songbooks. Empty `colour`
+        Delegates to the SAME shared core the `create` case of
+        /manage/songbooks and its guided "New Songbook" wizard call
+        (`songbookAdminValidateCreate()`/`…Create()`,
+        `includes/songbook_admin.php`, #1993, rule #22). Empty `colour`
         triggers the auto-pick palette (#677); the resolved colour is
         echoed back so the caller can render the badge immediately.
       security:
@@ -9886,8 +9889,27 @@ paths:
                   id:           { type: integer, description: New tblSongbooks.Id, example: 42 }
                   abbreviation: { type: string,  example: CP }
                   colour:       { type: string,  description: Resolved hex (auto-picked when blank), example: "#3B82F6" }
+                  displayAbbr:  { type: string, nullable: true, description: "Echoes display_abbr (#1332), null on an un-migrated install or when omitted." }
+                  publisherId:  { type: integer, nullable: true, description: "Resolved tblPublishers.Id when a publisher was supplied and the #1865 registry schema exists; null otherwise." }
         "400":
-          description: Validation error (abbreviation grammar, colour shape, BCP 47 tag, missing name)
+          description: |
+            Validation error (abbreviation grammar, colour shape, BCP 47
+            tag, missing name, or a malformed ARK/OpenLibrary identifier).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  field:
+                    type: string
+                    nullable: true
+                    description: |
+                      #1993. Which input the error is about — e.g.
+                      `abbreviation`/`name`/`colour`/`language`/`ark_id`/
+                      `openlibrary_work_id`/`openlibrary_edition_id` — so a
+                      client can route feedback to the right field/step
+                      without matching `error`'s prose (rule #35).
         "403":
           description: Admin access required
         "409":
@@ -23207,6 +23229,23 @@ components:
           `lang[-Script][-Region]`, max 35 chars.
         - All bibliographic identifier fields are nullable; an empty
           string normalises to NULL on the server.
+
+        #1993 — `admin_songbook_create` now delegates to the SAME
+        `songbookAdminValidateCreate()`/`…Create()` core
+        `/manage/songbooks`'s "Add a songbook" form and its guided wizard
+        call (`includes/songbook_admin.php`, rule #22), so create gained
+        parity it never had: `display_abbr` (#1332), `publisher_id`
+        (#1865), `publication_city`/`publication_city_id`,
+        `is_public_domain` and `openlibrary_work_id`/
+        `openlibrary_edition_id` (#1765 Features 2/3) — all CREATE-ONLY
+        for now (`admin_songbook_update` doesn't read them yet; a future
+        pass may extend the update side). At the same time, create
+        STOPPED accepting `internet_archive_url` — the web form dropped
+        that input in #1765 Feature 7 and the shared core now hardcodes
+        it null, so a caller that still posts it to CREATE has it
+        silently ignored. `internet_archive_url` remains valid on
+        `admin_songbook_update` only, which has its own separate,
+        un-touched-by-#1993 field-parsing block.
       required: [abbreviation, name]
       properties:
         abbreviation:
@@ -23232,19 +23271,57 @@ components:
           type: boolean
           default: false
           description: Recognised as an official Adventist publication (#502 / #670).
+        display_abbr:
+          type: string
+          nullable: true
+          maxLength: 30
+          description: |
+            #1332, CREATE ONLY (#1993). Optional free-text label (any
+            characters) shown to users instead of the abbreviation; the
+            abbreviation itself always stays the letters/numbers song-URL
+            code. Blank/omitted shows the abbreviation as-is.
+          example: AH-OLD
         publisher:
           type: string
           nullable: true
           example: Pacific Press Publishing Association
+        publisher_id:
+          type: integer
+          nullable: true
+          description: |
+            #1865, CREATE ONLY (#1993). A `tblPublishers.Id` the caller has
+            already resolved (e.g. via a prior publisher-search call) and
+            wants linked as this songbook's primary publisher. Verified
+            server-side against `publisher` (name must match) before being
+            trusted — an unverified/mismatched id is silently ignored and
+            the create falls back to name-based find-or-create.
         publication_year:
           type: string
           nullable: true
           description: Year of publication. Stored as VARCHAR so non-numeric strings (e.g. "1985 / 2002 reprint") survive.
           example: "1985"
+        publication_city:
+          type: string
+          nullable: true
+          description: CREATE ONLY (#1993). Free-text place of publication.
+          example: London, England
+        publication_city_id:
+          type: integer
+          nullable: true
+          description: |
+            CREATE ONLY (#1993). A resolved `tblPlaces.Id` paired with
+            `publication_city`. Omit to persist the free-text string alone.
         copyright:
           type: string
           nullable: true
           example: "© 1985 Review and Herald"
+        is_public_domain:
+          type: boolean
+          default: false
+          description: |
+            #1765 Feature 2, CREATE ONLY (#1993). The songbook itself (as a
+            published work) is in the public domain. Informational only —
+            never a content gate.
         affiliation:
           type: string
           nullable: true
@@ -23266,7 +23343,14 @@ components:
         internet_archive_url:
           type: string
           nullable: true
-          description: Internet Archive landing page (#672)
+          description: |
+            Internet Archive landing page (#672). UPDATE ONLY as of #1993 —
+            `/manage/songbooks`'s create form dropped this input in #1765
+            Feature 7 (IA links now go through the external-links card-list,
+            reachable only after the row exists), and `admin_songbook_create`
+            now delegates to the same shared core so it silently ignores
+            this key if posted. `admin_songbook_update` still reads/writes
+            it via its own separate, un-touched field-parsing block.
         wikipedia_url:
           type: string
           nullable: true
@@ -23295,6 +23379,23 @@ components:
           type: string
           nullable: true
           description: Archival Resource Key (ARK) (#672)
+        openlibrary_work_id:
+          type: string
+          nullable: true
+          maxLength: 20
+          description: |
+            #1765 Feature 3, CREATE ONLY (#1993). OpenLibrary Work id
+            (`OL...W`), validated via the shared publication-identifier
+            validator (`includes/media_identifiers.php`).
+          example: OL102749W
+        openlibrary_edition_id:
+          type: string
+          nullable: true
+          maxLength: 20
+          description: |
+            #1765 Feature 3, CREATE ONLY (#1993). OpenLibrary Edition id
+            (`OL...M`), same shared validator as `openlibrary_work_id`.
+          example: OL7357422M
         isni_id:
           type: string
           nullable: true

@@ -311,6 +311,15 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
 /* #1860 go-live — ilidStampNewRow() for admin_musician_add / admin_songbook_create below. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+/* #1993 (rule #22) — the shared songbook CREATE validate+write core.
+   admin_songbook_create below now calls songbookAdminValidateCreate()/
+   …Create() — the SAME functions manage/songbooks.php's `create` case and
+   its new guided-wizard `wizard_create_songbook` case call — instead of
+   its own drifted inline copy (that copy was missing DisplayAbbr/
+   PublicationCity+Id/IsPublicDomain/OpenLibrary/the #1865 publisher-
+   registry seed the page already had, and still accepted a removed
+   `internet_archive_url` input — all fixed by this re-point). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_admin.php';
 /* #1748 — the tune admin CRUD shared cores. The admin_tune_* actions below
    call these SAME functions manage/tunes.php's POST handlers call — one
    validation/persist/merge/delete core, two thin callers (rule #22/#35). */
@@ -14018,155 +14027,100 @@ if ($action !== null) {
 
             $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
 
-            $abbr     = trim((string)($body['abbreviation']  ?? ''));
-            $name     = trim((string)($body['name']          ?? ''));
-            $colour   = trim((string)($body['colour']        ?? ''));
-            $order    = (int)($body['display_order']         ?? 0);
-            $isOfficial = !empty($body['is_official']) ? 1 : 0;
-            $publisher  = trim((string)($body['publisher']        ?? '')) ?: null;
-            $pubYear    = trim((string)($body['publication_year'] ?? '')) ?: null;
-            $copyright  = trim((string)($body['copyright']        ?? '')) ?: null;
-            $affiliation= trim((string)($body['affiliation']      ?? '')) ?: null;
-
-            /* Optional language tag (#673 / #681). Cap to column width
-               (35 chars) before validating so a crafted-long tag can't
-               smuggle past the regex via mid-string truncation. */
-            $language   = trim((string)($body['language']         ?? '')) ?: null;
-            if ($language !== null) {
-                $language = mb_substr($language, 0, 35);
-                if ($e = validateSongbookBcp47($language)) {
-                    sendJson(['error' => $e], 400);
-                    break;
-                }
-            }
-
-            $websiteUrl   = trim((string)($body['website_url']         ?? '')) ?: null;
-            $iaUrl        = trim((string)($body['internet_archive_url']?? '')) ?: null;
-            $wikipediaUrl = trim((string)($body['wikipedia_url']       ?? '')) ?: null;
-            $wikidataId   = trim((string)($body['wikidata_id']         ?? '')) ?: null;
-            $oclcNumber   = trim((string)($body['oclc_number']         ?? '')) ?: null;
-            $ocnNumber    = trim((string)($body['ocn_number']          ?? '')) ?: null;
-            $lcpNumber    = trim((string)($body['lcp_number']          ?? '')) ?: null;
-            $isbn         = trim((string)($body['isbn']                ?? '')) ?: null;
-            $arkId        = trim((string)($body['ark_id']              ?? '')) ?: null;
-            $isniId       = trim((string)($body['isni_id']             ?? '')) ?: null;
-            $viafId       = trim((string)($body['viaf_id']             ?? '')) ?: null;
-            $lccn         = trim((string)($body['lccn']                ?? '')) ?: null;
-            $lcClass      = trim((string)($body['lc_class']            ?? '')) ?: null;
-
-            if ($e = validateSongbookAbbr($abbr)) {
-                sendJson(['error' => $e], 400);
-                break;
-            }
-            if ($name === '') {
-                sendJson(['error' => 'Name is required.'], 400);
-                break;
-            }
-            if ($e = validateSongbookColour($colour)) {
-                sendJson(['error' => $e], 400);
-                break;
-            }
-
             try {
                 $db = getDbMysqli();
 
-                /* Auto-colour fallback (#677) — palette helper lives in
-                   the manage tree because that's where the seed colours
-                   are documented. Lazy-loaded so the read paths above
-                   don't pay the include cost. */
-                if ($colour === '') {
-                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
-                               . 'includes'  . DIRECTORY_SEPARATOR . 'songbook-palette.php';
-                    $colour = pickAutoSongbookColour($db, $abbr);
-                }
-
-                /* @disabled-visible: admin surface + UNIQUE-key pre-check
-                   (#1765) — a disabled book's Abbreviation is still taken;
-                   filtering here would let a curator mint a colliding
-                   abbreviation and 500 on the INSERT's real UNIQUE
-                   constraint instead of getting this clean 409. */
-                $stmt = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ?');
-                $stmt->bind_param('s', $abbr);
-                $stmt->execute();
-                $exists = $stmt->get_result()->fetch_row() !== null;
-                $stmt->close();
-                if ($exists) {
-                    sendJson(['error' => 'Abbreviation already exists.'], 409);
+                /* #1993 (rule #22) — re-pointed onto the SAME
+                   songbookAdminValidateCreate()/…Create() core
+                   manage/songbooks.php's `create` and `wizard_create_songbook`
+                   cases call. This is where the API gains parity it never
+                   had before: DisplayAbbr (#1332), PublicationCity +
+                   PublicationCityId, IsPublicDomain + the OpenLibrary id
+                   pair (#1765 Features 2/3), and the #1865 publisher-
+                   registry seed. It also STOPS honouring a posted
+                   `internet_archive_url` — the page dropped that input in
+                   #1765 Feature 7 and the shared core now hardcodes it
+                   null for every caller (api-docs.yaml's SongbookWriteInput
+                   updated in lockstep to match). */
+                [$fields, $err, $status, $errField] = songbookAdminValidateCreate($db, $body);
+                if ($err !== null) {
+                    sendJson(['error' => $err, 'field' => $errField], $status);
                     break;
                 }
 
-                $stmt = $db->prepare(
-                    'INSERT INTO tblSongbooks
-                        (Abbreviation, Name, DisplayOrder, Colour,
-                         IsOfficial, Publisher, PublicationYear, Copyright, Affiliation,
-                         Language,
-                         WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
-                         OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
-                         ViafId, Lccn, LcClass)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
-                             ?,
-                             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-                );
-                /* 23-char type string mirrors the web admin save (#694
-                   regression check): ssis (Abbr,Name,Order,Colour) +
-                   isssss (IsOfficial,Publisher,Year,Copyright,Affiliation)
-                   + s (Language) + 13s (bibliographic identifiers). */
-                $orderInt = (int)($order ?: 0);
-                $stmt->bind_param(
-                    'ssisissssssssssssssssss',
-                    $abbr, $name, $orderInt, $colour,
-                    $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
-                    $language,
-                    $websiteUrl, $iaUrl, $wikipediaUrl, $wikidataId,
-                    $oclcNumber, $ocnNumber, $lcpNumber, $isbn, $arkId, $isniId,
-                    $viafId, $lccn, $lcClass
-                );
-                $stmt->execute();
-                $newId = (int)$db->insert_id;
-                $stmt->close();
-                /* #1860 go-live — mint this songbook's permanent IL-id (ILB…). */
-                ilidStampNewRow($db, 'songbook', $newId);
+                /* This case has no page-wide hoisted schema probes (unlike
+                   manage/songbooks.php's own $hasPublishersSchema/
+                   $hasPubDomainCol/$hasOpenLibraryCols, computed once per
+                   page-load) — compute the per-request equivalents here,
+                   reusing the SAME shared probes those hoists themselves
+                   call, never a second hand-rolled INFORMATION_SCHEMA copy. */
+                $apiHasPublishersSchema  = _publisherTableExists($db, 'tblSongbookPublishers');
+                $apiHasPubDomainCol      = placeColumnExists($db, 'tblSongbooks', 'IsPublicDomain');
+                $apiHasOpenLibraryCols   = placeColumnExists($db, 'tblSongbooks', 'OpenLibraryWorkId')
+                                        && placeColumnExists($db, 'tblSongbooks', 'OpenLibraryEditionId');
 
-                logActivity('api.admin.songbook.create', 'songbook', (string)$newId, [
-                    'abbreviation'    => $abbr,
-                    'name'            => $name,
-                    'display_order'   => $orderInt,
-                    'colour'          => $colour,
-                    'is_official'     => (bool)$isOfficial,
-                    'publisher'       => $publisher,
-                    'publication_year'=> $pubYear,
-                    'copyright'       => $copyright,
-                    'affiliation'     => $affiliation,
-                    'language'        => $language,
+                try {
+                    $created = songbookAdminCreate($db, $fields, [
+                        'hasPublishersSchema' => $apiHasPublishersSchema,
+                        'hasPubDomainCol'     => $apiHasPubDomainCol,
+                        'hasOpenLibraryCols'  => $apiHasOpenLibraryCols,
+                    ]);
+                } catch (SongbookAdminDuplicateAbbreviationException $e) {
+                    sendJson(['error' => $e->getMessage(), 'field' => 'abbreviation'], 409);
+                    break;
+                }
+
+                logActivity('api.admin.songbook.create', 'songbook', (string)$created['id'], [
+                    'abbreviation'    => $fields['abbr'],
+                    'name'            => $fields['name'],
+                    'display_order'   => $fields['order'],
+                    'colour'          => $created['colour'],
+                    'is_official'     => (bool)$fields['isOfficial'],
+                    'publisher'       => $fields['publisher'],
+                    'publisher_id'    => $apiHasPublishersSchema ? $created['publisherId'] : null,
+                    'publication_year'=> $fields['pubYear'],
+                    'copyright'       => $fields['copyright'],
+                    'affiliation'     => $fields['affiliation'],
+                    'language'        => $fields['language'],
+                    'is_public_domain'=> $apiHasPubDomainCol ? (bool)$fields['isPublicDomain'] : null,
                     'bibliographic'   => array_filter([
-                        'website_url'           => $websiteUrl,
-                        'internet_archive_url'  => $iaUrl,
-                        'wikipedia_url'         => $wikipediaUrl,
-                        'wikidata_id'           => $wikidataId,
-                        'oclc_number'           => $oclcNumber,
-                        'ocn_number'            => $ocnNumber,
-                        'lcp_number'            => $lcpNumber,
-                        'isbn'                  => $isbn,
-                        'ark_id'                => $arkId,
-                        'isni_id'               => $isniId,
-                        'viaf_id'               => $viafId,
-                        'lccn'                  => $lccn,
-                        'lc_class'              => $lcClass,
+                        'website_url'           => $fields['websiteUrl'],
+                        'wikipedia_url'         => $fields['wikipediaUrl'],
+                        'wikidata_id'           => $fields['wikidataId'],
+                        'oclc_number'           => $fields['oclcNumber'],
+                        'ocn_number'            => $fields['ocnNumber'],
+                        'lcp_number'            => $fields['lcpNumber'],
+                        'isbn'                  => $fields['isbn'],
+                        'ark_id'                => $fields['arkId'],
+                        'openlibrary_work_id'   => $fields['olWorkId'],
+                        'openlibrary_edition_id'=> $fields['olEditionId'],
+                        'isni_id'               => $fields['isniId'],
+                        'viaf_id'               => $fields['viafId'],
+                        'lccn'                  => $fields['lccn'],
+                        'lc_class'              => $fields['lcClass'],
                     ], fn($v) => $v !== null && $v !== ''),
                 ]);
 
                 /* Self-populate affiliation registry (#670). */
-                registerSongbookAffiliation($db, $affiliation);
+                registerSongbookAffiliation($db, $fields['affiliation']);
+                /* #961 — post-write songbook maintenance (orphan SongId-
+                   prefix sweep), same hook manage/songbooks.php's own
+                   create funnels already call — the API create path never
+                   had this before (#1993 parity fix). */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                songbookMaintenanceRun($db, 'api.songbooks.create');
 
                 sendJson([
                     'ok'           => true,
-                    'id'           => $newId,
-                    'abbreviation' => $abbr,
-                    'colour'       => $colour,
+                    'id'           => $created['id'],
+                    'abbreviation' => $fields['abbr'],
+                    'colour'       => $created['colour'],
+                    'displayAbbr'  => $fields['displayAbbr'],
+                    'publisherId'  => $apiHasPublishersSchema ? $created['publisherId'] : null,
                 ], 201);
             } catch (\Throwable $e) {
                 logActivityError('api.admin.songbook.create', 'songbook', '', $e, [
-                    'abbreviation' => $abbr,
+                    'abbreviation' => $body['abbreviation'] ?? null,
                 ]);
                 error_log('[admin_songbook_create] ' . $e->getMessage());
                 sendJson(['error' => 'Could not create songbook.'], 500);
@@ -14883,12 +14837,15 @@ if ($action !== null) {
          * file. MIRRORS manage/songbooks.php's `marcxml_import` POST
          * handler exactly: parses via the shared includes/marcxml.php core
          * through manage/includes/marcxml_admin.php's thin wiring — never a
-         * forked parser (rule #22). Songbooks has no extracted row-write
-         * core (admin_songbook_create above already inlines its own INSERT
-         * for the same reason — see that case's own doc-block), so this
-         * mirrors the page's INSERT the same way. A slightly-off identifier
-         * is skipped, not fatal — reported back in `skipped`/`unmapped`
-         * rather than failing the whole import.
+         * forked parser (rule #22). #1993 extracted a shared CREATE core
+         * (includes/songbook_admin.php) for admin_songbook_create above,
+         * but deliberately left THIS MARCXML funnel + its page sibling out
+         * of scope — see songbook_admin.php's own "SCOPE — MARCXML stays
+         * OUT" doc-block for why — so this case still mirrors the page's
+         * own small 4-column INSERT rather than the extracted core's
+         * 23-bind shape. A slightly-off identifier is skipped, not fatal —
+         * reported back in `skipped`/`unmapped` rather than failing the
+         * whole import.
          * Returns 201 + new id/abbreviation/name/colour + any notes.
          * ----------------------------------------------------------------- */
         case 'admin_songbook_marcxml_import': {

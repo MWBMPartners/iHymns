@@ -890,6 +890,15 @@ $MAPPING = [
            separate action. */
         'toggle_disable'        => 'api:admin_songbook_update',
         'update'                => 'api:admin_songbook_update',
+        /* #1993 — the guided "New Songbook" wizard's JSON-in/JSON-out branch
+           (an ordinary case in this page's SAME switch — see the CSRF note
+           on the case itself). Delegates to the SAME
+           songbookAdminValidateCreate()/…Create() core (includes/
+           songbook_admin.php, rule #22) 'create' above and the API twin
+           both call — two client shapes for the ONE server capability,
+           exactly the #1992 external-link-types 'wizard_create_type'
+           precedent immediately below. */
+        'wizard_create_songbook' => 'api:admin_songbook_create',
     ],
 
     'tags.php' => [

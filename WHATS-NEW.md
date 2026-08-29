@@ -48,6 +48,14 @@ with none of the behind-the-scenes technical detail.
   step-by-step helper that suggests a matching web-address pattern and tests it
   live against real examples before you save — or fill in the same details
   yourself with a plain form if you'd rather skip the guided steps.
+- **A guided helper for adding a songbook** — Curators can now add a new
+  songbook with a step-by-step helper that checks the short code as you type
+  and warns you if it's already taken, includes a digit, or would clash with
+  an internal code — so it's right the first time. It also explains, in plain
+  language, that the code becomes part of every song's web address in that
+  book and is best treated as permanent, while the separate display label
+  shown to everyone can be changed any time. The original one-page form is
+  still there too, for anyone who'd rather fill everything in at once.
 
 ## 1.0.0 — 24 August 2026
 
