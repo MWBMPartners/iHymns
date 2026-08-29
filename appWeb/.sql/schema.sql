@@ -5659,6 +5659,35 @@ CREATE TABLE IF NOT EXISTS tblWebhookDeliveries (
   COMMENT='Per-subscription webhook delivery queue, retry state and dead-letter surface (#1909). uq_Event_Subscription = fan-out idempotency; idx_Due = the drain claim predicate.';
 
 
+-- ----------------------------------------------------------------------------
+-- tblPushTokens (API-coverage plan 2026-08-28 C1) — Android/FireOS push
+-- registration tokens. `Provider` (fcm | adm) discriminates Google Firebase
+-- Cloud Messaging from Amazon Device Messaging (Fire OS has no Google Play
+-- Services) so ONE table serves both rather than forking a near-identical
+-- second table. DISTINCT from tblApnsTokens (Apple) and tblPushSubscriptions
+-- (Web Push/VAPID, keyed by browser endpoint URL). Entirely dormant until
+-- includes/fcm.php is keyed AND a live trigger calls fcmSend() — neither is
+-- true yet.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblPushTokens (
+    Id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    Provider   VARCHAR(16)    NOT NULL DEFAULT 'fcm' COMMENT 'fcm | adm — app-validated, VARCHAR not ENUM (rule #20); FCM = Google Firebase Cloud Messaging (ordinary Android), ADM = Amazon Device Messaging (Fire OS — no Google Play Services)',
+    UserId     INT UNSIGNED   NOT NULL COMMENT 'FK tblUsers — owning user (this endpoint is always authenticated; unlike tblApnsTokens there is no anonymous/presence-scoped token here)',
+    Token      VARCHAR(191)   NOT NULL COMMENT 'Opaque FCM registration token or ADM registration id. VARCHAR(191) keeps the utf8mb4 UNIQUE index under the legacy 767-byte-per-column InnoDB limit (mirrors tblSongExternalIds.IdValue)',
+    Platform   VARCHAR(20)    NULL DEFAULT NULL COMMENT 'Client-reported platform, e.g. android | fireos — optional, informational only, never gates anything',
+    AppVersion VARCHAR(20)    NULL DEFAULT NULL COMMENT 'Client app version string at register/last-seen time, e.g. 1.4.2',
+    CreatedAt  TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    LastSeenAt TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Refreshed on every re-register (ON DUPLICATE KEY UPDATE) so a future sender can prune stale tokens',
+
+    UNIQUE KEY uq_Provider_Token (Provider, Token),
+    INDEX      idx_User (UserId),
+
+    CONSTRAINT fk_PushTokens_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Android/FireOS push registration tokens (API-coverage 2026-08-28 C1). Provider discriminates FCM vs ADM. Entirely dormant until includes/fcm.php is keyed AND a live trigger calls fcmSend() — neither is true yet.';
+
+
 -- =====================================================================
 -- DEFERRED FOREIGN KEYS (#1708)
 --

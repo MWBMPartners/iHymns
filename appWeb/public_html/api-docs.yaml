@@ -7944,6 +7944,145 @@ paths:
           description: POST method required
 
   # ===========================================================================
+  # ANDROID/FIREOS PUSH BRIDGE (API-coverage plan 2026-08-28, C1/X2) —
+  # push-TOKEN REGISTRATION ONLY, mirroring the APNs bridge above. Entirely
+  # dormant: nothing in this codebase calls includes/fcm.php's fcmSend() yet,
+  # and even a future caller gets a guaranteed no-op until an owner
+  # provisions real FCM/ADM credentials. `tblPushTokens` ships live-dormant in
+  # the SAME change; every action below is pushTokensTableExists()-gated.
+  # ===========================================================================
+
+  /api.php?action=fcm_register:
+    post:
+      operationId: fcmRegister
+      tags: [Push]
+      summary: Register (or refresh) an Android/FireOS push token (API-coverage C1)
+      description: |
+        Requires authentication plus the same-origin CSRF check
+        (`validateCsrfRequest()`, rule #29). Rate-limited to 30 / hour per
+        user. Upserts on the token's unique key (`Provider`+`Token`, `ON
+        DUPLICATE KEY UPDATE`), so re-registering the same token just
+        refreshes its row.
+
+        `provider` distinguishes the two Android/FireOS push services:
+        `fcm` (Google Firebase Cloud Messaging — ordinary Android with
+        Google Play Services) or `adm` (Amazon Device Messaging — Fire OS
+        tablets, which have no Google Play Services). It is required and
+        rejected outright when missing/unrecognised (unlike APNs's
+        `apnsEnv`/`kind`, an invalid provider here is not softened with a
+        silent default, since sending to the wrong service is impossible
+        rather than merely wrong-environment).
+
+        Entirely dormant: this action only stores the token row. Nothing in
+        this codebase sends a push to it yet, and `includes/fcm.php`'s
+        sender is an inert skeleton until an owner provisions real FCM/ADM
+        credentials.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [fcm_register] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, provider]
+              properties:
+                token:
+                  type: string
+                  description: Opaque FCM registration token or ADM registration id, up to 191 printable-ASCII characters (no whitespace).
+                provider:
+                  type: string
+                  enum: [fcm, adm]
+                  description: Required — missing or unrecognised values are rejected with 400 rather than defaulted.
+                platform:
+                  type: string
+                  description: Optional client-reported platform, e.g. `android` or `fireos` — informational only, truncated to 20 characters.
+                app_version:
+                  type: string
+                  description: Optional client app version string, e.g. `1.4.2` — truncated to 20 characters.
+                csrf_token:
+                  type: string
+                  description: Optional when the request already carries the same-origin X-Requested-With header.
+      responses:
+        "200":
+          description: Registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "400":
+          description: Invalid/missing token, or missing/unrecognised provider
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "503":
+          description: Push registration is not available yet (tblPushTokens not migrated), or the upsert failed — retry
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=fcm_unregister:
+    post:
+      operationId: fcmUnregister
+      tags: [Push]
+      summary: Remove an Android/FireOS push token (API-coverage C1)
+      description: |
+        Requires authentication plus the same-origin CSRF check
+        (`validateCsrfRequest()`, rule #29). Rate-limited to 30 / hour per
+        user. Own-only (`WHERE UserId = ?`). On an un-migrated install (no
+        `tblPushTokens`) returns `{ok: true}` — nothing to unregister —
+        rather than a `503`, since this is a cleanup call a client may fire
+        during sign-out regardless of migration state.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [fcm_unregister] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+                  description: Opaque FCM registration token or ADM registration id, up to 191 printable-ASCII characters (no whitespace).
+                csrf_token:
+                  type: string
+                  description: Optional when the request already carries the same-origin X-Requested-With header.
+      responses:
+        "200":
+          description: Removed (idempotent — `ok:true` whether or not a matching token existed)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "400":
+          description: Invalid/missing token
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+
+  # ===========================================================================
   # EDITOR API  (separate entry point — /manage/editor/api.php)
   #
   # v1 is live-but-legacy (#1601): the DEFAULT editor is now v2

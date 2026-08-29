@@ -653,6 +653,22 @@ return [
            core-ahead-of-client) was HERE and has been removed — self-
            cleaning, as designed: metadata-tab.js's holder picker +
            api-client.js's setCopyrightHolder() (B3) now call it. */
+
+        /* ---------------------------------------------------------------
+         * 1i. API-coverage plan 2026-08-28, C1/X2 — Android/FireOS push
+         * registration. The SAME shape as 1c's auth_device_code_request/
+         * _poll pair: the server (registration endpoints + the dormant
+         * includes/fcm.php sender skeleton + tblPushTokens) ships ahead of
+         * its client — there is no Android/FireOS native client code in
+         * this repo yet to call it (appAndroid/ has no push-registration
+         * Kotlin source), exactly mirroring "the device side's consumer is
+         * the tvOS client, which has no device-code code yet" above.
+         * Self-cleaning, same pattern as 1c/1g/1h: once an Android/FireOS
+         * client is built and calls these, this entry goes stale and the
+         * guard demands its removal in that same commit.
+         * --------------------------------------------------------------- */
+        'fcm_register'   => 'deliberate API-first surface, API-coverage plan 2026-08-28 C1/X2; consumer = the Android/FireOS native client, which has no push-registration code in this repo yet — same posture as auth_device_code_request/_poll (§1c) ahead of the tvOS client',
+        'fcm_unregister' => 'deliberate API-first surface, API-coverage plan 2026-08-28 C1/X2; consumer = the Android/FireOS native client, which has no push-registration code in this repo yet — same posture as auth_device_code_request/_poll (§1c) ahead of the tvOS client',
     ],
 
     /* =====================================================================

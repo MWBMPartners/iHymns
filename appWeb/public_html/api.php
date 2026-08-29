@@ -6327,6 +6327,154 @@ if ($action !== null) {
         }
 
         /* =================================================================
+         * ANDROID/FIREOS PUSH BRIDGE (API-coverage plan 2026-08-28, C1/X2)
+         * push-token registration ONLY — mirrors the APNs bridge block
+         * immediately above. Entirely DORMANT: nothing in this codebase
+         * calls includes/fcm.php's fcmSend() yet, and even a future caller
+         * that does gets a guaranteed no-op (`not_configured`, or today
+         * `not_implemented` — see fcm.php's file-header) until an owner
+         * provisions real FCM/ADM credentials. `tblPushTokens` ships
+         * live-dormant in the SAME change; every read/write below is
+         * pushTokensTableExists()-gated.
+         * ================================================================= */
+        case 'fcm_register': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'fcm.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $userId = (int)$authUser['Id'];
+
+            $db = getDbMysqli();
+            if (!pushTokensTableExists($db)) {
+                sendJson(['error' => 'Push notifications are not available yet.'], 503);
+                break;
+            }
+
+            /* Mirrors apns_register's per-user bucket (#1636 paired writer
+               convention). */
+            $fcmRegIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('fcm_register', $fcmRegIp, 30, 3600, true, $userId);
+            recordRateLimitHit('fcm_register', rateLimitKey($fcmRegIp, $userId));
+
+            $provider = is_string($body['provider'] ?? null) ? strtolower(trim($body['provider'])) : '';
+            if (!in_array($provider, PUSH_TOKEN_PROVIDERS, true)) {
+                sendJson(['error' => 'provider is required and must be one of: ' . implode(', ', PUSH_TOKEN_PROVIDERS) . '.'], 400);
+                break;
+            }
+
+            /* Opaque FCM/ADM registration token — printable-ASCII, no
+               whitespace, bounded to the column width (VARCHAR(191), rule:
+               keeps the utf8mb4 UNIQUE index under the legacy 767-byte
+               InnoDB limit). Unlike an APNs token this is NOT hex — Google/
+               Amazon issue variable-shaped opaque strings, so the check is
+               a shape sanity check, not a format decode. */
+            $token = is_string($body['token'] ?? null) ? trim($body['token']) : '';
+            if ($token === '' || strlen($token) > 191 || !preg_match('/^[\x21-\x7E]+$/', $token)) {
+                sendJson(['error' => 'Invalid push token.'], 400);
+                break;
+            }
+
+            $platform = is_string($body['platform'] ?? null) ? trim($body['platform']) : '';
+            $platform = $platform !== '' ? substr($platform, 0, 20) : null;
+
+            $appVersion = is_string($body['app_version'] ?? null) ? trim($body['app_version']) : '';
+            $appVersion = $appVersion !== '' ? substr($appVersion, 0, 20) : null;
+
+            try {
+                $ins = $db->prepare(
+                    'INSERT INTO tblPushTokens (Provider, UserId, Token, Platform, AppVersion)
+                     VALUES (?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE UserId = VALUES(UserId), Platform = VALUES(Platform), AppVersion = VALUES(AppVersion)'
+                );
+                $ins->bind_param('sisss', $provider, $userId, $token, $platform, $appVersion);
+                $ins->execute();
+                $ins->close();
+            } catch (\Throwable $e) {
+                error_log('[api/fcm_register] ' . $e->getMessage());
+                sendJson(['error' => 'Could not register for push notifications, please retry.'], 503);
+                break;
+            }
+
+            /* §3.2 breadcrumb — IDs + fixed vocabulary only, NEVER the push
+               token in any form (fcm.php's file-header "SECURITY" note). */
+            logActivity('push.token.register', 'user', (string)$userId, ['provider' => $provider, 'platform' => $platform]);
+            sendJson(['ok' => true]);
+            break;
+        }
+
+        case 'fcm_unregister': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'fcm.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            /* CSRF (rule #29) — same standing rule as apns_unregister
+               applies uniformly to this state-changing authenticated
+               DELETE. */
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $userId = (int)$authUser['Id'];
+
+            $db = getDbMysqli();
+            if (!pushTokensTableExists($db)) {
+                sendJson(['ok' => true]); /* nothing to unregister on an un-migrated docroot */
+                break;
+            }
+
+            /* Mirrors apns_unregister's per-user bucket. */
+            $fcmUnregIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('fcm_unregister', $fcmUnregIp, 30, 3600, true, $userId);
+            recordRateLimitHit('fcm_unregister', rateLimitKey($fcmUnregIp, $userId));
+
+            $token = is_string($body['token'] ?? null) ? trim($body['token']) : '';
+            if ($token === '' || strlen($token) > 191 || !preg_match('/^[\x21-\x7E]+$/', $token)) {
+                sendJson(['error' => 'Invalid push token.'], 400);
+                break;
+            }
+
+            $del = $db->prepare('DELETE FROM tblPushTokens WHERE UserId = ? AND Token = ?');
+            $del->bind_param('is', $userId, $token);
+            $del->execute();
+            $removed = $del->affected_rows > 0;
+            $del->close();
+
+            logActivity('push.token.unregister', 'user', (string)$userId, ['removed' => $removed]);
+            sendJson(['ok' => true]);
+            break;
+        }
+
+        /* =================================================================
          * USER FAVORITES — Server-side sync (#284)
          * ================================================================= */
 

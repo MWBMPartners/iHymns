@@ -4699,4 +4699,35 @@ return [
         'probe' => static fn(\mysqli $db) =>
             !_migProbe_tableExists($db, 'tblSongPresentationCues'),
     ],
+
+    /* API-coverage plan 2026-08-28, C1/X2 — Android/FireOS push registration.
+       Owner-approved Q2 default: a provider-column design (fcm | adm) so ONE
+       table serves both Google FCM and Amazon ADM (Fire OS has no Google Play
+       Services). Additive, idempotent, a verified no-op until includes/fcm.php
+       is keyed AND a live trigger calls fcmSend() — neither is true yet. */
+    'push-tokens' => [
+        'script' => 'migrate-add-push-tokens.php',
+        'card' => [
+            'title'  => 'Android/FireOS push token registry (API-coverage C1)',
+            'body'   => 'Creates <code>tblPushTokens</code> — the registration'
+                      . ' store for Android/FireOS push notifications, keyed'
+                      . ' by a <code>Provider</code> discriminator'
+                      . ' (<code>fcm</code> = Google Firebase Cloud Messaging,'
+                      . ' <code>adm</code> = Amazon Device Messaging for Fire'
+                      . ' OS tablets) so one table serves both rather than'
+                      . ' forking a near-identical second one. Distinct from'
+                      . ' <code>tblApnsTokens</code> (Apple) and'
+                      . ' <code>tblPushSubscriptions</code> (Web Push).'
+                      . ' <strong>Entirely dormant</strong> — the'
+                      . ' <code>fcm_register</code>/<code>fcm_unregister</code>'
+                      . ' API actions only store/remove tokens; nothing sends a'
+                      . ' push yet, and <code>includes/fcm.php</code>\'s sender'
+                      . ' is an inert skeleton until an owner provisions real'
+                      . ' FCM/ADM credentials. Additive, idempotent — safe to'
+                      . ' re-run.',
+            'button' => 'Run Push Token Registry Migration',
+        ],
+        /* Single-object probe (rule #19) — never `=> true`. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblPushTokens'),
+    ],
 ];
