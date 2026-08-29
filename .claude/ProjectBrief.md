@@ -22,10 +22,14 @@ teaches LF-vs-Service-Mode), **#1996** Organisation+licence (`2a192d0e`, extract
 `organisation_admin.php` + `admin_organisation_create` twin, the finer
 `manage_org_licences` gate enforced server-side), **#1997** New-song in Editor2
 (`8cb189e8`, fits Editor2 as-is, seeds via `lyricLinesWriteComponents`). Each has a
-tree-derived mutation-proven guard incl. the manual-path assertion. Follow-ups
-filed: **#1994** (MARCXML fold), **#1998** (org licence join-row gap) — both open.
-**In progress:** #37 empty-state "Get started" launchers. Full record:
-`.claude/sessions/2026-08-29-HANDOFF.md` (Guided-wizard program section).
+tree-derived mutation-proven guard incl. the manual-path assertion. Then
+**#1999 `302619b1`** empty-state "Get started" launchers (shared partial, reuses each
+wizard modal's `data-bs-target`); **#39/#40 `84236694`** the wizard-suite security +
+WCAG-2.1-AA audit (no Critical/High/Medium; all Low/Info fixed; retrospective tracker
+**#2001**); **#38 `4d2a266a`** in-app Help + wiki docs. **Program complete — queue done.**
+Suite 246 PHP / 83 JS. Follow-ups open (deliberate, non-blocking): **#1994** (MARCXML
+fold), **#1998** (org licence join-row gap), **#2000** (app-wide button-token contrast).
+Full record: `.claude/sessions/2026-08-29-HANDOFF.md` (Guided-wizard program section).
 
 ---
 
