@@ -464,6 +464,12 @@ if ($pdfBytes === null) {
    still streams below regardless of how many (if any) rows got written. */
 $pdfCopiesRaw = $body['copies'] ?? null;
 if ($pdfCopiesRaw !== null) {
+    /* Defence-in-depth (security audit 2026-08-29, F3): clamp copies to
+       1..10000 at the endpoint. printUsageLog() already clamps to the same
+       range, but bounding here keeps a crafted negative/huge value out of the
+       log call entirely — it only ever affects the caller's own org's CCLI
+       usage report, so this is hardening, not a live cross-tenant issue. */
+    $pdfCopiesRaw = max(1, min(10000, (int)$pdfCopiesRaw));
     foreach ($sanitisedDocs as $pdfDoc) {
         $pdfLogSongId = trim((string)($pdfDoc['meta']['songId'] ?? ''));
         $pdfLogCcli   = (string)($pdfDoc['ccliNumber'] ?? '');
