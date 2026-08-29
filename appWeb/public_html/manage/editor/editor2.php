@@ -298,6 +298,13 @@ $pdSuggestForJs = [
                              button reveal a few lines below. */ ?>
                     <button id="v2-save-btn" type="button" class="btn btn-sm btn-outline-success" disabled><i class="bi bi-check2-all me-1" aria-hidden="true"></i>Save</button>
                     <button id="v2-new-btn" type="button" class="btn btn-sm btn-primary"><i aria-hidden="true" class="bi bi-plus-lg me-1"></i>New</button>
+                    <!-- #1997 — guided alternative to the plain New-song modal above,
+                         built on the shared stepper (js/modules/admin-wizard.js,
+                         #1992; see manage/venues.php's #1995 wizard for the closest
+                         analog). SEPARATE button + SEPARATE modal (#v2-new-wizard-
+                         modal, below) — #v2-new-btn/#v2-new-modal stay byte-
+                         identical, untouched by this addition. -->
+                    <button id="v2-new-wizard-btn" type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#v2-new-wizard-modal" title="Guided, step-by-step new song"><i aria-hidden="true" class="bi bi-magic me-1"></i>Guided</button>
                     <!-- #1783 — Duplicate the open song as a starting point for a new
                          songbook. Hidden until a song is loaded (shown in loadSong). -->
                     <button id="v2-duplicate-btn" type="button" class="btn btn-sm btn-outline-primary d-none" title="Duplicate this song as a starting point for a new songbook"><i aria-hidden="true" class="bi bi-files me-1"></i>Duplicate</button>
@@ -381,6 +388,104 @@ $pdSuggestForJs = [
                 <div class="modal-footer">
                     <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" class="btn btn-sm btn-primary" id="v2-new-create">Create</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <?php /* #1997 — guided "New song" wizard. Server-rendered [data-wiz-step]
+             panes per js/modules/admin-wizard.js's markup contract (module
+             doc-block): each pane carries data-wiz-heading + a role="alert"
+             data-wiz-alert slot; [data-wiz-progress]/[data-wiz-next]/
+             [data-wiz-back] are the stepper's own generated trail + nav.
+             All domain logic (population, validation, the Finish sequence)
+             lives in manage/editor/v2/new-song-wizard.js — this markup is
+             deliberately inert without it (rule: framework here, behaviour
+             there). Inputs are id-prefixed (v2-nsw-*) and carry NO name=
+             attribute — nothing here is ever submitted as a classic HTML
+             form; every value is read by the module via getElementById. */ ?>
+    <div class="modal fade" id="v2-new-wizard-modal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 class="modal-title h6"><i aria-hidden="true" class="bi bi-magic me-1"></i>New song — guided</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div data-wiz-progress class="mb-3"></div>
+
+                    <section data-wiz-step data-wiz-label="Songbook">
+                        <h3 data-wiz-heading class="h6 mb-3">1. Which songbook?</h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <div class="mb-0">
+                            <label class="form-label small mb-1" for="v2-nsw-songbook">Songbook</label>
+                            <select class="form-select form-select-sm" id="v2-nsw-songbook"></select>
+                        </div>
+                    </section>
+
+                    <section data-wiz-step data-wiz-label="Number" hidden>
+                        <h3 data-wiz-heading class="h6 mb-3">2. Song number <span class="text-muted small">(optional)</span></h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <div class="mb-2">
+                            <label class="form-label small mb-1" for="v2-nsw-number">Number</label>
+                            <div class="d-flex gap-2 align-items-center flex-wrap">
+                                <input type="number" min="1" step="1" class="form-control form-control-sm" style="max-width: 9rem;" id="v2-nsw-number">
+                                <button type="button" class="btn btn-sm btn-outline-secondary text-nowrap" id="v2-nsw-next-free">Use next free</button>
+                            </div>
+                        </div>
+                        <div id="v2-nsw-avail" class="small" aria-live="polite" hidden></div>
+                    </section>
+
+                    <section data-wiz-step data-wiz-label="Title" hidden>
+                        <h3 data-wiz-heading class="h6 mb-3">3. Title</h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <div class="mb-3">
+                            <label class="form-label small mb-1" for="v2-nsw-title">Title</label>
+                            <input type="text" class="form-control form-control-sm" id="v2-nsw-title" maxlength="500" placeholder="Song title">
+                        </div>
+                        <div class="mb-0">
+                            <label class="form-label small mb-1" for="v2-nsw-alt-title-input">Also known as <span class="text-muted small">(optional)</span></label>
+                            <div class="d-flex gap-2">
+                                <input type="text" class="form-control form-control-sm" id="v2-nsw-alt-title-input" maxlength="500" placeholder="Another title this song is known by">
+                                <button type="button" class="btn btn-sm btn-outline-secondary text-nowrap" id="v2-nsw-alt-title-add">Add</button>
+                            </div>
+                            <ul class="list-unstyled d-flex flex-wrap gap-1 mt-2 mb-0" id="v2-nsw-alt-titles"></ul>
+                        </div>
+                    </section>
+
+                    <section data-wiz-step data-wiz-label="Structure" hidden>
+                        <h3 data-wiz-heading class="h6 mb-3">4. Starting structure <span class="text-muted small">(optional)</span></h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <div class="row g-3">
+                            <div class="col-md-4">
+                                <label class="form-label small mb-1" for="v2-nsw-verses">Verses</label>
+                                <input type="number" min="0" max="10" step="1" class="form-control form-control-sm" id="v2-nsw-verses" value="3">
+                            </div>
+                            <div class="col-md-4 d-flex align-items-end">
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="v2-nsw-chorus" checked>
+                                    <label class="form-check-label small" for="v2-nsw-chorus">Chorus</label>
+                                </div>
+                            </div>
+                            <div class="col-md-4 d-flex align-items-end">
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="v2-nsw-bridge">
+                                    <label class="form-check-label small" for="v2-nsw-bridge">Bridge</label>
+                                </div>
+                            </div>
+                        </div>
+                        <p class="form-text small mb-0">Blank sections are added in order (Verse 1, Chorus, Verse 2…) — edit, reorder or add more on the Structure tab afterwards.</p>
+                    </section>
+
+                    <section data-wiz-step data-wiz-label="Review" hidden>
+                        <h3 data-wiz-heading class="h6 mb-3">5. Review &amp; create</h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <dl class="row small mb-0" id="v2-nsw-review"></dl>
+                    </section>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-wiz-back hidden>Back</button>
+                    <button type="button" class="btn btn-sm btn-primary" data-wiz-next>Next</button>
                 </div>
             </div>
         </div>
@@ -560,6 +665,7 @@ $pdSuggestForJs = [
         import { mountReflowModal }  from './v2/reflow-modal.js';
         import { mountExportMenu }   from './v2/export.js';
         import { mountRevisionsTab } from './v2/revisions-tab.js';
+        import { mountNewSongWizard } from './v2/new-song-wizard.js';
 
         const byId = (id) => document.getElementById(id);
         const initialSongId = <?= json_encode($songId) ?>;
@@ -786,6 +892,23 @@ $pdSuggestForJs = [
         try { window.matchMedia('(min-width: 992px)').addEventListener('change', (e) => { if (e.matches) { hideSidebarPanel(); } }); } catch (_e) {}
 
         const sidebar = mountSidebar(byId('v2-sidebar'), { api: editorApi, toast, onSelect: (id) => { hideSidebarPanel(); loadSong(id); }, onSelectionChange: onSelChange });
+
+        /* #1997 — guided "New song" wizard. Mounted ONCE here (boot-level,
+           like mountSidebar() immediately above — NOT inside mountTabs(),
+           which re-runs per open song). ctx hands the wizard the SAME
+           sidebar accessors + loadSong the manual New-song handler and
+           runPrefill() already use below — it makes no server call this
+           file doesn't already make elsewhere. */
+        mountNewSongWizard({
+            api: editorApi,
+            getSongbooks: () => sidebar.getSongbooks(),
+            whenSongbooksReady: () => sidebar.whenLoaded(),
+            findByBookAndNumber: (abbr, num) => sidebar.findByBookAndNumber(abbr, num),
+            addSong: (stub) => sidebar.addSong(stub),
+            loadSong: (id) => loadSong(id),
+            toast,
+            status,
+        });
 
         /* ---- bulk actions (multi-select) ---- */
         byId('v2-bulk-clear').addEventListener('click', () => sidebar.clearSelection());

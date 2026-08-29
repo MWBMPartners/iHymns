@@ -514,4 +514,49 @@ export async function songKeySave(songId, key) {
     return data.key;
 }
 
+/**
+ * Read a songbook's number-slot occupancy — the SAME authoritative read
+ * `/manage/missing-numbers.php` and its own `missing_songs` API action use
+ * (`SongData::getMissingSongNumbers()`, #285). Physical occupancy INCLUDES a
+ * soft-deleted song's slot (@deleted-visible) and separately reports which
+ * occupied numbers are held ONLY by a hidden song (#1829's `hiddenHeld`).
+ *
+ * ELI5: "which song numbers are free in book X, and which look free but are
+ * actually just hiding a deleted song?" — the one honest answer to that
+ * question.
+ *
+ * WHY NOT `sidebar.findByBookAndNumber()`. That helper answers a NARROWER
+ * question over the editor's already-loaded slim index: it silently drops
+ * every soft-deleted row (`SongData::getSongsSlimIndex()`'s visibility
+ * filter), so a number occupied ONLY by a hidden song reads there as simply
+ * absent — indistinguishable from a genuine gap. #1997's guided new-song
+ * wizard (the first consumer of this helper) needs the WIDER read so it can
+ * warn a curator before they collide with a hidden-but-still-occupied slot
+ * instead of silently minting a same-number duplicate.
+ *
+ * Mirrors `songKeyGet()`'s shape exactly (GET, `credentials:'same-origin'`,
+ * `X-Requested-With`, throw-with-status on failure) — see that function's
+ * own doc-block for why this lives here rather than as a new api2.php
+ * action (rule #22: `/api`'s `missing_songs` already exists and is
+ * editor+-role-gated; forking a second copy on api2.php would be the
+ * duplicate-write-path CLAUDE.md's modularity rule bans).
+ *
+ * @param {string} songbook Abbreviation (the SongId prefix — rule #27).
+ * @returns {Promise<{missing:number[], maxNumber:number, totalExisting:number,
+ *                     hiddenHeld:number[], hiddenHeldCount:number, songbook:string}>}
+ * @see appWeb/public_html/api.php                 case 'missing_songs'
+ * @see appWeb/public_html/includes/SongData.php    getMissingSongNumbers()
+ */
+export async function missingSongNumbers(songbook) {
+    const res = await fetch(
+        PUBLIC_API + '?action=missing_songs&songbook=' + encodeURIComponent(songbook),
+        {
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        }
+    );
+    if (!res.ok) throw await publicApiError(res);
+    return res.json();
+}
+
 export { csrfToken };

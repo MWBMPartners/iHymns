@@ -12,6 +12,12 @@ with none of the behind-the-scenes technical detail.
 
 ## 1.1.0 — 28 August 2026
 
+- **A guided helper for starting a new song** — Adding a new song to the
+  catalogue can now be a short, friendly walkthrough: pick the songbook,
+  check the number you want is actually free, add a title (and any other
+  names the song is known by), and start it off with a verse/chorus shape —
+  then it opens straight in the editor ready for the words. The plain "New"
+  button is still there if you'd rather jump straight in.
 - **A guided setup helper for new organisations** — Setting up a brand-new
   organisation is now a short, friendly, step-by-step walkthrough: give it a
   name, add its licence details, and invite its first members, all in one
