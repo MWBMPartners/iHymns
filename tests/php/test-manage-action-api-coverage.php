@@ -635,8 +635,18 @@ $MAPPING = [
         'unlink'    => 'api:admin_song_unlink',
     ],
 
+    /* #1992 — 'create_type' (the manual "Add provider" form) and
+       'wizard_create_type' (the guided wizard's fetch()+X-Requested-With
+       JSON branch) are TWO DIFFERENT client shapes for the SAME server
+       capability — both delegate to the shared
+       externalLinkTypeAdminValidateNewType()/…Create() core (rule #22)
+       and both map to the ONE api.php twin,
+       admin_external_link_type_create (verified: assertion B below
+       confirms that action really exists in api.php's $action switch). */
     'external-link-types.php' => [
-        'save_type_patterns' => 'api:admin_external_link_type_save',
+        'create_type'         => 'api:admin_external_link_type_create',
+        'save_type_patterns'  => 'api:admin_external_link_type_save',
+        'wizard_create_type'  => 'api:admin_external_link_type_create',
     ],
 
     /* feature-gating.php — the master content-gating rule CRUD. Plan §6:

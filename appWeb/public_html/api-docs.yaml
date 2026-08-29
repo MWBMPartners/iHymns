@@ -545,13 +545,16 @@ tags:
   - name: Admin — External Link Types
     description: |
       `tblExternalLinkTypes` + `tblExternalLinkPatterns` write surface
-      (#845/#1748 §5.2, API-coverage batch 4b-ii A7) — flip a type's
-      active flag / AppliesTo and replace its URL-matching pattern list in
-      one write. Mirrors `/manage/external-link-types`'s sole write action
-      (both surfaces call the SAME shared core in
-      `includes/external_link_type_admin.php`). No separate type create/
-      delete — types are curated content shipped with the app. Gated on
-      `manage_external_link_types`.
+      (#845/#1748 §5.2, API-coverage batch 4b-ii A7; #1992 curator-mintable
+      types) — flip an EXISTING type's active flag / AppliesTo and replace
+      its URL-matching pattern list in one write, OR mint a BRAND-NEW type
+      plus its initial pattern batch. Mirrors `/manage/external-link-types`'s
+      write actions (every surface — the page's edit forms, its manual
+      "Add provider" form, its guided wizard, and these two API twins — call
+      the SAME shared core in `includes/external_link_type_admin.php`).
+      Owner decision A (#1992) confirmed types ARE curator-mintable; this
+      supersedes the earlier "no create/delete, curated content only"
+      stance. Gated on `manage_external_link_types`.
   - name: Admin — Print Templates
     description: |
       `tblPrintTemplates` (Scope='song') scalar-row CRUD + the custom
@@ -14075,17 +14078,22 @@ paths:
                   requires_confirm:  { type: boolean, example: true }
 
   # ===========================================================================
-  # ADMIN — EXTERNAL LINK TYPES  (#845/#1748 §5.2, API-coverage batch 4b-ii A7)
+  # ADMIN — EXTERNAL LINK TYPES  (#845/#1748 §5.2, API-coverage batch 4b-ii A7,
+  # #1992 curator-mintable types)
   #
   # The tblExternalLinkTypes + tblExternalLinkPatterns write surface (rule
-  # #11/#12) — flip a type's IsActive/AppliesTo and wholesale-replace its
-  # URL-matching patterns in ONE write. The web page
-  # /manage/external-link-types and this JSON twin share ONE core
-  # (includes/external_link_type_admin.php). There is no separate type
-  # create/delete — the registry's *types* are curated content shipped
-  # with the app, not curator-minted rows, so the page (and this API) only
-  # ever edits an EXISTING type. Gated on the manage_external_link_types
-  # entitlement.
+  # #11/#12): admin_external_link_type_save flips an EXISTING type's
+  # IsActive/AppliesTo and wholesale-replaces its URL-matching patterns in
+  # ONE write; admin_external_link_type_create (#1992) mints a BRAND-NEW
+  # type plus its initial pattern batch. The web page
+  # /manage/external-link-types and these JSON twins share ONE core
+  # (includes/external_link_type_admin.php) — the page's edit forms, its
+  # manual "Add provider" form and its guided wizard all delegate to the
+  # SAME externalLinkTypeAdminValidateNewType()/…Create() functions the
+  # create twin calls. Owner decision A (#1992) confirmed the registry's
+  # *types* ARE curator-mintable, superseding the earlier "curated content
+  # only, no create/delete" stance that used to sit here. Gated on the
+  # manage_external_link_types entitlement.
   # ===========================================================================
   /api.php?action=admin_external_link_type_save:
     post:
@@ -14156,6 +14164,86 @@ paths:
           description: Link type not found
         "503":
           description: External-link pattern registry not migrated on this environment yet
+
+  /api.php?action=admin_external_link_type_create:
+    post:
+      operationId: adminExternalLinkTypeCreate
+      tags: [Admin — External Link Types]
+      summary: Mint a brand-new link type plus its initial URL-pattern batch
+      description: |
+        #1992 — one of THREE funnels that all delegate to the same shared
+        core (`includes/external_link_type_admin.php`): this API twin, the
+        `/manage/external-link-types` page's manual "Add provider" form,
+        and its guided wizard. `slug` is optional — when omitted (or
+        blank) it is derived from `name`; either way it must end up
+        matching `^[a-z0-9-]{1,60}$` and not already exist (409 on a
+        collision, including a race caught at INSERT time). `applies_to`
+        is intersected against the central `IHYMNS_LINK_ENTITY_TYPES`
+        allow-list and must resolve to at least one entry — an empty
+        result is a 422, unlike the *edit* twin
+        (`admin_external_link_type_save`), which silently preserves the
+        existing value instead. `category` must be one of the
+        `IHYMNS_LINK_TYPE_CATEGORIES` keys. `patterns` seeds the new
+        type's initial pattern list (same shape as the save twin's
+        `patterns`) — omit it to create the type with none.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_external_link_type_create] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, category, applies_to]
+              properties:
+                name:           { type: string, maxLength: 120 }
+                slug:           { type: string, maxLength: 60, description: "Optional — derived from name when blank. ^[a-z0-9-]{1,60}$" }
+                category:       { type: string, description: One of the IHYMNS_LINK_TYPE_CATEGORIES keys (official/information/read/sheet-music/listen/watch/purchase/authority/social/other). }
+                icon_class:     { type: string, maxLength: 60, description: "Optional Bootstrap Icons class, e.g. bi-music-note." }
+                applies_to:
+                  type: array
+                  items: { type: string }
+                  description: Subset of song/songbook/musician/work/tune (IHYMNS_LINK_ENTITY_TYPES). Required non-empty.
+                allow_multiple: { type: boolean, default: false }
+                is_active:      { type: boolean, default: true }
+                patterns:
+                  type: array
+                  items:
+                    type: object
+                    required: [host]
+                    properties:
+                      host:              { type: string, maxLength: 255, description: "Bare hostname, e.g. wikipedia.org — protocol/wildcard/trailing slash are stripped server-side." }
+                      path:              { type: string, maxLength: 255, description: Optional path prefix, e.g. /work/. }
+                      match_subdomains:  { type: boolean, default: false }
+                      priority:          { type: integer, default: 100, minimum: 0, maximum: 65535, description: Lower wins. }
+                      note:              { type: string, maxLength: 255 }
+                      is_active:         { type: boolean, default: false }
+      responses:
+        "200":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:             { type: boolean, example: true }
+                  id:             { type: integer, description: The new type's Id. }
+                  slug:           { type: string }
+                  name:           { type: string }
+                  pattern_count:  { type: integer, description: Patterns actually inserted after cleanup/validation. }
+        "403":
+          description: Admin access required
+        "409":
+          description: A link type with that slug already exists
+        "422":
+          description: Missing name, unrecognised category, empty/unrecognised applies_to, or a malformed slug/icon_class
+        "503":
+          description: External-link type registry not migrated on this environment yet
 
   # ===========================================================================
   # ADMIN — PRINT TEMPLATES  (#1350/#1767, API-coverage batch 4b-ii A8)

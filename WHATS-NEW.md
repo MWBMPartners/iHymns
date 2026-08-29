@@ -43,6 +43,11 @@ with none of the behind-the-scenes technical detail.
   Appearance lets you turn on stronger, higher-contrast colouring for the links
   in song details and descriptions, so they're easier to pick out from the words
   around them. It's off by default and remembered on your device.
+- **Add a new link provider yourself** — Curators managing Link Types can now
+  add a brand-new provider (not just edit the existing ones) with a guided,
+  step-by-step helper that suggests a matching web-address pattern and tests it
+  live against real examples before you save — or fill in the same details
+  yourself with a plain form if you'd rather skip the guided steps.
 
 ## 1.0.0 — 24 August 2026
 

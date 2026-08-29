@@ -1341,6 +1341,10 @@ foreach ($sections as $s) {
                     <p>
                         Provider rules are curator-editable at <a href="/manage/external-link-types">Link Types</a>. Add a new provider, sub-domain or path-prefix rule (e.g. <code>musicbrainz.org/work/</code>) at any time without a code deploy. Lower priority numbers win, so put more-specific patterns first.
                     </p>
+                    <h3 class="h6">Adding a new provider</h3>
+                    <p>
+                        The <strong>Add provider (guided)</strong> button on Link Types walks you through naming a new provider, suggesting a matching web-address pattern from a sample URL and testing it live against every existing provider before you save. Prefer typing everything yourself? The collapsed <strong>Add a link type manually</strong> panel above the list offers the same fields as a plain form.
+                    </p>
                     <h3 class="h6">Categories</h3>
                     <p>Links group on the public site under: <em>Official, Information, Read, Sheet music, Listen, Watch, Purchase, Authority, Social, Other</em>. The seeded type registry decides which category each provider belongs to; curators don't pick the category &mdash; it's derived from the type.</p>
                 </section>

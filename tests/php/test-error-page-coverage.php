@@ -492,8 +492,8 @@ $exemptions = [
             'includes/musician_duplicates.php', 'includes/song_link_admin.php',
             'includes/song_soft_delete.php', 'manage/api-keys.php',
             'manage/duplicate-songs.php', 'manage/editor/api.php', 'manage/editor/api2.php',
-            'manage/languages.php', 'manage/musician-duplicates.php', 'manage/setup-database.php',
-            'manage/tags.php',
+            'manage/external-link-types.php', 'manage/languages.php', 'manage/musician-duplicates.php',
+            'manage/setup-database.php', 'manage/tags.php',
         ],
     ],
     412 => [

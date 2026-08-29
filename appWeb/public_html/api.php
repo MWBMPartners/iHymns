@@ -21812,18 +21812,24 @@ if ($action !== null) {
 
         /* =================================================================
          * ADMIN — EXTERNAL-LINK TYPES + URL PATTERNS (#845/#1748 §5.2,
-         * API-coverage batch 4b-ii A7)
+         * API-coverage batch 4b-ii A7, #1992 curator-mintable types)
          *
-         * Mirrors /manage/external-link-types.php's SOLE write action —
-         * `save_type_patterns` (flip a type's IsActive/AppliesTo AND
-         * wholesale-replace its URL patterns in ONE write) — via the shared
-         * core includes/external_link_type_admin.php (rule #22). The page
-         * has no separate type create/delete (types are curated content
-         * shipped with the app, not curator-minted rows), so there is no
-         * second action to add here. Drives tblExternalLinkTypes +
+         * Mirrors /manage/external-link-types.php's write actions via the
+         * shared core includes/external_link_type_admin.php (rule #22):
+         *   - `admin_external_link_type_save`   flip an EXISTING type's
+         *     IsActive/AppliesTo AND wholesale-replace its URL patterns in
+         *     ONE write (mirrors the page's `save_type_patterns`).
+         *   - `admin_external_link_type_create` mint a BRAND-NEW type plus
+         *     its initial pattern batch (#1992 — mirrors the page's
+         *     `create_type` manual form AND its guided-wizard
+         *     `wizard_create_type` AJAX action; all three funnels call the
+         *     SAME externalLinkTypeAdminValidateNewType()/…Create()).
+         * Owner decision A (#1992) confirmed types ARE curator-mintable —
+         * this supersedes the earlier "no create/delete, curated content
+         * only" stance that used to sit here. Drives tblExternalLinkTypes +
          * tblExternalLinkPatterns (rule #11/#12). Gate:
          * userHasEntitlement('manage_external_link_types') — identical to
-         * the page's own gate (rule #1587).
+         * the page's own gate on both actions (rule #1587).
          * ================================================================= */
 
         /* -----------------------------------------------------------------
@@ -21899,6 +21905,97 @@ if ($action !== null) {
                 logActivityError('api.admin.external_link_type.save', 'external_link_type', (string)$typeId, $e);
                 error_log('[admin_external_link_type_save] ' . $e->getMessage());
                 sendJson(['error' => 'Could not save external-link type.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: mint a BRAND-NEW link type + its initial pattern batch
+         * (#1992). Mirrors /manage/external-link-types.php's manual
+         * `create_type` form POST and its guided-wizard `wizard_create_type`
+         * AJAX action — all three funnels call the SAME
+         * externalLinkTypeAdminValidateNewType()/…Create() core (rule #22).
+         * POST body: { name (required), slug?, category (required),
+         *   icon_class?, applies_to (required, list<string>),
+         *   allow_multiple?, is_active?, patterns? (list<{host,path?,
+         *   match_subdomains?,priority?,note?,is_active?}>) }
+         * ----------------------------------------------------------------- */
+        case 'admin_external_link_type_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_external_link_types', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $schemaReady = externalLinkTypeAdminSchemaReady($db);
+            if (!$schemaReady['types'] || !$schemaReady['patterns']) {
+                sendJson(['error' => 'External-link type registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body          = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $rawName       = (string)($body['name'] ?? '');
+            $rawSlug       = (string)($body['slug'] ?? '');
+            $rawCategory   = (string)($body['category'] ?? '');
+            $rawIconClass  = (string)($body['icon_class'] ?? '');
+            $postedApplies = $body['applies_to'] ?? [];
+            if (!is_array($postedApplies)) { $postedApplies = []; }
+            $allowMultiple = !empty($body['allow_multiple']) ? 1 : 0;
+            /* Default Active=ON when the caller omits the key entirely
+               (mirrors the manual form / wizard's own default-checked
+               switch) — only an EXPLICIT falsy value turns it off. */
+            $isActiveNew = array_key_exists('is_active', $body) ? (!empty($body['is_active']) ? 1 : 0) : 1;
+
+            [$fields, $validationError, $status] = externalLinkTypeAdminValidateNewType(
+                $db, $rawName, $rawSlug, $rawCategory, $rawIconClass, $postedApplies, $allowMultiple, $isActiveNew
+            );
+            if ($validationError !== null) {
+                sendJson(['error' => $validationError], $status);
+                break;
+            }
+
+            /* Transpose the JSON array-of-objects pattern shape into the
+               SAME parallel-array shape externalLinkTypeAdminNormalisePatterns()
+               already accepts — mirrors admin_external_link_type_save above
+               (rule #22/#35), never a second normaliser. */
+            $rawPatterns = $body['patterns'] ?? [];
+            if (!is_array($rawPatterns)) { $rawPatterns = []; }
+            $pHosts = []; $pPaths = []; $pSubs = []; $pPrios = []; $pNotes = []; $pActive = [];
+            foreach ($rawPatterns as $p) {
+                if (!is_array($p)) { continue; }
+                $pHosts[]  = $p['host'] ?? '';
+                $pPaths[]  = $p['path'] ?? '';
+                $pSubs[]   = !empty($p['match_subdomains']) ? 1 : 0;
+                $pPrios[]  = $p['priority'] ?? 100;
+                $pNotes[]  = $p['note'] ?? '';
+                $pActive[] = !empty($p['is_active']) ? 1 : 0;
+            }
+            $patternRows = externalLinkTypeAdminNormalisePatterns($pHosts, $pPaths, $pSubs, $pPrios, $pNotes, $pActive);
+
+            try {
+                $newId = externalLinkTypeAdminCreate($db, $fields, $patternRows);
+
+                logActivity('api.admin.external_link_type.create', 'external_link_type', (string)$newId, [
+                    'slug' => $fields['slug'], 'name' => $fields['name'], 'pattern_count' => count($patternRows),
+                ]);
+                sendJson([
+                    'ok'            => true,
+                    'id'            => $newId,
+                    'slug'          => $fields['slug'],
+                    'name'          => $fields['name'],
+                    'pattern_count' => count($patternRows),
+                ]);
+            } catch (ExternalLinkTypeDuplicateSlugException $e) {
+                sendJson(['error' => $e->getMessage()], 409);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.external_link_type.create', 'external_link_type', $fields['slug'] ?? '', $e);
+                error_log('[admin_external_link_type_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create external-link type.'], 500);
             }
             break;
         }

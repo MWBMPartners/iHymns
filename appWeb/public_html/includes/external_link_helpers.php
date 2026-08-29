@@ -40,6 +40,47 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 const IHYMNS_LINK_ENTITY_TYPES = ['song', 'songbook', 'musician', 'work', 'tune'];
 
 /**
+ * #1992 — the curator-facing labels for `tblExternalLinkTypes.Category`
+ * (VARCHAR(20), app-validated — rule #20, never an ENUM). ORDER matters: this
+ * is the display order both `/manage/external-link-types` and the public
+ * site's category grouping use.
+ *
+ * ELI5: which shelf does a provider's card sit on — "Listen", "Watch",
+ * "Read", …?
+ *
+ * DETAILED / WHY ONE CENTRAL CONST (rule #20/#35): `Category` used to live
+ * only as a page-local `$categoryLabels` array inside
+ * `manage/external-link-types.php` — fine while the page was the only writer
+ * of a Category value, but the #1992 create paths (manual form, guided
+ * wizard, the `admin_external_link_type_create` API twin) all need to
+ * VALIDATE a posted category against the same known set, not just render
+ * one. Centralising here means `externalLinkTypeAdminValidateNewType()`
+ * (includes/external_link_type_admin.php) and the page's render both read
+ * ONE list — growing the vocabulary is one line here, never a second
+ * page-local copy (mirrors IHYMNS_LINK_ENTITY_TYPES immediately above).
+ *
+ * Kept byte-identical to the pre-#1992 page-local `$categoryLabels` array
+ * (schema.sql:2634's Category column COMMENT lists the same 10 keys) — this
+ * is a lift, not a rewrite.
+ *
+ * @see appWeb/public_html/manage/external-link-types.php  $categoryLabels re-pointed to this
+ * @see appWeb/public_html/includes/external_link_type_admin.php  externalLinkTypeAdminValidateNewType()
+ * @see appWeb/.sql/schema.sql  tblExternalLinkTypes.Category column COMMENT
+ */
+const IHYMNS_LINK_TYPE_CATEGORIES = [
+    'official'    => 'Official',
+    'information' => 'Information',
+    'read'        => 'Read',
+    'sheet-music' => 'Sheet music',
+    'listen'      => 'Listen',
+    'watch'       => 'Watch',
+    'purchase'    => 'Purchase',
+    'authority'   => 'Authority',
+    'social'      => 'Social',
+    'other'       => 'Other',
+];
+
+/**
  * Attach a `patterns` array to each link-type row in $types.
  *
  * @param \mysqli              $db

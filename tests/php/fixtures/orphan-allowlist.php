@@ -314,15 +314,24 @@ return [
 
         /* #1969 (API-coverage plan §4.3, batch 4b-ii, A7) — external-link
            type + URL-pattern registry write API parity for
-           manage/external-link-types.php's own sole write action,
+           manage/external-link-types.php's edit write action,
            save_type_patterns. Same D1-default-A posture as the families
            above; delegates to the newly-extracted shared
            includes/external_link_type_admin.php core
            manage/external-link-types.php was ALSO re-pointed at in the
-           same commit (never a fork). No separate type create/delete
-           exists on the page (types are curated content shipped with the
-           app), so there is only this one action for the family. */
+           same commit (never a fork).
+           #1992 (owner decision A) later confirmed types ARE
+           curator-mintable after all — superseding this entry's original
+           "no separate create/delete, curated content only" note — and
+           added a SECOND action, admin_external_link_type_create, for the
+           same reason: the page's own manual "Add provider" form
+           (`create_type`) AND its guided wizard (`wizard_create_type`,
+           fetch()+X-Requested-With) both call the SAME
+           externalLinkTypeAdminValidateNewType()/…Create() core directly
+           — nothing first-party calls THIS JSON twin either, exactly the
+           same D1-default-A shape as its sibling below. */
         'admin_external_link_type_save'         => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/external-link-types.php\'s save_type_patterns handler calls the SAME shared includes/external_link_type_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_external_link_type_create'       => 'deliberate API-first surface #1992 (curator-mintable types, owner decision A); Swagger console consumer; same D1-default-A posture as admin_external_link_type_save immediately above; manage/external-link-types.php\'s manual create_type form AND its guided wizard\'s wizard_create_type AJAX action both call the SAME shared includes/external_link_type_admin.php externalLinkTypeAdminValidateNewType()/Create() core (never a fork), so nothing first-party calls the JSON twin yet',
 
         /* #1969 (API-coverage plan §4.3, batch 4b-ii, A8) — print-template
            CRUD + custom full-page layout API parity for
