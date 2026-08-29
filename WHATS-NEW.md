@@ -32,6 +32,12 @@ with none of the behind-the-scenes technical detail.
   several licences side by side — for example one for the words and a separate
   one for the music — each with its own number and expiry date, all managed in
   one place.
+- **Easier to use with a screen reader or keyboard** — A round of accessibility
+  work makes the app and the admin area clearer for people who use a screen
+  reader or navigate by keyboard: buttons and form fields now announce what they
+  do, collapsible sections open from the keyboard, a "skip to main content" link
+  jumps past the menus, and text and badges have stronger colour contrast so
+  they're easier to read.
 
 ## 1.0.0 — 24 August 2026
 
