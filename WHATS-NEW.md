@@ -12,6 +12,12 @@ with none of the behind-the-scenes technical detail.
 
 ## 1.1.0 — 28 August 2026
 
+- **A guided setup helper for live services** — Organisation admins can now
+  set up a venue and its regular service time in a few friendly steps, with
+  plain-language help explaining the two ways to go live: a quick, no-setup
+  session you start from any song, or a full service with a join code your
+  whole congregation can follow. The step-by-step forms you already know are
+  still there if you'd rather fill them in yourself.
 - **Bring songs in from ProPresenter** — You can now import songs, bundles and
   service playlists straight from ProPresenter 7, keeping their verses,
   choruses, arrangements and copyright details. A ProPresenter service playlist

@@ -80,6 +80,32 @@ $TZ_LIST = \DateTimeZone::listIdentifiers();
    reused by the ?action=org_venues API action (rule #22). */
 $schemaReady = venueAdminTablesExist($db);
 
+/* #1995 — the guided "Live Service setup" wizard (HYBRID shape, owner-
+   confirmed D1) reuses the shared stepper (js/modules/admin-wizard.js,
+   #1992) to walk a curator through: choose Live Follow vs Service Mode
+   (rule #26 — the two features are commonly confused), then, for Service
+   Mode, create/reuse a venue, optionally its regular service time, and
+   optionally mint a presentation-app driver key. It orchestrates the
+   THREE EXISTING API actions (org_admin_venue_save / org_admin_schedule_
+   save / service_driver_key_mint, api.php) client-side — ZERO new server
+   endpoints (rule #22 — the #1969 write core + its API twins already
+   exist; this page's own venue_save/schedule_save/venue_delete/
+   schedule_delete POST handlers below are UNTOUCHED). It does NOT start a
+   live session itself — the DONE pane links out to the existing consoles
+   (/manage/service-projection, /manage/service-lead) for that.
+   includes/service_driver_keys.php gives the driver-key protocol
+   vocabulary + its own table-existence probe, mirroring the identical
+   probe manage/service-projection.php's own driver-key card already
+   runs — #1770 C1 is a migration separate from the venue tables above, so
+   an install can be $schemaReady here yet still pre-#1770. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_driver_keys.php';
+$driverKeysReady = serviceDriverKeysTableExists($db);
+/* Cache-busted import path for the shared stepper module (#1992/#1993),
+   same filemtime-as-version-query pattern head-libs.php uses for every
+   other admin JS load. */
+$_adminWizardPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'admin-wizard.js';
+$adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizardPath) : '1';
+
 /**
  * Build a human "Every Sunday at 10:00 (90 min) · Europe/London" summary.
  * Pure — takes the row + its effective tz, returns a string for display.
@@ -326,13 +352,27 @@ function venuesUrl(array $overrides = []): string
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-2"><i aria-hidden="true" class="bi bi-geo-alt me-2"></i>Venues &amp; Service Times</h1>
-        <p class="text-secondary small mb-4" style="max-width: 60ch;">
-            Tell iHymns <strong>where</strong> your organisation meets and <strong>when</strong>.
-            This is the foundation for <em>Service Mode</em> (letting a congregation follow the
-            service on their own device). The map location &amp; radius are a convenience —
-            attendance is confirmed by an on-screen code, not your location.
-        </p>
+        <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-2">
+            <div>
+                <h1 class="h4 mb-2"><i aria-hidden="true" class="bi bi-geo-alt me-2"></i>Venues &amp; Service Times</h1>
+                <p class="text-secondary small mb-0" style="max-width: 60ch;">
+                    Tell iHymns <strong>where</strong> your organisation meets and <strong>when</strong>.
+                    This is the foundation for <em>Service Mode</em> (letting a congregation follow the
+                    service on their own device). The map location &amp; radius are a convenience —
+                    attendance is confirmed by an on-screen code, not your location.
+                </p>
+            </div>
+            <?php /* #1995 — the guided-wizard trigger. Gated on the SAME
+                     condition as the modal + its wiring further down this
+                     page (rule: nothing here can run against an org list
+                     that doesn't exist yet), never rendered when there is
+                     no organisation to attach a venue to. */ ?>
+            <?php if ($schemaReady && $orgs): ?>
+                <button type="button" class="btn btn-primary text-nowrap" data-bs-toggle="modal" data-bs-target="#svcWizardModal">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Live Service setup (guided)
+                </button>
+            <?php endif; ?>
+        </div>
 
         <?php if ($success): ?>
             <div class="alert alert-success py-2"><i aria-hidden="true" class="bi bi-check-circle me-1"></i><?= htmlspecialchars($success) ?></div>
@@ -740,6 +780,627 @@ function venuesUrl(array $overrides = []): string
         venuesToggleRecurrence();
     </script>
     <?php endif; ?>
+
+    <?php if ($schemaReady && $orgs): ?>
+    <?php /* #1995 — Live Service setup wizard: modal + wiring. BEGIN
+             Guided, step-by-step alternative to the manual venue/schedule
+             forms above (rule: additive — those forms + their POST
+             handlers are byte-identical, untouched by this block). Built
+             on the shared stepper (js/modules/admin-wizard.js, #1992) —
+             see external-link-types.php (#1992) / songbooks.php (#1993)
+             for the sibling consumers this mirrors. onFinish orchestrates,
+             client-side and sequentially, THREE EXISTING api.php actions —
+             never a new server endpoint (rule #22): org_admin_venue_save,
+             then org_admin_schedule_save (skipped if the curator ticks
+             "ad-hoc"), then service_driver_key_mint (skipped unless the
+             curator opts in). It does not itself start a live session —
+             the DONE pane links out to /manage/service-projection and
+             /manage/service-lead for that. */ ?>
+    <script>
+        window._iHymnsServiceWizard = {
+            csrf: <?= json_encode($csrf, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>,
+            driverKeysReady: <?= $driverKeysReady ? 'true' : 'false' ?>
+        };
+    </script>
+
+    <div class="modal fade" id="svcWizardModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content" id="svcWizardRoot">
+                <div class="modal-header">
+                    <h2 class="modal-title h5 mb-0">Live Service setup — guided</h2>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="svcwiz-steps-wrap">
+                        <div data-wiz-progress class="mb-3"></div>
+
+                        <section data-wiz-step data-wiz-label="Mode">
+                            <h3 data-wiz-heading class="h6 mb-3">1. Which kind of live session?</h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <div class="mb-2">
+                                <label class="form-label" for="svcwiz-mode">Live mode</label>
+                                <select class="form-select" id="svcwiz-mode">
+                                    <option value="service" selected>Service Mode — a venue-wide join code for your congregation</option>
+                                    <option value="quick">Quick Live Follow — no setup, start from any song</option>
+                                </select>
+                            </div>
+                            <p class="form-text small mb-0">
+                                <strong>Service Mode</strong> is for a venue's regular service: set up a venue and
+                                (usually) a weekly time in the next few steps, then project a join code your whole
+                                congregation can scan or type in. <strong>Quick Live Follow</strong> needs nothing
+                                here — any signed-in leader taps <strong>Go Live</strong> on a song page to start a
+                                one-off session immediately.
+                            </p>
+                        </section>
+
+                        <section data-wiz-step data-wiz-label="Venue" hidden>
+                            <h3 data-wiz-heading class="h6 mb-3">2. Where do you meet?</h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <div class="mb-3">
+                                <label class="form-label" for="svcwiz-org">Organisation</label>
+                                <select class="form-select" id="svcwiz-org">
+                                    <?php foreach ($orgs as $o): ?>
+                                        <option value="<?= (int)$o['Id'] ?>" <?= (int)$o['Id'] === $selectedOrgId ? 'selected' : '' ?>><?= htmlspecialchars($o['Name']) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label" for="svcwiz-venue-name">Venue name</label>
+                                <input type="text" class="form-control" id="svcwiz-venue-name" maxlength="150" placeholder="e.g. Main Sanctuary">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label" for="svcwiz-place">Find location (optional)</label>
+                                <input type="text" class="form-control" id="svcwiz-place" autocomplete="off" placeholder="Type an address or town to drop a map pin…">
+                                <input type="hidden" id="svcwiz-place-id" value="">
+                                <div class="form-text small">Sets the map pin — a convenience only, not the attendance check.</div>
+                            </div>
+                            <div class="mb-0">
+                                <label class="form-label" for="svcwiz-tz">Timezone</label>
+                                <select class="form-select" id="svcwiz-tz">
+                                    <?php foreach ($TZ_LIST as $tzId): ?>
+                                        <option value="<?= htmlspecialchars($tzId) ?>" <?= $tzId === 'Europe/London' ? 'selected' : '' ?>><?= htmlspecialchars($tzId) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </section>
+
+                        <section data-wiz-step data-wiz-label="Service time" hidden>
+                            <h3 data-wiz-heading class="h6 mb-3">3. When do you meet?</h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" id="svcwiz-sched-skip">
+                                <label class="form-check-label" for="svcwiz-sched-skip">Skip — we meet ad-hoc, not on a regular schedule</label>
+                            </div>
+                            <div id="svcwiz-sched-fields">
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label" for="svcwiz-sched-title">Service name</label>
+                                        <input type="text" class="form-control" id="svcwiz-sched-title" maxlength="150" value="Sunday Service">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label" for="svcwiz-sched-kind">Repeats</label>
+                                        <select class="form-select" id="svcwiz-sched-kind">
+                                            <?php foreach ($RECURRENCE_KINDS as $k => $label): ?>
+                                                <option value="<?= htmlspecialchars($k) ?>" <?= $k === 'weekly' ? 'selected' : '' ?>><?= htmlspecialchars($label) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-4" data-svcwiz-rec-field="day">
+                                        <label class="form-label" for="svcwiz-sched-dow">Day</label>
+                                        <select class="form-select" id="svcwiz-sched-dow">
+                                            <?php foreach ($DOW as $n => $dn): ?>
+                                                <option value="<?= $n ?>" <?= $n === 7 ? 'selected' : '' ?>><?= htmlspecialchars($dn) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label" for="svcwiz-sched-time">Start time</label>
+                                        <input type="time" class="form-control" id="svcwiz-sched-time" value="10:00">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label" for="svcwiz-sched-dur">Duration (min)</label>
+                                        <input type="number" class="form-control" id="svcwiz-sched-dur" min="1" max="1440" value="90">
+                                    </div>
+                                </div>
+                                <div class="row g-3" data-svcwiz-rec-field="nth">
+                                    <div class="col-md-4">
+                                        <label class="form-label" for="svcwiz-sched-nth">Which week</label>
+                                        <select class="form-select" id="svcwiz-sched-nth">
+                                            <?php foreach ($NTH_LABELS as $nv => $nl): ?>
+                                                <option value="<?= $nv ?>" <?= $nv === 1 ? 'selected' : '' ?>><?= htmlspecialchars(ucfirst($nl)) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="row g-3" data-svcwiz-rec-field="oneoff">
+                                    <div class="col-md-4">
+                                        <label class="form-label" for="svcwiz-sched-oneoff">Date</label>
+                                        <input type="date" class="form-control" id="svcwiz-sched-oneoff">
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section data-wiz-step data-wiz-label="Presentation app" hidden>
+                            <h3 data-wiz-heading class="h6 mb-3">4. Presentation-app control <span class="text-muted small">(optional)</span></h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <p class="text-secondary small">
+                                A driver key lets an external presentation app (ProPresenter, a Stream Deck
+                                script, a Companion webhook) advance the song and section on its own, without a
+                                person clicking here. Skip this if you'll drive the service by hand — you can
+                                always mint a key later from the Projector Screen.
+                            </p>
+                            <?php if (!$driverKeysReady): ?>
+                                <div class="alert alert-warning small mb-0">
+                                    <i aria-hidden="true" class="bi bi-database-exclamation me-1"></i>Driver keys
+                                    aren't migrated on this environment yet — the venue and service time above still
+                                    save fine; mint a key later from the Projector Screen once this is set up.
+                                </div>
+                            <?php else: ?>
+                                <div class="form-check form-switch mb-3">
+                                    <input class="form-check-input" type="checkbox" id="svcwiz-dk-optin">
+                                    <label class="form-check-label" for="svcwiz-dk-optin">Set up a presentation-app driver key now</label>
+                                </div>
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label" for="svcwiz-dk-label">Label</label>
+                                        <input type="text" class="form-control" id="svcwiz-dk-label" maxlength="120" placeholder="e.g. Sanctuary ProPresenter" disabled>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label" for="svcwiz-dk-protocol">Protocol</label>
+                                        <select class="form-select" id="svcwiz-dk-protocol" disabled>
+                                            <?php foreach (SERVICE_DRIVER_KEY_PROTOCOLS as $proto): ?>
+                                                <option value="<?= htmlspecialchars($proto) ?>"><?= htmlspecialchars(ucfirst($proto)) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
+                        </section>
+
+                        <section data-wiz-step data-wiz-label="Review" hidden>
+                            <h3 data-wiz-heading class="h6 mb-3">5. Review &amp; create</h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <dl class="row small mb-0" id="svcwiz-review-summary"></dl>
+                        </section>
+                    </div>
+
+                    <div id="svcwiz-done" hidden>
+                        <h3 tabindex="-1" id="svcwiz-done-heading" class="h6 mb-3">Live Service is set up</h3>
+                        <div id="svcwiz-done-body" class="small"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-wiz-back hidden>Back</button>
+                    <button type="button" class="btn btn-amber" data-wiz-next>Next</button>
+                    <button type="button" class="btn btn-amber" id="svcwiz-done-close" data-bs-dismiss="modal" hidden>Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+    /* #1995 — guided "Live Service setup" wizard wiring, built on the
+       shared stepper (js/modules/admin-wizard.js). Domain logic only — the
+       framework itself knows nothing about venues/schedules/driver keys
+       (module doc-block). Mirrors manage/external-link-types.php's (#1992)
+       / manage/songbooks.php's (#1993) wizard shape; the ONE difference is
+       that onFinish here calls THREE existing api.php actions in sequence
+       (bare fetch + X-Requested-With + credentials:'same-origin' — the
+       /manage house pattern; js/utils/api-client.js is PWA-only, rule
+       #31) rather than one page-local AJAX case. */
+    import { createWizard } from '/js/modules/admin-wizard.js?v=<?= htmlspecialchars($adminWizardVer, ENT_QUOTES) ?>';
+
+    (function () {
+        'use strict';
+        const modalEl = document.getElementById('svcWizardModal');
+        if (!modalEl) { return; }
+
+        const seed = window._iHymnsServiceWizard || {};
+        const csrfToken = seed.csrf || '';
+        const dkReady = !!seed.driverKeysReady;
+
+        const stepsWrap    = document.getElementById('svcwiz-steps-wrap');
+        const doneEl       = document.getElementById('svcwiz-done');
+        const doneBodyEl   = document.getElementById('svcwiz-done-body');
+        const nextBtn      = modalEl.querySelector('[data-wiz-next]');
+        const backBtn      = modalEl.querySelector('[data-wiz-back]');
+        const doneCloseBtn = document.getElementById('svcwiz-done-close');
+
+        const modeSelect      = document.getElementById('svcwiz-mode');
+        const orgSelect        = document.getElementById('svcwiz-org');
+        const venueNameInput   = document.getElementById('svcwiz-venue-name');
+        const placeInput       = document.getElementById('svcwiz-place');
+        const placeIdInput     = document.getElementById('svcwiz-place-id');
+        const tzSelect          = document.getElementById('svcwiz-tz');
+
+        const schedSkipEl      = document.getElementById('svcwiz-sched-skip');
+        const schedFieldsWrap  = document.getElementById('svcwiz-sched-fields');
+        const schedTitleInput  = document.getElementById('svcwiz-sched-title');
+        const schedKindSelect  = document.getElementById('svcwiz-sched-kind');
+        const schedDowSelect   = document.getElementById('svcwiz-sched-dow');
+        const schedTimeInput   = document.getElementById('svcwiz-sched-time');
+        const schedDurInput    = document.getElementById('svcwiz-sched-dur');
+        const schedNthSelect   = document.getElementById('svcwiz-sched-nth');
+        const schedOneoffInput = document.getElementById('svcwiz-sched-oneoff');
+
+        const dkOptinEl    = document.getElementById('svcwiz-dk-optin');
+        const dkLabelInput = document.getElementById('svcwiz-dk-label');
+        const dkProtocolSel = document.getElementById('svcwiz-dk-protocol');
+
+        const reviewSummary = document.getElementById('svcwiz-review-summary');
+
+        const orgDefaultValue = orgSelect ? orgSelect.value : '';
+
+        const state = { venueId: 0, scheduleId: 0, orgId: 0 };
+
+        function escapeHtml(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        /* ---- modal-scoped recurrence-kind show/hide — DELIBERATELY a
+           SEPARATE function + data attribute (data-svcwiz-rec-field, never
+           this page's own data-rec-field) from the manual schedule form's
+           global venuesToggleRecurrence(), which the manual form's edit
+           links still call unmodified (additive only). Querying only
+           inside modalEl also means this never touches the manual form's
+           own [data-rec-field] elements, and vice versa. */
+        function svcwizToggleRecurrence() {
+            const kind = schedKindSelect ? schedKindSelect.value : 'weekly';
+            const show = {
+                weekly:      ['day'],
+                fortnightly: ['day'],
+                monthly_nth: ['day', 'nth'],
+                one_off:     ['oneoff'],
+            }[kind] || ['day'];
+            modalEl.querySelectorAll('[data-svcwiz-rec-field]').forEach(function (el) {
+                el.style.display = show.indexOf(el.getAttribute('data-svcwiz-rec-field')) === -1 ? 'none' : '';
+            });
+        }
+        if (schedKindSelect) { schedKindSelect.addEventListener('change', svcwizToggleRecurrence); }
+        svcwizToggleRecurrence();
+
+        function svcwizToggleSchedSkip() {
+            if (schedFieldsWrap) { schedFieldsWrap.hidden = !!(schedSkipEl && schedSkipEl.checked); }
+        }
+        if (schedSkipEl) { schedSkipEl.addEventListener('change', svcwizToggleSchedSkip); }
+
+        if (dkOptinEl) {
+            dkOptinEl.addEventListener('change', function () {
+                const on = dkOptinEl.checked;
+                if (dkLabelInput) { dkLabelInput.disabled = !on; }
+                if (dkProtocolSel) { dkProtocolSel.disabled = !on; }
+            });
+        }
+
+        /* ---- location typeahead — the SAME shared module + attach shape
+           the manual venue form above already uses; place-search.js is
+           already loaded on this page by that block, never re-loaded
+           here. */
+        if (window.iHymnsPlaceSearch && placeInput && placeIdInput) {
+            window.iHymnsPlaceSearch.attach(placeInput, { hiddenIdInput: placeIdInput });
+        }
+
+        /* ---- review ------------------------------------------------- */
+        function updateReview() {
+            if (!reviewSummary) { return; }
+            const orgLabel = orgSelect && orgSelect.selectedOptions[0] ? orgSelect.selectedOptions[0].textContent : '';
+            let rows = '';
+            rows += '<dt class="col-sm-4">Organisation</dt><dd class="col-sm-8">' + escapeHtml(orgLabel) + '</dd>';
+            rows += '<dt class="col-sm-4">Venue</dt><dd class="col-sm-8">' + escapeHtml(venueNameInput.value.trim()) + '</dd>';
+            rows += '<dt class="col-sm-4">Timezone</dt><dd class="col-sm-8">' + escapeHtml(tzSelect.value) + '</dd>';
+            if (schedSkipEl && schedSkipEl.checked) {
+                rows += '<dt class="col-sm-4">Service time</dt><dd class="col-sm-8">Skipped — ad-hoc</dd>';
+            } else {
+                rows += '<dt class="col-sm-4">Service time</dt><dd class="col-sm-8">' + escapeHtml(schedTitleInput.value.trim() || 'Sunday Service') + '</dd>';
+            }
+            if (dkOptinEl && dkOptinEl.checked) {
+                rows += '<dt class="col-sm-4">Driver key</dt><dd class="col-sm-8">' + escapeHtml(dkLabelInput.value.trim() || '(unnamed)') + '</dd>';
+            }
+            reviewSummary.innerHTML = rows;
+        }
+
+        function showStepError(index, message) {
+            const panes = modalEl.querySelectorAll('[data-wiz-step]');
+            const pane = panes[index];
+            if (!pane) { return; }
+            const alertEl = pane.querySelector('[data-wiz-alert]');
+            if (alertEl) {
+                alertEl.hidden = false;
+                alertEl.textContent = message;
+                alertEl.focus();
+            }
+        }
+        function clearAllStepAlerts() {
+            modalEl.querySelectorAll('[data-wiz-alert]').forEach(function (el) { el.hidden = true; el.textContent = ''; });
+        }
+
+        const LAST_STEP = modalEl.querySelectorAll('[data-wiz-step]').length - 1;
+
+        /* ---- the wizard itself ----------------------------------------- */
+        const wizard = createWizard(modalEl, {
+            host: 'bootstrap-modal',
+            validateStep: function (index) {
+                if (index === 0) {
+                    if (modeSelect && modeSelect.value === 'quick') {
+                        return 'Quick Live Follow needs no setup here — open any song and tap Go Live. '
+                            + 'Choose Service Mode above to keep going, or close this wizard.';
+                    }
+                    return true;
+                }
+                if (index === 1) {
+                    if (!(orgSelect && parseInt(orgSelect.value, 10) > 0)) {
+                        return { ok: false, message: 'Choose an organisation.', focus: orgSelect };
+                    }
+                    if (!venueNameInput.value.trim()) {
+                        return { ok: false, message: 'Venue name is required.', focus: venueNameInput };
+                    }
+                    return true;
+                }
+                if (index === 2) {
+                    if (schedSkipEl && schedSkipEl.checked) { return true; }
+                    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(schedTimeInput.value || '')) {
+                        return { ok: false, message: 'Enter a valid start time.', focus: schedTimeInput };
+                    }
+                    const kind = schedKindSelect.value;
+                    if (kind === 'one_off') {
+                        if (!/^\d{4}-\d{2}-\d{2}$/.test(schedOneoffInput.value || '')) {
+                            return { ok: false, message: 'Enter the one-off date.', focus: schedOneoffInput };
+                        }
+                    } else {
+                        const dow = parseInt(schedDowSelect.value, 10);
+                        if (!(dow >= 1 && dow <= 7)) {
+                            return { ok: false, message: 'Choose a day of the week.', focus: schedDowSelect };
+                        }
+                    }
+                    return true;
+                }
+                if (index === 3) {
+                    if (dkOptinEl && dkOptinEl.checked && !dkLabelInput.value.trim()) {
+                        return { ok: false, message: 'Give the driver key a label.', focus: dkLabelInput };
+                    }
+                    return true;
+                }
+                if (index === 4) {
+                    updateReview();
+                    return true;
+                }
+                return true;
+            },
+            onStepChange: function (from, to) {
+                if (nextBtn) { nextBtn.textContent = (to === LAST_STEP) ? 'Create' : 'Next'; }
+                if (to === LAST_STEP) { updateReview(); }
+            },
+            onFinish: save,
+        });
+
+        /* ---- transport — bare fetch, the /manage house pattern (rule
+           #31 is PWA-only; js/utils/api-client.js is not consumed here),
+           same shape as manage/service-projection.php's own apiCall(). */
+        function svcwizApiCall(action, body) {
+            return fetch('/api?action=' + encodeURIComponent(action), {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify(body || {}),
+            }).then(function (res) {
+                return res.json().catch(function () { return {}; }).then(function (data) {
+                    return { status: res.status, data: data };
+                });
+            });
+        }
+
+        /* venue_id is ALWAYS the held state.venueId (0 the first time) —
+           org_admin_venue_save treats a positive venue_id as an UPDATE, so
+           a retry after a LATER step fails never mints a second venue row
+           (there is no name-uniqueness constraint to lean on instead). */
+        function doVenueSave() {
+            const body = {
+                venue_id: state.venueId || 0,
+                org_id: parseInt(orgSelect.value, 10) || 0,
+                name: venueNameInput.value.trim(),
+                timezone: tzSelect.value,
+                is_active: 1,
+                csrf_token: csrfToken,
+            };
+            if (placeIdInput.value) { body.place_id = parseInt(placeIdInput.value, 10); }
+            return svcwizApiCall('org_admin_venue_save', body).then(function (result) {
+                if (result.status === 200 && result.data && result.data.ok && result.data.venue) {
+                    return result.data.venue;
+                }
+                const err = new Error((result.data && result.data.error) || 'Could not save the venue.');
+                err.step = 'venue';
+                throw err;
+            });
+        }
+
+        /* schedule_id is likewise held in state — same retry-safety shape. */
+        function doScheduleSave(venueId) {
+            const kind = schedKindSelect.value;
+            const body = {
+                schedule_id: state.scheduleId || 0,
+                venue_id: venueId,
+                title: schedTitleInput.value.trim() || 'Sunday Service',
+                recurrence_kind: kind,
+                start_time: schedTimeInput.value,
+                duration_mins: parseInt(schedDurInput.value, 10) || 90,
+                is_active: 1,
+                csrf_token: csrfToken,
+            };
+            if (kind === 'one_off') {
+                body.one_off_date = schedOneoffInput.value;
+            } else {
+                body.day_of_week = parseInt(schedDowSelect.value, 10) || 7;
+                if (kind === 'monthly_nth') { body.nth = parseInt(schedNthSelect.value, 10) || 1; }
+            }
+            return svcwizApiCall('org_admin_schedule_save', body).then(function (result) {
+                if (result.status === 200 && result.data && result.data.ok && result.data.schedule) {
+                    return result.data.schedule;
+                }
+                const err = new Error((result.data && result.data.error) || 'Could not save the service time.');
+                err.step = 'schedule';
+                throw err;
+            });
+        }
+
+        /* Driver-key mint is the ONE non-fatal leg — it NEVER rejects. A
+           failure here must never undo the venue/schedule that already
+           saved; the DONE pane reports it and points at the Projector
+           Screen to mint later instead. */
+        function maybeMintDriverKey(venueId, orgId) {
+            if (!dkReady || !dkOptinEl || !dkOptinEl.checked) { return Promise.resolve(null); }
+            const label = dkLabelInput.value.trim();
+            if (!label) { return Promise.resolve(null); }
+            const body = {
+                orgId: orgId,
+                venueId: venueId,
+                label: label,
+                protocol: dkProtocolSel ? dkProtocolSel.value : 'generic',
+                csrf_token: csrfToken,
+            };
+            return svcwizApiCall('service_driver_key_mint', body).then(function (result) {
+                if (result.status === 200 && result.data && result.data.ok) {
+                    return { minted: true, key: result.data.key, prefix: result.data.prefix };
+                }
+                return { minted: false, error: (result.data && result.data.error) || 'Could not mint a driver key.' };
+            }).catch(function () {
+                return { minted: false, error: 'Could not reach the server to mint a driver key.' };
+            });
+        }
+
+        function routeSaveError(err) {
+            const msg = (err && err.message) || 'Something went wrong. Please try again.';
+            if (err && err.step === 'venue') {
+                wizard.goTo(1);
+                showStepError(1, msg);
+            } else if (err && err.step === 'schedule') {
+                wizard.goTo(2);
+                showStepError(2, msg);
+            } else {
+                window.alert(msg);
+            }
+        }
+
+        function showDonePane(info) {
+            if (stepsWrap) { stepsWrap.hidden = true; }
+            if (doneEl) { doneEl.hidden = false; }
+            if (backBtn) { backBtn.hidden = true; }
+            if (nextBtn) { nextBtn.hidden = true; }
+            if (doneCloseBtn) { doneCloseBtn.hidden = false; }
+
+            let html = '';
+            html += '<p><i aria-hidden="true" class="bi bi-check-circle-fill text-success me-1"></i>Venue <strong>'
+                + escapeHtml(info.venueName) + '</strong> is set up.</p>';
+            if (info.scheduleSkipped) {
+                html += '<p>No regular service time saved — add one any time from this page when you have one.</p>';
+            } else {
+                html += '<p>Service time <strong>' + escapeHtml(info.scheduleTitle) + '</strong> saved.</p>';
+            }
+            if (info.mintOutcome && info.mintOutcome.minted) {
+                /* Show-once (mirrors manage/service-projection.php's own
+                   driver-key mint card): the raw key is never stored,
+                   only ever displayed here, and is not sent anywhere
+                   again. */
+                html += '<div class="alert alert-warning py-2 px-3 mb-3">'
+                    + '<strong>Copy this driver key now — it will not be shown again:</strong><br>'
+                    + '<code style="user-select:all;" id="svcwiz-done-key">' + escapeHtml(info.mintOutcome.key) + '</code> '
+                    + '<button type="button" class="btn btn-sm btn-outline-secondary ms-2" id="svcwiz-copy-key">Copy</button>'
+                    + '<div class="form-text small mb-0">Lost it? Revoke it and mint a new one any time on the Projector Screen.</div>'
+                    + '</div>';
+            } else if (info.mintOutcome && info.mintOutcome.minted === false) {
+                html += '<div class="alert alert-secondary py-2 px-3 mb-3">Driver key not minted — '
+                    + escapeHtml(info.mintOutcome.error) + ' Mint one later on the Projector Screen.</div>';
+            }
+            html += '<p class="mb-2"><a href="/manage/service-projection">Open the Projector Screen</a> to start a '
+                + 'live service, or <a href="/manage/service-lead">Connect &amp; drive</a> from a leader’s device.</p>';
+            html += '<p class="text-secondary small mb-0">This works right now. A congregant’s copyrighted-lyrics '
+                + 'unlock during a service is a separate, dormant setting — it needs Content Gating turned on and a '
+                + 'CCLI licence restriction configured first.</p>';
+
+            if (doneBodyEl) { doneBodyEl.innerHTML = html; }
+            const copyBtn = document.getElementById('svcwiz-copy-key');
+            if (copyBtn) {
+                copyBtn.addEventListener('click', function () {
+                    const codeEl = document.getElementById('svcwiz-done-key');
+                    if (codeEl && navigator.clipboard) { navigator.clipboard.writeText(codeEl.textContent).catch(function () {}); }
+                });
+            }
+            const heading = document.getElementById('svcwiz-done-heading');
+            if (heading) { heading.focus(); }
+        }
+
+        function save() {
+            if (nextBtn) { nextBtn.disabled = true; }
+            clearAllStepAlerts();
+            const scheduleSkipped = !!(schedSkipEl && schedSkipEl.checked);
+            const scheduleTitle = schedTitleInput.value.trim() || 'Sunday Service';
+            const venueName = venueNameInput.value.trim();
+
+            doVenueSave()
+                .then(function (venue) {
+                    state.venueId = venue.id;
+                    state.orgId = venue.orgId;
+                    if (scheduleSkipped) { return null; }
+                    return doScheduleSave(venue.id);
+                })
+                .then(function (schedule) {
+                    state.scheduleId = schedule ? schedule.id : 0;
+                    return maybeMintDriverKey(state.venueId, state.orgId);
+                })
+                .then(function (mintOutcome) {
+                    showDonePane({
+                        venueName: venueName,
+                        scheduleSkipped: scheduleSkipped,
+                        scheduleTitle: scheduleTitle,
+                        mintOutcome: mintOutcome,
+                    });
+                })
+                .catch(function (err) { routeSaveError(err); })
+                .finally(function () { if (nextBtn) { nextBtn.disabled = false; } });
+        }
+
+        /* Reset to a clean slate every time the modal is opened again —
+           including collapsing the DONE pane back to the stepper (a
+           reopened wizard always starts a FRESH create, never resumes
+           the previous run's in-memory ids). */
+        modalEl.addEventListener('hidden.bs.modal', function () {
+            clearAllStepAlerts();
+            if (modeSelect) { modeSelect.value = 'service'; }
+            if (orgSelect) { orgSelect.value = orgDefaultValue; }
+            venueNameInput.value = '';
+            placeInput.value = '';
+            placeIdInput.value = '';
+            tzSelect.value = 'Europe/London';
+            if (schedSkipEl) { schedSkipEl.checked = false; }
+            schedTitleInput.value = 'Sunday Service';
+            schedKindSelect.value = 'weekly';
+            schedDowSelect.value = '7';
+            schedTimeInput.value = '10:00';
+            schedDurInput.value = '90';
+            schedNthSelect.value = '1';
+            schedOneoffInput.value = '';
+            svcwizToggleRecurrence();
+            svcwizToggleSchedSkip();
+            if (dkOptinEl) { dkOptinEl.checked = false; }
+            if (dkLabelInput) { dkLabelInput.value = ''; dkLabelInput.disabled = true; }
+            if (dkProtocolSel) { dkProtocolSel.disabled = true; }
+            state.venueId = 0; state.scheduleId = 0; state.orgId = 0;
+            if (stepsWrap) { stepsWrap.hidden = false; }
+            if (doneEl) { doneEl.hidden = true; }
+            if (backBtn) { backBtn.hidden = true; }
+            if (nextBtn) { nextBtn.hidden = false; nextBtn.textContent = 'Next'; nextBtn.disabled = false; }
+            if (doneCloseBtn) { doneCloseBtn.hidden = true; }
+            wizard.goTo(0);
+        });
+    })();
+    </script>
+    <?php /* #1995 — Live Service setup wizard: modal + wiring. END */ ?>
+    <?php endif; ?>
+
 
     <!-- Sortable table headers (#1786 sweep). -->
     <script type="module">
