@@ -625,6 +625,40 @@ funnels through it, so a new sign-in path never needs its own naming logic. It o
 explicit platform (a native app) is always left alone. Rename is `device_rename` (own-only, CSRF-gated,
 rate-limited) — never a raw `UPDATE tblApiTokens` from a page.
 
+### Per-channel search-engine visibility (#2024/#2025) — the one module you MUST reuse, not re-fork
+
+`includes/search_visibility.php` is the ONE place that answers "should THIS copy of the site (production,
+beta, or the alpha/dev channel) show up in search engines right now?" — `searchEngineVisibleHere()` (memoized
+per request) and `searchVisibilityEmitNoindexHeader()` (a one-line drop-in for any public endpoint). It reads
+one `tblAppSettings` row (`search_visibility_channels`, a CSV of the VISIBLE channels — the same storage shape
+as `webhooks_enabled_channels`/`intappsapi_enabled_channels`) via the shared `ihymns_parse_channels_csv()`
+(`includes/environment.php`, extracted from `webhooks.php`'s own channel-CSV parser so the two can never drift
+apart). The channel is always `ihymns_environment()` — the docroot the code is actually running from — never
+the request's `Host:` header, which an attacker can forge. Three consumers key off it: `index.php`/`api.php`/
+`og-image.php`/`qr.php`/`org-logo.php`/`song-media.php`/`audio-media.php` all emit `X-Robots-Tag: noindex`
+(plus the matching `<meta name="robots">` on the SPA shell) when the current channel is hidden;
+`sitemap.xml.php` 404s the whole sitemap (and every paginated child) ahead of the DB/fingerprint work; and the
+new `robots.txt.php` (replacing a static `robots.txt` file) drops that channel's `Sitemap:` line. It
+deliberately never adds `Disallow: /` — a blocked crawler can never see the `noindex` signal on a page, so
+staying crawlable is what makes `noindex` actually work; a CI guard actively bans a bare `Disallow: /` from
+ever appearing. Locked defaults (no admin action, no migration needed): production listed, beta and alpha
+hidden.
+
+### Dynamic sitemap hardening (#2023) — the shared helpers you MUST reuse, not re-fork
+
+`appWeb/public_html/sitemap.xml.php` (originally #151) is a **sitemap index** at the one `/sitemap.xml` URL;
+its children (`static`, `songbooks`, `songs` paginated at 10,000/page, `musicians`, `themes`, `works`,
+`publishers`, `tunes`) are served by the same file via `?section=&page=`, routed by an `.htaccess` rule to
+`/sitemap-<section>[-<page>].xml`. Every entity's `<lastmod>` comes from that row's own `UpdatedAt` (omitted,
+never invented, when unknown) — the old behaviour stamped every URL with "today," every day. The two genuinely
+pure helpers (`sitemapPageCount()`, `sitemapLastmod()`) live in the new `includes/sitemap_helpers.php` so a CI
+guard can call them directly without executing the parent file's request-handling flow (which ends in `exit;`
+on every branch) — the entity-query functions themselves deliberately stay in `sitemap.xml.php`, because two
+existing Node tests statically scan that file's own source text for specific literals. Conditional GET
+(ETag/Last-Modified/304) runs off cheap per-table `(COUNT, MAX(UpdatedAt))` aggregates, computed once per
+request and reused for the index's own per-child `<lastmod>`. Host resolution calls the shared
+`appCanonicalHost()` (`includes/config.php`) rather than a second hardcoded host list.
+
 ---
 
 ## 🚀 Deployment Architecture
@@ -785,7 +819,7 @@ npm run test:js                   # find appWeb -name '*.js' -exec node --check 
 npm run test:all                  # npm test && npm run test:php && npm run test:js
 ```
 
-As of this pass: **82 node suites** (`tests/*.js`) and **219 PHP suites** (`tests/php/*.php`), all
+As of this pass: **92 node suites** (`tests/*.js`) and **258 PHP suites** (`tests/php/*.php`), all
 passing. Both counts grow steadily — check `ls tests/*.js | wc -l` / `ls tests/php/*.php | wc -l` for
 the live count rather than trusting a number in prose.
 
