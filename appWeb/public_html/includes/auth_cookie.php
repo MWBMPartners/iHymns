@@ -5,6 +5,19 @@ declare(strict_types=1);
 /**
  * iHymns — cross-subdomain auth-cookie helpers (#1377 / #1376)
  *
+ * ELI5
+ * ----
+ * When someone signs in, the browser needs to remember "yes, this is a
+ * signed-in user" on every later request — that's what a cookie is for.
+ * iHymns is really several subdomains (the public app, `/manage/`, alpha/
+ * beta/dev copies) that all need to recognise the SAME sign-in, so the
+ * cookie has to be set up carefully: shared across `.ihymns.app` but
+ * never leaked to JavaScript, never sent over plain HTTP, and dropped
+ * cleanly on sign-out. This file is the ONE place that builds that cookie
+ * — set it here, clear it here, and every caller (the public API, the
+ * admin login) gets the exact same shape, so a sign-in can never work on
+ * one surface and silently fail on another.
+ *
  * The `ihymns_auth` cookie carries the opaque API bearer token that signs a
  * user in across EVERY iHymns subdomain (`.ihymns.app`) — the public app
  * (index.php / api.php) AND the path-scoped /manage/ admin area both resolve
@@ -52,6 +65,12 @@ if (!function_exists('_authCookieOpts')) {
      * top-level cross-subdomain navigation (e.g. clicking from /manage to the
      * public app) so the user stays recognised — Strict would drop it on that
      * first cross-site GET. HttpOnly keeps JS from reading the bearer token.
+     *
+     * ELI5: works out the right set of cookie attributes for THIS request —
+     * "should it be marked Secure?" (only if we're on HTTPS), "should it
+     * span all of ihymns.app?" (only on a real ihymns.app host, never on
+     * localhost) — so both setAuthTokenCookie() and clearAuthTokenCookie()
+     * below always agree on exactly what the cookie looks like.
      *
      * @param int $expiresAtTimestamp Unix epoch seconds for the cookie expiry.
      * @return array<string,mixed> setcookie() options array.

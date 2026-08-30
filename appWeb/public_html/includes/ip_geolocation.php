@@ -7,6 +7,19 @@ declare(strict_types=1);
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
+ * ELI5
+ * ----
+ * The activity log likes to show a little flag next to each sign-in —
+ * "signed in from United Kingdom" — worked out purely from the visitor's
+ * IP address, the same way a postal address tells you roughly where a
+ * letter came from. This file is how that lookup happens WITHOUT ever
+ * slowing down the actual sign-in: it tries the cheapest option first
+ * (has this IP been looked up before? → check memory, then the database
+ * cache) and only reaches for a slower option (a local MaxMind file, or —
+ * for a background catch-up job only, never on the live sign-in path — an
+ * external website) when it has to. A private IP (like 192.168.x.x) or one
+ * that can't be resolved just quietly gives no country, never an error.
+ *
  * Resolves a client IP to an ISO-3166-1 alpha-2 country for the activity log
  * (#1207's tblActivityLog.Country snapshot + the flag in the viewer). Layered so
  * the hot write path never blocks on the network:
@@ -42,6 +55,12 @@ const IHYMNS_GEO_MMDB_PATH = __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SE
 /**
  * Resolve an IP to ['code' => 'GB', 'name' => 'United Kingdom', 'source' => …]
  * or null. $allowExternal gates the network providers (false on the write path).
+ *
+ * ELI5: the main entry point — "where is this IP address roughly located?"
+ * Tries memory, then the database cache, then a local file, and only
+ * reaches out to the internet when $allowExternal says that's OK (never
+ * true on the hot sign-in path — a slow/unreachable external service must
+ * never make someone's sign-in hang).
  *
  * @return array{code:string,name:string,source:string}|null
  */

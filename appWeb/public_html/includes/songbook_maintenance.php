@@ -5,6 +5,19 @@ declare(strict_types=1);
 /**
  * iHymns — Post-write songbook maintenance helper.
  *
+ * ELI5
+ * ----
+ * A song's own id (like `MP-1008`) is supposed to start with its
+ * songbook's own short code (`MP`). Usually that's automatic — but a rare
+ * sequence of renames (rename the songbook's code, THEN bulk-import more
+ * songs into it) can leave some songs with an id that no longer matches
+ * their songbook, a small inconsistency called "prefix drift". Rather
+ * than make every curator remember to run a manual cleanup, this file
+ * quietly checks for drift EVERY time a songbook is saved and fixes up
+ * to 100 stray rows on the spot — a large batch (hundreds+) is left for
+ * the dedicated migration instead, so a rare one-off cleanup can't make
+ * an everyday save feel slow.
+ *
  * Single entry point every "I just wrote to the songbook catalogue"
  * code path can call to keep the public-facing reads consistent.
  *
@@ -189,6 +202,12 @@ function songIdPrefixProbeAndFixup(\mysqli $db): array
  * keep public reads consistent without making the curator click
  * Regenerate buttons."
  *
+ * ELI5: the function every songbook-saving code path calls right after
+ * the save — "tidy up anything that needs tidying, quietly, and tell me
+ * what you did." Nothing it does can fail the actual save; every step
+ * catches its own errors and just logs them for an operator to notice.
+ *
+
  * Runs the two follow-ups (cache regen + stale-prefix fixup) in
  * sequence; both are best-effort + their own try/catch — neither
  * will throw out of this function. Returns a structured summary
