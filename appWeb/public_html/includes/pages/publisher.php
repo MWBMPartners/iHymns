@@ -196,5 +196,13 @@ $pubRoleLabels = IHYMNS_PUBLISHER_ROLES;
     }
     if ($publisherAliases) { $ld['alternateName'] = array_values($publisherAliases); }
     ?>
-    <script type="application/ld+json"><?= json_encode($ld, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?></script>
+    <?php /* SECURITY: JSON_HEX_TAG|_AMP|_APOS|_QUOT so a DB publisher name, city
+             or alias containing </script> (or &, ", ') cannot break out of this
+             public <script> element and inject HTML (stored XSS). Mirrors the same
+             fix on musician.php:1128; both are guarded by
+             tests/php/test-jsonld-escaping.php. See the 2026-08-30 security audit. */ ?>
+    <script type="application/ld+json"><?= json_encode(
+        $ld,
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+    ) ?></script>
 <?php endif; ?>
