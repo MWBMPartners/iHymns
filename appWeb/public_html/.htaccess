@@ -203,14 +203,24 @@ RewriteRule ^audio/([A-Za-z0-9]+-[0-9]+)\.mp3$ audio-media.php?id=$1 [QSA,L]
 RewriteRule ^service-worker\.js$ service-worker.js.php [L]
 
 # ==========================================================================
-# SITEMAP ROUTING (#151)
+# SITEMAP ROUTING (#151, extended for the sitemap-index hardening 2026-08-30)
 #
 # /sitemap.xml → sitemap.xml.php
 # The sitemap is generated dynamically by PHP to include all songs,
-# songbooks, writers, and static pages from the song database.
+# songbooks, musicians, and static pages from the song database.
+#
+# /sitemap.xml is now a sitemap INDEX; /sitemap-<section>[-<page>].xml are
+# its children (?section=<section>&page=<page>), served by the SAME file —
+# never a second generator (modularity rule). Extensionless-.xml request
+# lines never contain ".php", so the "BLOCK DIRECT ACCESS TO PHP FILES"
+# %{THE_REQUEST} rule above is never tripped by these — the same mechanism
+# that already makes /og-image, /qr and /org-logo work (see those rules'
+# own comments above for the full THE_REQUEST explanation). No QSA: a child
+# sitemap URL carries no legitimate extra query string.
 # ==========================================================================
 
 RewriteRule ^sitemap\.xml$ sitemap.xml.php [L]
+RewriteRule ^sitemap-([a-z]+)(?:-([0-9]+))?\.xml$ sitemap.xml.php?section=$1&page=$2 [L]
 
 # ==========================================================================
 # APPLE APP SITE ASSOCIATION ROUTING (#1401)
@@ -405,6 +415,10 @@ RewriteRule ^ index.php [QSA,L]
     AddOutputFilterByType DEFLATE image/svg+xml
     AddOutputFilterByType DEFLATE font/woff
     AddOutputFilterByType DEFLATE application/font-sfnt
+    # Sitemap responses (~3MB uncompressed today, ~10:1 compressible) were
+    # never on this list — every /sitemap*.xml hit shipped uncompressed
+    # (2026-08-30 hardening).
+    AddOutputFilterByType DEFLATE application/xml
 </IfModule>
 
 # ==========================================================================
@@ -452,6 +466,21 @@ RewriteRule ^ index.php [QSA,L]
 
     # JSON data — short cache
     <FilesMatch "songs\.json$">
+        Header set Cache-Control "public, max-age=3600"
+    </FilesMatch>
+
+    # Sitemap (index + every child, 2026-08-30 hardening) — a later,
+    # more-specific same-scope directive wins over the blanket
+    # \.(html|php)$ "no-cache, no-store, must-revalidate" rule above, so
+    # this carves the sitemap out of it. Every request here — the index and
+    # every /sitemap-<section>[-<page>].xml child — internally targets this
+    # ONE file (see the SITEMAP ROUTING rewrite rules), so matching the
+    # basename is enough; matches PHP's own `Cache-Control: public,
+    # max-age=3600` (set only on a healthy 200/304 — see that file's
+    # conditional-GET block). Bare `set` (not `always set`) so a 4xx/5xx
+    # (404 unknown section, 503 DB outage) does NOT pick up a public-cache
+    # header — only a successful response does.
+    <FilesMatch "^sitemap\.xml\.php$">
         Header set Cache-Control "public, max-age=3600"
     </FilesMatch>
 </IfModule>

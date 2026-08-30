@@ -12,6 +12,12 @@ Disallow: /api
 Disallow: /bridge.html
 
 # Sitemap location
+# /sitemap.xml is a sitemap INDEX (2026-08-30 hardening) — each channel's
+# index points at its own child sitemaps, so only the index URL is listed
+# here per channel. dev.ihymns.app, not alpha.ihymns.app: that is the real
+# dev-channel hostname (see appCanonicalHost() in includes/config.php and
+# this app's #526 four-channel allow-list) — the old "alpha." line pointed
+# at a host this app has never served.
 Sitemap: https://ihymns.app/sitemap.xml
 Sitemap: https://beta.ihymns.app/sitemap.xml
-Sitemap: https://alpha.ihymns.app/sitemap.xml
+Sitemap: https://dev.ihymns.app/sitemap.xml
