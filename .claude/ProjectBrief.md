@@ -4,6 +4,23 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-30 (whole-codebase cleanup pass — security + a11y + lint/annotation + docs)
+
+Same branch, head **`534af87f`**, suite **258 PHP / 92 Node**, `php -l` (1037) + `node --check` (118) +
+`eslint` all clean. An owner-requested cleanup pipeline landed on top of the search-visibility feature
+(sequential Fable audit → Sonnet/Opus fix each): **security** — whole `appWeb/` audited, one confirmed
+Low stored-XSS straggler fixed (`publisher.php` JSON-LD missing `JSON_HEX_TAG`, `fe77f6d9`, #2026) +
+tree-derived guard `test-jsonld-escaping.php`; everything else verified solid. **Accessibility** —
+WCAG 2.1 AA across public/admin/editor, 2 High + 8 Med + 10 Low all fixed (epic #2027 + 19 subs, four
+commits), six mutation-proven guards incl. a **computed-contrast guard** that reads live CSS tokens per
+theme; owner decisions D1 (Emphasise-Links mode now underlines — rule #18 + guard updated in lockstep)
+and D2 (v1 editor cheap fixes, drag-builder deferred to v1-sunset #2036/#2038). **Code-quality** — lint
+clean tree-wide, 11 highest-value files annotation-backfilled, coverage 45%→71% on tracked epic #1158.
+**Docs** — README/SECURITY/PROJECT_STATUS/DEV_NOTES/help/wiki-mirror refreshed against the code
+(#2047 copy fix `534af87f`). Version unchanged (`feat:`→1.4.0 on merge, from the search-visibility
+feature below); the three version mirrors move in lockstep via `deploy.yml`. Branch still HELD for
+owner review — NO PR. Real GitHub Wiki push still blocked (no write grant) — tracked follow-up.
+
 ## 📌 Continuation note — 2026-08-30 (per-channel search-engine visibility, #2024/#2025 — closes #2024)
 
 Same branch, head **`a5c4042d`**, suite **257 PHP / 89 Node**. Answers #2024 (the sitemap-hardening
