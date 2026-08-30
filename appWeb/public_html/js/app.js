@@ -55,6 +55,10 @@ import { Notifications } from './modules/notifications.js';
 import { bootErrorMonitor } from './modules/error-monitor.js';
 import { escapeHtml } from './utils/html.js';
 import { setAuthHeaderProvider, apiFetch } from './utils/api-client.js';
+/* a11y audit M4 (2026-08-30): the quick-jump songbook picker had
+   role="dialog" but no aria-modal, no focus move-in, no Tab trap and no
+   focus restore — adopts the shared recipe. @see js/utils/dialog-a11y.js */
+import { openModalDialog } from './utils/dialog-a11y.js';
 import {
     STORAGE_DEFAULT_SONGBOOK,
     STORAGE_DISCLAIMER_ACCEPTED,
@@ -964,6 +968,26 @@ class iHymnsApp {
         /* Animate in */
         requestAnimationFrame(() => picker.classList.add('visible'));
 
+        /* a11y audit M4 (WCAG 2.4.3, 2.1.1): the shared modal-dialog focus
+           recipe — moves focus to the first songbook button (the picker's
+           whole point is picking one), traps Tab, inerts the background,
+           wires Escape, and restores focus to whatever the user was
+           typing digits into before this appeared. `onClose` is the
+           picker's own teardown (just removal — this overlay has no other
+           state to unwind); every dismiss path below (choosing a
+           songbook, clicking outside, Escape) now funnels through the ONE
+           returned close() instead of each repeating `picker.remove()`
+           and its own listener cleanup. */
+        const firstBookBtn = picker.querySelector('.quick-jump-book');
+        let outsideClickHandler;
+        const closePicker = openModalDialog(picker, {
+            initialFocus: firstBookBtn || picker,
+            onClose: () => {
+                picker.remove();
+                if (outsideClickHandler) { document.removeEventListener('click', outsideClickHandler); }
+            },
+        });
+
         /* Bind songbook buttons */
         picker.querySelectorAll('.quick-jump-book').forEach(btn => {
             btn.addEventListener('click', () => {
@@ -972,29 +996,18 @@ class iHymnsApp {
                 if (remember) {
                     localStorage.setItem(STORAGE_DEFAULT_SONGBOOK, bookId);
                 }
-                picker.remove();
+                closePicker();
                 const padded = number.padStart(4, '0');
                 this.router.navigate(`/song/${bookId}-${padded}`);
             });
         });
 
-        /* Close on click outside */
-        const closeHandler = (e) => {
-            if (!picker.contains(e.target)) {
-                picker.remove();
-                document.removeEventListener('click', closeHandler);
-            }
+        /* Close on click outside (Escape is handled internally by
+           openModalDialog() already). */
+        outsideClickHandler = (e) => {
+            if (!picker.contains(e.target)) { closePicker(); }
         };
-        setTimeout(() => document.addEventListener('click', closeHandler), 100);
-
-        /* Close on Escape */
-        const escHandler = (e) => {
-            if (e.key === 'Escape') {
-                picker.remove();
-                document.removeEventListener('keydown', escHandler);
-            }
-        };
-        document.addEventListener('keydown', escHandler);
+        setTimeout(() => document.addEventListener('click', outsideClickHandler), 100);
     }
 
     /**

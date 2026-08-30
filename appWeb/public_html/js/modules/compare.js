@@ -23,6 +23,10 @@ import { escapeHtml } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
 import { apiFetch } from '../utils/api-client.js';
 import './combobox-a11y.js';
+/* a11y audit M3 (2026-08-30): the comparison overlay had role="dialog" but
+   no aria-modal, no focus move-in, no Tab trap and no focus restore —
+   adopts the shared recipe. @see js/utils/dialog-a11y.js */
+import { openModalDialog } from '../utils/dialog-a11y.js';
 
 export class Compare {
     /**
@@ -268,21 +272,24 @@ export class Compare {
         /* Close button */
         overlay.querySelector('#compare-close-btn')?.addEventListener('click', () => this.closeComparison());
 
-        /* Escape to close */
-        this._escHandler = (e) => {
-            if (e.key === 'Escape') this.closeComparison();
-        };
-        document.addEventListener('keydown', this._escHandler);
+        /* a11y audit M3 (WCAG 2.4.3, 2.1.1): the shared modal-dialog focus
+           recipe — moves focus in, traps Tab, inerts the background, and
+           restores focus on close (replacing the old bare Escape-only
+           listener, which never did any of that). `onClose` is the
+           overlay's real teardown; the Close button above and Escape
+           (handled internally by openModalDialog()) both now funnel
+           through this ONE close(). */
+        this._compareClose = openModalDialog(overlay, {
+            onClose: () => {
+                document.body.classList.remove('compare-active');
+                document.getElementById('compare-overlay')?.remove();
+            },
+        });
     }
 
     /** Close the comparison overlay */
     closeComparison() {
-        document.body.classList.remove('compare-active');
-        document.getElementById('compare-overlay')?.remove();
-        if (this._escHandler) {
-            document.removeEventListener('keydown', this._escHandler);
-            this._escHandler = null;
-        }
+        this._compareClose?.();
     }
 
     /**

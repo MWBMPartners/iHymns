@@ -7,7 +7,17 @@
  * Shows a categorised keyboard shortcuts reference overlay when
  * the user presses '?' from any page (outside input fields).
  * Dismissible via Escape or the close button.
+ *
+ * a11y audit H2 (2026-08-30): this overlay declared `aria-modal="true"`
+ * but never actually moved focus into it, trapped Tab, or restored focus
+ * on close — the mispaired aria-modal was WORSE than no dialog semantics
+ * at all, because it told a screen reader "you are now confined to this
+ * dialog" while focus stayed on the page behind it. Fixed by adopting the
+ * shared recipe in js/utils/dialog-a11y.js (openModalDialog()) — see
+ * show()/hide() below.
+ * @link https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/
  */
+import { openModalDialog } from '../utils/dialog-a11y.js';
 
 export class Shortcuts {
     /**
@@ -157,19 +167,34 @@ export class Shortcuts {
 
         /* Animate in */
         requestAnimationFrame(() => overlay.classList.add('visible'));
+
+        /* a11y audit H2 (WCAG 2.4.3 Focus Order, 2.1.1 Keyboard): wire the
+           shared modal-dialog focus recipe on top of the visual open/close
+           this module already had. `aria-modal` is already set above (the
+           call below re-sets it — a harmless no-op); this ADDS the part
+           that was missing: focus moved into the dialog, a Tab trap, the
+           background hidden from assistive tech (`inert`), Escape now
+           routes here directly (in addition to app.js's existing global
+           handler, which stays — dialog-a11y's close() is idempotent), and
+           focus restored to whatever had it before '?' was pressed.
+           `onClose` is the dialog's ACTUAL teardown (the CSS transition +
+           removal this module already did) — every dismiss path (Close
+           button, backdrop click, "More Help", Escape) now funnels through
+           this ONE close() instead of each one repeating its own copy. */
+        this._close = openModalDialog(overlay, {
+            onClose: () => {
+                this.visible = false;
+                overlay.classList.remove('visible');
+                overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
+                /* Fallback removal if no transition */
+                setTimeout(() => overlay.remove(), 300);
+            },
+        });
     }
 
     /** Hide the shortcuts overlay */
     hide() {
         if (!this.visible) return;
-        this.visible = false;
-
-        const overlay = document.getElementById('shortcuts-overlay');
-        if (overlay) {
-            overlay.classList.remove('visible');
-            overlay.addEventListener('transitionend', () => overlay.remove(), { once: true });
-            /* Fallback removal if no transition */
-            setTimeout(() => overlay.remove(), 300);
-        }
+        this._close?.();
     }
 }

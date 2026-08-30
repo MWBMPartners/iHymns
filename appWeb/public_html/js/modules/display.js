@@ -10,6 +10,12 @@
  */
 import { escapeHtml } from '../utils/html.js';
 import { STORAGE_DISPLAY } from '../constants.js';
+/* a11y audit M2 (2026-08-30): the presentation overlay had role="dialog"
+   but no focus management at all — adopts the shared recipe already used
+   by present-mode.js (the model implementation) and js/utils/dialog-a11y.js
+   (the extracted, reusable version of that same recipe). See
+   enterPresentationMode() below. */
+import { openModalDialog } from '../utils/dialog-a11y.js';
 
 export class Display {
     /**
@@ -342,7 +348,10 @@ export class Display {
     togglePresentationMode() {
         const overlay = document.getElementById('presentation-overlay');
         if (overlay) {
-            this.exitPresentationMode();
+            /* Routes through the SAME close() as every other dismiss path
+               (a11y audit M2) so pressing "P" to close also restores
+               focus + un-inerts the background. */
+            this._closePresentation();
         } else {
             const lyricsEl = document.querySelector('.song-lyrics');
             if (lyricsEl) this.enterPresentationMode(lyricsEl);
@@ -577,9 +586,23 @@ export class Display {
         /* Add presentation class to body */
         document.body.classList.add('presentation-active');
 
+        /* a11y audit M2 (WCAG 2.4.3, 2.1.1): wire the shared modal-dialog
+           focus recipe — moves focus into the overlay, traps Tab, hides
+           the background from assistive tech (inert), and restores focus
+           on close. `onClose` is this overlay's REAL teardown
+           (exitPresentationMode(), unchanged) — every dismiss path below
+           (Close button, Escape, exiting fullscreen, the "P" key via
+           togglePresentationMode(), and leaving the song page via
+           cleanup()) now funnels through this ONE close() via
+           _closePresentation() so none of them can forget the inert /
+           focus-restore half of the teardown. */
+        this._presentationClose = openModalDialog(overlay, {
+            onClose: () => this.exitPresentationMode(),
+        });
+
         /* Close button */
         overlay.querySelector('#presentation-close-btn')?.addEventListener('click', () => {
-            this.exitPresentationMode();
+            this._closePresentation();
         });
 
         /* Blank/black screen toggle (#1273) — operator control; the "B" key
@@ -605,21 +628,35 @@ export class Display {
             this.stopCountdown();
         });
 
-        /* Escape key to close */
-        const escHandler = (e) => {
-            if (e.key === 'Escape') {
-                this.exitPresentationMode();
-                document.removeEventListener('keydown', escHandler);
-            }
-        };
-        document.addEventListener('keydown', escHandler);
+        /* Escape-to-close is now handled by openModalDialog() above (it
+           listens for Escape itself and calls the SAME close() this
+           module wires everywhere else) — the private per-open listener
+           this module used to register itself is gone (a11y audit M2). */
 
-        /* Fullscreen change — exit if user exits fullscreen */
+        /* Fullscreen change — exit if user exits fullscreen (e.g. the
+           system/browser fullscreen-exit gesture, not this module's own
+           Close button). Routes through _closePresentation() rather than
+           exitPresentationMode() directly so the inert/focus-restore half
+           of the dialog teardown still runs. */
         document.addEventListener('fullscreenchange', () => {
             if (!document.fullscreenElement) {
-                this.exitPresentationMode();
+                this._closePresentation();
             }
         }, { once: true });
+    }
+
+    /**
+     * Close the presentation overlay via the SAME path every dismiss
+     * route uses. Falls back to calling exitPresentationMode() directly
+     * when no dialog is currently open (openModalDialog() was never
+     * called, so there is nothing to inert-restore) — keeps this safe to
+     * call unconditionally, e.g. from cleanup() on every page navigation
+     * whether or not presentation mode happens to be active.
+     * @see js/utils/dialog-a11y.js openModalDialog()
+     */
+    _closePresentation() {
+        if (this._presentationClose) { this._presentationClose(); }
+        else { this.exitPresentationMode(); }
     }
 
     /** Exit presentation mode */
@@ -627,6 +664,12 @@ export class Display {
         /* Clear any running pre-service countdown so its interval doesn't
            keep firing after the overlay is gone (#1273). */
         this.stopCountdown();
+
+        /* This method IS the dialog's onClose (see openModalDialog() call
+           above) — clear the stored close() so a stale reference can't be
+           called twice, and so _closePresentation() correctly falls back
+           to calling this method directly once the dialog is gone. */
+        this._presentationClose = null;
 
         document.body.classList.remove('presentation-active');
         document.getElementById('presentation-overlay')?.remove();
@@ -750,7 +793,15 @@ export class Display {
     /** Clean up when leaving a song page */
     cleanup() {
         this.stopAutoScroll();
-        this.exitPresentationMode();
+        /* a11y audit M2: routes through the SAME close() as every other
+           dismiss path — calling exitPresentationMode() directly here
+           would skip un-inerting the background siblings openModalDialog()
+           set, stranding `inert` on the rest of the page after the new
+           page's content has already been swapped in. Safe to call on
+           EVERY navigation (router.js calls cleanup() unconditionally) —
+           _closePresentation() falls back to a no-op-safe
+           exitPresentationMode() when presentation mode was never open. */
+        this._closePresentation();
     }
 
     /**
