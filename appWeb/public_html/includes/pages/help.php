@@ -866,7 +866,7 @@ declare(strict_types=1);
                         <li><strong>System:</strong> Automatically matches your device's light/dark preference</li>
                     </ul>
                     <p>Access themes via the <i class="fa-solid fa-circle-half-stroke" aria-hidden="true"></i> icon in the top bar, or in <strong>Settings</strong>.</p>
-                    <p>Additional accessibility options in Settings include adjustable font size, reduced motion, and reduced transparency.</p>
+                    <p>Additional accessibility options in Settings include adjustable font size, reduced motion, reduced transparency, and <strong>Emphasise Links</strong> (gives in-text links an accent colour and an underline, for anyone who wants links to stand out more than the site's normal muted styling).</p>
                 </div>
             </div>
         </div>
