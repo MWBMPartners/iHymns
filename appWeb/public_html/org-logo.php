@@ -49,6 +49,13 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'read_rate_limit.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_helpers.php';
+/* Per-channel search-engine visibility (#2024/#2025) — this endpoint loads
+   neither config.php nor maintenance.php elsewhere, but search_visibility.php
+   self-requires everything it needs (environment.php, db_mysql.php already
+   above, maintenance.php), so this one require + call is everything an
+   otherwise-minimal endpoint like this one needs to add. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+searchVisibilityEmitNoindexHeader();
 
 /* Ordering is load-bearing (mirrors qr.php): set BEFORE any exit path. */
 header('X-Content-Type-Options: nosniff');

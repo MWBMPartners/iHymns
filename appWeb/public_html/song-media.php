@@ -70,6 +70,11 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    uses to let a signed-in curator preview an `admin`-only row. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_media_visibility.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+/* Per-channel search-engine visibility (#2024/#2025) — keeps a hidden
+   channel's gated media streams out of media search too; one early call,
+   before any byte-range/streaming logic below. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+searchVisibilityEmitNoindexHeader();
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
    so a broken song-media stream (storage backend down, missing
    row, range-header parse fail) surfaces in /manage/activity-log. */

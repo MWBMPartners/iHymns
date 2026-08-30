@@ -136,6 +136,20 @@ enforceChannelGate($app["Application"]["Version"]["Development"]["Status"] ?? nu
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
 enforceMaintenanceForPublicSite();
 
+/* Per-channel search-engine visibility (#2024/#2025) — an admin can switch
+   a whole copy of the site (production/beta/alpha) off from search
+   engines. When THIS channel is hidden, every response carries
+   `X-Robots-Tag: noindex` (emitted now, alongside the other bootstrap
+   gates, so it is set well before any other header/output point) and the
+   SPA shell ALSO carries the matching <meta name="robots" content=
+   "noindex"> further down in <head> (the one endpoint that gets BOTH forms
+   — the meta tag survives a saved/proxied copy of the HTML). The flag is
+   computed once here and reused by the <head> block below so the two can
+   never disagree with each other. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+$searchEngineHidden = !searchEngineVisibleHere();
+searchVisibilityEmitNoindexHeader();
+
 /* #947/#340 — the dormant CAPTCHA core, loaded before the CSP block below so
    captchaCspOrigins() can conditionally widen script-src/frame-src for the
    active provider ONLY when configured (byte-identical CSP when dormant). The
@@ -953,6 +967,14 @@ if (!empty($breadcrumbItems)) {
     <title><?= $ogTitle ?></title>
     <meta name="description" content="<?= htmlspecialchars($ogDescription) ?>">
     <meta name="keywords" content="<?= htmlspecialchars($app["Application"]["Description"]["Keywords"]) ?>">
+    <?php /* #2024/#2025 — mirrors the X-Robots-Tag header set earlier in this
+             file (same $searchEngineHidden flag, so the two can never
+             disagree): this channel has been switched off from search
+             engines by an admin. Absent entirely on a visible channel —
+             never an empty/false-y meta tag. */ ?>
+    <?php if ($searchEngineHidden): ?>
+    <meta name="robots" content="noindex">
+    <?php endif; ?>
     <meta name="author" content="<?= htmlspecialchars($app["Application"]["Vendor"]["Name"]) ?>">
     <meta name="application-name" content="<?= htmlspecialchars($app["Application"]["Name"]) ?>">
     <meta name="generator" content="<?= htmlspecialchars($app["Application"]["Name"]) ?> PWA">

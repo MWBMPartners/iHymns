@@ -412,6 +412,17 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmit() for the setlist_share / service_session_* funnels (dormant no-op) */
 enforceMaintenanceForApi();
 
+/* Per-channel search-engine visibility (#2024/#2025) — same channel-off
+   signal index.php emits, added here too so the SPA's ?page= HTML
+   fragments and JSON responses carry it uniformly. These fragments aren't
+   independently discoverable documents (nothing links to /api?page=…,
+   they're not in the sitemap, and robots.txt already carries a blanket
+   Disallow: /api), but the header is one cheap call and the value is
+   CONSTANT per channel — so the $_cacheablePages shared-cache fragments
+   (rule #6) are unaffected by adding it. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+searchVisibilityEmitNoindexHeader();
+
 /* Themed error-card renderer for the ?page= partials (song/songbook/work/…
    not-found etc.) so every in-SPA error state is one consistent card. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'error_page.php';

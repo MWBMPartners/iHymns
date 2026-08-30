@@ -50,6 +50,10 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'audio_signing.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'read_rate_limit.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* Per-channel search-engine visibility (#2024/#2025) — same reasoning as
+   song-media.php's sibling gated-media stream. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+searchVisibilityEmitNoindexHeader();
 /* Mirror any uncaught \Throwable / fatal into tblActivityLog so a broken audio
    stream (missing file, range-parse fail) surfaces in /manage/activity-log —
    same discipline as song-media.php. */
