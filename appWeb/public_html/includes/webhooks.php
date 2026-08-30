@@ -111,20 +111,21 @@ const WEBHOOK_CANONICAL_HOSTS = ['ihymns.app', 'www.ihymns.app', 'dev.ihymns.app
  * "Alpha, BETA  production"), this returns the clean list of real channel
  * names it actually means, dropping anything that isn't one of the three.
  *
+ * WHY THIS IS NOW A ONE-LINE DELEGATE (search-visibility feature, #2024/
+ * #2025): the search-engine-visibility toggle needed the exact same "which
+ * channels does this CSV name?" fold, and rule #22 forbids a second copy —
+ * so the fold itself moved to `includes/environment.php::ihymns_parse_
+ * channels_csv()` (the natural channel-domain home, dependency-free, loaded
+ * on every request already) and THIS function became a thin re-export. Every
+ * existing caller (name, signature, and behaviour) is unchanged.
+ *
  * @param string|null $csv Raw setting value (comma/whitespace separated).
  * @return array<int,string> subset of {alpha, beta, production}, de-duplicated.
+ * @see includes/environment.php::ihymns_parse_channels_csv()  the extracted pure core
  */
 function webhookParseChannelsCsv(?string $csv): array
 {
-    $raw = (string)$csv;
-    $out = [];
-    foreach (preg_split('/[\s,]+/', $raw, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $c) {
-        $c = strtolower(trim($c));
-        if (in_array($c, ['alpha', 'beta', 'production'], true)) {
-            $out[] = $c;
-        }
-    }
-    return array_values(array_unique($out));
+    return ihymns_parse_channels_csv($csv);
 }
 
 /**

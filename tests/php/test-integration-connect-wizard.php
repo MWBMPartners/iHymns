@@ -110,12 +110,17 @@ declare(strict_types=1);
  *      the (deliberately untouched) `save_apple` handler honest without
  *      constant-ising the handler itself. Also asserts the
  *      `apple_apns_key_id` field carries `'carry' => true`.
- *  (n) WEBHOOKS TEST + META DISCIPLINE (#2004): `integrationTestWebhooks()`
+ *  (n) WEBHOOKS TEST + META DISCIPLINE (#2004; re-pointed #2025 when the CSV
+ *      parser itself moved one level further out): `integrationTestWebhooks()`
  *      calls `webhookDrainHealth(` and NO outbound-call function (no
  *      `curl_*`, no `webhookHttpPost(`); `integrationWebhookChannelMeta()`
- *      keys equal `webhookParseChannelsCsv()`'s own allow-list in BOTH
- *      directions; `webhookEnabledChannels()` calls the extracted parser
- *      rather than carrying its own copy of the allow-list.
+ *      keys equal `ihymns_parse_channels_csv()`'s own allow-list (now in
+ *      includes/environment.php, the search-visibility feature's shared
+ *      extraction) in BOTH directions; `webhookEnabledChannels()` calls
+ *      `webhookParseChannelsCsv()` rather than carrying its own copy of the
+ *      allow-list, and `webhookParseChannelsCsv()` in turn calls
+ *      `ihymns_parse_channels_csv()` rather than carrying ITS OWN copy —
+ *      the delegation chain stays honest at both links, not just the first.
  *
  * MUTATION-TESTING PROTOCOL (rule #34)
  * -------------------------------------
@@ -156,6 +161,11 @@ $emailOptionsFile = $publicHtml . '/includes/email_options.php';
 $emailServiceFile = $publicHtml . '/includes/EmailService.php';
 $appleSiwaFile     = $publicHtml . '/includes/apple_siwa.php';
 $webhooksFile      = $publicHtml . '/includes/webhooks.php';
+/* #2025 (search-visibility feature) — webhookParseChannelsCsv()'s own CSV
+   fold moved one level further out, into includes/environment.php's
+   ihymns_parse_channels_csv(); check (n) below now isolates the allow-list
+   literal from THIS file rather than from webhooks.php. */
+$environmentFile   = $publicHtml . '/includes/environment.php';
 
 $passed = 0;
 $failed = 0;
@@ -306,7 +316,7 @@ ok('fixture: icwPageHasLauncherFor() refuses an absent key', !icwPageHasLauncher
  * ========================================================================= */
 
 foreach ([$registryFile, $cuercodeFile, $secretCryptoFile, $pageFile, $jsFile, $extLinkGuardFile,
-          $emailOptionsFile, $emailServiceFile, $appleSiwaFile, $webhooksFile] as $f) {
+          $emailOptionsFile, $emailServiceFile, $appleSiwaFile, $webhooksFile, $environmentFile] as $f) {
     ok("source file exists: {$f}", is_file($f));
 }
 
@@ -327,6 +337,9 @@ $appleSiwaSrc          = (string)file_get_contents($appleSiwaFile);
 $appleSiwaStripped     = icwStripComments($appleSiwaSrc);
 $webhooksSrc           = (string)file_get_contents($webhooksFile);
 $webhooksStripped      = icwStripComments($webhooksSrc);
+/* #2025 — the CSV-parser extraction's own source. */
+$environmentSrc        = (string)file_get_contents($environmentFile);
+$environmentStripped   = icwStripComments($environmentSrc);
 
 $registryKeys = array_keys(integrationRegistry());
 ok('the registry has at least the three Phase-1 keys', count(array_intersect(['intapps', 'cuercode', 'captcha'], $registryKeys)) === 3);
@@ -929,24 +942,41 @@ ok('(n) integrationTestWebhooks() calls no curl_* function (no outbound HTTP fro
 ok('(n) integrationTestWebhooks() calls no webhookHttpPost( (the SIGNED delivery dialer stays untouched by a status test)',
     !str_contains($integrationTestWebhooksBody, 'webhookHttpPost('));
 
-$webhookParseFnBody = icwFunctionBodyFor($webhooksStripped, 'webhookParseChannelsCsv');
-ok('(n) isolated webhookParseChannelsCsv()\'s body (non-empty)', $webhookParseFnBody !== '');
-preg_match('/\[\s*\'alpha\'\s*,\s*\'beta\'\s*,\s*\'production\'\s*\]/', $webhookParseFnBody, $mChanLit);
+/* #2025 — the allow-list literal itself now lives in includes/environment.php's
+   ihymns_parse_channels_csv() (extracted for the search-visibility feature,
+   which needed the SAME fold); webhookParseChannelsCsv() is a one-line
+   delegate to it (checked below, mirroring how webhookEnabledChannels()'s
+   own delegation to webhookParseChannelsCsv() is already checked). */
+$ihymnsParseFnBody = icwFunctionBodyFor($environmentStripped, 'ihymns_parse_channels_csv');
+ok('(n) isolated ihymns_parse_channels_csv()\'s body (non-empty)', $ihymnsParseFnBody !== '');
+preg_match('/\[\s*\'alpha\'\s*,\s*\'beta\'\s*,\s*\'production\'\s*\]/', $ihymnsParseFnBody, $mChanLit);
 $webhookParseAllowList = $mChanLit[0] ?? null;
-ok('(n) webhookParseChannelsCsv()\'s allow-list literal was found (fixture precondition)', $webhookParseAllowList !== null);
+ok('(n) ihymns_parse_channels_csv()\'s allow-list literal was found (fixture precondition)', $webhookParseAllowList !== null);
 
 $webhookChannelMetaKeys = array_keys(integrationWebhookChannelMeta());
 sort($webhookChannelMetaKeys);
 $parsedAllowListKeys = ['alpha', 'beta', 'production'];
 sort($parsedAllowListKeys);
-ok('(n) integrationWebhookChannelMeta() keys EXACTLY equal webhookParseChannelsCsv()\'s allow-list (both directions)',
+ok('(n) integrationWebhookChannelMeta() keys EXACTLY equal ihymns_parse_channels_csv()\'s allow-list (both directions)',
     $webhookChannelMetaKeys === $parsedAllowListKeys);
 
 $webhookEnabledChannelsFnBody = icwFunctionBodyFor($webhooksStripped, 'webhookEnabledChannels');
 ok('(n) webhookEnabledChannels() calls webhookParseChannelsCsv( (re-pointed, not duplicated)',
     str_contains($webhookEnabledChannelsFnBody, 'webhookParseChannelsCsv('));
-ok('(n) webhookEnabledChannels() no longer carries its OWN copy of the allow-list literal (the fold moved to webhookParseChannelsCsv())',
+ok('(n) webhookEnabledChannels() no longer carries its OWN copy of the allow-list literal (the fold moved to ihymns_parse_channels_csv())',
     !(bool)preg_match('/\[\s*\'alpha\'\s*,\s*\'beta\'\s*,\s*\'production\'\s*\]/', $webhookEnabledChannelsFnBody));
+
+/* #2025 — the SECOND link in the delegation chain: webhookParseChannelsCsv()
+   itself must call the extracted core, and must NOT carry its own copy of
+   the allow-list literal either (the exact regression this whole guard
+   update exists to catch — a naive "extract but forget to re-point the old
+   function" would leave the OLD literal sitting right there, duplicated). */
+$webhookParseFnBody = icwFunctionBodyFor($webhooksStripped, 'webhookParseChannelsCsv');
+ok('(n) isolated webhookParseChannelsCsv()\'s body (non-empty)', $webhookParseFnBody !== '');
+ok('(n) webhookParseChannelsCsv() calls ihymns_parse_channels_csv( (re-pointed, not duplicated)',
+    str_contains($webhookParseFnBody, 'ihymns_parse_channels_csv('));
+ok('(n) webhookParseChannelsCsv() no longer carries its OWN copy of the allow-list literal (the fold moved to ihymns_parse_channels_csv())',
+    !(bool)preg_match('/\[\s*\'alpha\'\s*,\s*\'beta\'\s*,\s*\'production\'\s*\]/', $webhookParseFnBody));
 
 /* MUTATION PROOF — inject a curl_init( call into a copy of the test body. */
 $mutWebhooksTest = $integrationTestWebhooksBody . "\ncurl_init('https://example.com/');";
