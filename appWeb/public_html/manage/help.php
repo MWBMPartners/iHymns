@@ -2040,6 +2040,28 @@ foreach ($sections as $s) {
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> this is entirely optional. Without it configured, the registry still works exactly as it always has &mdash; the manual "Refresh from IANA + CLDR" button on Database Setup still pulls the latest data on demand.
                     </div>
+                    <h3 class="h6">Search engine visibility</h3>
+                    <p>
+                        A card with three switches &mdash; <strong>Production</strong>, <strong>Beta</strong>, and
+                        <strong>Alpha (dev)</strong> &mdash; controlling whether each of the three iHymns sites is
+                        listed by search engines like Google. Out of the box the live site is listed and the beta
+                        preview and dev site are not, so an in-progress version of a song page can't turn up
+                        alongside the real one in a web search.
+                    </p>
+                    <p>
+                        Switching a site off tells search engines not to list any of its pages, removes its
+                        sitemap, and stops <code>robots.txt</code> pointing at it &mdash; but the site keeps
+                        working normally for everyone the whole time; only whether it shows up in search results
+                        changes. Because the three sites share one setting, this card manages all three at once
+                        from wherever you're signed in &mdash; unlike most other cards here, which only manage the
+                        one you're currently on.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> a switch here takes days to weeks to show up in search results,
+                        not instantly &mdash; search engines only notice the change the next time they revisit a
+                        page. That cuts both ways: turning a site off doesn't scrub it from search overnight, and
+                        turning it back on doesn't relist it overnight either.
+                    </div>
                 </section>
 
                 <section id="bot-protection" class="help-section card-admin mb-4">

@@ -10,6 +10,17 @@ with none of the behind-the-scenes technical detail.
 > `## <version> — <date>` heading style and `- ` bullets so the app can display
 > it. See `.claude/whats-new-style.md` for the full house style.
 
+## 1.4.0 — 30 August 2026
+
+- **Choose which sites appear in search engines** — Admins can now control
+  whether each copy of iHymns — the live site, the beta preview, and the
+  dev site — shows up in search engines like Google. The live site is
+  listed as before; the preview and dev sites are now kept out of search
+  results by default, so an in-progress version of a song page can no
+  longer turn up in a web search. Each can be switched on or off from the
+  admin Settings page, and the site itself keeps working normally either
+  way — this only changes whether it's listed.
+
 ## 1.3.0 — 29 August 2026
 
 - **A guided helper for switching content locking on** — Turning on the
