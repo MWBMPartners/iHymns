@@ -4,6 +4,36 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-30 (per-channel search-engine visibility, #2024/#2025 — closes #2024)
+
+Same branch, head **`a5c4042d`**, suite **257 PHP / 89 Node**. Answers #2024 (the sitemap-hardening
+pass's own for-consideration follow-up, just below) with the owner's actual decision: a per-channel,
+admin-controllable toggle — new "Search engine visibility" card on `/manage/configuration`, three
+switches (Production/Beta/Alpha-dev). Locked defaults, no DB migration needed: production listed,
+beta hidden, alpha (dev) hidden. Switching a channel OFF is three pieces hanging off ONE
+`tblAppSettings` row (`search_visibility_channels`, CSV — the webhooks/intappsapi storage precedent)
+and ONE new helper `includes/search_visibility.php`: (1) `X-Robots-Tag: noindex` on every response
+(`index.php`/`api.php`/`og-image.php`/`qr.php`/`org-logo.php`/`song-media.php`/`audio-media.php`,
+plus `index.php`'s matching `<meta name="robots">`); (2) `/sitemap.xml` (+children) 404s, gated before
+the DB fingerprint work and conditional GET; (3) `robots.txt` — now dynamic (`robots.txt.php`, static
+file deleted, never-5xx by total `try/catch`) — drops the `Sitemap:` line and now advertises only its
+OWN host (fixing a wart where every channel used to list all three). Deliberately never adds
+`Disallow: /` — a blocked crawler can't see the noindex, so staying crawlable is what makes it work;
+mechanically banned by the new guard. `includes/environment.php` gained the extracted, shared
+`ihymns_parse_channels_csv()` (rule #22 — `webhooks.php`'s own parser is now a one-line delegate).
+Two guards, both run through their full mutation-proof procedure for real: `test-sitemap-coverage.php`
+PASS 7 (2 mutations) + new `test-search-visibility.php` (6 passes, 10 mutations — incl. an active,
+verified-narrow ban on a bare `Disallow: /`, the one mutation that would defeat the feature's whole
+SEO premise). 6 atomic commits, all pushed, no PR. **Version: this is a genuine `feat:`, which
+outranks the pending `v1.3.1` patch-release plan from the runtime-bug-hunt pass (major > minor > patch,
+rule #46) — the branch as a whole now bumps to minor 1.4.0 on merge, not patch 1.3.1; F-1/F-2/F-3 ride
+along inside 1.4.0.** Docs done: WHATS-NEW (new `## 1.4.0` heading), CHANGELOG, `manage/help.php`, the
+in-repo wiki mirror (`Deployment-&-CI-CD.md`, `Troubleshooting-&-FAQ.md` — same GitHub-Wiki-push-blocked
+caveat as the sitemap-hardening note below). Tracking: **#2025** (this work); **closes #2024**. Full
+detail: `sessions/2026-08-30-HANDOFF.md`.
+
+---
+
 ## 📌 Current state — 2026-08-30 (v1.3.0; dormant-feature activation program COMPLETE)
 
 Branch `claude/dormant-features-settings-1sdw4t`, suite **252 PHP / 84 Node**, version **1.3.0**
