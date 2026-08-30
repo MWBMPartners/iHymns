@@ -162,6 +162,43 @@ function _ihymnsNumericIpv4ToDotted(string $host): ?string
 }
 
 /**
+ * ELI5: if this IPv6 address is really an IPv4 address wearing an IPv6
+ * costume (`::ffff:127.0.0.1`), hand back the plain IPv4 underneath
+ * (`127.0.0.1`); otherwise null.
+ *
+ * WHY this exists: an "IPv4-mapped IPv6 address" (the `::ffff:0:0/96` block)
+ * is how an IPv6 socket talks to an IPv4 host — `::ffff:127.0.0.1` routes to
+ * exactly the same loopback `127.0.0.1` would. But `filter_var()`'s
+ * FILTER_FLAG_NO_RES_RANGE / _NO_PRIV_RANGE flags classify that mapped block
+ * INCONSISTENTLY across PHP/libc builds: on one runner `::ffff:127.0.0.1`
+ * comes back "reserved" (correct), on another it comes back a perfectly
+ * public IPv6 address — the exact CI-passes-here / CI-fails-there split that
+ * flagged this. Extracting the embedded IPv4 and classifying THAT (IPv4
+ * range classification IS reliable and consistent everywhere) makes the
+ * verdict deterministic and, more importantly, matches what curl would
+ * actually dial. So `::ffff:10.0.0.1`, `::ffff:169.254.169.254`, etc. are
+ * now caught for certain, not by luck of the build.
+ * @link https://en.wikipedia.org/wiki/IPv6#IPv4-mapped_IPv6_addresses
+ *
+ * @param string $ip A candidate IP string.
+ * @return string|null The embedded dotted-quad IPv4, or null if $ip is not a
+ *                      valid IPv4-mapped IPv6 address.
+ */
+function _ihymnsIpv4MappedToDotted(string $ip): ?string
+{
+    $packed = @inet_pton($ip);                        /* parses ::ffff:127.0.0.1 AND ::ffff:7f00:1 to 16 bytes */
+    if ($packed === false || strlen($packed) !== 16) {
+        return null;                                  /* not a valid IPv6 address */
+    }
+    /* IPv4-mapped IPv6 = 10 zero bytes, then 0xffff, then the 4 IPv4 bytes. */
+    if (substr($packed, 0, 12) !== "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff") {
+        return null;
+    }
+    $dotted = @inet_ntop(substr($packed, 12));        /* the trailing 4 bytes -> dotted-quad IPv4 */
+    return $dotted === false ? null : $dotted;
+}
+
+/**
  * ELI5: does this hostname (or literal IP) lead to a private/internal
  * address? WHY: an admin-typed outbound base URL is trusted input from a
  * privileged operator, but "trusted" still isn't "immune to a typo or a
@@ -222,8 +259,20 @@ function ihymnsHostResolvesPrivate(string $host): bool
         }
     }
     foreach ($ips as $ip) {
-        if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-            return true;                              /* a private/reserved address among the resolutions */
+        /* Classify the address AND, if it is an IPv4-mapped IPv6 address, the
+           plain IPv4 underneath — filter_var()'s IPv6 reserved/private flags
+           handle the ::ffff:0:0/96 block inconsistently across builds, so we
+           check the embedded IPv4 directly for a deterministic verdict (see
+           _ihymnsIpv4MappedToDotted). */
+        $candidates = [$ip];
+        $mapped = _ihymnsIpv4MappedToDotted($ip);
+        if ($mapped !== null) {
+            $candidates[] = $mapped;
+        }
+        foreach ($candidates as $candidate) {
+            if (!filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                return true;                          /* a private/reserved address among the resolutions */
+            }
         }
     }
     return false;
