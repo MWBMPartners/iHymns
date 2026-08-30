@@ -1208,7 +1208,7 @@ register_shutdown_function(function () use (&$pageRenderedCleanly): void {
  *
  * NO-JS FALLBACK (kept working, not broken): every plain `<a href="?action=…">`
  * link and GET `<form>` on this page that triggers a state-changing action
- * now carries `csrf_token=<?= csrfToken() ?>` — either appended to the href
+ * now carries a `csrf_token` value (rendered server-side by csrfToken()) — either appended to the href
  * or as a hidden form field — so a curator with JavaScript OFF keeps
  * working exactly as before; the token just rides along on the same link
  * or form submit they'd already use. Every such link/form on this page was
