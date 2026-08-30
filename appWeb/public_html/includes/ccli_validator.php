@@ -190,22 +190,42 @@ function resolveEffectiveTier(int $userId): string
        filtered out by the WHERE. */
     $sqlRecursive = "
         WITH RECURSIVE org_chain AS (
-            /* Anchor: every org the user is a direct member of. */
-            SELECT o.Id, o.LicenceType, o.IsActive, o.ParentOrgId
+            /* Anchor: every org the user is a direct member of.
+               F-2 (2026-08-30 correctness review) — LicenceExpiresAt is
+               carried through the CTE (both here and in the recursive step
+               below) so the legacy-column union arm downstream can filter
+               on it. Before this fix the CTE never selected the column at
+               all, so that arm had no way to know an org's legacy licence
+               had expired — see the arm's own comment for the failure this
+               closes. */
+            SELECT o.Id, o.LicenceType, o.LicenceExpiresAt, o.IsActive, o.ParentOrgId
               FROM tblOrganisations o
               JOIN tblOrganisationMembers m ON m.OrgId = o.Id
              WHERE m.UserId = ?
             UNION ALL
             /* Recursive step: parent orgs along the nesting chain. */
-            SELECT po.Id, po.LicenceType, po.IsActive, po.ParentOrgId
+            SELECT po.Id, po.LicenceType, po.LicenceExpiresAt, po.IsActive, po.ParentOrgId
               FROM tblOrganisations po
               JOIN org_chain c ON c.ParentOrgId = po.Id
         )
         SELECT LicenceType FROM (
-            /* Legacy primary licence on the org row (back-compat). */
+            /* Legacy primary licence on the org row (back-compat).
+               F-2 (2026-08-30 correctness review) — this arm carried NO
+               expiry filter until now, even though the join-table arm right
+               below it (and getUserEffectiveLicences() in licences.php
+               branch (e)) both filter LicenceExpiresAt. That gap meant an
+               org whose CCLI/etc licence lives in this LEGACY column (not
+               the #640 join table) kept conferring its tier to every member
+               forever, even years past the expiry date an admin had typed
+               into the org's own licence field — exactly the two-gates-
+               disagree divergence #1969's join-table fix (below) states it
+               closed, but only half-closed. Same NULL-means-never-expires
+               convention as the join-table arm and licences.php. */
             SELECT DISTINCT LicenceType
               FROM org_chain
-             WHERE IsActive = 1 AND LicenceType <> 'none'
+             WHERE IsActive = 1
+               AND LicenceType <> 'none'
+               AND (LicenceExpiresAt IS NULL OR LicenceExpiresAt > NOW())
             UNION
             /* Multi-licence join table (#640). Each org along the
                chain may carry any number of additional active
@@ -236,12 +256,19 @@ function resolveEffectiveTier(int $userId): string
         }
     } catch (\Throwable $_e) {
         /* MySQL < 8.0 / MariaDB without recursive CTE — fall back to
-         * the direct-membership query so the page keeps working. */
+         * the direct-membership query so the page keeps working.
+         * F-2 (2026-08-30 correctness review) — this fallback reads
+         * tblOrganisations directly (no CTE needed to add the column to),
+         * so it gets the SAME expiry predicate the legacy-column CTE arm
+         * above now carries: an expired legacy org licence must stop
+         * conferring a tier on THIS path too, or a MySQL-<8 install
+         * re-opens the exact gap the CTE arm above just closed. */
         $stmt = $db->prepare(
             'SELECT DISTINCT o.LicenceType
              FROM tblOrganisations o
              JOIN tblOrganisationMembers m ON m.OrgId = o.Id
-             WHERE m.UserId = ? AND o.IsActive = 1 AND o.LicenceType <> \'none\''
+             WHERE m.UserId = ? AND o.IsActive = 1 AND o.LicenceType <> \'none\'
+               AND (o.LicenceExpiresAt IS NULL OR o.LicenceExpiresAt > NOW())'
         );
         $stmt->bind_param('i', $userId);
         $stmt->execute();
