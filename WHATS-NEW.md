@@ -10,7 +10,7 @@ with none of the behind-the-scenes technical detail.
 > `## <version> — <date>` heading style and `- ` bullets so the app can display
 > it. See `.claude/whats-new-style.md` for the full house style.
 
-## 1.4.0 — 30 August 2026
+## 1.3.0 — 30 August 2026
 
 - **Clearer colours and better keyboard/screen-reader support** — A pass
   through the whole app to make it easier to use for people with low
@@ -33,8 +33,6 @@ with none of the behind-the-scenes technical detail.
   longer turn up in a web search. Each can be switched on or off from the
   admin Settings page, and the site itself keeps working normally either
   way — this only changes whether it's listed.
-
-## 1.3.0 — 29 August 2026
 
 - **A guided helper for switching content locking on** — Turning on the
   setting that limits copyrighted songs to the right membership level is
