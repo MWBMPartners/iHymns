@@ -43,6 +43,11 @@ with none of the behind-the-scenes technical detail.
   extra services, and finish with a plain "yes, everything's ready" check —
   each step explained in everyday language along the way. The detailed
   setup page is still there if you'd rather do it yourself.
+- **Clearer, higher-contrast text and buttons in the admin area** — Several
+  warning and info messages, outlined buttons, and a few links in the admin
+  screens were hard to read against a light background — pale yellow or
+  pale blue text, and links that all but disappeared. They're now easier to
+  read in Light mode, without changing how anything looks in Dark mode.
 
 ## 1.1.0 — 28 August 2026
 

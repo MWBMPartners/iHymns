@@ -124,7 +124,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             Shows whether iHymns is linked to the outside app service and its
             latest status. This page only displays information — you set up and
             turn on the link over on
-            <a href="/manage/configuration" class="link-light">Settings</a>.
+            <a href="/manage/configuration">Settings</a>.
         </p>
 
         <?php if (!$configured): ?>
@@ -136,7 +136,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     and zero <code>tblIntAppsSync</code> reads. This is the expected state on
                     every install until the owner-only gateway-registration prerequisite
                     closes and credentials are pasted on
-                    <a href="/manage/configuration" class="link-light">Configuration</a> —
+                    <a href="/manage/configuration">Configuration</a> —
                     not an error to fix.
                 </div>
             </div>
@@ -147,7 +147,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <strong>Dormant — credentials are set, but no channel is enabled.</strong>
                     Add <code><?= htmlspecialchars($currentChannel, ENT_QUOTES, 'UTF-8') ?></code>
                     (this channel) to the enabled-channels field on
-                    <a href="/manage/configuration" class="link-light">Configuration</a> to
+                    <a href="/manage/configuration">Configuration</a> to
                     start using this integration here.
                 </div>
             </div>
@@ -158,7 +158,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <strong>Enabled-channels lists a channel, but the credential set is still
                     incomplete.</strong> The integration behaves EXACTLY as if it were
                     disabled until every field on
-                    <a href="/manage/configuration" class="link-light">Configuration</a> is
+                    <a href="/manage/configuration">Configuration</a> is
                     set — this is the documented fail-open default, not a crash.
                 </div>
             </div>

@@ -1626,7 +1626,7 @@ try {
                     <h5 class="modal-title" id="history-modal-title">
                         <i aria-hidden="true" class="bi bi-clock-history me-2"></i>Revision history
                     </h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div id="history-list" class="list-group list-group-flush"></div>
@@ -1647,7 +1647,7 @@ try {
                     <h5 class="modal-title" id="reflow-modal-title">
                         <i aria-hidden="true" class="bi bi-magic me-2"></i>Paste &amp; Reflow
                     </h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <!-- #1180 — prominent, scannable explainer (the old version

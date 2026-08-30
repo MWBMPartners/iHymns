@@ -649,7 +649,7 @@ if ($hasSchema) {
                             <h5 class="modal-title">
                                 <i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit tune — <span id="edit-tune-name-label"></span>
                             </h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
                             <div class="row g-2 mb-3">
@@ -769,7 +769,7 @@ if ($hasSchema) {
                             <h5 class="modal-title">
                                 <i aria-hidden="true" class="bi bi-trash me-2"></i>Delete tune — <span id="delete-tune-name-label"></span>
                             </h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
                             <p class="text-warning mb-2" id="delete-tune-usage-label"></p>
@@ -797,7 +797,7 @@ if ($hasSchema) {
                         <input type="hidden" name="action" value="merge">
                         <div class="modal-header" style="border-color: var(--ih-border);">
                             <h5 class="modal-title">Merge tunes</h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
                             <p class="small text-secondary">

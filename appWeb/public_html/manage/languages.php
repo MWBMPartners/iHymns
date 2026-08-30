@@ -764,7 +764,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <input type="hidden" name="action" id="lm-action" value="create">
                 <div class="modal-header">
                     <h5 class="modal-title" id="languageModalTitle">Add language</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div class="mb-3">
@@ -834,7 +834,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">Delete language</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
                 <p>Permanently remove <code id="ldm-code">…</code> (<span id="ldm-name">…</span>) from <code>tblLanguages</code>?</p>

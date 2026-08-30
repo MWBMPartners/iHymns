@@ -179,7 +179,7 @@ if ($audit !== null) {
             Checks that the live database has the exact structure iHymns
             expects, and flags anything that is missing or extra. This page
             only looks — it never changes anything; if something is missing,
-            use <a href="/manage/setup-database" class="link-light">Database Setup</a>
+            use <a href="/manage/setup-database">Database Setup</a>
             to add it.
         </p>
 
@@ -248,7 +248,7 @@ if ($audit !== null) {
                         <p class="small text-secondary mb-1">
                             <strong class="text-warning">Missing</strong> &mdash;
                             a migration covers each. Run via
-                            <a href="/manage/setup-database" class="link-light">Database Setup</a>:
+                            <a href="/manage/setup-database">Database Setup</a>:
                         </p>
                         <ul class="small mb-0">
                             <?php foreach ($missingList as $entry): ?>
@@ -292,7 +292,7 @@ if ($audit !== null) {
                                     <td class="small text-secondary">
                                         <?php if ($r['status'] === 'missing'): ?>
                                             Add via <code><?= htmlspecialchars($r['migration']) ?></code>
-                                            on <a href="/manage/setup-database" class="link-light">Database Setup</a>.
+                                            on <a href="/manage/setup-database">Database Setup</a>.
                                         <?php elseif ($r['status'] === 'uncovered'): ?>
                                             In <code>schema.sql</code> but no migration adds it.
                                             Fresh installs get it; existing DBs need a new migration step. <strong>File a bug.</strong>

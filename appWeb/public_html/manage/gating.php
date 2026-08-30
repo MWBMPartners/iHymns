@@ -594,7 +594,7 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                     <div>
                         <strong>Byte-identical no-op proven on this env</strong>
                         <div class="small text-secondary">Capture the OFF baseline and re-run Verify on
-                            <a href="/manage/gating-noop-verify" class="link-light">Gating No-op Verify</a> —
+                            <a href="/manage/gating-noop-verify">Gating No-op Verify</a> —
                             every sampled song must hash identically before you flip the switch.</div>
                     </div>
                 </li>
@@ -606,7 +606,7 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                             before enforcing — otherwise the flip applies half-decided behaviour:</div>
                         <ul class="small mb-0 mt-1">
                             <?php foreach ($gatingDecisions as [$num, $desc]): ?>
-                                <li><a href="https://github.com/MWBMPartners/iHymns/issues/<?= (int)$num ?>" class="link-light" target="_blank" rel="noopener">#<?= (int)$num ?></a> — <?= htmlspecialchars($desc, ENT_QUOTES, 'UTF-8') ?></li>
+                                <li><a href="https://github.com/MWBMPartners/iHymns/issues/<?= (int)$num ?>" target="_blank" rel="noopener">#<?= (int)$num ?></a> — <?= htmlspecialchars($desc, ENT_QUOTES, 'UTF-8') ?></li>
                             <?php endforeach; ?>
                         </ul>
                     </div>
@@ -629,7 +629,7 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                             <div class="d-flex align-items-center gap-2">
                                 <i aria-hidden="true" class="bi <?= htmlspecialchars($icon, ENT_QUOTES, 'UTF-8') ?>"></i>
                                 <?php if ($canSee): ?>
-                                    <a href="<?= htmlspecialchars($route, ENT_QUOTES, 'UTF-8') ?>" class="link-light fw-semibold"><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?></a>
+                                    <a href="<?= htmlspecialchars($route, ENT_QUOTES, 'UTF-8') ?>" class="fw-semibold"><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?></a>
                                 <?php else: ?>
                                     <span class="fw-semibold"><?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?></span>
                                     <span class="badge bg-secondary ms-1">no access</span>

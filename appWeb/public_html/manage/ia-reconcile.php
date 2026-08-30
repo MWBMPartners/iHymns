@@ -209,7 +209,7 @@ if ($method === 'POST' && (string)($_POST['action'] ?? '') === 'run') {
                     $persisted = iaRecPersistRun($db, $identifier, $songbookAbbr, $fulltext['sha256'], $reportResult['candidates']);
                     if (!$persisted) {
                         $amberMessage = 'Results were computed but NOT persisted — run the "IA Reconcile" '
-                            . 'migration card on <a href="/manage/setup-database" class="link-light">Database Setup</a> '
+                            . 'migration card on <a href="/manage/setup-database">Database Setup</a> '
                             . 'to keep results across page loads.';
                     }
 

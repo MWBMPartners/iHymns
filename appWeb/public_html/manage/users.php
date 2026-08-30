@@ -427,13 +427,13 @@ function canManage(array $target, array $actor): bool {
         <?php if ($success): ?>
             <div class="alert alert-success py-2 alert-dismissible fade show">
                 <i aria-hidden="true" class="bi bi-check-circle me-1"></i><?= htmlspecialchars($success) ?>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
             </div>
         <?php endif; ?>
         <?php if ($error): ?>
             <div class="alert alert-danger py-2 alert-dismissible fade show">
                 <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
             </div>
         <?php endif; ?>
 
@@ -674,7 +674,7 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="user_id" id="edit-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
                         <h5 class="modal-title"><i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit Profile</h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="mb-3">
@@ -705,7 +705,7 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="user_id" id="role-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
                         <h5 class="modal-title"><i aria-hidden="true" class="bi bi-shield me-2"></i>Change Role — <span id="role-username"></span></h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <select class="form-select" name="new_role" id="role-select">
@@ -739,7 +739,7 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="user_id" id="rename-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
                         <h5 class="modal-title"><i aria-hidden="true" class="bi bi-at me-2"></i>Rename — <span id="rename-current-username"></span></h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="mb-3">
@@ -779,7 +779,7 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="user_id" id="tier-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
                         <h5 class="modal-title" id="tierModalLabel"><i class="bi bi-stars me-2" aria-hidden="true"></i>Change Access Tier — <span id="tier-username"></span></h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <label class="form-label small" for="tier-select">Access tier</label>
@@ -818,7 +818,7 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="user_id" id="pw-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
                         <h5 class="modal-title"><i aria-hidden="true" class="bi bi-key me-2"></i>Reset Password — <span id="pw-username"></span></h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="mb-3">

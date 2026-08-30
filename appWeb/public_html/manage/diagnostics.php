@@ -388,7 +388,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             problem — a way to see exactly what is stored right now. Nothing
             here can change or delete anything; results are capped at
             <?= number_format(DIAGNOSTICS_MAX_ROWS) ?> rows and every run is recorded in the
-            <a href="/manage/activity-log" class="link-light">Activity Log</a>.
+            <a href="/manage/activity-log">Activity Log</a>.
         </p>
 
         <div class="alert alert-warning d-flex align-items-start gap-2 py-2 small">

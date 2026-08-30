@@ -4060,7 +4060,7 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
                                 <i class="bi bi-eye-slash me-1" aria-hidden="true"></i>Disabled — hidden from the public site
                             </span>
                         </h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <?php
@@ -4472,7 +4472,7 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
                     <input type="hidden" name="id" id="delete-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
                         <h5 class="modal-title"><i aria-hidden="true" class="bi bi-trash me-2"></i>Delete — <code id="delete-abbr-label"></code></h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <p>Remove this songbook? This is only allowed if no songs reference the abbreviation.</p>
@@ -4503,7 +4503,7 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
                             <i aria-hidden="true" class="bi bi-exclamation-triangle-fill me-2 text-danger"></i>
                             Cascade delete — <code id="cascade-delete-abbr-label"></code>
                         </h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <p class="text-danger">

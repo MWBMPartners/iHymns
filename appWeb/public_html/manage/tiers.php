@@ -468,7 +468,7 @@ $tierTableCols = 3 + count(tierCapsEffective()) + 2;
                         <h5 class="modal-title" id="editTierModalLabel">
                             <i class="bi bi-pencil me-2" aria-hidden="true"></i>Edit tier — <code id="edit-tier-name"></code>
                         </h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="row g-2 mb-3">

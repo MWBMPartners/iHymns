@@ -505,6 +505,17 @@ body:has(.navbar-admin) {
 
 /* ==========================================================================
    BUTTONS — legacy .btn-amber kept for back-compat, re-coloured to accent
+
+   Light-theme contrast note (a11y audit A3/A4/A5, #2000, 2026-08-30): the
+   `[data-bs-theme="light"] .btn-amber` / `.text-warning` / `.text-info` /
+   `.btn-outline-warning` / `.btn-outline-info` contrast fixes live in
+   css/app.css, NOT here — every page that loads admin.css loads app.css
+   FIRST (manage/includes/head-libs.php and every bespoke-<head> admin
+   page), and app.css is also the file the equivalent PUBLIC pages
+   (settings.php, home.php) load, so one rule set there covers both
+   surfaces. A second copy here would just be a place for the two to
+   quietly drift apart (rule #35) — if you're hunting for those rules,
+   they're in app.css's "LIGHT-THEME BOOTSTRAP-TOKEN CONTRAST" section.
    ========================================================================== */
 
 .btn-amber {

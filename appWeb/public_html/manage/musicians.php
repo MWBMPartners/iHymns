@@ -2539,7 +2539,7 @@ try {
                         <h5 class="modal-title" id="musDeleteLabel">
                             <i aria-hidden="true" class="bi bi-trash me-2"></i>Remove from registry
                         </h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                     <div class="modal-body">
                         <p class="mb-3">
@@ -2592,7 +2592,7 @@ try {
                         <i aria-hidden="true" class="bi bi-music-note-list me-2"></i>
                         Songs citing <strong id="mus-view-songs-name"></strong>
                     </h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div id="mus-view-songs-loading" class="text-center py-3 text-secondary small d-none">
@@ -2631,7 +2631,7 @@ try {
                         <h5 class="modal-title" id="musRenameLabel">
                             <i aria-hidden="true" class="bi bi-pencil-square me-2"></i>Rename person
                         </h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                     <div class="modal-body">
                         <div class="mb-2">
@@ -2682,7 +2682,7 @@ try {
                         <h5 class="modal-title" id="musMergeLabel">
                             <i aria-hidden="true" class="bi bi-union me-2"></i>Merge person into another
                         </h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                     <div class="modal-body">
                         <div class="row g-2 mb-3">
@@ -2823,7 +2823,7 @@ try {
                 <i aria-hidden="true" class="bi bi-person-badge me-2"></i>
                 <span id="mus-drawer-title">Add person</span>
             </h5>
-            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas" aria-label="Close"></button>
+            <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button>
         </div>
         <form method="POST" id="mus-drawer-form" class="offcanvas-body d-flex flex-column gap-3">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">

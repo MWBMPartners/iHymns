@@ -1921,6 +1921,114 @@ body.reduce-transparency .pwa-install-banner {
 }
 
 /* ==========================================================================
+   LIGHT-THEME BOOTSTRAP-TOKEN CONTRAST — WCAG 1.4.3 Contrast (Minimum)
+   (a11y audit A3/A4/A5, GitHub #2000, 2026-08-30)
+
+   ELI5: Bootstrap's raw warning-yellow (#ffc107) and info-cyan (#0dcaf0) are
+   bright enough to read on a DARK background but almost invisible as TEXT
+   on a light/white one — like writing in pale yellow chalk on a white
+   board. This app's admin area defaults to dark theme, so nobody noticed
+   until Light/System-light was picked.
+
+   THE DETAILS: measured against this app's light `--surface-card`
+   (#ffffff), plain `.text-warning`/`.text-info` and the at-rest state of
+   `.btn-outline-warning`/`.btn-outline-info` (same colour, used as both
+   text AND border) all land under half of the 4.5:1 text floor:
+     .text-warning        #ffc107 on #fff  ≈ 1.63:1  (fail)
+     .text-info            #0dcaf0 on #fff  ≈ 1.55:1  (fail)
+     .btn-outline-warning  same colour, at rest        (fail)
+     .btn-outline-info     same colour, at rest        (fail)
+   Bootstrap 5.3 already ships a themed "text-emphasis" pair built for
+   exactly this — a darker shade of the SAME hue meant for text on a light
+   card (https://getbootstrap.com/docs/5.3/customize/color/#color-sass-maps):
+     --bs-warning-text-emphasis  (light: #664d03 ≈ 8.0:1 on #fff — pass)
+     --bs-info-text-emphasis     (light: #055160 ≈ 8.9:1 on #fff — pass)
+   Bootstrap's OWN [data-bs-theme="dark"] block already swaps these same
+   variable NAMES for a lighter tint that reads fine on dark — so we only
+   repoint the colour on LIGHT here; dark keeps Bootstrap's original
+   #ffc107/#0dcaf0, which already passes there (audit measured ≈8.7:1 /
+   ≈7.3:1 against the dark `--surface-card` #1e293b) and this rule set
+   never touches it.
+
+   The two outline buttons are fixed via Bootstrap's own per-component
+   CSS-variable API (`--bs-btn-color` / `--bs-btn-border-color`) rather
+   than a bespoke class override, so every OTHER state Bootstrap already
+   computes from those variables (disabled, focus ring colour) inherits
+   the fix for free. Their HOVER/ACTIVE fill state is untouched on
+   purpose: Bootstrap already swaps to BLACK text on the bright fill
+   (#000 on #ffc107 ≈ 12.9:1, #000 on #0dcaf0 ≈ 10.7:1) — already AA, so
+   only the at-rest colour needed pinning.
+
+   Placed in app.css (not admin.css) because BOTH surfaces need it: the
+   public settings/home pages use `.btn-outline-warning`/`.btn-outline-info`
+   directly (card-layout edit/reset buttons, the language-filter toggle
+   pills, the set-list "Arrange" button), and every /manage/* admin page
+   already loads app.css BEFORE admin.css (manage/includes/head-libs.php
+   and every bespoke-<head> admin page) — one rule here reaches both
+   surfaces instead of two copies that could drift out of sync (rule #35).
+   ========================================================================== */
+[data-bs-theme="light"] .text-warning {
+    /* Fallback hex matches the established convention already used for
+       this exact token elsewhere in this file (.offline-banner-offline) —
+       keeps every consumer safe even if Bootstrap's CSS somehow fails to
+       load (CDN outage, SRI mismatch) and the variable is never defined. */
+    color: var(--bs-warning-text-emphasis, #664d03);
+}
+[data-bs-theme="light"] .text-info {
+    color: var(--bs-info-text-emphasis, #055160);
+}
+[data-bs-theme="light"] .btn-outline-warning {
+    --bs-btn-color: var(--bs-warning-text-emphasis, #664d03);
+    --bs-btn-border-color: var(--bs-warning-text-emphasis, #664d03);
+}
+[data-bs-theme="light"] .btn-outline-info {
+    --bs-btn-color: var(--bs-info-text-emphasis, #055160);
+    --bs-btn-border-color: var(--bs-info-text-emphasis, #055160);
+}
+
+/* ---------------------------------------------------------------------------
+   .btn-amber — the admin/editor "primary action" button (#2000). Its text
+   AND border are `var(--accent-solid)`, and on hover/focus/active that
+   same colour becomes the FILLED background with white text — so it's
+   really only one colour value at risk. On the light theme that value is
+   Indigo-500 (#6366f1), which measures 4.47:1 on white — a hair under the
+   4.5:1 floor (both as at-rest text-on-white AND as the hover state's
+   white-on-fill, since contrast is symmetric either way round).
+
+   Fix: pin `.btn-amber` in light theme to Indigo-600 (#4f46e5) — one
+   Tailwind step darker, already used elsewhere in this file as the
+   `.btn-amber-solid` gradient's start colour, so no new colour enters the
+   palette. #4f46e5 measures 6.29:1 on white, comfortably clearing 4.5:1 in
+   both the at-rest (text+border) and hover/focus (fill+white-text) states.
+
+   Deliberately does NOT touch `--accent-solid` itself: that token also
+   drives ~50 other rules across this file (link colours, focus outlines,
+   card borders, …) that the a11y audit did not flag — re-pointing the
+   whole token would re-theme the entire light-mode accent colour as a
+   side effect of fixing one button. Dark theme is untouched: its own
+   --accent-solid (#818cf8) already measures 4.90:1 there (a11y audit
+   #2000) and this rule set never applies under [data-bs-theme="dark"].
+
+   :not([data-ihymns-theme="high-contrast"]) is LOAD-BEARING, not decoration:
+   admin-theme-init.php's applyTheme() stamps data-bs-theme="light" for
+   high-contrast TOO (it "uses light Bootstrap base + the overrides in
+   accessibility.css" — see that file's own comment), so a plain
+   `[data-bs-theme="light"] .btn-amber` selector would also fire there and
+   stomp high-contrast's own deliberate --accent-solid: #0000cc (11.2:1 on
+   white — already comfortably passing) with this indigo. Excluding it
+   here leaves high-contrast's existing `color: var(--accent-solid)` from
+   the base .btn-amber rule above untouched. */
+[data-bs-theme="light"]:not([data-ihymns-theme="high-contrast"]) .btn-amber {
+    color: #4f46e5;
+    border-color: #4f46e5;
+}
+[data-bs-theme="light"]:not([data-ihymns-theme="high-contrast"]) .btn-amber:hover,
+[data-bs-theme="light"]:not([data-ihymns-theme="high-contrast"]) .btn-amber:focus {
+    background-color: #4f46e5;
+    border-color: #4f46e5;
+}
+
+/* ==========================================================================
    8. RESPONSIVE BREAKPOINTS
    ========================================================================== */
 

@@ -1594,7 +1594,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 design</strong> — with no channel listed below, this integration performs zero
                 HTTP calls and zero database reads beyond this page, byte-identical to a build
                 with no gateway integration at all. Full status + snapshot viewer:
-                <a href="/manage/intapps-status" class="link-light">IntApps Gateway status</a>.
+                <a href="/manage/intapps-status">IntApps Gateway status</a>.
             </p>
             <?php if (!$intappsAppUuidVal && !$intappsApiKeySet && !$intappsHmacSecretSet): ?>
                 <p class="small text-body-secondary border-start border-secondary border-3 ps-2 mb-3">
@@ -1684,7 +1684,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         </div>
         <div class="card-body">
             <p class="small text-secondary mb-3">
-                Credentials for the <a href="https://cuercode.net" class="link-light" target="_blank" rel="noopener">CueRCode</a>
+                Credentials for the <a href="https://cuercode.net" target="_blank" rel="noopener">CueRCode</a>
                 service, which generates every QR code in iHymns (the print-template QR block and the
                 Service-Projection join QR) via its API — server-side, so the secret key never reaches a
                 browser. <strong>Dormant until keyed</strong>: with no API key saved, the <code>/qr</code>
@@ -1975,7 +1975,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <div class="card-body">
             <p class="small text-secondary mb-3">
                 Outbound event delivery (#1909): external systems subscribe on
-                <a href="/manage/webhooks" class="link-light">Webhooks</a> and receive signed HTTP callbacks
+                <a href="/manage/webhooks">Webhooks</a> and receive signed HTTP callbacks
                 when songs / songbooks change, a set-list is shared, or a service goes live. This card is the
                 <strong>master switch</strong> and the drain-key custody — the tables do nothing until a channel
                 is ticked below.
@@ -2080,7 +2080,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 Keeps the IETF BCP 47 / IANA Language Subtag Registry + CLDR display names (#738) current
                 automatically — a monthly GitHub Action pokes the endpoint below so nobody has to remember to
                 click "Refresh from IANA + CLDR" on
-                <a href="/manage/setup-database" class="link-light">Setup / Database</a> by hand. This card is the
+                <a href="/manage/setup-database">Setup / Database</a> by hand. This card is the
                 key custody only; the refresh itself runs server-side against the SAME core the manual button uses.
             </p>
             <?php if (!$langRefreshSchemaReady): ?>
@@ -2148,10 +2148,10 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 A worship leader's "Go Live" session auto-closes after this many minutes with no
                 genuine leader interaction (opening the app doesn't count — reading, navigating,
                 or driving a section does). This is the site-wide DEFAULT — a leader's own
-                <a href="/settings" class="link-light">Settings</a> can shorten or lengthen it,
+                <a href="/settings">Settings</a> can shorten or lengthen it,
                 and an organisation can override or lock it on
-                <a href="/manage/organisations" class="link-light">Organisations</a>
-                (site admin) or <a href="/manage/my-organisations" class="link-light">My organisations</a>
+                <a href="/manage/organisations">Organisations</a>
+                (site admin) or <a href="/manage/my-organisations">My organisations</a>
                 (org admin).
             </p>
             <form method="post" class="row g-3 align-items-end">
