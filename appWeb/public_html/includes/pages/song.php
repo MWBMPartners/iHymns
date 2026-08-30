@@ -954,8 +954,13 @@ foreach ($components as $_c) {
                 <small class="text-muted" id="song-key-info"></small>
             </div>
 
-            <!-- Action buttons row -->
-            <div class="d-flex flex-wrap gap-2">
+            <!-- Action buttons row. `song-actions` is the named mount-point
+                 contract js/modules/live-follow.js's _mountControls() looks
+                 for first (falling back to the structural
+                 `.d-flex.flex-wrap.gap-2` selector if this class is ever
+                 renamed) — see the silent-wiring sweep, rule #34. Keep this
+                 class on this row even if the utility classes change. -->
+            <div class="song-actions d-flex flex-wrap gap-2">
                 <!-- Favourite toggle -->
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-favourite"
