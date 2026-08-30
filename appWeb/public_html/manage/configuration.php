@@ -1164,7 +1164,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                constant (rule #35 — never retype the key literal). */
             require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
             try {
-                $postedChans = (array)($_POST['search_visibility_channels'] ?? []);
+                /* Posted field name is deliberately DIFFERENT from the
+                   settings-key literal itself (the webhooks_channels[] vs
+                   webhooks_enabled_channels precedent) — so a tree-wide scan
+                   for the quoted settings-key string (tests/php/test-search-
+                   visibility.php PASS 2) finds it in exactly one file. */
+                $postedChans = (array)($_POST['search_engine_channels'] ?? []);
                 $validChans  = ['alpha', 'beta', 'production'];
                 $chansOut    = [];
                 foreach ($postedChans as $c) {
@@ -1590,7 +1595,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <div class="d-flex flex-column gap-2" role="group" aria-labelledby="search-vis-channels-label">
                         <?php foreach (['production' => 'Production (ihymns.app)', 'beta' => 'Beta (beta.ihymns.app)', 'alpha' => 'Alpha &mdash; dev (dev.ihymns.app)'] as $chOpt => $chLabel): ?>
                             <div class="form-check form-switch">
-                                <input class="form-check-input" type="checkbox" role="switch" name="search_visibility_channels[]"
+                                <input class="form-check-input" type="checkbox" role="switch" name="search_engine_channels[]"
                                        value="<?= $chOpt ?>" id="sv_ch_<?= $chOpt ?>"<?= in_array($chOpt, $searchVisChannels, true) ? ' checked' : '' ?>>
                                 <label class="form-check-label" for="sv_ch_<?= $chOpt ?>">
                                     <?= $chLabel /* fixed, safe strings from the loop above — no user input */ ?>

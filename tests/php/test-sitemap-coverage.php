@@ -50,6 +50,14 @@ declare(strict_types=1);
  *     sitemap source. A shared set-list link is a 256-bit CAPABILITY URL
  *     (#1791); advertising one to every search engine would leak a private
  *     link to the world — the worst possible regression for this file.
+ *  7. THE VISIBILITY GATE (search-engine visibility feature, #2024/#2025) —
+ *     the file calls the ONE shared `searchEngineVisibleHere()` (never a raw
+ *     re-read of the setting), and does so BEFORE `getDbMysqli(` (no wasted
+ *     DB fingerprint work on a hidden channel) AND before
+ *     `HTTP_IF_NONE_MATCH` (a hidden channel can never answer a cached-copy
+ *     304 — it must always get a real 404). The `getDbMysqli(` anchor itself
+ *     is asserted to appear EXACTLY ONCE first, so the ordering check can't
+ *     quietly become meaningless if a second call ever appears elsewhere.
  *
  * WHY THE TRUTH TABLES CALL REAL FUNCTIONS, NOT JUST REGEX THE SOURCE
  * ----------------------------------------------------------------------------
@@ -77,6 +85,9 @@ declare(strict_types=1);
  *   8. Reintroduce `'lastmod' => $today` in a loop  → PASS 5 (retired pattern) goes RED
  *   9. Add a second `date('Y-m-d')` entity lastmod  → PASS 5 (exactly-once) goes RED
  *  10. Add the literal '/setlist/shared' to the file → PASS 6 goes RED
+ *  11. Delete the visibility-gate call               → PASS 7.1 goes RED
+ *  12. Move the gate block to just before
+ *      `sitemapEmitUrlset($built['urls']);`           → PASS 7.2b and 7.3 go RED
  * Every mutation was performed once against the real tree, confirmed RED
  * (naming the right thing), then reverted byte-identical; the guard was also
  * confirmed GREEN on the correct code both before and after (rule #34's
@@ -339,6 +350,31 @@ sc("5.3 date('Y-m-d') appears EXACTLY ONCE (the home page's one deliberate excep
 
 sc('6.1 sitemap.xml.php never contains the string "/setlist/shared" (a shared set-list link is a secret capability URL)',
     strpos($sitemapRaw, '/setlist/shared') === false);
+
+/* =========================================================================
+ * PASS 7 — THE VISIBILITY GATE (search-engine visibility feature, #2024/
+ * #2025): an admin-hidden channel's sitemap must 404, and it must do so
+ * BEFORE the DB fingerprint work AND before conditional GET, so a crawler
+ * holding a cached ETag can never get a 304 "still good" for a channel
+ * we've just asked it not to list.
+ * ========================================================================= */
+
+sc('7.1 sitemap.xml.php calls the ONE shared searchEngineVisibleHere() (never a raw getAppSetting(\'search_visibility_channels\'…) re-read)',
+    strpos($sitemapStripped, 'searchEngineVisibleHere(') !== false);
+
+$posGate = strpos($sitemapStripped, 'searchEngineVisibleHere(');
+$posDb   = strpos($sitemapStripped, 'getDbMysqli(');
+$posIfNoneMatch = strpos($sitemapStripped, 'HTTP_IF_NONE_MATCH');
+
+/* The anchor itself must not have silently multiplied or vanished — a
+   second getDbMysqli( call elsewhere in the file would make the ordering
+   check below meaningless without anyone noticing. */
+sc('7.2a "getDbMysqli(" appears exactly once in sitemap.xml.php (the step-2 try block — the ordering anchor itself hasn\'t drifted)',
+    substr_count($sitemapStripped, 'getDbMysqli(') === 1);
+sc('7.2b the visibility gate runs BEFORE getDbMysqli( (no wasted DB fingerprint work on a hidden channel)',
+    $posGate !== false && $posDb !== false && $posGate < $posDb);
+sc('7.3 the visibility gate runs BEFORE HTTP_IF_NONE_MATCH (a hidden channel can never answer a cached-copy 304)',
+    $posGate !== false && $posIfNoneMatch !== false && $posGate < $posIfNoneMatch);
 
 /* ========================================================================= */
 
