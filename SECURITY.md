@@ -44,7 +44,13 @@ These are enforced conventions; new code must follow them (see
   matched against central maps.
 - **Output** — DB/user-derived values are escaped with
   `htmlspecialchars(…, ENT_QUOTES, 'UTF-8')` server-side and an `escapeHtml()`
-  helper client-side; no `innerHTML = userInput`.
+  helper client-side; no `innerHTML = userInput`. Structured-data blocks
+  embedded inside a `<script type="application/ld+json">` tag are additionally
+  encoded with `JSON_HEX_TAG` — ordinary HTML escaping does not stop a
+  `</script>` breakout inside a `<script>` element, so a plain `json_encode()`
+  call on its own is not enough there (a missing `JSON_HEX_TAG` on one such
+  block was found and closed on 2026-08-30; a tree-derived test now checks
+  every such block in the codebase).
 - **Authentication** — Bearer token (`tblApiTokens`, SHA-256-hashed) with a
   `SameSite=Lax`, `HttpOnly`, `Secure` cookie fallback (`ihymns_auth`). The
   `manage/*` admin area adopts the API-token session. **First-admin
@@ -207,7 +213,12 @@ These are enforced conventions; new code must follow them (see
   a compromised admin account could point an outbound call back at the server's
   own internal network. All three outbound clients call the one shared check;
   the admin-facing save handlers surface a heads-up immediately if a saved URL
-  will now be refused.
+  will now be refused. A follow-up review the same day found the guard could
+  still be sidestepped by writing the same private address a different way —
+  a bracketed IPv6 literal (`[::1]`) or a numeric-decimal/hex form of an IPv4
+  address (`2130706433`, `0x7f000001`) both slipped through unrecognised. The
+  check now normalises both shapes before classifying the address, closing
+  that gap.
 - **Organisation-logo SVG uploads are sanitised by a dedicated, stricter module**
   (#1830) — `includes/svg_sanitizer.php`, separate from and stricter than the
   print-layout sanitiser above (which correctly keeps blocking `<svg>` outright).
@@ -332,12 +343,24 @@ These are enforced conventions; new code must follow them (see
 - Periodic **adversarial multi-agent security audits** sweep the codebase and
   verify each finding before a fix lands (e.g. the 2026-06 audit fixed a critical
   SQL-injection in the EasyWorship importer and a `.mxl` path-traversal). The
-  **2026-08-30 audit** covered the whole codebase and closed two Low-severity
-  findings (the CSRF gate and the outbound SSRF guard described above) plus a
-  batch of accessibility fixes across the favourites, link-editor, compare and
-  guided-wizard surfaces, and a coordinated colour-contrast pass that fixed
-  five failures affecting admin-area text and buttons in Light/System-light
-  mode (dark theme was already unaffected).
+  **2026-08-30 audit** covered the whole codebase in two passes. The first
+  closed two Low-severity findings (the CSRF gate and the outbound SSRF guard
+  described above) plus a batch of accessibility fixes across the favourites,
+  link-editor, compare and guided-wizard surfaces, and a coordinated
+  colour-contrast pass that fixed five failures affecting admin-area text and
+  buttons in Light/System-light mode (dark theme was already unaffected). A
+  second, deeper pass the same day closed a stored-XSS gap in a structured-data
+  block (described above), widened the SSRF guard to two address forms it had
+  missed (also described above), fixed a licence-expiry check that had only
+  been enforced on one of two code paths (so an **expired** legacy
+  organisation licence could still grant paid-tier access), and completed a
+  whole-app WCAG 2.1 AA accessibility review (epic #2027 — 0 Critical, 2 High,
+  8 Medium, 10 Low findings, all fixed): raised colour contrast further across
+  admin buttons/badges and small text, gave four more pop-up panels a proper
+  keyboard focus trap, added real per-record browser-tab titles, added an
+  underline to the opt-in "Emphasise Links" accessibility mode so it clears
+  text-contrast requirements in both themes, and filled in dozens of smaller
+  labelling gaps across the admin area and the classic song editor.
 
 ## Dependencies
 
