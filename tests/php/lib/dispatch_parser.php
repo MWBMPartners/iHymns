@@ -364,3 +364,149 @@ function dispatchParserDiscoverSurfaces(string $dir): array
     sort($out);
     return $out;
 }
+
+/**
+ * MAP-KEYED dispatch — added for the silent-wiring bug sweep's
+ * caller-coverage guard (epic #2008, tests/php/test-action-caller-coverage.php).
+ *
+ * ELI5
+ * ----
+ * `switch ($action) { case 'x': }` is one way a page decides what to do.
+ * `manage/setup-database.php` decides a different way: it looks the action
+ * name up in an ARRAY, `$scriptMap[$action] ?? null`. This file already
+ * knows how to find `switch`/`if`/`in_array` dispatch; this function teaches
+ * it the array-lookup shape too, so a caller-coverage guard checking "does
+ * anything handle this action name?" does not falsely accuse
+ * `manage/setup-database.php` of ignoring `users`/`cleanup`/`drop-legacy`/
+ * every migration slug just because they never appear in a `case` label.
+ *
+ * WHAT IT MODELS
+ * --------------
+ *  1. `$map[$actionVar]` (incl. inside `isset(...)`) and
+ *     `array_key_exists($actionVar, $map)`, where `$actionVar` is one of
+ *     THIS file's own dispatch variables (`dispatchParserActionVars()`) —
+ *     this identifies `$map`'s VARIABLE NAME as a dispatch map.
+ *  2. That map's own literal keys, from a short-array-syntax assignment in
+ *     the SAME file (`$scriptMap = [ 'install' => '...', … ];`, top-level
+ *     `'key' => ` pairs only — a nested array's keys are not this map's
+ *     action names).
+ *  3. The ONE documented registry-derived case: `manage/setup-database.php`
+ *     populates `$scriptMap` a SECOND way, inside a `foreach` over the
+ *     value of `require … 'migration-registry.php'` — those slugs are
+ *     never literal strings in `setup-database.php` at all; they live in
+ *     `migration-registry.php`'s own top-level (4-space-indented)
+ *     `'slug' => [` array-literal keys (`manage/includes/migration-registry.php`,
+ *     rule #19 — the single migration registry). This is a NARROW, NAMED
+ *     special case, not a generic "follow every require" mechanism — a
+ *     future second registry-populated map would need its own case added
+ *     here, deliberately, rather than this function silently guessing at
+ *     an arbitrary require chain.
+ *
+ * Deliberately LOOSE on this handled side — see the file header's "Every
+ * extracted label also carries the TOKEN INDEX" note and
+ * `test-orphan-inventory.php`'s `orphanEmittersIn()` precedent: a name
+ * harvested here only ever EXCUSES a caller that would otherwise look
+ * orphaned, so over-matching here can only reduce the guard's recall, never
+ * produce a false alarm.
+ *
+ * @return array<int,string> action names this file dispatches via a map lookup
+ */
+function dispatchParserMapKeys(string $file): array
+{
+    $toks = dispatchParserTokens($file);
+    $n = count($toks);
+    $vars = dispatchParserActionVars($file);
+
+    $isWs = static fn ($t): bool => is_array($t) && in_array($t[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true);
+    $skipWs = static function (int $i) use ($toks, $n, $isWs): int {
+        while ($i < $n && $isWs($toks[$i] ?? null)) { $i++; }
+        return $i;
+    };
+
+    /* Step 1 — which variable names are used as a map keyed by a dispatch
+       variable? Two call shapes, both scanned in one pass. */
+    $mapNames = [];
+    for ($i = 0; $i < $n; $i++) {
+        $t = $toks[$i];
+
+        /* $map[$actionVar] — also matches the same shape written inside
+           isset(...) or empty(...), since those just wrap the same
+           VARIABLE '[' VARIABLE ']' token sequence. */
+        if (is_array($t) && $t[0] === T_VARIABLE && !in_array($t[1], $vars, true)) {
+            $j = $skipWs($i + 1);
+            if (($toks[$j] ?? null) === '[') {
+                $k = $skipWs($j + 1);
+                $kt = $toks[$k] ?? null;
+                if (is_array($kt) && $kt[0] === T_VARIABLE && in_array($kt[1], $vars, true)) {
+                    $m = $skipWs($k + 1);
+                    if (($toks[$m] ?? null) === ']') { $mapNames[$t[1]] = true; }
+                }
+            }
+        }
+
+        /* array_key_exists($actionVar, $map) */
+        if (is_array($t) && $t[0] === T_STRING && strtolower($t[1]) === 'array_key_exists') {
+            $j = $skipWs($i + 1);
+            if (($toks[$j] ?? null) === '(') {
+                $k = $skipWs($j + 1);
+                $kt = $toks[$k] ?? null;
+                if (is_array($kt) && $kt[0] === T_VARIABLE && in_array($kt[1], $vars, true)) {
+                    $m = $skipWs($k + 1);
+                    if (($toks[$m] ?? null) === ',') {
+                        $p = $skipWs($m + 1);
+                        $pt = $toks[$p] ?? null;
+                        if (is_array($pt) && $pt[0] === T_VARIABLE) { $mapNames[$pt[1]] = true; }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Step 2 — for each discovered map variable, harvest its own top-level
+       array-literal keys: `$mapName = [ 'a' => …, … ];` (short-array
+       syntax only — this codebase's convention throughout). */
+    $names = [];
+    foreach (array_keys($mapNames) as $mapName) {
+        for ($i = 0; $i < $n; $i++) {
+            $t = $toks[$i];
+            if (!is_array($t) || $t[0] !== T_VARIABLE || $t[1] !== $mapName) { continue; }
+            $j = $skipWs($i + 1);
+            if (($toks[$j] ?? null) !== '=') { continue; }
+            $k = $skipWs($j + 1);
+            if (($toks[$k] ?? null) !== '[') { continue; }
+
+            $depth = 0;
+            for ($m = $k; $m < $n; $m++) {
+                if ($toks[$m] === '[') { $depth++; continue; }
+                if ($toks[$m] === ']') { $depth--; if ($depth === 0) { break; } continue; }
+                if ($depth === 1 && is_array($toks[$m]) && $toks[$m][0] === T_CONSTANT_ENCAPSED_STRING) {
+                    $p = $skipWs($m + 1);
+                    if (is_array($toks[$p] ?? null) && $toks[$p][0] === T_DOUBLE_ARROW) {
+                        $v = trim($toks[$m][1], "'\"");
+                        if ($v !== '') { $names[$v] = true; }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Step 3 — the one documented registry-derived case (see the doc-block
+       above): this file requires a path literally containing
+       'migration-registry.php' AND populated at least one discovered map
+       variable, so also harvest the registry file's own top-level
+       (exactly-4-space-indented) array-literal keys. */
+    if ($mapNames !== []) {
+        $src = (string)file_get_contents($file);
+        if (preg_match('/require(?:_once)?\s*\(?[^;]*[\'"]([^\'"]*migration-registry\.php)[\'"]/i', $src)) {
+            $registryPath = dirname($file) . '/includes/migration-registry.php';
+            if (is_file($registryPath)) {
+                $regSrc = (string)file_get_contents($registryPath);
+                if (preg_match_all("/^ {4}'([A-Za-z0-9_.\\-]+)'\\s*=>\\s*\\[/m", $regSrc, $km)) {
+                    foreach ($km[1] as $slug) { $names[$slug] = true; }
+                }
+            }
+        }
+    }
+
+    return array_keys($names);
+}
