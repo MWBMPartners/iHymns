@@ -75,7 +75,8 @@ export class Compare {
                     </div>
                     <div class="modal-body">
                         <input type="search" class="form-control mb-3" id="compare-search-input"
-                               placeholder="Search by title or number..." autocomplete="off" autofocus>
+                               placeholder="Search by title or number..." autocomplete="off" autofocus
+                               aria-label="Search by title or number">
                         <div id="compare-search-results" class="list-group" style="max-height:300px;overflow-y:auto">
                             <p class="text-muted text-center py-3 small">Type to search for a song</p>
                         </div>

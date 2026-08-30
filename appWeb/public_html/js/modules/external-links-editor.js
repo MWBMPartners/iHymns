@@ -70,9 +70,22 @@
         return byCat;
     }
 
+    /* A12 fix (a11y audit 2026-08-30, WCAG 1.3.1/4.1.2/3.3.2) — module-level
+       counter so every row's "Verified" checkbox gets a unique id to pair
+       with its existing visible <label> via `for` (a <label> with no `for`
+       and no wrapping is programmatically unassociated — the checkbox reads
+       as unlabelled to a screen reader even though sighted users see the
+       text right next to it). Persists across mount() calls / multiple
+       editors on one page so ids can never collide. */
+    var extLinkRowSeq = 0;
+
     function buildSelectHtml(types, selectedId) {
         var byCat = groupByCategory(types);
-        var html  = '<select class="form-select form-select-sm" name="ext_link_type_ids[]" required>';
+        /* A12 fix — this compact card has no room for a visible <label>
+           above the type/URL/note controls, so aria-label carries the
+           accessible name instead (a placeholder alone, as the URL/note
+           inputs had, is NOT an accessible name — WCAG 3.3.2/4.1.2). */
+        var html  = '<select class="form-select form-select-sm" name="ext_link_type_ids[]" aria-label="Link type" required>';
         html += '<option value="">— pick a link type —</option>';
         for (var ci = 0; ci < CAT_ORDER.length; ci++) {
             var cat = CAT_ORDER[ci];
@@ -115,6 +128,9 @@
         var notePh = opts.notePlaceholder || 'Optional note';
         var urlMax = Number(opts.urlMaxLen) || 2048;
         var noteMax = Number(opts.noteMaxLen) || 255;
+        /* A12 fix — unique id for THIS row's Verified checkbox so the
+           label below can point `for` at it instead of being an orphan. */
+        var verifiedId = 'ext-link-verified-' + (++extLinkRowSeq);
 
         var card = document.createElement('div');
         card.className = 'card bg-body-tertiary border-secondary ihymns-ext-link-row';
@@ -128,21 +144,21 @@
                     '<div class="col-md-7">' +
                       '<input type="url" class="form-control form-control-sm" ' +
                               'name="ext_link_urls[]" required maxlength="' + urlMax + '" ' +
-                              'placeholder="https://…" value="' + escapeHtml(url) + '">' +
+                              'placeholder="https://…" aria-label="Link URL" value="' + escapeHtml(url) + '">' +
                     '</div>' +
                   '</div>' +
                   '<div class="row g-2">' +
                     '<div class="col-md-9">' +
                       '<input type="text" class="form-control form-control-sm" ' +
                               'name="ext_link_notes[]" maxlength="' + noteMax + '" ' +
-                              'placeholder="' + escapeHtml(notePh) + '" ' +
+                              'placeholder="' + escapeHtml(notePh) + '" aria-label="Note" ' +
                               'value="' + escapeHtml(note) + '">' +
                     '</div>' +
                     '<div class="col-md-3 d-flex align-items-center">' +
                       '<div class="form-check small">' +
-                        '<input class="form-check-input" type="checkbox" ' +
+                        '<input class="form-check-input" type="checkbox" id="' + verifiedId + '" ' +
                                 'name="ext_link_verified[]" value="1" ' + ver + '>' +
-                        '<label class="form-check-label">Verified</label>' +
+                        '<label class="form-check-label" for="' + verifiedId + '">Verified</label>' +
                       '</div>' +
                     '</div>' +
                   '</div>' +

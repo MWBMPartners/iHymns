@@ -2403,10 +2403,16 @@ try {
                                 data-country="<?= htmlspecialchars((string)($p['birth_country'] ?? '')) ?>"
                                 data-person='<?= htmlspecialchars($personJson, ENT_QUOTES) ?>'>
                                 <td data-col-priority="primary" class="person-name <?= $isSpecial ? 'fst-italic' : '' ?>">
+                                    <?php /* A17 fix (a11y audit 2026-08-30): aria-hidden ALWAYS wins over
+                                       aria-label on the same element, so pairing them made this icon's
+                                       meaning invisible to screen readers (icon-only — nothing else in the
+                                       row repeats "group" / "special case"). role="img" is the codebase's
+                                       own established icon-only-meaning pattern (song.php's verified-badge
+                                       / canonical-star / verified-check icons). */ ?>
                                     <?php if ($isGroup): ?>
-                                        <i aria-hidden="true" class="bi bi-people-fill text-info me-1" title="Group / band / collective" aria-label="Group"></i>
+                                        <i class="bi bi-people-fill text-info me-1" role="img" title="Group / band / collective" aria-label="Group"></i>
                                     <?php elseif ($isSpecial): ?>
-                                        <i aria-hidden="true" class="bi bi-question-circle text-warning me-1" title="Special-case attribution" aria-label="Special case"></i>
+                                        <i class="bi bi-question-circle text-warning me-1" role="img" title="Special-case attribution" aria-label="Special case"></i>
                                     <?php endif; ?>
                                     <?= htmlspecialchars($p['name']) ?>
                                     <?php if ($isSpecial): ?>

@@ -55,6 +55,14 @@ with none of the behind-the-scenes technical detail.
   one of the guides now actually works, and the database setup page's
   buttons are better protected against being triggered from outside the
   app.
+- **More of the app works properly with a keyboard and screen reader** —
+  the tag pills in the favourites tag editor can now be reached and turned
+  on/off with the keyboard (they used to be mouse-only); the "add custom
+  tag" box, the "add tag" button, and the compare-with search box now
+  announce what they're for; the link editor used on songs, songbooks,
+  credit people and works pages now properly names its type, URL, note and
+  "Verified" fields; and a couple of small icon-labelling glitches were
+  fixed on the musicians page and the favourites list.
 
 ## 1.1.0 — 28 August 2026
 
