@@ -223,6 +223,34 @@ RewriteRule ^sitemap\.xml$ sitemap.xml.php [L]
 RewriteRule ^sitemap-([a-z]+)(?:-([0-9]+))?\.xml$ sitemap.xml.php?section=$1&page=$2 [L]
 
 # ==========================================================================
+# ROBOTS.TXT ROUTING (per-channel search-engine visibility, #2024/#2025)
+#
+# /robots.txt → robots.txt.php
+# robots.txt became dynamic (was a static file) so it can name only THIS
+# channel's own sitemap — never the other two channels' — and drop its
+# Sitemap: line entirely when an admin has switched this channel's
+# search-engine visibility off (/manage/configuration). See robots.txt.php's
+# own doc-block for the full "why dynamic now" reasoning and the never-5xx
+# contract that keeps this endpoint as safe as a static file would have
+# been.
+#
+# ORDER MATTERS: this rule sits BEFORE the "STATIC ASSET PASSTHROUGH"
+# section further down (which would otherwise serve an on-disk robots.txt
+# directly via %{REQUEST_FILENAME} -f) — so even if a stale static
+# robots.txt is ever left behind by an SFTP deploy that doesn't reliably
+# delete removed files, this rewrite wins and the stale file is harmless.
+# The static appWeb/public_html/robots.txt this replaces has been deleted
+# from the repo in the same commit that added this rule — two sources of
+# truth for one URL would only ever drift.
+#
+# /robots.txt contains no ".php", so the "BLOCK DIRECT ACCESS TO PHP FILES"
+# %{THE_REQUEST} rule above is never tripped by it — the same mechanism
+# that already makes /sitemap.xml, /og-image, /qr and /org-logo work.
+# ==========================================================================
+
+RewriteRule ^robots\.txt$ robots.txt.php [L]
+
+# ==========================================================================
 # APPLE APP SITE ASSOCIATION ROUTING (#1401)
 #
 # /.well-known/apple-app-site-association → .well-known/apple-app-site-association.php

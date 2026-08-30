@@ -902,6 +902,34 @@ if ($section !== null && !$isPaginated && $pageParam !== '' && $pageParam !== '1
     exit;
 }
 
+/* ---- 1.5. Per-channel search-visibility gate (#2024/#2025) -------------
+ * ELI5: an admin can switch a whole copy of the site (production/beta/
+ * alpha) OFF from search engines. When THIS channel is off, the sitemap
+ * itself is one of the three things that switches off — no point actively
+ * inviting a crawler to a channel we've just asked it not to list.
+ *
+ * WHY HERE, EXACTLY: after the static shape checks above (an unknown
+ * section/page is a 404 on every channel for the same reason, so nothing
+ * leaks either way) and BEFORE both the DB fingerprint work (step 2 — no
+ * wasted aggregate queries on a hidden channel) and the conditional-GET
+ * block (step 4 — a crawler holding a cached copy + ETag must get a real
+ * 404, never a 304 "still good" for content we've asked it to forget).
+ * `searchEngineVisibleHere()` itself performs the request's first DB read
+ * (via getAppSetting(), through the shared connection) — on a DB outage it
+ * returns the safe default, so a hidden channel simply 404s (its steady
+ * state anyway) while production falls through to the existing, fully
+ * preserved 503 degraded path below. Every other contract in this file
+ * (503 + Retry-After, the host whitelist, nosniff already set above, the
+ * activity-log handlers) is untouched — this gate only ever adds an early
+ * exit, never changes an existing branch. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+if (!searchEngineVisibleHere()) {
+    http_response_code(404);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo "Not found.\n";
+    exit;
+}
+
 /* ---- 2. DB connectivity + fingerprint ----------------------------------- */
 
 /* DB-direct (WS-J #1020): getDbMysqli() THROWS when MySQL is unreachable —
