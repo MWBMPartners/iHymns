@@ -80,6 +80,15 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* #2004 — getAppSetting() (a plain tblAppSettings key/value read that
+   transparently decrypts a secret-flagged value — see secret_crypto.php's
+   own doc). deliveryTest() below reads the NON-secret 'email_service' key
+   through it rather than re-opening its own SELECT, so the "which provider
+   is this test running against?" label can never disagree with what the
+   rest of the app calls the current provider. maintenance.php is itself
+   require-safe (constants/functions only, its own doc-block) so this adds
+   no side effect to loading EmailService.php. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'maintenance.php';
 
 /**
  * Result envelope for every send attempt.
@@ -181,6 +190,119 @@ final class EmailService
     public static function resetCache(): void
     {
         self::$settings = null;
+    }
+
+    /**
+     * The ONE "send a real test email to this admin and tell me what
+     * happened" core (#2004, epic #2002) — the body of
+     * `manage/configuration.php`'s `test_email` classic button, extracted
+     * VERBATIM so the "Connect a service" guided wizard's own email test
+     * (`integrationTestEmail()`, `includes/integration_registry.php`) calls
+     * the SAME send instead of forking a second one (rule #22/#35).
+     *
+     * ELI5: "send me a test email and tell me, structurally, what
+     * happened" — never configured (no provider chosen), no valid admin
+     * address to send it to, sent-and-failed, or sent-and-ok. Both callers
+     * turn the SAME structured answer into their own copy — a plain-English
+     * sentence here (`deliveryTestMessage()`), a `{ok,status,detail}`
+     * envelope in the wizard's test function.
+     *
+     * WHY THE RETURN SHAPE IS STRUCTURED, NOT A SENTENCE (rule #35): the
+     * wizard branches on `status`, never on prose — a future reworded
+     * sentence in `deliveryTestMessage()` must never silently break the
+     * wizard's status→copy mapping the way a regex-matched sentence would.
+     *
+     * @param string|null $adminEmail The current admin's own email address
+     *                                  (the ONLY recipient a test send is
+     *                                  ever aimed at — harmless even on a
+     *                                  typo'd From, per the classic
+     *                                  button's own original rationale).
+     * @return array{ok:bool, status:'ok'|'no_admin_email'|'unconfigured'|'send_failed',
+     *               provider:string, messageId:?string, errorClass:?string,
+     *               error:?string, adminEmail:string}
+     */
+    public static function deliveryTest(?string $adminEmail): array
+    {
+        /* The save_email branch on the calling page may have JUST changed
+           the provider config in this same request; reset the cache so
+           this test reads the fresh values (kept from the original branch —
+           harmless defensiveness even when nothing changed). */
+        self::resetCache();
+
+        /* Non-secret — getAppSetting() is the SAME read path every other
+           "what's the currently saved X?" caller on this page uses, so this
+           test can never disagree with what the Email service card itself
+           shows as "Configured: <provider>". */
+        $providerLabel = function_exists('getAppSetting')
+            ? (string)(getAppSetting('email_service', 'none') ?? 'none')
+            : 'none';
+        $adminEmail = trim((string)$adminEmail);
+
+        if ($adminEmail === '' || !filter_var($adminEmail, FILTER_VALIDATE_EMAIL)) {
+            return [
+                'ok' => false, 'status' => 'no_admin_email', 'provider' => $providerLabel,
+                'messageId' => null, 'errorClass' => null, 'error' => null, 'adminEmail' => $adminEmail,
+            ];
+        }
+        if (!self::isConfigured()) {
+            return [
+                'ok' => false, 'status' => 'unconfigured', 'provider' => $providerLabel,
+                'messageId' => null, 'errorClass' => null, 'error' => null, 'adminEmail' => $adminEmail,
+            ];
+        }
+
+        $stamp    = gmdate('Y-m-d H:i:s') . ' UTC';
+        $bodyHtml = '<h1>iHymns email delivery test</h1>'
+                  . '<p>This is a delivery test from <strong>' . htmlspecialchars($providerLabel, ENT_QUOTES, 'UTF-8') . '</strong>'
+                  . ' at <strong>' . htmlspecialchars($stamp, ENT_QUOTES, 'UTF-8') . '</strong>.</p>'
+                  . '<p>If you received this, your email provider is correctly configured.</p>';
+        $bodyText = "iHymns email delivery test from {$providerLabel} at {$stamp}.\n\n"
+                  . "If you received this, your email provider is correctly configured.\n";
+        $sendResult = self::send(
+            $adminEmail,
+            'iHymns email delivery test (' . $providerLabel . ')',
+            $bodyHtml,
+            $bodyText
+        );
+
+        return [
+            'ok'         => $sendResult->ok,
+            'status'     => $sendResult->ok ? 'ok' : 'send_failed',
+            'provider'   => $sendResult->provider,
+            'messageId'  => $sendResult->providerMessageId,
+            'errorClass' => $sendResult->errorClass,
+            'error'      => $sendResult->error,
+            'adminEmail' => $adminEmail,
+        ];
+    }
+
+    /**
+     * Turn `deliveryTest()`'s structured answer into the EXACT plain-English
+     * sentence the classic "Send test email" button has always shown —
+     * byte-for-byte, so this extraction changes nothing an admin sees.
+     *
+     * @param array $r deliveryTest()'s return value.
+     * @return string
+     */
+    public static function deliveryTestMessage(array $r): string
+    {
+        if (($r['status'] ?? '') === 'no_admin_email') {
+            return 'Send-test failed: your admin account has no valid email address on file. '
+                 . 'Set one in Users -> your row -> Edit, then retry.';
+        }
+        if (($r['status'] ?? '') === 'unconfigured') {
+            return 'Send-test failed: provider is "' . (string)($r['provider'] ?? 'none') . '". Pick a real provider and Save before testing.';
+        }
+        if (($r['ok'] ?? false) === true) {
+            $messageId = (string)($r['messageId'] ?? '');
+            return 'Test email dispatched via ' . (string)($r['provider'] ?? '')
+                 . ($messageId !== '' ? ' (Message-Id: ' . $messageId . ')' : '')
+                 . '. Check ' . (string)($r['adminEmail'] ?? '') . ' to confirm delivery.';
+        }
+        return 'Test email FAILED via ' . (string)($r['provider'] ?? '')
+             . ' (' . (string)($r['errorClass'] ?? 'Error') . '): '
+             . (string)($r['error'] ?? '')
+             . '. See the Activity Log "email.send" row for the full record.';
     }
 
     /* -------------------------------------------------------------------

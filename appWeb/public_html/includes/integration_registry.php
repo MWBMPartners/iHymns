@@ -75,6 +75,15 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'intapps_client.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'cuercode_client.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'captcha.php';
+/* #2004 (epic #2002) — the extend-phase's three sibling requires, pulling in
+   the setting-key CONSTANTS + pure helpers `email`/`siwa`/`webhooks` need
+   below (rule #35 — never a re-typed literal). All three are documented
+   require-safe (constants/functions only, no DB/network at LOAD time — see
+   each file's own top-of-file doc-block), so this file's own "require-safe
+   by design" guarantee (this doc-block, above) is unchanged. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'email_options.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apple_siwa.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';
 
 /**
  * The CAPTCHA provider → "where do I sign up / get keys" portal map.
@@ -113,6 +122,56 @@ const IHYMNS_INTEGRATION_CAPTCHA_PORTALS = [
 ];
 
 /**
+ * The email provider → "where do I sign up / get keys" portal map (#2004,
+ * epic #2002) — the SAME shape and SAME reasoning as
+ * `IHYMNS_INTEGRATION_CAPTCHA_PORTALS` immediately above (see that block's
+ * own "WHY A SEPARATE CONST" note, which applies unchanged here): where a
+ * human goes to create an account has no runtime use anywhere else in the
+ * app, so it lives here rather than growing `includes/email_options.php`'s
+ * settings model with a key nothing else reads.
+ *
+ * `'smtp' => [null, null]` is deliberate, not an oversight — a generic
+ * "custom SMTP server" has no ONE portal to link to (it's the admin's own
+ * mail server); `renderNeedPane()` (`js/modules/integration-connect-wizard.js`)
+ * already degrades a null `portalUrl` to "no portal link" (the SAME fallback
+ * path CAPTCHA's own null `portal` exercises today).
+ *
+ * Guard check (j) (`tests/php/test-integration-connect-wizard.php`) asserts
+ * these keys equal `ihymnsEmailServiceOptions()`'s keys MINUS `'none'` in
+ * BOTH directions (the (i) mirror) — a newly added email provider with no
+ * portal entry here fails loudly rather than shipping a dead "create an
+ * account" link.
+ *
+ * @see appWeb/public_html/includes/email_options.php::ihymnsEmailServiceOptions()
+ */
+const IHYMNS_INTEGRATION_EMAIL_PORTALS = [
+    'office365' => [
+        'portalUrl'   => 'https://admin.microsoft.com/',
+        'portalLabel' => 'Microsoft 365 admin center',
+    ],
+    'gmail'     => [
+        'portalUrl'   => 'https://admin.google.com/',
+        'portalLabel' => 'Google Workspace admin console',
+    ],
+    'smtp'      => [
+        'portalUrl'   => null, /* "your own server" — nothing to link to */
+        'portalLabel' => null,
+    ],
+    'sendgrid'  => [
+        'portalUrl'   => 'https://app.sendgrid.com/',
+        'portalLabel' => 'SendGrid dashboard',
+    ],
+    'mailgun'   => [
+        'portalUrl'   => 'https://app.mailgun.com/',
+        'portalLabel' => 'Mailgun dashboard',
+    ],
+    'ses'       => [
+        'portalUrl'   => 'https://console.aws.amazon.com/ses/',
+        'portalLabel' => 'AWS SES console',
+    ],
+];
+
+/**
  * The CAPTCHA per-form labels + native-impact captions.
  *
  * ELI5: this is the little explanation next to each "guard this form"
@@ -146,6 +205,38 @@ function integrationCaptchaFormMeta(): array
 }
 
 /**
+ * The webhooks channel-checkbox labels + captions (#2004, epic #2002) — the
+ * `formMeta` for the `webhooks` entry's `webhooks_channels` checkbox-group
+ * field, the SAME role `integrationCaptchaFormMeta()` plays for CAPTCHA's
+ * `captcha_forms`/`captcha_strict_forms` fields above.
+ *
+ * WHY A SEPARATE FUNCTION HERE, NOT A DATA CONST ON THE FIELD ITSELF: the
+ * checkbox-group renderer (`renderField()`,
+ * `js/modules/integration-connect-wizard.js`) reads `entry.formMeta`
+ * generically for ANY checkbox-group field on the entry — CAPTCHA already
+ * established this shape for TWO checkbox-group fields sharing ONE
+ * `formMeta` map, so `webhooks_channels` reuses the identical mechanism
+ * rather than inventing a second one.
+ *
+ * Guard check (n) (`tests/php/test-integration-connect-wizard.php`) locks
+ * these keys to `webhookParseChannelsCsv()`'s own allow-list in BOTH
+ * directions — the classic Partner webhooks card's own channel checkboxes
+ * (`manage/configuration.php`) iterate the SAME literal `['alpha', 'beta',
+ * 'production']`, so a channel added to one without the other would leave
+ * either the classic card or this wizard step silently out of step.
+ *
+ * @return array<string,array{label:string,caption:string}>
+ */
+function integrationWebhookChannelMeta(): array
+{
+    return [
+        'alpha'      => ['label' => 'Alpha',      'caption' => 'The dev site (dev.ihymns.app).'],
+        'beta'       => ['label' => 'Beta',       'caption' => 'The beta site.'],
+        'production' => ['label' => 'Production', 'caption' => 'The live site — enable last.'],
+    ];
+}
+
+/**
  * THE registry — one entry per integration the guided wizard covers.
  *
  * ELI5: a phone book for the wizard. For each integration it says: its
@@ -159,18 +250,24 @@ function integrationCaptchaFormMeta(): array
  * never a re-typed string literal — rule #35, so a future rename of one of
  * those constants is a compile error here, not a silent drift.
  *
- * Phase 1 covers exactly `intapps` / `cuercode` / `captcha` (plan §0). The
- * extend-phase keys (`email` / `siwa` / `webhooks`) are deliberately NOT
- * here yet — see plan §12; adding one later is registry data only, the
- * client/guard both derive from this array's keys and need no code change.
+ * Phase 1 shipped `intapps` / `cuercode` / `captcha` (plan §0 of
+ * `.claude/plan-integration-connect-wizard.md`); the extend phase (#2004,
+ * epic #2002, `.claude/plan-connect-wizard-extend.md`) adds `email` /
+ * `siwa` / `webhooks` — every entry key is still registry data only, and
+ * both the client driver and the standing guard derive their per-entry
+ * behaviour from this array's keys with no per-integration code change.
  *
  * @return array<string, array{
  *   label:string, icon:string, statusFn:string, saveAction:string, testFn:string,
  *   intro:string, need:list<string>, portal:?array{url:string,label:string},
  *   providers:?array<string,array{label:string,portalUrl:?string,portalLabel:?string}>,
  *   providerField:?string,
- *   fields:list<array{post:string,setting:string,label:string,type:string,secret:bool,
- *                     help?:string,placeholder?:string,default?:string,parser?:string}>,
+ *   fields:list<array{post:string,setting:?string,label:string,type:string,secret:bool,
+ *                     help?:string,placeholder?:string,default?:string,parser?:string,
+ *                     options?:array<string,string>,inputType?:string,
+ *                     showWhen?:list<array{field:string,in:list<string>}>,carry?:bool,
+ *                     validate?:string}>,
+ *   formMetaFn:?string,
  *   surfaces:list<array{label:string,href:?string}>
  * }>
  */
@@ -191,6 +288,105 @@ function integrationRegistry(): array
             'portalUrl'   => $portal['portalUrl'] ?? null,
             'portalLabel' => $portal['portalLabel'] ?? null,
         ];
+    }
+
+    /* Email's provider list is likewise DERIVED, never typed — iterate
+       `ihymnsEmailServiceOptions()` (#2004), SKIP 'none' (sub-decision E4:
+       the wizard's job is connecting a service; disabling one stays a
+       classic-card act), and overlay the portal link from the const map
+       above by the SAME key. Guard check (j) asserts these keys equal
+       `ihymnsEmailServiceOptions()` keys minus 'none' equal
+       `IHYMNS_INTEGRATION_EMAIL_PORTALS` keys, in every direction. */
+    $emailProvidersOut = [];
+    foreach (ihymnsEmailServiceOptions() as $eKey => $eLabel) {
+        if ($eKey === 'none') {
+            continue;
+        }
+        $ePortal = IHYMNS_INTEGRATION_EMAIL_PORTALS[$eKey] ?? null;
+        $emailProvidersOut[(string)$eKey] = [
+            'label'       => (string)$eLabel,
+            'portalUrl'   => $ePortal['portalUrl'] ?? null,
+            'portalLabel' => $ePortal['portalLabel'] ?? null,
+        ];
+    }
+
+    /* Email's FIELD list is likewise DERIVED from `ihymnsEmailSettingsModel()`
+       (#2004) — never hand-typed a second time — in model order, skipping
+       ONLY `email_smtp_preset` (sub-decision E1: a page-side pre-fill hint;
+       `save_email` preserves it when absent from the POST, and an empty
+       host already resolves to the office365/gmail preset server-side —
+       see EmailService.php / the classic save_email branch). Each row's
+       `showWhen` is MECHANICALLY built from the model's own `providers` +
+       `authShow` columns — never hand-typed — so guard check (j) can assert
+       the two never drift: a field's provider condition on `email_service`
+       always equals its model `providers` column, by construction. */
+    $emailFieldOmit = ['email_smtp_preset'];
+    /* A small, wizard-ONLY overlay of help/placeholder/options text keyed by
+       setting name — cosmetic copy only, never a second source of secret/
+       provider/authShow truth (all of that stays model-derived above). */
+    $emailFieldOverlay = [
+        'email_smtp_secure' => ['options' => ihymnsSmtpSecureOptions(), 'default' => 'tls'],
+        'email_auth_method' => ['options' => ihymnsEmailAuthMethodOptions(), 'default' => 'smtp'],
+        'email_smtp_host'   => ['placeholder' => 'smtp.example.com',
+            'help' => 'Leave blank to use Microsoft\'s / Google\'s standard server when the provider above is Microsoft 365 or Google Workspace.'],
+        'email_smtp_port'   => ['placeholder' => '587'],
+        'email_smtp_user'   => ['help' => 'The mailbox / app-password username your provider issued.'],
+        'email_smtp_pass'   => ['placeholder' => 'App password (not your normal account password, for most providers).'],
+        'email_from_address' => ['placeholder' => 'no-reply@yourdomain.com'],
+        'email_from_name'    => ['placeholder' => 'iHymns'],
+        'email_sendgrid_api_key' => ['placeholder' => 'SG.xxxxxxxx'],
+        'email_mailgun_api_key'  => ['placeholder' => 'key-xxxxxxxx'],
+        'email_mailgun_domain'   => ['placeholder' => 'mg.yourdomain.com'],
+        'email_ses_region'       => ['placeholder' => 'eu-west-1'],
+        'email_ses_access_key'   => ['placeholder' => 'AKIA…'],
+        'email_graph_tenant_id'  => ['placeholder' => '00000000-0000-0000-0000-000000000000'],
+        'email_graph_client_id'  => ['placeholder' => '00000000-0000-0000-0000-000000000000'],
+        'email_graph_client_secret' => ['help' => 'The secret VALUE (not the Secret ID) from "Certificates & secrets".'],
+        'email_graph_sender'     => ['placeholder' => 'noreply@yourtenant.com'],
+        'email_gmail_sa_json'    => ['help' => 'The downloaded service-account key file (contains client_email + private_key).'],
+        'email_gmail_sender'     => ['placeholder' => 'noreply@yourdomain.com',
+            'help' => 'The Workspace user the service account impersonates (domain-wide delegation).'],
+    ];
+    $emailFieldsOut = [];
+    foreach (ihymnsEmailSettingsModel() as $emKey => $emRow) {
+        if (in_array($emKey, $emailFieldOmit, true)) {
+            continue;
+        }
+        [$emLabel, $emType, $emSecret, $emProviders, $emAuthShow] = $emRow;
+
+        $emField = [
+            'post' => $emKey, 'setting' => $emKey, 'label' => $emLabel, 'secret' => $emSecret,
+        ];
+        if ($emType === 'select') {
+            $emField['type'] = 'select';
+        } elseif ($emType === 'textarea') {
+            $emField['type'] = 'textarea';
+        } else {
+            $emField['type'] = 'text';
+            if ($emType === 'email' || $emType === 'number') {
+                $emField['inputType'] = $emType;
+            }
+            /* model type 'password' needs no inputType — a secret field
+               always renders as a password input regardless of declared
+               `type` (renderField()'s own secret-first rendering rule). */
+        }
+
+        $emShowWhen = [];
+        if ($emProviders !== null) {
+            $emShowWhen[] = ['field' => 'email_service', 'in' => $emProviders];
+        }
+        if ($emAuthShow !== null) {
+            $emShowWhen[] = ['field' => 'email_auth_method', 'in' => [$emAuthShow]];
+        }
+        if ($emShowWhen !== []) {
+            $emField['showWhen'] = $emShowWhen;
+        }
+
+        if (isset($emailFieldOverlay[$emKey])) {
+            $emField += $emailFieldOverlay[$emKey];
+        }
+
+        $emailFieldsOut[] = $emField;
     }
 
     return [
@@ -251,6 +447,7 @@ function integrationRegistry(): array
                     'label' => 'HMAC secret', 'type' => 'text', 'secret' => true,
                 ],
             ],
+            'formMetaFn' => null,
             'surfaces'   => [
                 ['label' => 'Connected Apps status & snapshot viewer', 'href' => '/manage/intapps-status'],
             ],
@@ -287,6 +484,7 @@ function integrationRegistry(): array
                     'placeholder' => 'cuercode_…',
                 ],
             ],
+            'formMetaFn' => null,
             'surfaces'   => [
                 ['label' => 'Print templates — QR block', 'href' => null],
                 ['label' => 'Service Projection — join QR', 'href' => '/manage/service-projection.php'],
@@ -336,8 +534,165 @@ function integrationRegistry(): array
                     'parser' => 'captchaParseForms',
                 ],
             ],
+            /* Generalised from the old hardcoded `($key === 'captcha') ? ...`
+               ternary in integrationClientProjection() (#2004) — captcha is
+               simply the first entry to NAME a formMeta builder function,
+               never a special case the projection singles out by key. */
+            'formMetaFn' => 'integrationCaptchaFormMeta',
             'surfaces'   => [
                 ['label' => 'Provider health strip on the CAPTCHA card', 'href' => '/manage/configuration#captcha'],
+            ],
+        ],
+
+        'email' => [
+            'label'      => 'Email service',
+            'icon'       => 'bi-envelope-at',
+            'statusFn'   => 'emailServiceConfigured',
+            'saveAction' => 'save_email',
+            'testFn'     => 'integrationTestEmail',
+            'intro'      => 'Sends the app\'s emails — password resets, sign-in codes and links, and '
+                . 'notifications. While no provider is set, email sign-in stays hidden and '
+                . 'password-only sign-in keeps working.',
+            'need'       => [
+                'An account with one of the supported email providers.',
+                'That provider\'s sending credentials (an app password or an API key).',
+                'The last step saves your details and sends a real test email to your own admin address.',
+            ],
+            'portal'     => null, /* provider-specific — resolved client-side from `providers` once one is chosen */
+            'providers'  => $emailProvidersOut,
+            'providerField' => 'email_service',
+            'fields'     => $emailFieldsOut,
+            'formMetaFn' => null,
+            'surfaces'   => [
+                ['label' => 'Step-by-step provider guides (bottom of the Configuration page)', 'href' => '/manage/configuration#email-instructions'],
+                ['label' => 'Sign In — email code / magic-link login', 'href' => null],
+            ],
+        ],
+
+        'siwa' => [
+            'label'      => 'Sign in with Apple',
+            'icon'       => 'bi-apple',
+            'statusFn'   => 'appleSiwaConfigured',
+            'saveAction' => 'save_apple',
+            'testFn'     => 'integrationTestSiwa',
+            'intro'      => 'Lets people sign in with their Apple ID. Sign-in itself works without any of '
+                . 'this; these credentials add the refresh-token exchange, Apple-side sign-out on '
+                . 'account deletion, and (optionally) Apple sign-in on the web.',
+            'need'       => [
+                'Your Apple Developer Team ID (developer.apple.com → Membership).',
+                'A "Sign in with Apple" key: its 10-character Key ID and the downloaded .p8 file.',
+                'Optional, for web sign-in: a separate Services ID (not the app\'s own App ID).',
+                'No message is sent to Apple by this guide — the last step checks that your key, '
+                    . 'Key ID and Team ID fit together. Apple itself is only contacted during a real sign-in.',
+            ],
+            'portal'     => ['url' => 'https://developer.apple.com/account/resources/authkeys/list', 'label' => 'Apple Developer — Keys'],
+            'providers'  => null,
+            'providerField' => null,
+            'fields'     => [
+                [
+                    'post' => 'apple_team_id', 'setting' => APPLE_SETTING_TEAM_ID,
+                    'label' => 'Apple Team ID', 'type' => 'text', 'secret' => false,
+                    'validate' => 'ten_char_id', 'placeholder' => 'ABCDE12345',
+                    'help' => 'Exactly 10 letters/digits. Also drives Universal Links (must match the APPLE_TEAM_ID build secret).',
+                ],
+                [
+                    'post' => 'apple_siwa_key_id', 'setting' => APPLE_SETTING_SIWA_KEY_ID,
+                    'label' => 'SIWA Key ID', 'type' => 'text', 'secret' => false,
+                    'validate' => 'ten_char_id', 'placeholder' => 'ABCDE12345',
+                ],
+                [
+                    'post' => 'apple_siwa_private_key', 'setting' => APPLE_SETTING_SIWA_PRIVATE_KEY,
+                    'label' => 'SIWA private key (.p8)', 'type' => 'textarea', 'secret' => true,
+                    'help' => 'Paste the ENTIRE downloaded .p8 file, including the BEGIN/END lines. Not the App Store Connect deploy key.',
+                ],
+                [
+                    'post' => 'apple_siwa_services_id', 'setting' => APPLE_SETTING_SIWA_SERVICES_ID,
+                    'label' => 'Services ID (web sign-in, optional)', 'type' => 'text', 'secret' => false,
+                    'placeholder' => 'app.ihymns.web',
+                    'help' => 'Only needed for Apple sign-in on the web. Must NOT be the app\'s own App ID.',
+                ],
+                [
+                    'post' => 'apple_web_login_enabled', 'setting' => APPLE_SETTING_WEB_LOGIN_ENABLED,
+                    'label' => 'Web sign-in enabled on channels', 'type' => 'text', 'secret' => false,
+                    'validate' => 'channel_tokens', 'placeholder' => 'e.g. alpha  (leave blank to keep web sign-in off)',
+                    'help' => 'Comma-separated: alpha, beta, production, or all.',
+                ],
+                /* CARRY (rule #45's carry-safety class, plan §4.2 sub-decision
+                   E2) — save_apple UNCONDITIONALLY overwrites this key on
+                   EVERY save (it has no "leave blank to keep" branch, unlike
+                   the two .p8 fields below), so this wizard entry MUST post
+                   its CURRENT value back or a wizard save silently WIPES the
+                   stored APNs Key ID — the exact silent-corruption class
+                   rule #45 names. Never rendered (buildPanes() skips any
+                   field with carry===true); collectFields() posts its
+                   projected `value` directly. Guard check (m) mechanically
+                   re-derives save_apple's own unconditional-overwrite set
+                   from source and asserts this field covers it — never a
+                   comment alone (rule #35). */
+                [
+                    'post' => 'apple_apns_key_id', 'setting' => APPLE_SETTING_APNS_KEY_ID,
+                    'label' => 'APNs Key ID (carried)', 'type' => 'text', 'secret' => false, 'carry' => true,
+                ],
+                /* apple_apns_private_key is deliberately OMITTED: save_apple
+                   treats an absent/blank POST as "don't touch the stored
+                   value" for this key (the SAME blank-keep convention as
+                   apple_siwa_private_key) — so leaving it off this entry's
+                   field list is itself carry-safe, not an oversight. */
+            ],
+            'formMetaFn' => null,
+            'surfaces'   => [
+                ['label' => 'The Sign In screen\'s "Sign in with Apple" button', 'href' => null],
+                ['label' => 'Universal Links (apple-app-site-association) once the Team ID is saved', 'href' => null],
+            ],
+        ],
+
+        'webhooks' => [
+            'label'      => 'Partner webhooks',
+            'icon'       => 'bi-broadcast',
+            'statusFn'   => 'webhooksEnabled',
+            'saveAction' => 'save_webhooks',
+            'testFn'     => 'integrationTestWebhooks',
+            'intro'      => 'Lets outside systems receive signed messages when things change here — songs, '
+                . 'songbooks, shared set lists, live services. Fully dormant until a channel is '
+                . 'ticked, and nothing is ever sent until a partner subscription exists.',
+            'need'       => [
+                'A decision which environments should send (start with alpha).',
+                'A partner system to receive the messages — added afterwards on the Webhooks page.',
+                'A scheduled job (cron or an uptime monitor) to poke the drain endpoint every minute — '
+                    . 'the drain key below authorises it.',
+            ],
+            'portal'     => ['url' => '/manage/webhooks', 'label' => 'Webhooks — manage subscriptions'],
+            'providers'  => null,
+            'providerField' => null,
+            'fields'     => [
+                [
+                    'post' => 'webhooks_channels', 'setting' => WEBHOOK_SETTING_ENABLED_CHANNELS,
+                    'label' => 'Send from these environments', 'type' => 'checkbox-group', 'secret' => false,
+                    'parser' => 'webhookParseChannelsCsv',
+                ],
+                [
+                    'post' => 'webhook_allow_loopback', 'setting' => WEBHOOK_SETTING_ALLOW_LOOPBACK,
+                    'label' => 'Allow http://127.0.0.1 targets (local testing only)', 'type' => 'checkbox', 'secret' => false,
+                    'help' => 'Leave off on a real server.',
+                ],
+                /* A stateless COMMAND tick, not a stored value — `setting`
+                   is deliberately null (legal ONLY for type:'checkbox' — see
+                   integrationClientProjection()'s own doc-comment): it always
+                   projects `checked:false`, since there is nothing saved to
+                   reflect back. Ticking it tells save_webhooks to mint a
+                   FRESH show-once drain key on THIS save (mirrors the
+                   classic card's own "Regenerate the drain key on save"
+                   checkbox, manage/configuration.php). */
+                [
+                    'post' => 'webhook_regenerate_drain_key', 'setting' => null,
+                    'label' => 'Generate a new drain key now (shown once)', 'type' => 'checkbox', 'secret' => false,
+                    'help' => 'Tick this on first set-up. The key appears once on the next step — copy it into your cron command.',
+                ],
+            ],
+            'formMetaFn' => 'integrationWebhookChannelMeta',
+            'surfaces'   => [
+                ['label' => 'Manage webhook subscriptions', 'href' => '/manage/webhooks'],
+                ['label' => 'Delivery status strip on the Partner webhooks card', 'href' => '/manage/configuration'],
             ],
         ],
     ];
@@ -391,18 +746,55 @@ function integrationClientProjection(callable $getSetting, ?callable $statusFor 
             if (isset($f['help']))        { $fieldOut['help']        = $f['help']; }
             if (isset($f['placeholder'])) { $fieldOut['placeholder'] = $f['placeholder']; }
             if (isset($f['validate']))    { $fieldOut['validate']    = $f['validate']; }
+            /* #2004 — cosmetic passthrough (never used for a secret-safety
+               decision, unlike `secret`/`set`/`value` below): the input's
+               HTML `type` hint for a plain text control ('email'/'number'). */
+            if (isset($f['inputType']))   { $fieldOut['inputType']   = $f['inputType']; }
+            /* #2004 — the conditional-visibility rule the DRIVER evaluates
+               client-side (`showWhen` conditional visibility,
+               js/modules/integration-connect-wizard.js). Passed through
+               verbatim — this function makes no visibility DECISION itself,
+               it only carries the registry's own rule to the browser. */
+            if (isset($f['showWhen']))    { $fieldOut['showWhen']    = $f['showWhen']; }
+            /* #2004 — marks a field the DRIVER must post but must NEVER
+               render (the save_apple APNs-Key-ID carry-safety field, §4.2
+               of the extend plan). Non-secret only, by registry construction
+               — a carry field always falls through to the plain `value`
+               branch below, so a secret could never be marked carry without
+               ALSO being non-secret, which the registry never does. */
+            if (!empty($f['carry']))      { $fieldOut['carry']       = true; }
+            /* #2004 — a `type:'select'` field's OWN option list, for every
+               select EXCEPT the provider field (which is drawn on its own
+               dedicated "Choose provider" pane from `entry.providers`
+               instead — renderProviderSelect(), never this generic path). */
+            if ($f['type'] === 'select' && $f['post'] !== $entry['providerField'] && isset($f['options'])) {
+                $fieldOut['options'] = $f['options'];
+            }
 
             if ($f['type'] === 'checkbox-group') {
                 /* A multi-value CSV setting (e.g. captcha_forms). The parser
                    is named in the FIELD's own registry data (never a literal
                    here) so this loop stays generic across integrations —
-                   today only CAPTCHA has one, but a future checkbox-group
-                   field just names its own pure parser function. */
+                   today CAPTCHA and Partner webhooks each have one, but ANY
+                   future checkbox-group field just names its own pure
+                   parser function. */
                 $raw    = (string)($getSetting($f['setting'], '') ?? '');
                 $parser = $f['parser'] ?? null;
                 $fieldOut['values'] = ($parser !== null && function_exists($parser))
                     ? (array)call_user_func($parser, $raw)
                     : [];
+            } elseif ($f['type'] === 'checkbox') {
+                /* #2004 — a SINGLE boolean tick (e.g. "allow loopback
+                   targets"). `setting === null` is legal ONLY for this type
+                   — a stateless command tick (e.g. "regenerate the drain key
+                   now") with nothing stored to reflect, so it always
+                   projects unticked. The raw setting value, when one exists,
+                   is used ONLY inside this `=== '1'` boolean comparison —
+                   same structural no-leak shape the secret branch below
+                   uses, so a checkbox field can never echo its underlying
+                   raw string either (guard check (c) proves this for both). */
+                $fieldOut['checked'] = ($f['setting'] !== null)
+                    && ((string)($getSetting($f['setting'], '') ?? '') === '1');
             } elseif (!empty($f['secret'])) {
                 /* SECRET FIELD — the reader's return value is used ONLY in
                    this boolean comparison and is NEVER assigned into
@@ -413,6 +805,12 @@ function integrationClientProjection(callable $getSetting, ?callable $statusFor 
             } else {
                 $default = $f['default'] ?? '';
                 $fieldOut['value'] = (string)($getSetting($f['setting'], $default) ?? $default);
+                /* #2004 — Non-secret only (a carry field is always
+                   non-secret by construction, so it reaches here too): the
+                   driver's `showWhen` "effective value of a HIDDEN field"
+                   rule needs the registry's OWN default when nothing is
+                   saved yet — see the field renderer's own comment. */
+                if (isset($f['default'])) { $fieldOut['default'] = $f['default']; }
             }
             $fieldsOut[] = $fieldOut;
         }
@@ -431,7 +829,15 @@ function integrationClientProjection(callable $getSetting, ?callable $statusFor 
             'providers'     => $entry['providers'],
             'providerField' => $entry['providerField'],
             'fields'        => $fieldsOut,
-            'formMeta'      => ($key === 'captcha') ? integrationCaptchaFormMeta() : null,
+            /* #2004 — generalised from a hardcoded `($key === 'captcha') ?
+               integrationCaptchaFormMeta() : null` ternary: ANY entry names
+               its own formMeta builder via `formMetaFn` (a plain function
+               name, resolved the SAME `function_exists()` way `statusFn`/
+               `testFn` already are) — captcha and webhooks both use this
+               today; a future checkbox-group entry names its own. */
+            'formMeta'      => isset($entry['formMetaFn']) && $entry['formMetaFn'] !== null && function_exists($entry['formMetaFn'])
+                ? call_user_func($entry['formMetaFn'])
+                : null,
             'surfaces'      => $entry['surfaces'],
             'saveAction'    => $entry['saveAction'],
             'active'        => $active,
@@ -618,6 +1024,123 @@ function integrationTestCaptcha(): array
         'detail' => [
             'errno'      => $probe['errno'],
             'httpStatus' => $probe['httpStatus'],
+        ],
+    ];
+}
+
+/**
+ * Email delivery test — reuses the EXACT core the classic "Send test email"
+ * button now calls: `EmailService::deliveryTest()` (#2004, `includes/
+ * EmailService.php`, extracted from the `test_email` branch of
+ * `manage/configuration.php` in this SAME change — rule #22, never a second
+ * send implementation). The real send is deliberate (the classic button's
+ * own long-standing rationale: it lands harmlessly in the ADMIN's own
+ * inbox) — the wizard auto-runs this the moment its Save & test step is
+ * entered, and its own `need` list says so up front.
+ *
+ * @return array{ok:bool, status:string, detail:array<string,mixed>}
+ */
+function integrationTestEmail(\mysqli $db): array
+{
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
+    $user = function_exists('getCurrentUser') ? getCurrentUser() : null;
+    $r = EmailService::deliveryTest(trim((string)($user['email'] ?? '')));
+    return [
+        'ok'     => $r['ok'],
+        'status' => $r['status'],
+        'detail' => [
+            'provider'   => $r['provider'],
+            'messageId'  => $r['messageId'],
+            'errorClass' => $r['errorClass'],
+            'adminEmail' => $r['adminEmail'],
+        ],
+    ];
+}
+
+/**
+ * Sign in with Apple credentials test — LOCAL and ZERO-NETWORK: mints an
+ * ES256 client_secret JWT via the EXISTING, already-shipped
+ * `appleSiwaBuildClientSecret()` (`includes/apple_siwa.php`) and checks only
+ * whether minting SUCCEEDED. That function returns null on a non-parsing or
+ * non-EC-P-256 key (its own docblock), so a NON-null return is proof the
+ * .p8 key, Key ID and Team ID all cohere and CAN sign — Apple itself is
+ * never contacted (only a real sign-in talks to Apple; this only proves the
+ * saved trio is internally consistent).
+ *
+ * SECRET-SAFETY: the minted `$minted` JWT is used ONLY in the `=== null`
+ * null-check immediately below its assignment — it is NEVER placed into the
+ * returned `detail` array. Guard check (l) mechanically proves this
+ * (`substr_count($body, '$minted') === 2`) — the same "used only in a
+ * boolean comparison, never assigned onward" shape the projection's own
+ * secret-field branch uses (this file's `integrationClientProjection()`).
+ *
+ * @return array{ok:bool, status:string, detail:array<string,mixed>}
+ */
+function integrationTestSiwa(\mysqli $db): array
+{
+    $teamId = (string)(getAppSetting(APPLE_SETTING_TEAM_ID, '') ?? '');
+    $keyId  = (string)(getAppSetting(APPLE_SETTING_SIWA_KEY_ID, '') ?? '');
+    $p8     = (string)(getAppSetting(APPLE_SETTING_SIWA_PRIVATE_KEY, '') ?? '');
+    $flags  = ['teamIdSet' => $teamId !== '', 'keyIdSet' => $keyId !== '', 'p8Set' => $p8 !== ''];
+    if ($teamId === '' || $keyId === '' || $p8 === '') {
+        return ['ok' => false, 'status' => 'unconfigured', 'detail' => $flags];
+    }
+
+    $minted = appleSiwaBuildClientSecret($teamId, $keyId, IHYMNS_SIWA_CLIENT_ID, $p8, time());
+    if ($minted === null) {
+        /* O4 (plan §14 precedent): the FAILURE outcome is logged too — key
+           NAMES/booleans only, never the signed JWT (which never reaches
+           this point anyway — see the docblock above). */
+        if (function_exists('logActivity')) {
+            logActivity('apple_siwa.test_credentials', 'app_setting', 'apple_siwa', ['ok' => false, 'via' => 'wizard'], 'failure');
+        }
+        return ['ok' => false, 'status' => 'invalid_key', 'detail' => $flags];
+    }
+
+    if (function_exists('logActivity')) {
+        logActivity('apple_siwa.test_credentials', 'app_setting', 'apple_siwa', ['ok' => true, 'via' => 'wizard'], 'success');
+    }
+    return [
+        'ok'     => true,
+        'status' => 'ok',
+        'detail' => ['clientId' => IHYMNS_SIWA_CLIENT_ID, 'webEnabled' => appleWebLoginEnabledForChannel()],
+    ];
+}
+
+/**
+ * Partner webhooks health read — NO OUTBOUND HTTP CALL of any kind (nothing
+ * is sent without a subscriber; the wizard's own copy says so). Reuses the
+ * EXISTING `webhookDrainHealth()` (`includes/webhook_admin.php`, already
+ * shipped for the classic card's passive health strip) — a pure read, so
+ * O4 (plan §14): no `logActivity()` call, matching `captcha_probe`'s own
+ * read-only precedent.
+ *
+ * @return array{ok:bool, status:string, detail:array<string,mixed>}
+ */
+function integrationTestWebhooks(\mysqli $db): array
+{
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+
+    $chans = webhookEnabledChannels();
+    if (count($chans) === 0) {
+        return ['ok' => false, 'status' => 'unconfigured', 'detail' => ['channels' => []]];
+    }
+    if (!webhookSchemaReady($db)) {
+        return ['ok' => false, 'status' => 'schema_missing', 'detail' => ['channels' => $chans]];
+    }
+
+    $h    = webhookDrainHealth($db);
+    $here = webhooksEnabled();
+    return [
+        'ok'     => true,
+        'status' => $here ? 'ok' : 'ok_elsewhere',
+        'detail' => [
+            'channels'    => $chans,
+            'thisChannel' => ihymns_environment(),
+            'activeSubs'  => $h['active_subs'],
+            'dueNow'      => $h['due_now'],
+            'lastDrainAt' => $h['last_drain_at'],
+            'drainKeySet' => ((string)(getAppSetting(WEBHOOK_SETTING_DRAIN_KEY, '') ?? '')) !== '',
         ],
     ];
 }

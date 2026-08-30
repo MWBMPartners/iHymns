@@ -98,16 +98,25 @@ const WEBHOOK_CANONICAL_HOSTS = ['ihymns.app', 'www.ihymns.app', 'dev.ihymns.app
  * ========================================================================= */
 
 /**
- * ELI5: which channels have webhooks switched on?
- * WHY: a CSV allow-list, not a boolean — tblAppSettings is shared by all three
- * docroots (the INTAPPS_SETTING_ENABLED_CHANNELS precedent), so an alpha-only
- * soak is expressible. Default empty ⇒ fully dormant.
+ * PURE fold: turn a raw CSV/whitespace-separated channel string into the
+ * validated subset of {alpha, beta, production} — no DB, no setting read.
+ * Extracted out of `webhookEnabledChannels()` (#2004, epic #2002) so the
+ * "Connect a service" guided wizard's registry projection can call the SAME
+ * parser as this file's own checkbox-group `parser` convention already
+ * anticipated (`includes/integration_registry.php`'s
+ * `integrationClientProjection()` doc-block: "a future checkbox-group field
+ * just names its own pure parser function" — this is that future field).
  *
- * @return array<int,string> subset of {alpha, beta, production}
+ * ELI5: given the raw text stored in the database ("alpha,beta" or even
+ * "Alpha, BETA  production"), this returns the clean list of real channel
+ * names it actually means, dropping anything that isn't one of the three.
+ *
+ * @param string|null $csv Raw setting value (comma/whitespace separated).
+ * @return array<int,string> subset of {alpha, beta, production}, de-duplicated.
  */
-function webhookEnabledChannels(): array
+function webhookParseChannelsCsv(?string $csv): array
 {
-    $raw = (string)(getAppSetting(WEBHOOK_SETTING_ENABLED_CHANNELS, '') ?? '');
+    $raw = (string)$csv;
     $out = [];
     foreach (preg_split('/[\s,]+/', $raw, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $c) {
         $c = strtolower(trim($c));
@@ -116,6 +125,22 @@ function webhookEnabledChannels(): array
         }
     }
     return array_values(array_unique($out));
+}
+
+/**
+ * ELI5: which channels have webhooks switched on?
+ * WHY: a CSV allow-list, not a boolean — tblAppSettings is shared by all three
+ * docroots (the INTAPPS_SETTING_ENABLED_CHANNELS precedent), so an alpha-only
+ * soak is expressible. Default empty ⇒ fully dormant. Delegates to the PURE
+ * `webhookParseChannelsCsv()` above (#2004) — this function's only job is
+ * supplying the LIVE setting read; the parsing/validation logic lives in
+ * exactly one place.
+ *
+ * @return array<int,string> subset of {alpha, beta, production}
+ */
+function webhookEnabledChannels(): array
+{
+    return webhookParseChannelsCsv((string)(getAppSetting(WEBHOOK_SETTING_ENABLED_CHANNELS, '') ?? ''));
 }
 
 /**

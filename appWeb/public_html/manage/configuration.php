@@ -72,76 +72,23 @@ $csrf = csrfToken();
  * (still saveable; the field shows a placeholder); also redacted from
  * the activity-log details. The on-the-wire POST still carries it
  * (over HTTPS) when the admin actually changes it.
+ *
+ * #2004 — the four vocabulary arrays that used to be typed HERE now live in
+ * `includes/email_options.php` as plain functions, so the "Connect a
+ * service" guided wizard's registry (`includes/integration_registry.php`)
+ * can build its own Email step from the SAME source instead of typing a
+ * second copy (rule #22). This re-point is BYTE-IDENTICAL for every
+ * downstream reader on this page: `ihymnsEmailSettingsModel()`'s rows carry
+ * a 5th `authShow` element the `save_email` loop below never reads (PHP's
+ * `[$label, $type, $secret, $providers]` destructure simply ignores it —
+ * see that file's own doc-block for why that's safe), and the three option
+ * maps are returned exactly as they were declared inline here.
  * ---------------------------------------------------------------------- */
-$EMAIL_SETTINGS = [
-    /* key                     => [label, type, secret, providers] */
-    'email_service'             => ['Email service',             'select', false, null],
-    /* #1309 — 'office365' and 'gmail' are first-class SMTP-AUTH providers, so
-       the SMTP + common field groups are visible for them too. */
-    'email_from_address'        => ['From address',              'email',  false, ['smtp','office365','gmail','sendgrid','mailgun','ses']],
-    'email_from_name'           => ['From name',                 'text',   false, ['smtp','office365','gmail','sendgrid','mailgun','ses']],
-    /* feature C — SMTP provider preset (pre-fills host/port/secure in the
-       UI; constrained server-side to the $SMTP_PRESETS keys). Custom SMTP
-       only — for office365/gmail the preset is implied by the provider. */
-    'email_smtp_preset'         => ['SMTP provider preset',      'select', false, ['smtp']],
-    'email_smtp_host'           => ['SMTP host',                 'text',   false, ['smtp','office365','gmail']],
-    'email_smtp_port'           => ['SMTP port',                 'number', false, ['smtp','office365','gmail']],
-    'email_smtp_user'           => ['SMTP username',             'text',   false, ['smtp','office365','gmail']],
-    'email_smtp_pass'           => ['SMTP password',             'password', true, ['smtp','office365','gmail']],
-    'email_smtp_secure'         => ['SMTP encryption',           'select', false, ['smtp','office365','gmail']],
-    /* feature C — delegate / send-as. Optional; validated as an email in
-       the save handler. When set, mail is sent FROM this mailbox while
-       AUTH still uses the SMTP username above (the login mailbox must be
-       granted Send-As on it in the provider's admin console). */
-    'email_smtp_from_address'   => ['Send-as / From address (delegate)', 'email', false, ['smtp','office365','gmail']],
-    'email_smtp_from_name'      => ['Send-as display name',      'text',   false, ['smtp','office365','gmail']],
-    'email_sendgrid_api_key'    => ['SendGrid API key',          'password', true, ['sendgrid']],
-    'email_mailgun_api_key'     => ['Mailgun API key',           'password', true, ['mailgun']],
-    'email_mailgun_domain'      => ['Mailgun domain',            'text',   false, ['mailgun']],
-    'email_ses_region'          => ['AWS region (e.g. eu-west-1)', 'text', false, ['ses']],
-    'email_ses_access_key'      => ['AWS access key',            'password', true, ['ses']],
-    'email_ses_secret_key'      => ['AWS secret key',            'password', true, ['ses']],
-    /* #1311 — OAuth2 API transport. The auth-method selector applies to the
-       office365/gmail providers; the Graph + Gmail-API credential fields show
-       only when method=oauth2 (client-side data-auth-show). The secrets (client
-       secret, service-account JSON) keep secret=true → blank-skip on save +
-       redaction from the activity-log key list. */
-    'email_auth_method'         => ['Authentication method',          'select',   false, ['office365','gmail']],
-    'email_graph_tenant_id'     => ['Azure tenant ID',                'text',     false, ['office365']],
-    'email_graph_client_id'     => ['Azure app (client) ID',          'text',     false, ['office365']],
-    'email_graph_client_secret' => ['Azure client secret',            'password', true,  ['office365']],
-    'email_graph_sender'        => ['Sender mailbox (UPN)',           'text',     false, ['office365']],
-    'email_gmail_sa_json'       => ['Service-account JSON key',       'textarea', true,  ['gmail']],
-    'email_gmail_sender'        => ['Sender mailbox (impersonated)',  'text',     false, ['gmail']],
-];
-
-/* #1311 — OAuth2 transport options for the office365/gmail providers. */
-$EMAIL_AUTH_METHOD_OPTIONS = [
-    'smtp'   => 'SMTP-AUTH (host + app password)',
-    'oauth2' => 'OAuth2 API (Microsoft Graph / Gmail API — no SMTP)',
-];
-
-/* #1309 — Microsoft 365 + Google Workspace are now FIRST-CLASS providers in
-   this dropdown (they used to be a nested "preset" under a generic SMTP entry,
-   which the owner reported as undiscoverable — the guides showed but the
-   services weren't selectable). The keys match the shared smtp_presets map so
-   the pre-fill JS + EmailService dispatch recognise them; both route through
-   the SMTP-AUTH transport. 'smtp' remains for any OTHER custom server. */
-$EMAIL_SERVICE_OPTIONS = [
-    'none'      => 'None — email login disabled',
-    'office365' => 'Microsoft 365 (Exchange Online)',
-    'gmail'     => 'Google Workspace / Gmail',
-    'smtp'      => 'SMTP (other / custom server)',
-    'sendgrid'  => 'SendGrid',
-    'mailgun'   => 'Mailgun',
-    'ses'       => 'AWS SES',
-];
-
-$SMTP_SECURE_OPTIONS = [
-    'tls'  => 'STARTTLS (port 587)',
-    'ssl'  => 'SSL/TLS implicit (port 465)',
-    'none' => 'None (port 25 — not recommended)',
-];
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'email_options.php';
+$EMAIL_SETTINGS            = ihymnsEmailSettingsModel();
+$EMAIL_AUTH_METHOD_OPTIONS = ihymnsEmailAuthMethodOptions();
+$EMAIL_SERVICE_OPTIONS     = ihymnsEmailServiceOptions();
+$SMTP_SECURE_OPTIONS       = ihymnsSmtpSecureOptions();
 
 /* ----------------------------------------------------------------------
  * feature C — SMTP provider presets. Selecting one pre-fills host / port /
@@ -400,66 +347,25 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
         } elseif ($action === 'test_email') {
-            /* Real send (#898) — replaces the previous stub. Uses
-               EmailService::send() with an ad-hoc payload targeting
-               the current admin's own email so the button is harmless
-               even if a typo lands in From. The EmailSendResult is
-               mirrored into the alert and a structured email.send
-               row goes into tblActivityLog. */
+            /* Real send (#898) — replaces the previous stub. #2004 moved
+               this branch's body into the reusable
+               EmailService::deliveryTest()/deliveryTestMessage() pair (rule
+               #22/#35 — a single core, never a second copy) so the "Connect
+               a service" wizard's own email test
+               (integrationTestEmail(), includes/integration_registry.php)
+               calls the SAME send, never a forked one. deliveryTest() opens
+               with EmailService::resetCache() (the save_email branch above
+               may have just changed the provider config in this same
+               request) and reproduces the exact three gates + real send
+               this branch always ran; deliveryTestMessage() reproduces the
+               four possible sentences byte-for-byte. The EmailSendResult is
+               still mirrored into this page's alert, and
+               EmailService::send() still writes the structured email.send
+               row into tblActivityLog — nothing about WHAT happens changed,
+               only where the logic lives. */
             require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
-            /* The save_email branch above may have just changed the
-               provider config in this same request; reset the cache
-               so the test reads the fresh values. */
-            EmailService::resetCache();
-            /* Reload current settings so the alert text reflects the
-               just-saved provider (the page-level $currentSettings
-               below is fetched after this block runs). */
-            $current = $loadSettings($db, array_keys($EMAIL_SETTINGS));
-            $providerLabel = (string)($current['email_service'] ?? 'none');
-
-            $adminEmail = trim((string)($currentUser['email'] ?? ''));
-            if ($adminEmail === '' || !filter_var($adminEmail, FILTER_VALIDATE_EMAIL)) {
-                $testResult = [
-                    'ok'      => false,
-                    'message' => 'Send-test failed: your admin account has no valid email address on file. '
-                               . 'Set one in Users -> your row -> Edit, then retry.',
-                ];
-            } elseif (!EmailService::isConfigured()) {
-                $testResult = [
-                    'ok'      => false,
-                    'message' => 'Send-test failed: provider is "' . $providerLabel . '". Pick a real provider and Save before testing.',
-                ];
-            } else {
-                $stamp    = gmdate('Y-m-d H:i:s') . ' UTC';
-                $bodyHtml = '<h1>iHymns email delivery test</h1>'
-                          . '<p>This is a delivery test from <strong>' . htmlspecialchars($providerLabel, ENT_QUOTES, 'UTF-8') . '</strong>'
-                          . ' at <strong>' . htmlspecialchars($stamp, ENT_QUOTES, 'UTF-8') . '</strong>.</p>'
-                          . '<p>If you received this, your email provider is correctly configured.</p>';
-                $bodyText = "iHymns email delivery test from {$providerLabel} at {$stamp}.\n\n"
-                          . "If you received this, your email provider is correctly configured.\n";
-                $sendResult = EmailService::send(
-                    $adminEmail,
-                    'iHymns email delivery test (' . $providerLabel . ')',
-                    $bodyHtml,
-                    $bodyText
-                );
-                if ($sendResult->ok) {
-                    $testResult = [
-                        'ok'      => true,
-                        'message' => 'Test email dispatched via ' . $sendResult->provider
-                                   . (($sendResult->providerMessageId ?? '') !== '' ? ' (Message-Id: ' . $sendResult->providerMessageId . ')' : '')
-                                   . '. Check ' . $adminEmail . ' to confirm delivery.',
-                    ];
-                } else {
-                    $testResult = [
-                        'ok'      => false,
-                        'message' => 'Test email FAILED via ' . $sendResult->provider
-                                   . ' (' . ($sendResult->errorClass ?? 'Error') . '): '
-                                   . (string)$sendResult->error
-                                   . '. See the Activity Log "email.send" row for the full record.',
-                    ];
-                }
-            }
+            $r = EmailService::deliveryTest(trim((string)($currentUser['email'] ?? '')));
+            $testResult = ['ok' => $r['ok'], 'message' => EmailService::deliveryTestMessage($r)];
         } elseif ($action === 'save_maintenance') {
             /* System maintenance mode (WS-K #1021). Toggles the public site
                into a 503 maintenance landing page; /manage stays reachable
@@ -1241,6 +1147,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (string)($_POST['respond
         'success' => $saveSuccess !== '' ? $saveSuccess : null,
         'error'   => $saveError   !== '' ? $saveError   : null,
         'warning' => $saveWarning !== '' ? $saveWarning : null,
+        /* #2004 — additive: null on every action except a save_webhooks that
+           just regenerated the drain key. The wizard's webhooks entry reads
+           this to show the show-once key (§ the driver's runSaveAndTest()) —
+           the key was minted by THIS save, so whether the admin ever sees it
+           must never depend on the SUBSEQUENT connection test's verdict. */
+        'drainKey' => $webhookNewDrainKey,
     ]);
     exit;
 }
@@ -2048,9 +1960,17 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-broadcast me-2"></i>Partner webhooks
             </h2>
-            <a href="/manage/webhooks" class="btn btn-sm btn-outline-light">
-                <i aria-hidden="true" class="bi bi-list-ul me-1"></i>Manage subscriptions
-            </a>
+            <span class="d-flex align-items-center gap-2">
+                <?php /* #2004 — "Connect a service" wizard launcher (see the IntAppsAPI
+                         card's own rationale comment near the top of this page). */ ?>
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+                        data-bs-target="#integrationConnectModal" data-integration="webhooks">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Set up with a guide
+                </button>
+                <a href="/manage/webhooks" class="btn btn-sm btn-outline-light">
+                    <i aria-hidden="true" class="bi bi-list-ul me-1"></i>Manage subscriptions
+                </a>
+            </span>
         </div>
         <div class="card-body">
             <p class="small text-secondary mb-3">
@@ -2307,8 +2227,19 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-apple me-2"></i>Apple native app
             </h2>
-            <span class="badge <?= $appleTeamId === '' ? 'bg-secondary' : 'bg-success' ?>">
-                <?= $appleTeamId === '' ? 'Team ID not set (AASA uses placeholder)' : 'Team ID set' ?>
+            <span class="d-flex align-items-center gap-2">
+                <?php /* #2004 — "Connect a service" wizard launcher (see the IntAppsAPI
+                         card's own rationale comment near the top of this page). The
+                         wizard's scope is Sign in with Apple (+ the Team ID it rides
+                         on) — NOT the separate APNs Auth Key section further down this
+                         card, which stays a classic-only field group. */ ?>
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+                        data-bs-target="#integrationConnectModal" data-integration="siwa">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Set up with a guide
+                </button>
+                <span class="badge <?= $appleTeamId === '' ? 'bg-secondary' : 'bg-success' ?>">
+                    <?= $appleTeamId === '' ? 'Team ID not set (AASA uses placeholder)' : 'Team ID set' ?>
+                </span>
             </span>
         </div>
         <div class="card-body">
@@ -2590,8 +2521,16 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-envelope-at me-2"></i>Email service
             </h2>
-            <span class="badge <?= $currentService === 'none' ? 'bg-secondary' : 'bg-success' ?>">
-                <?= $currentService === 'none' ? 'Not configured' : 'Configured: ' . htmlspecialchars($currentService, ENT_QUOTES, 'UTF-8') ?>
+            <span class="d-flex align-items-center gap-2">
+                <?php /* #2004 — "Connect a service" wizard launcher (see the IntAppsAPI
+                         card's own rationale comment near the top of this page). */ ?>
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+                        data-bs-target="#integrationConnectModal" data-integration="email">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Set up with a guide
+                </button>
+                <span class="badge <?= $currentService === 'none' ? 'bg-secondary' : 'bg-success' ?>">
+                    <?= $currentService === 'none' ? 'Not configured' : 'Configured: ' . htmlspecialchars($currentService, ENT_QUOTES, 'UTF-8') ?>
+                </span>
             </span>
         </div>
         <div class="card-body">

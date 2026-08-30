@@ -14,13 +14,29 @@
  *
  * DETAILED
  * --------
- * ONE GENERIC DRIVER, NOT THREE (rule #1 / plan §D2): this module never
+ * ONE GENERIC DRIVER, NOT SIX (rule #1 / plan §D2): this module never
  * hardcodes a field name, a setting key, or a status word for any ONE
  * integration. Everything it renders comes from the `registry` object
  * passed to `initIntegrationConnectWizard()` — the JSON projection built by
- * `includes/integration_registry.php::integrationClientProjection()`. Adding
- * a Phase-2 integration (plan §12: email/SIWA/webhooks) is new PHP registry
- * data plus a new launcher button; this file needs no change.
+ * `includes/integration_registry.php::integrationClientProjection()`.
+ *
+ * #2004 STALE-CLAIM CORRECTION (rule #26): this sentence used to claim
+ * "adding a Phase-2 integration is new PHP registry data plus a new
+ * launcher button; this file needs no change." That was Phase 1's
+ * optimistic sketch, and it was WRONG the moment email/SIWA/webhooks
+ * actually needed building — their field shapes (a plain `<select>`, a
+ * `<textarea>`, a single checkbox, a field whose visibility depends on
+ * ANOTHER field's value, a field that must be posted but never rendered)
+ * did not exist in Phase 1's driver at all. The corrected claim: adding a
+ * NEW integration whose fields are already expressible in the SIX generic
+ * field shapes this driver understands (`text` incl. `email`/`number` via
+ * `inputType`, `select`, `textarea`, `checkbox`, `checkbox-group`, plus the
+ * `secret`/`showWhen`/`carry` modifiers any of them can carry) is registry
+ * data only. A field shape THIS driver has never seen before is the one
+ * case that still needs a driver change — and even then, the change is a
+ * new GENERIC renderer branch keyed on `field.type`, never a per-integration
+ * `if (entry.key === '…')` special case (that is exactly what guard check
+ * (f)'s literal-ban scan exists to keep true).
  *
  * BUILT ON THE SHARED STEPPER `./admin-wizard.js` (`createWizard()`, #1992):
  * because that module derives its steps from whichever `[data-wiz-step]`
@@ -109,6 +125,12 @@ function isSecretField(field) {
 
 const CHANNEL_TOKENS = ['alpha', 'beta', 'production', 'all'];
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/* #2004 — mirrors save_apple's OWN server-side shape check
+   (`preg_match('/^[A-Z0-9]{10}$/', ...)` after an uppercase, applied to
+   apple_team_id / apple_siwa_key_id, manage/configuration.php) — client
+   convenience only; the server stays the authority, case-insensitive here
+   since save_apple itself uppercases before checking. */
+const TEN_CHAR_ID_RE = /^[A-Za-z0-9]{10}$/;
 
 /**
  * Build (or update) one field's status BADGE + PLACEHOLDER for a secret
@@ -128,6 +150,13 @@ function secretBadgeHtml(set) {
  * tests/php/test-integration-connect-wizard.php check (f) bans: a
  * hardcoded field-name literal here instead of iterating `entry.fields`).
  *
+ * #2004 (epic #2002) grew this from ONE generic text/password renderer to
+ * SIX generic shapes (`checkbox-group` unchanged, plus `select`/`textarea`/
+ * `checkbox`, and the `showWhen`/`carry` MODIFIERS any non-checkbox-group
+ * field can carry) — every branch below still keys off `field.type` /
+ * `field.secret`-inferred-via-`isSecretField()` / registry data, never an
+ * integration key or a post-name literal.
+ *
  * @param {object} entry  the registry entry (for `formMeta` on a checkbox-group)
  * @param {object} field  one projected field
  * @returns {HTMLElement}
@@ -136,6 +165,17 @@ function renderField(entry, field) {
     const id = 'icw-f-' + field.post;
     const wrap = document.createElement('div');
     wrap.className = 'mb-3';
+    /* Generic markers EVERY field wrapper carries, regardless of shape —
+       collectFields()/validateCredentialsFields() look a field's wrapper up
+       by `data-icw-field` to answer "is this currently showWhen-hidden?"
+       without caring what kind of control lives inside; applyShowWhen()
+       re-derives `hidden` from `data-icw-showwhen` (JSON-encoded conditions)
+       on every change. Neither attribute does anything by itself — a field
+       with no `showWhen` simply never gets hidden by this mechanism. */
+    wrap.dataset.icwField = field.post;
+    if (field.showWhen) {
+        wrap.dataset.icwShowwhen = JSON.stringify(field.showWhen);
+    }
 
     if (field.type === 'checkbox-group') {
         const legend = document.createElement('div');
@@ -179,6 +219,33 @@ function renderField(entry, field) {
         return wrap;
     }
 
+    if (field.type === 'checkbox') {
+        /* A SINGLE boolean tick (e.g. "allow loopback targets", "regenerate
+           the drain key now") — its OWN label/help live beside the checkbox
+           itself, unlike checkbox-group's per-option formMeta lookup. */
+        const check = document.createElement('div');
+        check.className = 'form-check';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'form-check-input';
+        cb.id = id;
+        cb.checked = !!field.checked;
+        const lab = document.createElement('label');
+        lab.className = 'form-check-label';
+        lab.htmlFor = id;
+        lab.textContent = field.label;
+        check.appendChild(cb);
+        check.appendChild(lab);
+        wrap.appendChild(check);
+        if (field.help) {
+            const help = document.createElement('div');
+            help.className = 'form-text small';
+            help.textContent = field.help;
+            wrap.appendChild(help);
+        }
+        return wrap;
+    }
+
     const label = document.createElement('label');
     label.className = 'form-label';
     label.htmlFor = id;
@@ -190,24 +257,72 @@ function renderField(entry, field) {
     }
     wrap.appendChild(label);
 
-    const input = document.createElement('input');
-    input.id = id;
-    input.className = 'form-control';
-    if (isSecretField(field)) {
-        input.type = 'password';
-        input.autocomplete = 'off';
-        input.placeholder = field.set ? '(unchanged — leave blank to keep)' : (field.placeholder || '');
+    const secret = isSecretField(field);
+    /* A `type:'select'` field that ISN'T secret draws a real <select> from
+       its own `options` map — the ONE select field Phase 1 had
+       (`captcha_provider`) is the PROVIDER field, rendered on its own
+       dedicated "Choose provider" pane instead (renderProviderSelect()), so
+       it never reaches this generic path; a non-provider select (e.g.
+       `email_smtp_secure`) does. (No registry field is ever BOTH
+       `type:'select'` AND `secret:true` — a secret always renders as the
+       password `<input>` branch below regardless of its declared `type`,
+       matching how a `type:'password'` model row is expressed in the
+       registry as `type:'text', secret:true` in the first place.) */
+    const useSelect = field.type === 'select' && !secret;
+    /* A `type:'textarea'` field (e.g. the .p8 keys, the Gmail service-account
+       JSON) always renders as a multi-line control, secret or not — only
+       whether it PREFILLS differs, mirroring every other secret field's
+       "never echo, always show the (unchanged — leave blank to keep)
+       placeholder" idiom. */
+    const useTextarea = field.type === 'textarea';
+
+    let input;
+    if (useSelect) {
+        input = document.createElement('select');
+        input.className = 'form-select';
+        const opts = field.options || {};
+        Object.keys(opts).forEach((val) => {
+            const opt = document.createElement('option');
+            opt.value = val;
+            opt.textContent = opts[val];
+            input.appendChild(opt);
+        });
+        /* Preselect the current value, falling back to the registry's own
+           default (plan §2.2) — and if NEITHER resolves to a real <option>
+           (an unrecognised stored value), fall through to whatever the
+           browser's own default selection is rather than forcing one. */
+        const want = field.value || field.default || '';
+        if (Object.prototype.hasOwnProperty.call(opts, want)) {
+            input.value = want;
+        }
+    } else if (useTextarea) {
+        input = document.createElement('textarea');
+        input.className = 'form-control font-monospace';
+        input.rows = 4;
+        input.spellcheck = false;
+        if (secret) {
+            input.autocomplete = 'off';
+            input.placeholder = field.set ? '(unchanged — leave blank to keep)' : (field.placeholder || '');
+        } else {
+            input.value = field.value || '';
+            if (field.placeholder) { input.placeholder = field.placeholder; }
+        }
     } else {
-        /* Every Phase-1 non-secret credential field is plain text — the ONE
-           select field (captcha_provider) is rendered on its own dedicated
-           "Choose provider" pane instead (see renderProviderSelect()), so
-           it never reaches this generic renderer. A future non-provider
-           select field would need this branch extended; nothing in Phase 1
-           exercises it. */
-        input.type = 'text';
-        input.value = field.value || '';
-        if (field.placeholder) { input.placeholder = field.placeholder; }
+        input = document.createElement('input');
+        input.className = 'form-control';
+        if (secret) {
+            input.type = 'password';
+            input.autocomplete = 'off';
+            input.placeholder = field.set ? '(unchanged — leave blank to keep)' : (field.placeholder || '');
+        } else {
+            /* `inputType` is a cosmetic passthrough ('email'/'number') —
+               falls back to plain 'text' when the registry doesn't set one. */
+            input.type = field.inputType || 'text';
+            input.value = field.value || '';
+            if (field.placeholder) { input.placeholder = field.placeholder; }
+        }
     }
+    input.id = id;
     wrap.appendChild(input);
 
     if (field.help) {
@@ -217,6 +332,77 @@ function renderField(entry, field) {
         wrap.appendChild(help);
     }
     return wrap;
+}
+
+/**
+ * Read field `post`'s CURRENT effective value for a `showWhen` condition.
+ *
+ * ELI5: "what does this OTHER field say right now?" — read straight off its
+ * live control when one exists in the DOM (hidden or not: a hidden
+ * `<select>`/`<input>` still holds whatever it was seeded with, so this
+ * naturally reproduces "a field with no selector at all defaults to the
+ * registry's `default`" WITHOUT a special hidden-vs-visible branch — see
+ * the note below). Falls back to the registry's own `default` only when the
+ * control genuinely isn't in the DOM.
+ *
+ * WHY NO EXPLICIT "is the wrapper hidden?" CHECK: every field this driver
+ * can render is built ONCE per wizard-open (buildPanes()) and stays in the
+ * DOM for the WHOLE open (only its wrapper's `hidden` attribute toggles) —
+ * so a conditionally-hidden control (e.g. `email_auth_method`, hidden
+ * whenever the chosen provider has no auth-method choice) is STILL seeded
+ * with `field.value || field.default` at render time (renderField()'s own
+ * `useSelect` branch) and keeps that value in the DOM whether its wrapper
+ * is shown or not. Reading `.value` directly already gives the exact answer
+ * "the registry's default, unless something else was explicitly chosen" —
+ * the same rule expressed either way, with less code and one fewer state to
+ * keep in sync.
+ *
+ * @param {object} entry
+ * @param {string} post
+ * @returns {string}
+ */
+function fieldEffectiveValue(entry, post) {
+    const input = document.getElementById('icw-f-' + post);
+    if (input) {
+        return input.type === 'checkbox' ? (input.checked ? '1' : '') : input.value;
+    }
+    const field = (entry.fields || []).find((f) => f.post === post);
+    return (field && field.default) || '';
+}
+
+/** Do EVERY condition in a field's `showWhen` list hold, given the CURRENT
+ *  form state? Conditions are ANDed (plan §2.3) — generic over any number
+ *  of conditions referencing any other field, never a per-integration
+ *  branch. */
+function showWhenConditionsMet(entry, showWhen) {
+    return (showWhen || []).every((cond) => {
+        const val = fieldEffectiveValue(entry, cond.field);
+        return Array.isArray(cond.in) && cond.in.includes(val);
+    });
+}
+
+/**
+ * Re-derive EVERY conditional field wrapper's visibility from the CURRENT
+ * form state — called once right after buildPanes() (so the credentials
+ * pane opens already correct) and again on every `change`/`input` inside
+ * the panes (the provider select included, since it lives in the SAME
+ * `panesEl` subtree — see openWizard()'s single delegated listener).
+ *
+ * Generic over ANY field's `showWhen` (registry data) — the one entry using
+ * this today (`email`) is not special-cased here in any way; a future
+ * integration's conditional field works by naming a `showWhen` in its OWN
+ * registry entry, nothing else.
+ */
+function applyShowWhen(entry, panesEl) {
+    panesEl.querySelectorAll('[data-icw-showwhen]').forEach((wrap) => {
+        let conditions = [];
+        try {
+            conditions = JSON.parse(wrap.dataset.icwShowwhen || '[]');
+        } catch (_e) {
+            conditions = [];
+        }
+        wrap.hidden = !showWhenConditionsMet(entry, conditions);
+    });
 }
 
 /** The dedicated provider <select> for the "Choose provider" pane — built
@@ -291,6 +477,16 @@ function renderNeedPane(entry, needListEl, portalEl) {
     }
 }
 
+/** Is field `post`'s wrapper CURRENTLY showWhen-hidden? A field with no
+ *  `data-icw-showwhen` wrapper at all (most fields; every Phase-1 field)
+ *  never matches this, so it's always treated as visible — this helper only
+ *  ever SKIPS something that opted into the mechanism via its OWN registry
+ *  `showWhen`. */
+function isFieldCurrentlyHidden(post) {
+    const wrap = document.querySelector('[data-icw-field="' + post + '"]');
+    return !!(wrap && wrap.hidden);
+}
+
 /** Every non-secret + secret field this integration's SAVE handler reads
  *  unconditionally, PLUS every ticked checkbox-group value — collected
  *  generically by iterating `entry.fields` (never a hardcoded field-name
@@ -298,13 +494,34 @@ function renderNeedPane(entry, needListEl, portalEl) {
  *  this). This is the carry-safety table from the plan (§8) made
  *  mechanical: every field the registry describes is always posted, so a
  *  classic handler's "unconditionally overwritten from $_POST" fields can
- *  never be silently wiped by an incomplete wizard POST. */
+ *  never be silently wiped by an incomplete wizard POST.
+ *
+ * #2004 additions, still fully generic over registry data: a showWhen-
+ * HIDDEN field is skipped entirely (mirrors the classic email card's own
+ * "disable inputs in a hidden group so the form doesn't submit stale
+ * values" convention — safe here because the ONE entry using `showWhen`
+ * today, `email`, has an `array_key_exists`-carry-safe save handler, so an
+ * omitted key is preserved, never zeroed); a `checkbox` field posts `'1'`
+ * ONLY when ticked (absent-when-unticked, matching every classic checkbox
+ * handler's `!empty()` read); a `carry` field posts its PROJECTED value
+ * directly — it is never rendered, so there is no DOM input to read. */
 function collectFields(entry) {
     const out = [];
     entry.fields.forEach((field) => {
+        if (isFieldCurrentlyHidden(field.post)) { return; }
+
         if (field.type === 'checkbox-group') {
             document.querySelectorAll('input[type=checkbox][data-icw-cbgroup="' + field.post + '"]:checked')
                 .forEach((cb) => { out.push([field.post + '[]', cb.value]); });
+            return;
+        }
+        if (field.type === 'checkbox') {
+            const cb = document.getElementById('icw-f-' + field.post);
+            if (cb && cb.checked) { out.push([field.post, '1']); }
+            return;
+        }
+        if (field.carry) {
+            out.push([field.post, field.value != null ? String(field.value) : '']);
             return;
         }
         const input = document.getElementById('icw-f-' + field.post);
@@ -316,10 +533,16 @@ function collectFields(entry) {
 /** Client-side MIRRORS of the cheap server-side validations (plan §7.2 item
  *  4) — convenience only; a mismatch here costs one extra round trip, never
  *  a security gap, because the server's own save handler (unchanged)
- *  remains the authority and its 422 routes straight back to this step. */
+ *  remains the authority and its 422 routes straight back to this step.
+ *  #2004: a showWhen-hidden field is never validated either (mirrors
+ *  collectFields()'s own skip — a hidden field's stale/blank value is never
+ *  posted, so validating it would only ever produce a confusing false
+ *  positive), and a `carry` field is skipped outright (it has no rendered
+ *  input to read a value FROM). */
 function validateCredentialsFields(entry) {
     for (const field of entry.fields) {
-        if (field.type === 'checkbox-group' || !field.validate) { continue; }
+        if (field.type === 'checkbox-group' || field.type === 'checkbox' || field.carry || !field.validate) { continue; }
+        if (isFieldCurrentlyHidden(field.post)) { continue; }
         const input = document.getElementById('icw-f-' + field.post);
         if (!input) { continue; }
         const val = input.value.trim();
@@ -336,6 +559,9 @@ function validateCredentialsFields(entry) {
             if (bad) {
                 return { ok: false, message: '"' + bad + '" is not a valid channel — use alpha, beta, production, or all.', focus: input };
             }
+        }
+        if (field.validate === 'ten_char_id' && !TEN_CHAR_ID_RE.test(val)) {
+            return { ok: false, message: field.label + ' must be exactly 10 letters/digits, or left blank.', focus: input };
         }
     }
     return true;
@@ -364,6 +590,23 @@ const STATUS_COPY = {
         misconfig: 'The provider answered and REJECTED the secret key — paste the correct secret key and try again.',
         down: 'Saved — but the provider is not reachable from this server right now. Gated forms fall back to the ordinary rate limits until it answers again; this is not a lockout.',
         unobservable: 'Saved — but this server has no way to check right now (no outbound HTTP client). Nothing was recorded.',
+    },
+    email: {
+        ok: 'A test email is on its way to your own admin address — check that inbox to confirm delivery.',
+        no_admin_email: 'Your admin account has no valid email address on file, so there was nowhere to send the test. Set one under Users, then retry.',
+        unconfigured: 'Saved — but no provider is selected yet, so email features stay off.',
+        send_failed: 'The provider refused the send. The full error is recorded in the Activity Log (the "email.send" row) — adjust the credentials and retry.',
+    },
+    siwa: {
+        ok: 'Credentials check out — the .p8 key, Key ID and Team ID fit together and can sign Apple sign-in requests. Apple itself is only contacted during a real sign-in.',
+        unconfigured: 'Saved — but the Team ID, Key ID and .p8 key are not all set yet, so there was nothing to check. Sign-in itself keeps working regardless.',
+        invalid_key: 'The saved key, Key ID and Team ID do not fit together — most often the wrong .p8 was pasted (the App Store Connect deploy key is a different key). Paste the Sign in with Apple .p8 and retry.',
+    },
+    webhooks: {
+        ok: 'Webhooks are switched on for this environment. Nothing is sent until a partner subscription exists — add one on the Webhooks page.',
+        ok_elsewhere: 'Saved and switched on for the ticked environments — note this environment itself is not one of them, so nothing sends from here.',
+        unconfigured: 'Saved — with no environment ticked, webhooks stay fully dormant. That is a valid choice, not an error.',
+        schema_missing: 'The webhook tables are not installed on this database yet — run the webhook set-up card on the Database Setup page, then retry.',
     },
 };
 
@@ -437,11 +680,14 @@ function buildPanes(entry, panesEl) {
     renderNeedPane(entry, needList, portalP);
 
     /* 4 — Credentials (every field EXCEPT the provider field, which lives
-       on its own pane above — see renderField()'s own note). */
+       on its own pane above — see renderField()'s own note — and EXCEPT any
+       `carry` field, §2.4: a value the save handler must receive back but
+       that has no business being shown as an editable box — see the SIWA
+       APNs-Key-ID carry field's own registry comment). */
     const credPane = pane('credentials', 'Paste your credentials');
     const fieldsWrap = document.createElement('div');
     entry.fields.forEach((field) => {
-        if (field.post === entry.providerField) { return; }
+        if (field.post === entry.providerField || field.carry) { return; }
         fieldsWrap.appendChild(renderField(entry, field));
     });
     credPane.appendChild(fieldsWrap);
@@ -455,6 +701,12 @@ function buildPanes(entry, panesEl) {
     statusEl.setAttribute('data-icw-test-status', '');
     testPane.appendChild(statusEl);
     refs.statusEl = statusEl;
+
+    /* #2004 — every conditional field's initial visibility, resolved ONCE
+       right after every field/select exists in the DOM (so the credentials
+       pane opens already correct rather than flashing then settling) —
+       re-applied again on every change (openWizard()'s delegated listener). */
+    applyShowWhen(entry, panesEl);
 
     return { stepNames, refs };
 }
@@ -513,11 +765,39 @@ function renderOkStatus(statusEl, message, warning) {
 }
 
 /**
- * Build the DONE pane's content — success line, the registry's own
- * `surfaces` list, and (CueRCode only) the live `/qr` proof image (owner
- * sub-decision O5, plan §14 — "the most honest confirmation possible").
+ * Render the show-once secret-key reveal block (#2004, §2.5 — today only
+ * the webhooks drain key, minted by `save_webhooks` on a "regenerate now"
+ * tick). The key was minted by the SAVE, not the TEST that follows it, so
+ * this is rendered — verbatim, from the SAME `oneTimeKey` value — into BOTH
+ * the Save & test status area (regardless of the test's own verdict) AND
+ * the DONE pane (renderDonePane() below), never decided by whether the
+ * connection test passed.
  */
-function renderDonePane(entry, doneBodyEl, warning) {
+function renderOneTimeKeyWarning(oneTimeKey) {
+    const wrap = document.createElement('div');
+    wrap.className = 'alert alert-warning mt-2 mb-0';
+    wrap.setAttribute('role', 'alert');
+    const strong = document.createElement('strong');
+    strong.textContent = 'New key — copy it now. It is shown only once.';
+    wrap.appendChild(strong);
+    const code = document.createElement('code');
+    code.className = 'user-select-all d-block mt-1';
+    code.textContent = oneTimeKey;
+    wrap.appendChild(code);
+    const p = document.createElement('p');
+    p.className = 'small mb-0 mt-1';
+    p.textContent = 'Use it as ?key=… on the webhook drain endpoint (the cron command is on the Partner webhooks card).';
+    wrap.appendChild(p);
+    return wrap;
+}
+
+/**
+ * Build the DONE pane's content — success line, the registry's own
+ * `surfaces` list, the show-once key reveal when one was minted (#2004),
+ * and (CueRCode only) the live `/qr` proof image (owner sub-decision O5,
+ * plan §14 — "the most honest confirmation possible").
+ */
+function renderDonePane(entry, doneBodyEl, warning, oneTimeKey) {
     doneBodyEl.innerHTML = '';
 
     const p = document.createElement('p');
@@ -533,6 +813,10 @@ function renderDonePane(entry, doneBodyEl, warning) {
         w.className = 'text-warning-emphasis small';
         w.textContent = warning;
         doneBodyEl.appendChild(w);
+    }
+
+    if (oneTimeKey) {
+        doneBodyEl.appendChild(renderOneTimeKeyWarning(oneTimeKey));
     }
 
     if (entry.surfaces && entry.surfaces.length > 0) {
@@ -630,24 +914,41 @@ function openWizard(entry, csrfToken, dom) {
                 return;
             }
             const saveWarning = saveResult.data.warning || null;
+            /* #2004 §2.5 — the show-once drain key, captured from the SAVE
+               response, NEVER the test response that follows: the key was
+               already minted and persisted the instant the save succeeded,
+               so whether the admin ever sees it must not depend on the
+               connection test's verdict. Rendered into the status area
+               below REGARDLESS of that verdict, and again on the done pane. */
+            const oneTimeKey = (saveResult.data && typeof saveResult.data.drainKey === 'string' && saveResult.data.drainKey !== '')
+                ? saveResult.data.drainKey
+                : null;
+            function revealOneTimeKeyIfAny() {
+                if (oneTimeKey) { refs.statusEl.appendChild(renderOneTimeKeyWarning(oneTimeKey)); }
+            }
+
             return postForm('integration_test', csrfToken, [['integration', entry.key]]).then((testResult) => {
                 inFlight = false;
                 setBusy(false);
                 if (testResult.status === 403) {
                     renderFailureStatus(refs.statusEl, 'Session expired — refresh the page and try again.', () => {});
+                    revealOneTimeKeyIfAny();
                     return;
                 }
                 if (!testResult.data || typeof testResult.data.status !== 'string') {
                     renderFailureStatus(refs.statusEl, 'Saved, but the connection test could not run. You can try again, or close this and check the card\'s own status.', () => {});
+                    revealOneTimeKeyIfAny();
                     return;
                 }
                 const status = testResult.data.status;
                 const message = statusCopy(entry.key, status);
                 if (testResult.data.ok === true) {
                     renderOkStatus(refs.statusEl, message, saveWarning);
-                    showDone(entry, saveWarning);
+                    revealOneTimeKeyIfAny();
+                    showDone(entry, saveWarning, oneTimeKey);
                 } else {
                     renderFailureStatus(refs.statusEl, message, () => showStepAlertAndGo(credIndex, message));
+                    revealOneTimeKeyIfAny();
                 }
             });
         }).catch(() => {
@@ -657,8 +958,8 @@ function openWizard(entry, csrfToken, dom) {
         });
     }
 
-    function showDone(entryArg, warning) {
-        renderDonePane(entryArg, dom.doneBodyEl, warning);
+    function showDone(entryArg, warning, oneTimeKey) {
+        renderDonePane(entryArg, dom.doneBodyEl, warning, oneTimeKey);
         dom.stepsWrapEl.hidden = true;
         dom.doneEl.hidden = false;
         if (dom.backBtn) { dom.backBtn.hidden = true; }
@@ -737,6 +1038,20 @@ export function initIntegrationConnectWizard({ modalEl, registry, csrfToken }) {
     if (!dom.modalContentEl || !dom.panesEl) { return; }
 
     let currentWizard = null;
+    let currentEntry = null;
+
+    /* #2004 §2.3 — showWhen re-evaluation on every change/input, delegated
+       ONCE on the persistent `panesEl` node (not re-attached per modal
+       open — buildPanes() clears and rebuilds panesEl's CHILDREN on every
+       open, but panesEl itself is the SAME long-lived element across
+       repeated opens of this ONE shared modal, so a listener added inside
+       openWizard()/buildPanes() would stack a fresh copy on every re-open).
+       Covers the credentials pane's own inputs AND the separate "Choose
+       provider" pane's <select> — both are descendants of the SAME
+       panesEl, so one delegated listener reaches both. No-ops harmlessly
+       when no wizard is currently open (currentEntry null). */
+    dom.panesEl.addEventListener('change', () => { if (currentEntry) { applyShowWhen(currentEntry, dom.panesEl); } });
+    dom.panesEl.addEventListener('input', () => { if (currentEntry) { applyShowWhen(currentEntry, dom.panesEl); } });
 
     modalEl.addEventListener('show.bs.modal', (e) => {
         const trigger = e.relatedTarget;
@@ -750,6 +1065,7 @@ export function initIntegrationConnectWizard({ modalEl, registry, csrfToken }) {
             console.error('integration-connect-wizard: unknown integration key', key);
             return;
         }
+        currentEntry = entry;
         currentWizard = openWizard(entry, csrfToken, dom);
     });
 
@@ -759,6 +1075,7 @@ export function initIntegrationConnectWizard({ modalEl, registry, csrfToken }) {
            instance's own nav-button listeners) so a stale wizard can never
            double-handle the next open()'s events. */
         if (currentWizard) { currentWizard.destroy(); currentWizard = null; }
+        currentEntry = null;
         dom.panesEl.innerHTML = '';
         if (dom.doneBodyEl) { dom.doneBodyEl.innerHTML = ''; }
         if (dom.stepsWrapEl) { dom.stepsWrapEl.hidden = false; }

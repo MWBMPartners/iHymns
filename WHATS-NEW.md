@@ -27,6 +27,15 @@ with none of the behind-the-scenes technical detail.
   a built-in "test the connection" check before you're done, so you know
   straight away whether it's actually working. The full settings screen is
   still there if you'd rather set it up yourself.
+- **The guided set-up helper now also covers email, Apple sign-in and
+  webhooks** — the same step-by-step "what you'll need, where to paste it,
+  test the connection" guide above now also walks admins through setting up
+  the app's email service, Sign in with Apple, and outbound webhooks for
+  partner systems. Each one finishes with a real check — a genuine test
+  email, a check that the saved Apple sign-in key is valid, or a look at
+  whether webhook delivery is switched on — so you know straight away
+  whether it's actually working, without needing to hunt through a long
+  settings form.
 - **A guided walkthrough for getting a brand-new install running** — Setting
   up iHymns for the first time is now a short, friendly, step-by-step guide
   instead of one long checklist: connect the database, bring it up to date,
