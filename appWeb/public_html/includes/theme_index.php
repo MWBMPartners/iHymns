@@ -131,8 +131,16 @@ function themeIndexCounts(\mysqli $db, ?int $limit = null, string $order = 'name
     $visible  = songVisibleSql($db, 's');
     $servable = songServableSql($db, 's');
 
+    /* lastTouched (sitemap hardening, 2026-08-30) — ADDITIVE: the most recent
+       UpdatedAt among this theme's own VISIBLE songs (same join, same
+       predicates already in this query — the aggregate is free). Nothing
+       about the existing count changes; this is one more SELECT column and
+       one more key on the returned rows. Its ONE consumer today is
+       sitemap.xml.php's themes section (a theme page's content changes
+       exactly when the songs carrying it do); the /themes index and the home
+       "Popular themes" chips simply ignore the extra key. */
     $sql = "SELECT t.Id AS id, t.Name AS name, t.Slug AS slug, t.Description AS description{$selectHier},
-                   COUNT(m.TagId) AS useCount
+                   COUNT(m.TagId) AS useCount, MAX(s.UpdatedAt) AS lastTouched
               FROM tblSongTags t
               JOIN tblSongTagMap m ON m.TagId = t.Id
               JOIN tblSongs s      ON s.SongId = m.SongId{$joinHier}
@@ -160,6 +168,10 @@ function themeIndexCounts(\mysqli $db, ?int $limit = null, string $order = 'name
     foreach ($rows as &$r) {
         $r['id']       = (int)$r['id'];
         $r['useCount'] = (int)$r['useCount'];
+        /* lastTouched stays a raw string (or null) — callers that want a
+           date-only <lastmod> shape run it through sitemapLastmod(); this
+           core doesn't know it's feeding a sitemap. */
+        $r['lastTouched'] = isset($r['lastTouched']) && $r['lastTouched'] !== null ? (string)$r['lastTouched'] : null;
         /* Normalise the hierarchy pair to explicit nulls whether the columns
            were selected (hier present, but a top-level tag has NULL ParentId)
            or not selected at all (pre-#1152) — callers always see both keys. */
@@ -230,4 +242,47 @@ function themeIndexOne(\mysqli $db, string $slug): ?array
         'description' => $tag['Description'] !== null ? (string)$tag['Description'] : null,
         'useCount'    => (int)($crow['c'] ?? 0),
     ];
+}
+
+/**
+ * A raw, table-wide "has tag MEMBERSHIP changed at all?" signal — NOT a
+ * per-tag usage count (never shown to a user; sits alongside
+ * `themeIndexCounts()`/`themeIndexOne()`, not a rival to them).
+ *
+ * ELI5: `tblSongTagMap` has no `UpdatedAt` column at all, so there is no
+ * date to ask "did anything change?" — but a plain row COUNT still answers
+ * it: a tag being added to or removed from a song moves this number even
+ * though nothing else about the song necessarily did. Its ONE consumer is
+ * `sitemap.xml.php`'s conditional-GET fingerprint (a themes/tag page's
+ * content changes when tag membership does, not only when a song's own
+ * `UpdatedAt` moves).
+ *
+ * WHY THIS LIVES HERE, NOT AS A SECOND `COUNT(...) FROM tblSongTagMap` IN
+ * THE SITEMAP FILE: `tests/php/test-theme-index.php` bans any second public
+ * surface from holding its own tag-count query — this file is the ONE core
+ * (rule #22) — so a NEW theme-adjacent count gets a new function HERE, not a
+ * bespoke query wherever it's needed.
+ *
+ * Deliberately UNFILTERED (no `songVisibleSql`/`songServableSql` — a
+ * change-detection signal must count a hidden row's tag being touched too,
+ * the same "over-invalidation is the safe direction" argument
+ * `songs_index_etag.php`'s own version-signal query makes) and
+ * schema-tolerant (0 on a pre-#1152 install or any transient failure,
+ * never a throw).
+ *
+ * @param \mysqli $db
+ * @return int Total row count in tblSongTagMap, or 0 when unavailable.
+ */
+function themeIndexMembershipCount(\mysqli $db): int
+{
+    if (!themeIndexReady($db)) {
+        return 0;
+    }
+    try {
+        $res = $db->query('SELECT COUNT(*) AS c FROM tblSongTagMap');
+        $row = ($res instanceof \mysqli_result) ? $res->fetch_assoc() : null;
+        return (int)($row['c'] ?? 0);
+    } catch (\Throwable $e) {
+        return 0;
+    }
 }
