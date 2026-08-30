@@ -5,6 +5,20 @@ declare(strict_types=1);
 /**
  * iHymns — Places registry helper
  *
+ * ELI5
+ * ----
+ * When an admin types a birthplace into a form (say, "Bristol" for a
+ * musician's date-of-birth panel), a location-search box offers real
+ * places from OpenStreetMap to pick from — not a free-text box (see rule
+ * #43: a free-text field that should point at a registry row mints
+ * duplicates and typo variants). This file is what happens the moment
+ * someone PICKS one of those suggestions: it takes the raw geocoder
+ * result, cleans it up into iHymns' own shape, and either re-uses an
+ * existing `tblPlaces` row for that same real-world place or creates one
+ * — so "Bristol, England" picked twice by two different curators becomes
+ * ONE row both records point at, not two near-identical rows that will
+ * never realise they mean the same city.
+ *
  * Single source of truth for upserting + reading rows from
  * `tblPlaces`. Every admin form that wires the live-location
  * autocomplete (Credit People birth / death place today,
@@ -15,6 +29,9 @@ declare(strict_types=1);
  * Schema-tolerant — every function below returns NULL / empty
  * gracefully on installs that haven't run migrate-places.php
  * yet, so a partly-migrated database doesn't 500.
+ *
+ * @see appWeb/public_html/manage/places-api.php   the API proxy that calls placesUpsertFromPayload()
+ * @link https://nominatim.org/release-docs/latest/api/Output/   Nominatim's address field shapes, mirrored by _placesCollapseCity()
  */
 
 if (!function_exists('getDbMysqli')) {
@@ -117,6 +134,11 @@ function _placesCollapseCity(array $address): ?string
  * client-supplied parts so a stale / tampered POST can't poison
  * the registry.
  *
+ * ELI5: two different map-search services (Photon and Nominatim) send
+ * back their results shaped slightly differently — this is the ONE place
+ * that turns either shape into iHymns' own column names, so the rest of
+ * the app never has to know or care which service answered the search.
+ *
  * Returns NULL when the payload is too sparse to be useful (no
  * display name).
  *
@@ -209,6 +231,12 @@ function placesNormaliseCandidate(array $candidate): ?array
  * existing row when the (Provider, OsmType, OsmId) triple matches —
  * that's what makes two curators picking the same OSM place land
  * on the same registry row.
+ *
+ * ELI5: "save this picked place, or tell me it's already saved" — the
+ * find-or-create step rule #43 asks every registry-backed picker to do.
+ * `(Provider, OsmType, OsmId)` is the natural key: OpenStreetMap's own
+ * id for that exact node/way/relation, so the SAME real-world place
+ * always maps to the SAME `tblPlaces` row no matter who picks it or when.
  *
  * Returns NULL when tblPlaces hasn't been migrated yet, when the
  * payload doesn't normalise (missing display name), or on a DB
