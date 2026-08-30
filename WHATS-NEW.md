@@ -12,6 +12,19 @@ with none of the behind-the-scenes technical detail.
 
 ## 1.4.0 — 30 August 2026
 
+- **Clearer colours and better keyboard/screen-reader support** — A pass
+  through the whole app to make it easier to use for people with low
+  vision or who rely on a keyboard or screen reader. Some admin buttons
+  and status badges now use easier-to-read colours; several pop-up panels
+  (the keyboard-shortcuts guide, presentation mode, song comparison, and
+  the quick song-number picker) now properly keep your keyboard focus
+  inside them and hand it back to where you were once you close them;
+  browser tabs and page titles for songs, songbooks, themes, people,
+  publishers, tunes and works now show the actual name instead of a
+  generic label; the "Emphasise Links" accessibility option now adds an
+  underline as well as colour, so links stand out clearly for everyone
+  who turns it on; and dozens of smaller wording and labelling gaps were
+  filled in across the admin area and the classic song editor.
 - **Choose which sites appear in search engines** — Admins can now control
   whether each copy of iHymns — the live site, the beta preview, and the
   dev site — shows up in search engines like Google. The live site is
