@@ -1149,6 +1149,50 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_pd_publication_threshold] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_search_visibility') {
+            /* Per-channel search-engine visibility (#2024/#2025). ONE setting:
+               the ticked subset of {alpha,beta,production} that search
+               engines may list, stored as CSV (the webhooks_enabled_channels /
+               intappsapi_enabled_channels precedent — rule #20's "growable
+               vocabulary as CSV, never ENUM" applied to a channel allow-list).
+               Unlike those two dormancy gates, an EMPTY tick-set here is a
+               real, meaningful state ("hide every channel"), so it is stored
+               as the literal 'none' rather than '' — setAppSetting()'s own
+               convention reads '' as "unset", and 'none' is self-describing
+               (see includes/search_visibility.php's doc-block for the full
+               reasoning). Requires search_visibility.php for the setting-key
+               constant (rule #35 — never retype the key literal). */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+            try {
+                $postedChans = (array)($_POST['search_visibility_channels'] ?? []);
+                $validChans  = ['alpha', 'beta', 'production'];
+                $chansOut    = [];
+                foreach ($postedChans as $c) {
+                    $c = trim((string)$c);
+                    if (in_array($c, $validChans, true) && !in_array($c, $chansOut, true)) {
+                        $chansOut[] = $c;
+                    }
+                }
+                $csv = $chansOut === [] ? 'none' : implode(',', $chansOut);
+                $saveSetting($db, SEARCH_VISIBILITY_SETTING_KEY, $csv);
+                if (function_exists('logActivity')) {
+                    logActivity('app_setting.update', 'app_setting', SEARCH_VISIBILITY_SETTING_KEY,
+                        ['channels' => $csv], 'success');
+                }
+                /* Plain-language confirmation naming what's now listed/hidden —
+                   and a reminder that search engines take time to react, so an
+                   admin doesn't expect an instant change in search results. */
+                $friendlyChanName = static fn(string $c): string => $c === 'alpha' ? 'Alpha (dev)' : ucfirst($c);
+                $listedNames = array_map($friendlyChanName, $chansOut);
+                $hiddenNames = array_map($friendlyChanName, array_diff($validChans, $chansOut));
+                $saveSuccess = 'Saved. Listed in search engines: '
+                    . ($listedNames === [] ? 'none' : implode(', ', $listedNames))
+                    . '. Hidden: ' . ($hiddenNames === [] ? 'none' : implode(', ', $hiddenNames))
+                    . '. Changes reach search results gradually as pages are re-crawled.';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_search_visibility] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -1198,6 +1242,17 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (string)($_POST['respond
 $currentSettings    = $loadSettings($db, array_keys($EMAIL_SETTINGS));
 $currentService     = $currentSettings['email_service'] ?? 'none';
 $envCurrent          = ihymns_environment();   // #1233 — per-env maintenance keys
+
+/* Search-engine visibility (#2024/#2025) — read through the SAME constant
+   + parse the runtime itself uses (require_once is idempotent; this page
+   may not have loaded search_visibility.php yet if no save action ran),
+   so this card can never disagree with actual behaviour — the same
+   no-drift discipline maintenanceRefreshSeconds() follows just above. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+$searchVisChannels = ihymns_parse_channels_csv(
+    (string)(getAppSetting(SEARCH_VISIBILITY_SETTING_KEY, SEARCH_VISIBILITY_DEFAULT_CSV) ?? SEARCH_VISIBILITY_DEFAULT_CSV)
+);
+
 $maintenanceSettings = $loadSettings($db, [
     'maintenance_mode_' . $envCurrent,
     'maintenance_message_' . $envCurrent,
@@ -1486,6 +1541,73 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <button type="submit" class="btn btn-primary">
                     <i aria-hidden="true" class="bi bi-save me-1"></i>Save maintenance settings
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         SEARCH ENGINE VISIBILITY SECTION (#2024/#2025)
+         =========================== -->
+    <div class="card bg-body-tertiary border-secondary mb-4" id="search-visibility">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i aria-hidden="true" class="bi bi-search me-2"></i>Search engine visibility
+            </h2>
+            <span class="badge <?= in_array('production', $searchVisChannels, true) ? 'bg-success' : 'bg-warning text-dark' ?>">
+                <?= in_array('production', $searchVisChannels, true) ? 'Production listed' : 'Production hidden' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-2">
+                Controls whether each of the three iHymns sites &mdash; the live site, the beta
+                preview, and the dev site &mdash; is listed by search engines like Google.
+            </p>
+            <p class="small text-secondary mb-3">
+                Switching a site off tells search engines not to list any of its pages (every page
+                carries a &ldquo;do not index&rdquo; signal), takes away its sitemap, and stops
+                <code>robots.txt</code> advertising it. The site keeps working normally for
+                everyone &mdash; this only changes whether it shows up in search results, and
+                pages disappear from those results gradually as search engines revisit them
+                (days to weeks, not instantly).
+            </p>
+            <p class="small mb-3">
+                <i aria-hidden="true" class="bi bi-geo-alt me-1"></i>
+                You are viewing this admin page on: <strong class="text-uppercase"><?= htmlspecialchars($envCurrent, ENT_QUOTES, 'UTF-8') ?></strong>
+            </p>
+            <p class="small text-secondary mb-3">
+                <i aria-hidden="true" class="bi bi-hdd-network me-1"></i><strong>All three at once, from anywhere.</strong>
+                Unlike System maintenance above (which only manages the environment you're currently
+                signed in to), this card edits the ONE shared setting behind all three sites &mdash;
+                because beta and dev may not always have an admin signed in on them, seeing all
+                three together IS the control.
+            </p>
+            <form method="post">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_search_visibility">
+                <div class="mb-2">
+                    <label class="form-label mb-1" id="search-vis-channels-label">Listed in search engines</label>
+                    <div class="d-flex flex-column gap-2" role="group" aria-labelledby="search-vis-channels-label">
+                        <?php foreach (['production' => 'Production (ihymns.app)', 'beta' => 'Beta (beta.ihymns.app)', 'alpha' => 'Alpha &mdash; dev (dev.ihymns.app)'] as $chOpt => $chLabel): ?>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" name="search_visibility_channels[]"
+                                       value="<?= $chOpt ?>" id="sv_ch_<?= $chOpt ?>"<?= in_array($chOpt, $searchVisChannels, true) ? ' checked' : '' ?>>
+                                <label class="form-check-label" for="sv_ch_<?= $chOpt ?>">
+                                    <?= $chLabel /* fixed, safe strings from the loop above — no user input */ ?>
+                                    <?php if ($chOpt === $envCurrent): ?><span class="badge bg-info text-dark ms-1">this site</span><?php endif; ?>
+                                </label>
+                                <?php if ($chOpt === 'production'): ?>
+                                    <div class="form-text text-warning-emphasis">
+                                        <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>Turning Production off removes
+                                        the live site from search results over the following weeks &mdash; only do this deliberately.
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save search engine visibility
                 </button>
             </form>
         </div>

@@ -611,6 +611,11 @@ $MAPPING = [
         'save_maintenance'                 => 'web_only:configuration-secrets',
         'save_native_apps'                 => 'web_only:configuration-secrets',
         'save_pd_publication_threshold'    => 'web_only:configuration-secrets',
+        /* #2024/#2025 — a rare, deliberate, whole-installation SEO switch;
+           native apps have no admin-configuration surface and no
+           conceivable use for it (same class as every other action in
+           this file — see this array's own doc-block just above). */
+        'save_search_visibility'           => 'web_only:configuration-secrets',
         'save_webhooks'                    => 'web_only:configuration-secrets',
         'test_email'                       => 'web_only:configuration-secrets',
     ],
