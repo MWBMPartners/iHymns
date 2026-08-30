@@ -1052,27 +1052,40 @@ declare(strict_types=1);
                 <dt class="col-sm-4">Application</dt>
                 <dd class="col-sm-8"><?= htmlspecialchars($app["Application"]["Name"]) ?></dd>
 
+                <?php /* Version / Build / Channel / Commit / Date — the owner display
+                        contract's five labelled About rows (the versioning-scheme
+                        split + deliberate patch releases; see rule #46 in
+                        .claude/CLAUDE.md for the full contract). Version is now the
+                        bare marketing MAJOR.MINOR.PATCH — the channel badge that used
+                        to sit on this row moved to its own dedicated Channel row below
+                        so each row answers exactly one question. */ ?>
                 <dt class="col-sm-4">Version</dt>
+                <dd class="col-sm-8"><?= htmlspecialchars($app["Application"]["Version"]["Number"]) ?></dd>
+
+                <?php /* The per-commit build number, fully separate from the marketing
+                        Version above — it is NOT encoded in the version string any more
+                        (rule #35: two different views, read straight from Build.Number
+                        rather than re-parsed out of the version). NULL-guarded so it
+                        renders nothing on an un-injected checkout (local dev). */ ?>
+                <?php if (!empty($app["Application"]["Version"]["Build"]["Number"])): ?>
+                    <dt class="col-sm-4">Build</dt>
+                    <dd class="col-sm-8"><?= htmlspecialchars((string)$app["Application"]["Version"]["Build"]["Number"]) ?></dd>
+                <?php endif; ?>
+
+                <?php /* Channel — which deploy environment this copy is running on.
+                        "Production" is not a Development.Status VALUE (that field is
+                        NULL there, see infoAppVer.php) — it's what this row says on
+                        NULL, mirroring the admin footer's identical fallback. */ ?>
+                <dt class="col-sm-4">Channel</dt>
                 <dd class="col-sm-8">
-                    <?= htmlspecialchars($app["Application"]["Version"]["Number"]) ?>
                     <?php if ($app["Application"]["Version"]["Development"]["Status"]): ?>
                         <span class="badge bg-warning text-dark">
                             <?= htmlspecialchars($app["Application"]["Version"]["Development"]["Status"]) ?>
                         </span>
+                    <?php else: ?>
+                        Production
                     <?php endif; ?>
                 </dd>
-
-                <?php /* #1963 — the raw per-commit build number, shown independently of
-                        Version.Number's tag-derived MAJOR.RELEASE.BUILD (rule #35: two
-                        different views of the same value, so this reads it straight from
-                        Build.Number rather than re-parsing the version string). Guarded so
-                        it renders nothing on an un-injected checkout (local dev) — where
-                        Build.Number is still NULL — same degrade-gracefully shape as the
-                        Repo.Commit.SHA-derived "Build" row further down this list. */ ?>
-                <?php if (!empty($app["Application"]["Version"]["Build"]["Number"])): ?>
-                    <dt class="col-sm-4">Build</dt>
-                    <dd class="col-sm-8">#<?= htmlspecialchars((string)$app["Application"]["Version"]["Build"]["Number"]) ?></dd>
-                <?php endif; ?>
 
                 <dt class="col-sm-4">Developer</dt>
                 <dd class="col-sm-8"><?= htmlspecialchars($app["Application"]["Vendor"]["Name"]) ?></dd>
@@ -1101,6 +1114,24 @@ declare(strict_types=1);
                             <?= htmlspecialchars($app["Application"]["Version"]["Repo"]["Commit"]["SHA"]["Short"]) ?>
                         <?php endif; ?>
                     </dd>
+                <?php endif; ?>
+
+                <?php
+                    /* Date — the deploy commit timestamp, relocated here from the public
+                       footer (where it used to show as a raw 14-digit blob) and rendered
+                       human-formatted. deploy.yml injects Repo.Commit.Date as
+                       "Y-m-d H:i:s" (step "Inject build info into infoAppVer.php"); parse
+                       that EXACT shape and fall back to the raw string if it ever changes
+                       (degrade, never blank). NULL-guarded like Commit above — both read
+                       the same deploy-injected field, so both go missing together on an
+                       un-injected local checkout. */
+                    $_aboutCommitDate = $app["Application"]["Version"]["Repo"]["Commit"]["Date"] ?? null;
+                    if ($_aboutCommitDate !== null):
+                        $_aboutDt = \DateTime::createFromFormat('Y-m-d H:i:s', (string)$_aboutCommitDate);
+                        $_aboutDateDisplay = $_aboutDt ? $_aboutDt->format('j M Y, H:i') : (string)$_aboutCommitDate;
+                ?>
+                    <dt class="col-sm-4">Date</dt>
+                    <dd class="col-sm-8"><?= htmlspecialchars($_aboutDateDisplay) ?></dd>
                 <?php endif; ?>
             </dl>
         </div>

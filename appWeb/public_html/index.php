@@ -165,19 +165,36 @@ $iosApp     = verifyAppStoreApp('ios', $nativeAppIosVal);
 $androidApp = verifyAppStoreApp('android', $nativeAppAndroidVal);
 $amazonApp  = verifyAppStoreApp('amazon', $nativeAppAmazonVal);
 
-/** Build a display version string (e.g., "0.1.5 Beta") */
-$versionDisplay = $app["Application"]["Version"]["Number"];
+/** Build the display version string per the owner display contract:
+ *  "iHymns v<MAJOR.MINOR.PATCH> · build <commit-count>[ · Alpha|Beta]".
+ *  The build number is ALWAYS labelled with the word "build" (never a bare
+ *  .z / +z suffix); the channel suffix appears only off-production; the old
+ *  raw 14-digit commit-date stamp is gone from the footer (it lives on,
+ *  formatted, as Settings → About's "Date" row — see includes/pages/
+ *  settings.php). Degrades gracefully on an un-injected local checkout
+ *  (Build.Number NULL → no build segment).
+ *  @see .claude/CLAUDE.md rule #46 (the full versioning contract) */
+$versionDisplay = 'iHymns v' . $app["Application"]["Version"]["Number"];
+if (!empty($app["Application"]["Version"]["Build"]["Number"])) {
+    $versionDisplay .= ' · build ' . $app["Application"]["Version"]["Build"]["Number"];
+}
 if ($app["Application"]["Version"]["Development"]["Status"] !== null) {
-    $versionDisplay .= ' ' . $app["Application"]["Version"]["Development"]["Status"];
+    $versionDisplay .= ' · ' . $app["Application"]["Version"]["Development"]["Status"];
 }
 
-/** On alpha: append build timestamp (yyyymmddhhmmss) for tracking deploys */
-$commitDate = $app["Application"]["Version"]["Repo"]["Commit"]["Date"] ?? null;
-if ($app["Application"]["Version"]["Development"]["Status"] === 'Alpha' && $commitDate !== null) {
-    $buildStamp = preg_replace('/[^0-9]/', '', $commitDate);
-    if (strlen($buildStamp) >= 12) {
-        $versionDisplay .= ' · ' . substr($buildStamp, 0, 14);
-    }
+/** Per-deploy asset cache-buster: the marketing version above no longer
+ *  changes on every deploy (only on a real feat/major/patch release), so
+ *  the CSS `?v=` busters below (and the app.js bundle) fold in the
+ *  injected build number (monotonic per commit — strictly fresher than the
+ *  old commit-date stamp, and one shared mechanism instead of two) so
+ *  every deploy still produces a fresh URL and .htaccess' max-age can
+ *  never serve stale CSS/JS after a build-only deploy. Bare version on an
+ *  un-injected local checkout — exactly the pre-split local behaviour.
+ *  URL-only, not a display string, so the "always label with the word
+ *  build" rule above does not apply here. */
+$assetVersion = $app["Application"]["Version"]["Number"];
+if (!empty($app["Application"]["Version"]["Build"]["Number"])) {
+    $assetVersion .= '-' . $app["Application"]["Version"]["Build"]["Number"];
 }
 
 /**
@@ -1045,13 +1062,13 @@ if (!empty($breadcrumbItems)) {
           id="animatecss">
 
     <!-- iHymns Application Stylesheet -->
-    <link rel="stylesheet" href="/css/app.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>">
+    <link rel="stylesheet" href="/css/app.css?v=<?= urlencode($assetVersion) ?>">
 
     <!-- Accessibility Stylesheet (high contrast, colour blind modes, RTL) -->
-    <link rel="stylesheet" href="/css/accessibility.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>">
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= urlencode($assetVersion) ?>">
 
     <!-- Print Stylesheet -->
-    <link rel="stylesheet" href="/css/print.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>" media="print">
+    <link rel="stylesheet" href="/css/print.css?v=<?= urlencode($assetVersion) ?>" media="print">
 
     <!-- ================================================================
          #1832 — CSP-SAFE CDN → /vendor STYLESHEET FALLBACK
@@ -1668,7 +1685,7 @@ if (!empty($breadcrumbItems)) {
                        it doubles as the What's New affordance instead of
                        adding a separate footer link. */
                 ?>
-                <a href="/whats-new" data-navigate="whats-new" class="footer-link" aria-label="What's new — v<?= htmlspecialchars($versionDisplay) ?>">v<?= htmlspecialchars($versionDisplay) ?></a>
+                <a href="/whats-new" data-navigate="whats-new" class="footer-link" aria-label="What's new — <?= htmlspecialchars($versionDisplay) ?>"><?= htmlspecialchars($versionDisplay) ?></a>
                 &nbsp;|&nbsp;
                 <a href="/terms" data-navigate="terms" class="footer-link">Terms</a>
                 &nbsp;|&nbsp;
@@ -2072,18 +2089,13 @@ if (!empty($breadcrumbItems)) {
 
     <!-- iHymns Application Scripts (ES Modules)
 
-         Cache-buster combines the semver with the deploy-time commit-date
-         stamp (injected by the GH Actions pipeline into infoAppVer.php)
-         so every deploy produces a new URL even when the semver hasn't
-         bumped. Without the commit stamp, .htaccess' max-age=3600 holds
-         onto user-auth.js and peers for up to an hour after a deploy. -->
-    <?php
-        $_appJsStamp = preg_replace('/[^0-9]/', '',
-            (string)($app['Application']['Version']['Repo']['Commit']['Date'] ?? ''));
-        $_appJsVersion = $app['Application']['Version']['Number']
-            . ($_appJsStamp !== '' ? '-' . $_appJsStamp : '');
-    ?>
-    <script src="/js/app.js?v=<?= urlencode($_appJsVersion) ?>" type="module"></script>
+         Cache-buster reuses $assetVersion (marketing version + the
+         deploy-injected build number, defined above) so every deploy
+         produces a new URL even when the marketing version hasn't bumped —
+         one shared mechanism instead of a second commit-date-stamp copy.
+         Without it, .htaccess' max-age=3600 holds onto user-auth.js and
+         peers for up to an hour after a build-only deploy. -->
+    <script src="/js/app.js?v=<?= urlencode($assetVersion) ?>" type="module"></script>
 
     <!-- Colour Vision Deficiency (CVD) SVG correction filters (#319) -->
     <?php readfile(__DIR__ . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'cvd-filters.svg'); ?>

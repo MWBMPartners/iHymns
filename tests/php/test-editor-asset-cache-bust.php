@@ -59,8 +59,9 @@ declare(strict_types=1);
  *   4. A LOCAL tag's URL value must contain the literal substring `?v=`.
  *      No opinion on what supplies the version (`filemtime()` — the
  *      convention this page already uses everywhere else, #1594 — or the
- *      app version, `urlencode($_appJsVersion)`, per index.php) — only that
- *      SOME cache-bust query param is present.
+ *      per-deploy app version, `urlencode($assetVersion)`, per index.php's
+ *      marketing-version+build-number cache-buster) — only that SOME
+ *      cache-bust query param is present.
  *
  *   php tests/php/test-editor-asset-cache-bust.php
  *
