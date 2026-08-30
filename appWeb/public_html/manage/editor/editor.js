@@ -4143,7 +4143,6 @@ function sniffProContent(file) {
            DEL byte (0x7F) — a genuine text file (RTF/XML/ChordPro) never
            contains these; protobuf's varint/length-delimited encoding
            produces them constantly. */
-        // eslint-disable-next-line no-control-regex
         if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(text)) {
             return 'pro7';
         }

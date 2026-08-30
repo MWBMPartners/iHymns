@@ -271,7 +271,6 @@ export function bootSetupWizard(root) {
     if (runBtn) {
         runBtn.addEventListener('click', () => {
             runSequence().catch((err) => {
-                // eslint-disable-next-line no-console
                 console.error('[setup-wizard] run failed:', err);
             });
         });
