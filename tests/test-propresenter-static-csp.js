@@ -165,6 +165,81 @@ async function main() {
         assert.ok(obj && obj.cues && obj.cues.length >= 1, 'decoded presentation has no cues');
     });
 
+    /* ==================================================================
+     * #1968 P6 — chord custom_attributes byte-identity (plan §4.3/§6.4).
+     *
+     * WHY THIS ROW IS MANDATORY, NOT OPTIONAL: this file's OWN doc-block
+     * above explains #1788's root cause — protobufjs's REFLECTION encoder
+     * builds a message type's encoder LAZILY via `new Function()`, which
+     * the enforcing nonce CSP refuses in-browser, so the STATIC (`pbjs -t
+     * static`) artifact is what actually ships. `Attributes.custom_attributes`
+     * is a REPEATED SUB-MESSAGE array field (`CustomAttribute`, itself
+     * containing a `oneof` and a nested `IntRange` sub-message) — exactly
+     * the shape class this file's own §4.3 citation flags as the one
+     * that CAN diverge between the two encoders (sub-message arrays,
+     * unlike the flat scalar `info` field #1918 already proved identical
+     * — see propresenter-export.js's own comment on why `info` was safe
+     * but `paragraph_style`, a DIFFERENT sub-message, was not). Every
+     * assertion above this point used SAMPLE_SONG, which carries NO
+     * chords — so without this row, the STATIC encoder's handling of
+     * `custom_attributes` would ship completely unverified against its
+     * one real-world consumer, real ProPresenter opening the file. */
+    const CHORD_SAMPLE_SONG = {
+        id: 'CP-9999', number: 99, title: 'Chord Export Sample', songbook: 'CP',
+        components: [
+            {
+                type: 'verse', number: 1,
+                lines: ['Amazing grace how sweet the sound', 'That saved a wretch like me'],
+                chords: ['G        D', null],
+            },
+            {
+                type: 'chorus',
+                lines: ['Praise the Lord'],
+                chords: [['C', 'F', 'G']],
+            },
+        ],
+    };
+    const chordPayload = exporter._internal.buildPresentationPayload(CHORD_SAMPLE_SONG);
+
+    let bytesChordReflection, bytesChordStatic;
+
+    await test('chord payload: reflection encoder produces bytes (baseline)', () => {
+        bytesChordReflection = Buffer.from(reflectionPresentation.encode(chordPayload).finish());
+        assert.ok(bytesChordReflection.length > 0, 'reflection output empty');
+    });
+
+    await test('chord payload: static encoder produces bytes', () => {
+        bytesChordStatic = Buffer.from(staticPresentation.encode(chordPayload).finish());
+        assert.ok(bytesChordStatic.length > 0, 'static output empty');
+    });
+
+    await test('chord payload: STATIC output is BYTE-IDENTICAL to reflection output (custom_attributes sub-message arrays)', () => {
+        assert.equal(bytesChordStatic.length, bytesChordReflection.length,
+            `length differs: static=${bytesChordStatic.length} reflection=${bytesChordReflection.length}`);
+        assert.equal(Buffer.compare(bytesChordStatic, bytesChordReflection), 0,
+            'static and reflection wire bytes differ for a chord-bearing payload');
+    });
+
+    await test('chord payload: the static output round-trips back through the reflection decoder WITH custom_attributes intact', () => {
+        const decoded = reflectionPresentation.decode(bytesChordStatic);
+        // { defaults: true } here (unlike every OTHER toObject() call in this file) is
+        // deliberate: `range.start` for the FIRST chord is 0 — proto3's implicit-presence
+        // default, genuinely absent from the wire (the same omission
+        // includes/propresenter7_decode.php's pp7DecodeIntRange() had to learn to handle
+        // correctly, see that function's own doc-block) — so {defaults:false} would report it
+        // as `undefined` even though decode succeeded correctly; {defaults:true} fills it back
+        // in as the explicit 0 this assertion wants to see.
+        const obj = reflectionPresentation.toObject(decoded, { defaults: true });
+        const verse1Element = obj.cues[0].actions[0].slide.presentation.base_slide.elements[0].element;
+        assert.ok(verse1Element.text.attributes.custom_attributes
+            && verse1Element.text.attributes.custom_attributes.length === 2,
+            'expected 2 custom_attributes rows on the STRING-cell verse');
+        assert.equal(verse1Element.text.attributes.custom_attributes[0].chord, 'G');
+        assert.equal(verse1Element.text.attributes.custom_attributes[0].range.start, 0);
+        assert.equal(verse1Element.text.attributes.custom_attributes[1].chord, 'D');
+        assert.equal(verse1Element.text.attributes.custom_attributes[1].range.start, 9);
+    });
+
     await test('static artifact contains NO new Function / eval (CSP-safe by construction)', () => {
         /* Strip block + line comments so the header prose ("… new Function …")
            doesn't false-positive (rule #34 — the guard must not fire on

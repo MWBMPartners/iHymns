@@ -54,6 +54,33 @@
         }
     }
 
+    /**
+     * L1 (a11y audit 2026-08-30, WCAG 1.4.11 non-text contrast): Bootstrap's
+     * close icon is a plain SVG masked by currentColor — `btn-close-white`
+     * inverts it to white, meant for a DARK toast background. This module
+     * used to add that class unconditionally, but the warning
+     * (`text-bg-warning`, amber #ffc107) and info/default
+     * (`text-bg-info`, cyan #0dcaf0) variants are LIGHT/BRIGHT — a white X
+     * there measures 1.63:1 and 1.96:1, both well under the 3:1 floor a
+     * graphical UI control needs. The plain (unmodified) `btn-close` icon
+     * is dark and reads correctly on both of those; success/error/danger
+     * keep their existing dark backgrounds, where white-on-dark passes.
+     * @link https://www.w3.org/WAI/WCAG21/Understanding/non-text-contrast.html
+     *
+     * @param {string} type same values variantClass() accepts.
+     * @returns {boolean} true when the white-icon modifier should be added.
+     */
+    function needsWhiteClose(type) {
+        switch (type) {
+            case 'success':
+            case 'error':
+            case 'danger':  return true;
+            case 'warning':
+            case 'info':
+            default:        return false;
+        }
+    }
+
     function show(message, type, duration) {
         if (typeof bootstrap === 'undefined' || !bootstrap.Toast) {
             /* JS bundle didn't load — degrade silently rather than
@@ -79,7 +106,7 @@
 
         var closeBtn = document.createElement('button');
         closeBtn.type = 'button';
-        closeBtn.className = 'btn-close btn-close-white me-2 m-auto';
+        closeBtn.className = 'btn-close' + (needsWhiteClose(type) ? ' btn-close-white' : '') + ' me-2 m-auto';
         closeBtn.setAttribute('data-bs-dismiss', 'toast');
         closeBtn.setAttribute('aria-label', 'Close');
 

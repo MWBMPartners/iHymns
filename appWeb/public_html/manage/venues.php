@@ -32,6 +32,15 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* #1969 — the read half (table-existence probe, venue list, schedule list +
+   RecurrenceData decode / effective-tz resolution) now lives in the shared
+   includes/venue_admin.php core, reused by the new ?action=org_venues API
+   endpoint (rule #22). This page's own POST write handlers are unchanged. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'venue_admin.php';
+/* #1999 — the shared "Get started" empty-state launcher, rendered below
+   when the selected org has no venues yet (points at the SAME guided
+   wizard the header button above already opens — rule #1). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'wizard-empty-state.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -55,41 +64,51 @@ $db      = getDbMysqli();
  * is an entry here, never an ALTER (rule #20).
  * ------------------------------------------------------------------ */
 $DOW = [1 => 'Monday', 2 => 'Tuesday', 3 => 'Wednesday', 4 => 'Thursday', 5 => 'Friday', 6 => 'Saturday', 7 => 'Sunday'];
-$RECURRENCE_KINDS = [
-    'weekly'      => 'Every week',
-    'fortnightly' => 'Every 2 weeks',
-    'monthly_nth' => 'Monthly (nth weekday)',
-    'one_off'     => 'One-off date',
-];
+/* #1969 batch 3 (O4) — the vocabulary itself now lives ONCE in
+   includes/venue_admin.php (IHYMNS_VENUE_RECURRENCE_KINDS), reused by the
+   org_admin_schedule_save API action's own validation so the two can never
+   list a different set of cadences (rule #20's "never a hard-coded list
+   that already exists in a central map" applied to this page's own former
+   local copy). */
+$RECURRENCE_KINDS = IHYMNS_VENUE_RECURRENCE_KINDS;
 $NTH_LABELS = [1 => 'first', 2 => 'second', 3 => 'third', 4 => 'fourth', 5 => 'fifth', -1 => 'last'];
 /* Cache the IANA tz list once (DateTimeZone::listIdentifiers is the canonical
    source — https://www.php.net/manual/en/datetimezone.listidentifiers.php). */
 $TZ_LIST = \DateTimeZone::listIdentifiers();
 
-/**
- * Schema-presence guard. Migrations are NOT auto-applied on deploy, so the
- * tables may not exist on this env yet ("it's in schema.sql" ≠ "it exists" —
- * CLAUDE.md red flag). Probe INFORMATION_SCHEMA so a missing table renders a
- * themed "run the migration" card instead of white-screening under STRICT.
- */
-function _venuesTableExists(\mysqli $db, string $t): bool
-{
-    try {
-        $stmt = $db->prepare(
-            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1"
-        );
-        $stmt->bind_param('s', $t);
-        $stmt->execute();
-        $exists = $stmt->get_result()->fetch_row() !== null;
-        $stmt->close();
-        return $exists;
-    } catch (\Throwable $e) {
-        error_log('[manage/venues.php] table probe failed: ' . $e->getMessage());
-        return false;
-    }
-}
-$schemaReady = _venuesTableExists($db, 'tblOrgVenues') && _venuesTableExists($db, 'tblOrgServiceSchedules');
+/* Schema-presence guard. Migrations are NOT auto-applied on deploy, so the
+   tables may not exist on this env yet ("it's in schema.sql" ≠ "it exists" —
+   CLAUDE.md red flag). Probe INFORMATION_SCHEMA so a missing table renders a
+   themed "run the migration" card instead of white-screening under STRICT.
+   #1969 — now the shared venueAdminTablesExist() (includes/venue_admin.php),
+   reused by the ?action=org_venues API action (rule #22). */
+$schemaReady = venueAdminTablesExist($db);
+
+/* #1995 — the guided "Live Service setup" wizard (HYBRID shape, owner-
+   confirmed D1) reuses the shared stepper (js/modules/admin-wizard.js,
+   #1992) to walk a curator through: choose Live Follow vs Service Mode
+   (rule #26 — the two features are commonly confused), then, for Service
+   Mode, create/reuse a venue, optionally its regular service time, and
+   optionally mint a presentation-app driver key. It orchestrates the
+   THREE EXISTING API actions (org_admin_venue_save / org_admin_schedule_
+   save / service_driver_key_mint, api.php) client-side — ZERO new server
+   endpoints (rule #22 — the #1969 write core + its API twins already
+   exist; this page's own venue_save/schedule_save/venue_delete/
+   schedule_delete POST handlers below are UNTOUCHED). It does NOT start a
+   live session itself — the DONE pane links out to the existing consoles
+   (/manage/service-projection, /manage/service-lead) for that.
+   includes/service_driver_keys.php gives the driver-key protocol
+   vocabulary + its own table-existence probe, mirroring the identical
+   probe manage/service-projection.php's own driver-key card already
+   runs — #1770 C1 is a migration separate from the venue tables above, so
+   an install can be $schemaReady here yet still pre-#1770. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_driver_keys.php';
+$driverKeysReady = serviceDriverKeysTableExists($db);
+/* Cache-busted import path for the shared stepper module (#1992/#1993),
+   same filemtime-as-version-query pattern head-libs.php uses for every
+   other admin JS load. */
+$_adminWizardPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'admin-wizard.js';
+$adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizardPath) : '1';
 
 /**
  * Build a human "Every Sunday at 10:00 (90 min) · Europe/London" summary.
@@ -202,108 +221,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $schemaReady) {
     try {
         switch ($action) {
 
-            /* ---- Venue create / update ---- */
+            /* ---- Venue create / update ----
+               #1969 batch 3 (O4) — delegates to the shared write core
+               (includes/venue_admin.php), reused by the org_admin_venue_save
+               API action (rule #22). Validation/defaults/SQL are unchanged;
+               only the source of the input and the failure signal moved. */
             case 'venue_save': {
-                $venueId = (int)($_POST['venue_id'] ?? 0);
-                $orgId   = (int)($_POST['org_id'] ?? 0);
-                $name    = trim((string)($_POST['name'] ?? ''));
-                $addr    = trim((string)($_POST['address_line'] ?? ''));
-                $city    = trim((string)($_POST['city'] ?? ''));
-                $post    = trim((string)($_POST['postcode'] ?? ''));
-                $cc      = strtoupper(trim((string)($_POST['country_code'] ?? '')));
-                $tz      = trim((string)($_POST['timezone'] ?? 'UTC'));
-                $placeId = (int)($_POST['place_id'] ?? 0);
-                $isActive = isset($_POST['is_active']) ? 1 : 0;
-
-                if ($name === '') { throw new \RuntimeException('Venue name is required.'); }
-                if ($orgId <= 0)  { throw new \RuntimeException('Choose an organisation first.'); }
-                if (!in_array($tz, $GLOBALS['TZ_LIST'], true)) { $tz = 'UTC'; }
-                if ($cc !== '' && !preg_match('/^[A-Z]{2}$/', $cc)) { $cc = ''; }
-
-                // Confirm the org exists (FK would throw, but this gives a friendly error).
-                $chk = $db->prepare('SELECT 1 FROM tblOrganisations WHERE Id = ? LIMIT 1');
-                $chk->bind_param('i', $orgId);
-                $chk->execute();
-                if ($chk->get_result()->fetch_row() === null) { $chk->close(); throw new \RuntimeException('Unknown organisation.'); }
-                $chk->close();
-
-                // Resolve coordinates: a geocoder pick (PlaceId) wins; else the
-                // optional manual lat/lng. placesLoadById() returns {lat,lon}.
-                $lat = ($_POST['latitude']  ?? '') !== '' ? (float)$_POST['latitude']  : null;
-                $lng = ($_POST['longitude'] ?? '') !== '' ? (float)$_POST['longitude'] : null;
-                $placeIdOrNull = $placeId > 0 ? $placeId : null;
-                if ($placeIdOrNull !== null && function_exists('placesLoadById')) {
-                    $place = placesLoadById($db, $placeIdOrNull);
-                    if ($place) {
-                        if ($lat === null && isset($place['lat'])) { $lat = (float)$place['lat']; }
-                        if ($lng === null && isset($place['lon'])) { $lng = (float)$place['lon']; }
-                    }
-                }
-                // Clamp coordinates to valid WGS84 ranges.
-                if ($lat !== null && ($lat < -90 || $lat > 90))   { $lat = null; }
-                if ($lng !== null && ($lng < -180 || $lng > 180)) { $lng = null; }
-                $radius = ($_POST['radius_metres'] ?? '') !== '' ? max(0, min(50000, (int)$_POST['radius_metres'])) : null;
-
-                $addrN = $addr !== '' ? $addr : null;
-                $cityN = $city !== '' ? $city : null;
-                $postN = $post !== '' ? $post : null;
-                $ccN   = $cc !== '' ? $cc : null;
-
-                if ($venueId > 0) {
-                    $stmt = $db->prepare(
-                        'UPDATE tblOrgVenues
-                            SET OrgId = ?, Name = ?, AddressLine = ?, City = ?, Postcode = ?,
-                                CountryCode = ?, PlaceId = ?, Latitude = ?, Longitude = ?,
-                                RadiusMetres = ?, TimeZone = ?, IsActive = ?
-                          WHERE Id = ?'
-                    );
-                    // i s s s s  s i d d  i s i  i
-                    $stmt->bind_param(
-                        'isssssiddisii',
-                        $orgId, $name, $addrN, $cityN, $postN,
-                        $ccN, $placeIdOrNull, $lat, $lng,
-                        $radius, $tz, $isActive, $venueId
-                    );
-                    $stmt->execute();
-                    $stmt->close();
-                    logActivity('venue.edit', 'organisation', (string)$orgId, ['venue_id' => $venueId, 'name' => $name]);
-                    $success = 'Venue updated.';
-                } else {
-                    $stmt = $db->prepare(
-                        'INSERT INTO tblOrgVenues
-                            (OrgId, Name, AddressLine, City, Postcode, CountryCode,
-                             PlaceId, Latitude, Longitude, RadiusMetres, TimeZone, IsActive)
-                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)'
-                    );
-                    $stmt->bind_param(
-                        'isssssiddisi',
-                        $orgId, $name, $addrN, $cityN, $postN, $ccN,
-                        $placeIdOrNull, $lat, $lng, $radius, $tz, $isActive
-                    );
-                    $stmt->execute();
-                    $venueId = (int)$db->insert_id;
-                    $stmt->close();
-                    logActivity('venue.create', 'organisation', (string)$orgId, ['venue_id' => $venueId, 'name' => $name]);
-                    $success = 'Venue added.';
-                }
+                $result = venueAdminSaveVenue($db, $_POST);
+                logActivity(
+                    $result['created'] ? 'venue.create' : 'venue.edit',
+                    'organisation', (string)$result['orgId'],
+                    ['venue_id' => $result['id'], 'name' => $result['name']]
+                );
+                $success = $result['created'] ? 'Venue added.' : 'Venue updated.';
                 break;
             }
 
             /* ---- Venue delete (CASCADE removes its schedules) ---- */
             case 'venue_delete': {
                 $venueId = (int)($_POST['venue_id'] ?? 0);
-                if ($venueId <= 0) { throw new \RuntimeException('Missing venue.'); }
-                $stmt = $db->prepare('SELECT OrgId, Name FROM tblOrgVenues WHERE Id = ?');
-                $stmt->bind_param('i', $venueId);
-                $stmt->execute();
-                $row = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
-                if ($row) {
-                    $del = $db->prepare('DELETE FROM tblOrgVenues WHERE Id = ?');
-                    $del->bind_param('i', $venueId);
-                    $del->execute();
-                    $del->close();
-                    logActivity('venue.delete', 'organisation', (string)$row['OrgId'], ['venue_id' => $venueId, 'name' => $row['Name']]);
+                $deleted = venueAdminDeleteVenue($db, $venueId);
+                if ($deleted !== null) {
+                    logActivity('venue.delete', 'organisation', (string)$deleted['orgId'], ['venue_id' => $venueId, 'name' => $deleted['name']]);
                     $success = 'Venue deleted.';
                 }
                 break;
@@ -311,120 +250,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $schemaReady) {
 
             /* ---- Service schedule create / update ---- */
             case 'schedule_save': {
-                $schedId = (int)($_POST['schedule_id'] ?? 0);
-                $venueId = (int)($_POST['venue_id'] ?? 0);
-                if ($venueId <= 0) { throw new \RuntimeException('Missing venue.'); }
-
-                // Derive OrgId + default tz from the venue — never trust posted OrgId.
-                $vs = $db->prepare('SELECT OrgId, TimeZone FROM tblOrgVenues WHERE Id = ?');
-                $vs->bind_param('i', $venueId);
-                $vs->execute();
-                $venue = $vs->get_result()->fetch_assoc();
-                $vs->close();
-                if (!$venue) { throw new \RuntimeException('Unknown venue.'); }
-                $orgId = (int)$venue['OrgId'];
-
-                $title = trim((string)($_POST['title'] ?? 'Service'));
-                if ($title === '') { $title = 'Service'; }
-                $kind  = (string)($_POST['recurrence_kind'] ?? 'weekly');
-                if (!array_key_exists($kind, $GLOBALS['RECURRENCE_KINDS'])) { $kind = 'weekly'; }
-                $startTime = (string)($_POST['start_time'] ?? '');
-                if (!preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $startTime)) {
-                    throw new \RuntimeException('Enter a valid start time (HH:MM).');
-                }
-                $startTime .= ':00';
-                $duration = max(1, min(1440, (int)($_POST['duration_mins'] ?? 90)));
-                $tzOverride = trim((string)($_POST['timezone'] ?? ''));
-                $tzN = ($tzOverride !== '' && in_array($tzOverride, $GLOBALS['TZ_LIST'], true)) ? $tzOverride : null;
-                $isActive = isset($_POST['is_active']) ? 1 : 0;
-
-                // DayOfWeek required for recurring kinds; NULL for one_off.
-                $dow = (int)($_POST['day_of_week'] ?? 0);
-                if ($kind !== 'one_off') {
-                    if ($dow < 1 || $dow > 7) { throw new \RuntimeException('Choose a day of the week.'); }
-                    $dowN = $dow;
-                } else {
-                    $dowN = null;
-                }
-
-                // Assemble RecurrenceData JSON from the kind-specific inputs.
-                $rd = [];
-                if ($kind === 'monthly_nth') {
-                    $nth = (int)($_POST['nth'] ?? 1);
-                    if (!in_array($nth, [1, 2, 3, 4, 5, -1], true)) { $nth = 1; }
-                    $rd['nth'] = $nth;
-                } elseif ($kind === 'one_off') {
-                    $oneOff = (string)($_POST['one_off_date'] ?? '');
-                    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $oneOff)) { throw new \RuntimeException('Enter the one-off date (YYYY-MM-DD).'); }
-                    $rd['date'] = $oneOff;
-                } elseif ($kind === 'fortnightly') {
-                    $anchor = (string)($_POST['anchor_date'] ?? '');
-                    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $anchor)) { $rd['anchor'] = $anchor; }
-                }
-                $until = (string)($_POST['until_date'] ?? '');
-                if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $until)) { $rd['until'] = $until; }
-                // Exceptions: comma/space/newline-separated YYYY-MM-DD dates.
-                $excRaw = (string)($_POST['exceptions'] ?? '');
-                if (trim($excRaw) !== '') {
-                    $exc = preg_split('/[\s,]+/', trim($excRaw)) ?: [];
-                    $exc = array_values(array_filter($exc, static fn($d) => preg_match('/^\d{4}-\d{2}-\d{2}$/', $d)));
-                    if ($exc) { $rd['exceptions'] = $exc; }
-                }
-                $rdJson = $rd ? json_encode($rd, JSON_UNESCAPED_SLASHES) : null;
-
-                if ($schedId > 0) {
-                    $stmt = $db->prepare(
-                        'UPDATE tblOrgServiceSchedules
-                            SET VenueId = ?, OrgId = ?, Title = ?, DayOfWeek = ?, StartTime = ?,
-                                DurationMins = ?, RecurrenceKind = ?, RecurrenceData = ?,
-                                TimeZone = ?, IsActive = ?
-                          WHERE Id = ?'
-                    );
-                    $stmt->bind_param(
-                        'iisisisssii',
-                        $venueId, $orgId, $title, $dowN, $startTime,
-                        $duration, $kind, $rdJson, $tzN, $isActive, $schedId
-                    );
-                    $stmt->execute();
-                    $stmt->close();
-                    logActivity('venue.schedule.edit', 'organisation', (string)$orgId, ['schedule_id' => $schedId, 'venue_id' => $venueId]);
-                    $success = 'Service time updated.';
-                } else {
-                    $stmt = $db->prepare(
-                        'INSERT INTO tblOrgServiceSchedules
-                            (VenueId, OrgId, Title, DayOfWeek, StartTime, DurationMins,
-                             RecurrenceKind, RecurrenceData, TimeZone, IsActive)
-                         VALUES (?,?,?,?,?,?,?,?,?,?)'
-                    );
-                    $stmt->bind_param(
-                        'iisisisssi',
-                        $venueId, $orgId, $title, $dowN, $startTime,
-                        $duration, $kind, $rdJson, $tzN, $isActive
-                    );
-                    $stmt->execute();
-                    $newId = (int)$db->insert_id;
-                    $stmt->close();
-                    logActivity('venue.schedule.create', 'organisation', (string)$orgId, ['schedule_id' => $newId, 'venue_id' => $venueId]);
-                    $success = 'Service time added.';
-                }
+                $result = venueAdminSaveSchedule($db, $_POST);
+                logActivity(
+                    $result['created'] ? 'venue.schedule.create' : 'venue.schedule.edit',
+                    'organisation', (string)$result['orgId'],
+                    ['schedule_id' => $result['id'], 'venue_id' => $result['venueId']]
+                );
+                $success = $result['created'] ? 'Service time added.' : 'Service time updated.';
                 break;
             }
 
             /* ---- Schedule delete ---- */
             case 'schedule_delete': {
                 $schedId = (int)($_POST['schedule_id'] ?? 0);
-                if ($schedId <= 0) { throw new \RuntimeException('Missing service time.'); }
-                $stmt = $db->prepare('SELECT OrgId FROM tblOrgServiceSchedules WHERE Id = ?');
-                $stmt->bind_param('i', $schedId);
-                $stmt->execute();
-                $row = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
-                if ($row) {
-                    $del = $db->prepare('DELETE FROM tblOrgServiceSchedules WHERE Id = ?');
-                    $del->bind_param('i', $schedId);
-                    $del->execute();
-                    $del->close();
-                    logActivity('venue.schedule.delete', 'organisation', (string)$row['OrgId'], ['schedule_id' => $schedId]);
+                $deleted = venueAdminDeleteSchedule($db, $schedId);
+                if ($deleted !== null) {
+                    logActivity('venue.schedule.delete', 'organisation', (string)$deleted['orgId'], ['schedule_id' => $schedId]);
                     $success = 'Service time deleted.';
                 }
                 break;
@@ -453,15 +294,9 @@ if ($schemaReady) {
         if ($selectedOrgId <= 0 && $orgs) { $selectedOrgId = (int)$orgs[0]['Id']; }
 
         if ($selectedOrgId > 0) {
-            $stmt = $db->prepare(
-                'SELECT Id, OrgId, Name, AddressLine, City, Postcode, CountryCode,
-                        Latitude, Longitude, RadiusMetres, TimeZone, IsActive
-                   FROM tblOrgVenues WHERE OrgId = ? ORDER BY SortOrder ASC, Name ASC'
-            );
-            $stmt->bind_param('i', $selectedOrgId);
-            $stmt->execute();
-            $venues = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
+            /* #1969 — shared core (includes/venue_admin.php); same columns,
+               same ORDER BY, reused by the ?action=org_venues API action. */
+            $venues = venueAdminListForOrg($db, $selectedOrgId);
         }
 
         // Confirm the selected venue belongs to the selected org, then load its schedules.
@@ -470,22 +305,10 @@ if ($schemaReady) {
             if ((int)$v['Id'] === $selectedVenueId) { $selectedVenue = $v; break; }
         }
         if ($selectedVenue) {
-            $stmt = $db->prepare(
-                'SELECT Id, VenueId, Title, DayOfWeek, StartTime, DurationMins,
-                        RecurrenceKind, RecurrenceData, TimeZone, IsActive
-                   FROM tblOrgServiceSchedules WHERE VenueId = ?
-                  ORDER BY DayOfWeek ASC, StartTime ASC'
-            );
-            $stmt->bind_param('i', $selectedVenueId);
-            $stmt->execute();
-            $schedules = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-            // Decode RecurrenceData + resolve effective tz once per row.
-            foreach ($schedules as &$s) {
-                $s['_rd']     = json_decode((string)($s['RecurrenceData'] ?? ''), true) ?: [];
-                $s['_EffTz']  = ($s['TimeZone'] ?? null) ?: ($selectedVenue['TimeZone'] ?? 'UTC');
-            }
-            unset($s);
+            /* #1969 — shared core; decodes RecurrenceData + resolves the
+               effective timezone identically to the pre-extraction inline
+               loop below (byte-identical: `TimeZone ?? $fallbackTz`). */
+            $schedules = venueAdminSchedulesForVenue($db, $selectedVenueId, (string)($selectedVenue['TimeZone'] ?? 'UTC'));
         } else {
             $selectedVenueId = 0;
         }
@@ -533,31 +356,45 @@ function venuesUrl(array $overrides = []): string
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-2"><i class="bi bi-geo-alt me-2"></i>Venues &amp; Service Times</h1>
-        <p class="text-secondary small mb-4" style="max-width: 60ch;">
-            Tell iHymns <strong>where</strong> your organisation meets and <strong>when</strong>.
-            This is the foundation for <em>Service Mode</em> (letting a congregation follow the
-            service on their own device). The map location &amp; radius are a convenience —
-            attendance is confirmed by an on-screen code, not your location.
-        </p>
+        <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-2">
+            <div>
+                <h1 class="h4 mb-2"><i aria-hidden="true" class="bi bi-geo-alt me-2"></i>Venues &amp; Service Times</h1>
+                <p class="text-secondary small mb-0" style="max-width: 60ch;">
+                    Tell iHymns <strong>where</strong> your organisation meets and <strong>when</strong>.
+                    This is the foundation for <em>Service Mode</em> (letting a congregation follow the
+                    service on their own device). The map location &amp; radius are a convenience —
+                    attendance is confirmed by an on-screen code, not your location.
+                </p>
+            </div>
+            <?php /* #1995 — the guided-wizard trigger. Gated on the SAME
+                     condition as the modal + its wiring further down this
+                     page (rule: nothing here can run against an org list
+                     that doesn't exist yet), never rendered when there is
+                     no organisation to attach a venue to. */ ?>
+            <?php if ($schemaReady && $orgs): ?>
+                <button type="button" class="btn btn-primary text-nowrap" data-bs-toggle="modal" data-bs-target="#svcWizardModal">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Live Service setup (guided)
+                </button>
+            <?php endif; ?>
+        </div>
 
         <?php if ($success): ?>
-            <div class="alert alert-success py-2"><i class="bi bi-check-circle me-1"></i><?= htmlspecialchars($success) ?></div>
+            <div class="alert alert-success py-2"><i aria-hidden="true" class="bi bi-check-circle me-1"></i><?= htmlspecialchars($success) ?></div>
         <?php endif; ?>
         <?php if ($error): ?>
-            <div class="alert alert-danger py-2"><i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?></div>
+            <div class="alert alert-danger py-2"><i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?></div>
         <?php endif; ?>
 
         <?php if (!$schemaReady): ?>
             <div class="card border-warning">
                 <div class="card-body">
-                    <h2 class="h6 text-warning-emphasis"><i class="bi bi-database-exclamation me-1"></i>Schema not yet migrated</h2>
+                    <h2 class="h6 text-warning-emphasis"><i aria-hidden="true" class="bi bi-database-exclamation me-1"></i>Schema not yet migrated</h2>
                     <p class="small mb-2">
                         The <code>tblOrgVenues</code> / <code>tblOrgServiceSchedules</code> tables don't
                         exist on this environment yet. Migrations aren't applied automatically on deploy.
                     </p>
                     <a class="btn btn-sm btn-amber-solid" href="/manage/setup-database">
-                        <i class="bi bi-database-gear me-1"></i>Open Database Setup → run “Org Venues &amp; Service Schedules”
+                        <i aria-hidden="true" class="bi bi-database-gear me-1"></i>Open Database Setup → run “Org Venues &amp; Service Schedules”
                     </a>
                 </div>
             </div>
@@ -584,24 +421,44 @@ function venuesUrl(array $overrides = []): string
         <!-- ============================ VENUES ============================ -->
         <div class="card mb-4">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <span class="fw-semibold"><i class="bi bi-building me-1"></i>Venues</span>
+                <span class="fw-semibold"><i aria-hidden="true" class="bi bi-building me-1"></i>Venues</span>
                 <a class="btn btn-sm btn-amber-solid" href="<?= htmlspecialchars(venuesUrl(['edit_venue' => 'new', 'venue' => null])) ?>#venue-form">
-                    <i class="bi bi-plus-lg me-1"></i>Add venue
+                    <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add venue
                 </a>
             </div>
             <div class="card-body p-0">
                 <?php if (!$venues): ?>
-                    <p class="text-secondary small m-3 mb-3">No venues yet. Add the place(s) your organisation meets.</p>
+                    <?php /* #1999 — empty-state "Get started" launcher, but ONLY when
+                             there's an organisation to attach a venue to: the wizard
+                             modal further down this page is itself gated on
+                             `$schemaReady && $orgs` (same as the header trigger above),
+                             so on a zero-organisation install a crafted ?org=<n> could
+                             otherwise land $selectedOrgId > 0 with an empty $orgs and
+                             point this launcher at a modal that never rendered
+                             (rule #33's dead-launcher trap). */ ?>
+                    <?php if ($orgs): ?>
+                        <?= ihymns_wizard_empty_state([
+                            'icon'        => 'bi-geo-alt',
+                            'heading'     => 'No venues yet',
+                            'body'        => 'Add the place(s) your organisation meets so congregants can follow along in Live Service.',
+                            'modalId'     => 'svcWizardModal',
+                            'buttonLabel' => 'Live Service setup (guided)',
+                            'wrap'        => 'bare',
+                            'hint'        => 'Prefer to type it yourself? Use the Add venue button above.',
+                        ]) ?>
+                    <?php else: ?>
+                        <p class="text-secondary small m-3 mb-3">No venues yet. Add the place(s) your organisation meets.</p>
+                    <?php endif; ?>
                 <?php else: ?>
                 <div class="table-responsive">
                     <table class="table admin-table-responsive cp-sortable align-middle mb-0">
                         <thead>
                             <tr>
-                                <th data-col-priority="primary" data-sort-key="venue" data-sort-type="text">Venue</th>
-                                <th data-col-priority="secondary" data-sort-key="location" data-sort-type="text">Location</th>
-                                <th data-col-priority="tertiary" data-sort-key="tz" data-sort-type="text">Timezone</th>
-                                <th data-col-priority="tertiary" data-sort-key="status" data-sort-type="text">Status</th>
-                                <th data-col-priority="primary" class="text-end">Actions</th>
+                                <th scope="col" data-col-priority="primary" data-sort-key="venue" data-sort-type="text">Venue</th>
+                                <th scope="col" data-col-priority="secondary" data-sort-key="location" data-sort-type="text">Location</th>
+                                <th scope="col" data-col-priority="tertiary" data-sort-key="tz" data-sort-type="text">Timezone</th>
+                                <th scope="col" data-col-priority="tertiary" data-sort-key="status" data-sort-type="text">Status</th>
+                                <th scope="col" data-col-priority="primary" class="text-end">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -618,8 +475,8 @@ function venuesUrl(array $overrides = []): string
                                 <td data-col-priority="secondary" data-sort-value="<?= htmlspecialchars(implode(', ', $loc), ENT_QUOTES) ?>">
                                     <span class="small"><?= $loc ? htmlspecialchars(implode(', ', $loc)) : '<span class="text-secondary">—</span>' ?></span>
                                     <?php if ($hasCoords): ?>
-                                        <span class="badge text-bg-light ms-1" title="Map pin set (convenience geofence<?= $v['RadiusMetres'] !== null ? ', radius ' . (int)$v['RadiusMetres'] . ' m' : '' ?>)">
-                                            <i class="bi bi-pin-map"></i>
+                                        <span class="badge text-bg-light ms-1" title="Map pin set (convenience geofence<?= $v['RadiusMetres'] !== null ? ', radius ' . (int)$v['RadiusMetres'] . ' m' : '' ?>)" role="img" aria-label="Map pin set">
+                                            <i class="bi bi-pin-map" aria-hidden="true"></i>
                                         </span>
                                     <?php endif; ?>
                                 </td>
@@ -633,7 +490,7 @@ function venuesUrl(array $overrides = []): string
                                 </td>
                                 <td data-col-priority="primary" class="text-end text-nowrap">
                                     <a class="btn btn-sm btn-outline-primary" href="<?= htmlspecialchars(venuesUrl(['venue' => (int)$v['Id'], 'edit_venue' => null, 'edit_schedule' => null])) ?>#schedules" title="Manage service times">
-                                        <i class="bi bi-clock-history"></i><span class="d-none d-md-inline ms-1">Service times</span>
+                                        <i aria-hidden="true" class="bi bi-clock-history"></i><span class="d-none d-md-inline ms-1">Service times</span>
                                     </a>
                                     <a class="btn btn-sm btn-outline-secondary" href="<?= htmlspecialchars(venuesUrl(['edit_venue' => (int)$v['Id'], 'venue' => null])) ?>#venue-form" title="Edit venue"
                                        aria-label="Edit venue <?= htmlspecialchars($v['Name'], ENT_QUOTES) ?>">
@@ -663,7 +520,7 @@ function venuesUrl(array $overrides = []): string
             <?php $ev = $editVenue ?? []; $isEditV = !empty($ev); ?>
             <div class="card mb-4" id="venue-form">
                 <div class="card-header fw-semibold">
-                    <i class="bi bi-<?= $isEditV ? 'pencil' : 'plus-lg' ?> me-1"></i><?= $isEditV ? 'Edit venue' : 'Add a venue' ?>
+                    <i aria-hidden="true" class="bi bi-<?= $isEditV ? 'pencil' : 'plus-lg' ?> me-1"></i><?= $isEditV ? 'Edit venue' : 'Add a venue' ?>
                 </div>
                 <div class="card-body">
                     <form method="post" action="/manage/venues" class="row g-3">
@@ -739,7 +596,7 @@ function venuesUrl(array $overrides = []): string
                         </div>
 
                         <div class="col-12 d-flex gap-2">
-                            <button type="submit" class="btn btn-amber-solid"><i class="bi bi-check-lg me-1"></i><?= $isEditV ? 'Save venue' : 'Add venue' ?></button>
+                            <button type="submit" class="btn btn-amber-solid"><i aria-hidden="true" class="bi bi-check-lg me-1"></i><?= $isEditV ? 'Save venue' : 'Add venue' ?></button>
                             <a class="btn btn-outline-secondary" href="<?= htmlspecialchars(venuesUrl(['edit_venue' => null])) ?>">Cancel</a>
                         </div>
                     </form>
@@ -751,9 +608,9 @@ function venuesUrl(array $overrides = []): string
         <?php if ($selectedVenueRow !== null): ?>
             <div class="card mb-4" id="schedules">
                 <div class="card-header d-flex justify-content-between align-items-center">
-                    <span class="fw-semibold"><i class="bi bi-calendar-week me-1"></i>Service times — <?= htmlspecialchars($selectedVenueRow['Name']) ?></span>
+                    <span class="fw-semibold"><i aria-hidden="true" class="bi bi-calendar-week me-1"></i>Service times — <?= htmlspecialchars($selectedVenueRow['Name']) ?></span>
                     <a class="btn btn-sm btn-amber-solid" href="<?= htmlspecialchars(venuesUrl(['edit_schedule' => 'new'])) ?>#schedule-form">
-                        <i class="bi bi-plus-lg me-1"></i>Add service time
+                        <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add service time
                     </a>
                 </div>
                 <div class="card-body p-0">
@@ -764,11 +621,11 @@ function venuesUrl(array $overrides = []): string
                         <table class="table admin-table-responsive cp-sortable align-middle mb-0">
                             <thead>
                                 <tr>
-                                    <th data-col-priority="primary" data-sort-key="service" data-sort-type="text">Service</th>
-                                    <th data-col-priority="primary" data-sort-key="when" data-sort-type="text">When</th>
-                                    <th data-col-priority="secondary" data-sort-key="next" data-sort-type="date">Next dates</th>
-                                    <th data-col-priority="tertiary" data-sort-key="status" data-sort-type="text">Status</th>
-                                    <th data-col-priority="primary" class="text-end">Actions</th>
+                                    <th scope="col" data-col-priority="primary" data-sort-key="service" data-sort-type="text">Service</th>
+                                    <th scope="col" data-col-priority="primary" data-sort-key="when" data-sort-type="text">When</th>
+                                    <th scope="col" data-col-priority="secondary" data-sort-key="next" data-sort-type="date">Next dates</th>
+                                    <th scope="col" data-col-priority="tertiary" data-sort-key="status" data-sort-type="text">Status</th>
+                                    <th scope="col" data-col-priority="primary" class="text-end">Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -815,7 +672,7 @@ function venuesUrl(array $overrides = []): string
                 <?php $es = $editSchedule ?? []; $isEditS = !empty($es); $esKind = $es['RecurrenceKind'] ?? 'weekly'; ?>
                 <div class="card mb-4" id="schedule-form">
                     <div class="card-header fw-semibold">
-                        <i class="bi bi-<?= $isEditS ? 'pencil' : 'plus-lg' ?> me-1"></i><?= $isEditS ? 'Edit service time' : 'Add a service time' ?>
+                        <i aria-hidden="true" class="bi bi-<?= $isEditS ? 'pencil' : 'plus-lg' ?> me-1"></i><?= $isEditS ? 'Edit service time' : 'Add a service time' ?>
                     </div>
                     <div class="card-body">
                         <form method="post" action="/manage/venues" class="row g-3" id="sched-form-el">
@@ -906,7 +763,7 @@ function venuesUrl(array $overrides = []): string
                             </div>
 
                             <div class="col-12 d-flex gap-2">
-                                <button type="submit" class="btn btn-amber-solid"><i class="bi bi-check-lg me-1"></i><?= $isEditS ? 'Save service time' : 'Add service time' ?></button>
+                                <button type="submit" class="btn btn-amber-solid"><i aria-hidden="true" class="bi bi-check-lg me-1"></i><?= $isEditS ? 'Save service time' : 'Add service time' ?></button>
                                 <a class="btn btn-outline-secondary" href="<?= htmlspecialchars(venuesUrl(['edit_schedule' => null])) ?>">Cancel</a>
                             </div>
                         </form>
@@ -947,6 +804,654 @@ function venuesUrl(array $overrides = []): string
         venuesToggleRecurrence();
     </script>
     <?php endif; ?>
+
+    <?php if ($schemaReady && $orgs): ?>
+    <?php /* #1995 — Live Service setup wizard: modal + wiring. BEGIN
+             Guided, step-by-step alternative to the manual venue/schedule
+             forms above (rule: additive — those forms + their POST
+             handlers are byte-identical, untouched by this block). Built
+             on the shared stepper (js/modules/admin-wizard.js, #1992) —
+             see external-link-types.php (#1992) / songbooks.php (#1993)
+             for the sibling consumers this mirrors. onFinish orchestrates,
+             client-side and sequentially, THREE EXISTING api.php actions —
+             never a new server endpoint (rule #22): org_admin_venue_save,
+             then org_admin_schedule_save (skipped if the curator ticks
+             "ad-hoc"), then service_driver_key_mint (skipped unless the
+             curator opts in). It does not itself start a live session —
+             the DONE pane links out to /manage/service-projection and
+             /manage/service-lead for that. */ ?>
+    <script>
+        window._iHymnsServiceWizard = {
+            csrf: <?= json_encode($csrf, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>,
+            driverKeysReady: <?= $driverKeysReady ? 'true' : 'false' ?>
+        };
+    </script>
+
+    <div class="modal fade" id="svcWizardModal" tabindex="-1" aria-hidden="true" aria-labelledby="svcWizardModalLabel" data-bs-backdrop="static">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content" id="svcWizardRoot">
+                <div class="modal-header">
+                    <h2 class="modal-title h5 mb-0" id="svcWizardModalLabel">Live Service setup — guided</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="svcwiz-steps-wrap">
+                        <div data-wiz-progress class="mb-3"></div>
+
+                        <section data-wiz-step data-wiz-label="Mode">
+                            <h3 data-wiz-heading class="h6 mb-3">1. Which kind of live session?</h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <div class="mb-2">
+                                <label class="form-label" for="svcwiz-mode">Live mode</label>
+                                <select class="form-select" id="svcwiz-mode">
+                                    <option value="service" selected>Service Mode — a venue-wide join code for your congregation</option>
+                                    <option value="quick">Quick Live Follow — no setup, start from any song</option>
+                                </select>
+                            </div>
+                            <p class="form-text small mb-0">
+                                <strong>Service Mode</strong> is for a venue's regular service: set up a venue and
+                                (usually) a weekly time in the next few steps, then project a join code your whole
+                                congregation can scan or type in. <strong>Quick Live Follow</strong> needs nothing
+                                here — any signed-in leader taps <strong>Go Live</strong> on a song page to start a
+                                one-off session immediately.
+                            </p>
+                        </section>
+
+                        <section data-wiz-step data-wiz-label="Venue" hidden>
+                            <h3 data-wiz-heading class="h6 mb-3">2. Where do you meet?</h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <div class="mb-3">
+                                <label class="form-label" for="svcwiz-org">Organisation</label>
+                                <select class="form-select" id="svcwiz-org" aria-required="true">
+                                    <?php foreach ($orgs as $o): ?>
+                                        <option value="<?= (int)$o['Id'] ?>" <?= (int)$o['Id'] === $selectedOrgId ? 'selected' : '' ?>><?= htmlspecialchars($o['Name']) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label" for="svcwiz-venue-name">Venue name</label>
+                                <input type="text" class="form-control" id="svcwiz-venue-name" maxlength="150" placeholder="e.g. Main Sanctuary" aria-required="true">
+                            </div>
+                            <div class="mb-3">
+                                <label class="form-label" for="svcwiz-place">Find location (optional)</label>
+                                <input type="text" class="form-control" id="svcwiz-place" autocomplete="off" placeholder="Type an address or town to drop a map pin…">
+                                <input type="hidden" id="svcwiz-place-id" value="">
+                                <div class="form-text small">Sets the map pin — a convenience only, not the attendance check.</div>
+                            </div>
+                            <div class="mb-0">
+                                <label class="form-label" for="svcwiz-tz">Timezone</label>
+                                <select class="form-select" id="svcwiz-tz">
+                                    <?php foreach ($TZ_LIST as $tzId): ?>
+                                        <option value="<?= htmlspecialchars($tzId) ?>" <?= $tzId === 'Europe/London' ? 'selected' : '' ?>><?= htmlspecialchars($tzId) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                        </section>
+
+                        <section data-wiz-step data-wiz-label="Service time" hidden>
+                            <h3 data-wiz-heading class="h6 mb-3">3. When do you meet?</h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" id="svcwiz-sched-skip">
+                                <label class="form-check-label" for="svcwiz-sched-skip">Skip — we meet ad-hoc, not on a regular schedule</label>
+                            </div>
+                            <div id="svcwiz-sched-fields">
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label" for="svcwiz-sched-title">Service name</label>
+                                        <input type="text" class="form-control" id="svcwiz-sched-title" maxlength="150" value="Sunday Service">
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label" for="svcwiz-sched-kind">Repeats</label>
+                                        <select class="form-select" id="svcwiz-sched-kind">
+                                            <?php foreach ($RECURRENCE_KINDS as $k => $label): ?>
+                                                <option value="<?= htmlspecialchars($k) ?>" <?= $k === 'weekly' ? 'selected' : '' ?>><?= htmlspecialchars($label) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="row g-3 mb-3">
+                                    <div class="col-md-4" data-svcwiz-rec-field="day">
+                                        <label class="form-label" for="svcwiz-sched-dow">Day</label>
+                                        <select class="form-select" id="svcwiz-sched-dow">
+                                            <?php foreach ($DOW as $n => $dn): ?>
+                                                <option value="<?= $n ?>" <?= $n === 7 ? 'selected' : '' ?>><?= htmlspecialchars($dn) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label" for="svcwiz-sched-time">Start time</label>
+                                        <input type="time" class="form-control" id="svcwiz-sched-time" value="10:00">
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label" for="svcwiz-sched-dur">Duration (min)</label>
+                                        <input type="number" class="form-control" id="svcwiz-sched-dur" min="1" max="1440" value="90">
+                                    </div>
+                                </div>
+                                <div class="row g-3" data-svcwiz-rec-field="nth">
+                                    <div class="col-md-4">
+                                        <label class="form-label" for="svcwiz-sched-nth">Which week</label>
+                                        <select class="form-select" id="svcwiz-sched-nth">
+                                            <?php foreach ($NTH_LABELS as $nv => $nl): ?>
+                                                <option value="<?= $nv ?>" <?= $nv === 1 ? 'selected' : '' ?>><?= htmlspecialchars(ucfirst($nl)) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="row g-3" data-svcwiz-rec-field="oneoff">
+                                    <div class="col-md-4">
+                                        <label class="form-label" for="svcwiz-sched-oneoff">Date</label>
+                                        <input type="date" class="form-control" id="svcwiz-sched-oneoff">
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section data-wiz-step data-wiz-label="Presentation app" hidden>
+                            <h3 data-wiz-heading class="h6 mb-3">4. Presentation-app control <span class="text-muted small">(optional)</span></h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <p class="text-secondary small">
+                                A driver key lets an external presentation app (ProPresenter, a Stream Deck
+                                script, a Companion webhook) advance the song and section on its own, without a
+                                person clicking here. Skip this if you'll drive the service by hand — you can
+                                always mint a key later from the Projector Screen.
+                            </p>
+                            <?php if (!$driverKeysReady): ?>
+                                <div class="alert alert-warning small mb-0">
+                                    <i aria-hidden="true" class="bi bi-database-exclamation me-1"></i>Driver keys
+                                    aren't migrated on this environment yet — the venue and service time above still
+                                    save fine; mint a key later from the Projector Screen once this is set up.
+                                </div>
+                            <?php else: ?>
+                                <div class="form-check form-switch mb-3">
+                                    <input class="form-check-input" type="checkbox" id="svcwiz-dk-optin">
+                                    <label class="form-check-label" for="svcwiz-dk-optin">Set up a presentation-app driver key now</label>
+                                </div>
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label" for="svcwiz-dk-label">Label</label>
+                                        <input type="text" class="form-control" id="svcwiz-dk-label" maxlength="120" placeholder="e.g. Sanctuary ProPresenter" disabled>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label" for="svcwiz-dk-protocol">Protocol</label>
+                                        <select class="form-select" id="svcwiz-dk-protocol" disabled>
+                                            <?php foreach (SERVICE_DRIVER_KEY_PROTOCOLS as $proto): ?>
+                                                <option value="<?= htmlspecialchars($proto) ?>"><?= htmlspecialchars(ucfirst($proto)) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+                                </div>
+                            <?php endif; ?>
+                        </section>
+
+                        <section data-wiz-step data-wiz-label="Review" hidden>
+                            <h3 data-wiz-heading class="h6 mb-3">5. Review &amp; create</h3>
+                            <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                            <dl class="row small mb-0" id="svcwiz-review-summary"></dl>
+                        </section>
+                    </div>
+
+                    <div id="svcwiz-done" hidden>
+                        <h3 tabindex="-1" id="svcwiz-done-heading" class="h6 mb-3">Live Service is set up</h3>
+                        <div id="svcwiz-done-body" class="small"></div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-wiz-back hidden>Back</button>
+                    <button type="button" class="btn btn-amber" data-wiz-next>Next</button>
+                    <button type="button" class="btn btn-amber" id="svcwiz-done-close" data-bs-dismiss="modal" hidden>Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+    /* #1995 — guided "Live Service setup" wizard wiring, built on the
+       shared stepper (js/modules/admin-wizard.js). Domain logic only — the
+       framework itself knows nothing about venues/schedules/driver keys
+       (module doc-block). Mirrors manage/external-link-types.php's (#1992)
+       / manage/songbooks.php's (#1993) wizard shape; the ONE difference is
+       that onFinish here calls THREE existing api.php actions in sequence
+       (bare fetch + X-Requested-With + credentials:'same-origin' — the
+       /manage house pattern; js/utils/api-client.js is PWA-only, rule
+       #31) rather than one page-local AJAX case. */
+    import { createWizard } from '/js/modules/admin-wizard.js?v=<?= htmlspecialchars($adminWizardVer, ENT_QUOTES) ?>';
+
+    (function () {
+        'use strict';
+        const modalEl = document.getElementById('svcWizardModal');
+        if (!modalEl) { return; }
+
+        const seed = window._iHymnsServiceWizard || {};
+        const csrfToken = seed.csrf || '';
+        const dkReady = !!seed.driverKeysReady;
+
+        const stepsWrap    = document.getElementById('svcwiz-steps-wrap');
+        const doneEl       = document.getElementById('svcwiz-done');
+        const doneBodyEl   = document.getElementById('svcwiz-done-body');
+        const nextBtn      = modalEl.querySelector('[data-wiz-next]');
+        const backBtn      = modalEl.querySelector('[data-wiz-back]');
+        const doneCloseBtn = document.getElementById('svcwiz-done-close');
+
+        const modeSelect      = document.getElementById('svcwiz-mode');
+        const orgSelect        = document.getElementById('svcwiz-org');
+        const venueNameInput   = document.getElementById('svcwiz-venue-name');
+        const placeInput       = document.getElementById('svcwiz-place');
+        const placeIdInput     = document.getElementById('svcwiz-place-id');
+        const tzSelect          = document.getElementById('svcwiz-tz');
+
+        const schedSkipEl      = document.getElementById('svcwiz-sched-skip');
+        const schedFieldsWrap  = document.getElementById('svcwiz-sched-fields');
+        const schedTitleInput  = document.getElementById('svcwiz-sched-title');
+        const schedKindSelect  = document.getElementById('svcwiz-sched-kind');
+        const schedDowSelect   = document.getElementById('svcwiz-sched-dow');
+        const schedTimeInput   = document.getElementById('svcwiz-sched-time');
+        const schedDurInput    = document.getElementById('svcwiz-sched-dur');
+        const schedNthSelect   = document.getElementById('svcwiz-sched-nth');
+        const schedOneoffInput = document.getElementById('svcwiz-sched-oneoff');
+
+        const dkOptinEl    = document.getElementById('svcwiz-dk-optin');
+        const dkLabelInput = document.getElementById('svcwiz-dk-label');
+        const dkProtocolSel = document.getElementById('svcwiz-dk-protocol');
+
+        const reviewSummary = document.getElementById('svcwiz-review-summary');
+
+        const orgDefaultValue = orgSelect ? orgSelect.value : '';
+
+        const state = { venueId: 0, scheduleId: 0, orgId: 0 };
+
+        function escapeHtml(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        /* ---- modal-scoped recurrence-kind show/hide — DELIBERATELY a
+           SEPARATE function + data attribute (data-svcwiz-rec-field, never
+           this page's own data-rec-field) from the manual schedule form's
+           global venuesToggleRecurrence(), which the manual form's edit
+           links still call unmodified (additive only). Querying only
+           inside modalEl also means this never touches the manual form's
+           own [data-rec-field] elements, and vice versa. */
+        function svcwizToggleRecurrence() {
+            const kind = schedKindSelect ? schedKindSelect.value : 'weekly';
+            const show = {
+                weekly:      ['day'],
+                fortnightly: ['day'],
+                monthly_nth: ['day', 'nth'],
+                one_off:     ['oneoff'],
+            }[kind] || ['day'];
+            modalEl.querySelectorAll('[data-svcwiz-rec-field]').forEach(function (el) {
+                el.style.display = show.indexOf(el.getAttribute('data-svcwiz-rec-field')) === -1 ? 'none' : '';
+            });
+        }
+        if (schedKindSelect) { schedKindSelect.addEventListener('change', svcwizToggleRecurrence); }
+        svcwizToggleRecurrence();
+
+        function svcwizToggleSchedSkip() {
+            if (schedFieldsWrap) { schedFieldsWrap.hidden = !!(schedSkipEl && schedSkipEl.checked); }
+        }
+        if (schedSkipEl) { schedSkipEl.addEventListener('change', svcwizToggleSchedSkip); }
+
+        if (dkOptinEl) {
+            dkOptinEl.addEventListener('change', function () {
+                const on = dkOptinEl.checked;
+                if (dkLabelInput) { dkLabelInput.disabled = !on; }
+                if (dkProtocolSel) { dkProtocolSel.disabled = !on; }
+            });
+        }
+
+        /* ---- location typeahead — the SAME shared module + attach shape
+           the manual venue form above already uses; place-search.js is
+           already loaded on this page by that block, never re-loaded
+           here. */
+        if (window.iHymnsPlaceSearch && placeInput && placeIdInput) {
+            window.iHymnsPlaceSearch.attach(placeInput, { hiddenIdInput: placeIdInput });
+        }
+
+        /* ---- review ------------------------------------------------- */
+        function updateReview() {
+            if (!reviewSummary) { return; }
+            const orgLabel = orgSelect && orgSelect.selectedOptions[0] ? orgSelect.selectedOptions[0].textContent : '';
+            let rows = '';
+            rows += '<dt class="col-sm-4">Organisation</dt><dd class="col-sm-8">' + escapeHtml(orgLabel) + '</dd>';
+            rows += '<dt class="col-sm-4">Venue</dt><dd class="col-sm-8">' + escapeHtml(venueNameInput.value.trim()) + '</dd>';
+            rows += '<dt class="col-sm-4">Timezone</dt><dd class="col-sm-8">' + escapeHtml(tzSelect.value) + '</dd>';
+            if (schedSkipEl && schedSkipEl.checked) {
+                rows += '<dt class="col-sm-4">Service time</dt><dd class="col-sm-8">Skipped — ad-hoc</dd>';
+            } else {
+                rows += '<dt class="col-sm-4">Service time</dt><dd class="col-sm-8">' + escapeHtml(schedTitleInput.value.trim() || 'Sunday Service') + '</dd>';
+            }
+            if (dkOptinEl && dkOptinEl.checked) {
+                rows += '<dt class="col-sm-4">Driver key</dt><dd class="col-sm-8">' + escapeHtml(dkLabelInput.value.trim() || '(unnamed)') + '</dd>';
+            }
+            reviewSummary.innerHTML = rows;
+        }
+
+        function showStepError(index, message) {
+            const panes = modalEl.querySelectorAll('[data-wiz-step]');
+            const pane = panes[index];
+            if (!pane) { return; }
+            const alertEl = pane.querySelector('[data-wiz-alert]');
+            if (alertEl) {
+                alertEl.hidden = false;
+                alertEl.textContent = message;
+                alertEl.focus();
+            }
+        }
+        function clearAllStepAlerts() {
+            modalEl.querySelectorAll('[data-wiz-alert]').forEach(function (el) { el.hidden = true; el.textContent = ''; });
+        }
+
+        const LAST_STEP = modalEl.querySelectorAll('[data-wiz-step]').length - 1;
+
+        /* ---- the wizard itself ----------------------------------------- */
+        const wizard = createWizard(modalEl, {
+            host: 'bootstrap-modal',
+            validateStep: function (index) {
+                if (index === 0) {
+                    if (modeSelect && modeSelect.value === 'quick') {
+                        return 'Quick Live Follow needs no setup here — open any song and tap Go Live. '
+                            + 'Choose Service Mode above to keep going, or close this wizard.';
+                    }
+                    return true;
+                }
+                if (index === 1) {
+                    if (!(orgSelect && parseInt(orgSelect.value, 10) > 0)) {
+                        return { ok: false, message: 'Choose an organisation.', focus: orgSelect };
+                    }
+                    if (!venueNameInput.value.trim()) {
+                        return { ok: false, message: 'Venue name is required.', focus: venueNameInput };
+                    }
+                    return true;
+                }
+                if (index === 2) {
+                    if (schedSkipEl && schedSkipEl.checked) { return true; }
+                    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(schedTimeInput.value || '')) {
+                        return { ok: false, message: 'Enter a valid start time.', focus: schedTimeInput };
+                    }
+                    const kind = schedKindSelect.value;
+                    if (kind === 'one_off') {
+                        if (!/^\d{4}-\d{2}-\d{2}$/.test(schedOneoffInput.value || '')) {
+                            return { ok: false, message: 'Enter the one-off date.', focus: schedOneoffInput };
+                        }
+                    } else {
+                        const dow = parseInt(schedDowSelect.value, 10);
+                        if (!(dow >= 1 && dow <= 7)) {
+                            return { ok: false, message: 'Choose a day of the week.', focus: schedDowSelect };
+                        }
+                    }
+                    return true;
+                }
+                if (index === 3) {
+                    if (dkOptinEl && dkOptinEl.checked && !dkLabelInput.value.trim()) {
+                        return { ok: false, message: 'Give the driver key a label.', focus: dkLabelInput };
+                    }
+                    return true;
+                }
+                if (index === 4) {
+                    updateReview();
+                    return true;
+                }
+                return true;
+            },
+            onStepChange: function (from, to) {
+                if (nextBtn) { nextBtn.textContent = (to === LAST_STEP) ? 'Create' : 'Next'; }
+                if (to === LAST_STEP) { updateReview(); }
+            },
+            onFinish: save,
+        });
+
+        /* ---- transport — bare fetch, the /manage house pattern (rule
+           #31 is PWA-only; js/utils/api-client.js is not consumed here),
+           same shape as manage/service-projection.php's own apiCall(). */
+        function svcwizApiCall(action, body) {
+            return fetch('/api?action=' + encodeURIComponent(action), {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify(body || {}),
+            }).then(function (res) {
+                return res.json().catch(function () { return {}; }).then(function (data) {
+                    return { status: res.status, data: data };
+                });
+            });
+        }
+
+        /* venue_id is ALWAYS the held state.venueId (0 the first time) —
+           org_admin_venue_save treats a positive venue_id as an UPDATE, so
+           a retry after a LATER step fails never mints a second venue row
+           (there is no name-uniqueness constraint to lean on instead). */
+        function doVenueSave() {
+            const body = {
+                venue_id: state.venueId || 0,
+                org_id: parseInt(orgSelect.value, 10) || 0,
+                name: venueNameInput.value.trim(),
+                timezone: tzSelect.value,
+                is_active: 1,
+                csrf_token: csrfToken,
+            };
+            if (placeIdInput.value) { body.place_id = parseInt(placeIdInput.value, 10); }
+            return svcwizApiCall('org_admin_venue_save', body).then(function (result) {
+                if (result.status === 200 && result.data && result.data.ok && result.data.venue) {
+                    return result.data.venue;
+                }
+                const err = new Error((result.data && result.data.error) || 'Could not save the venue.');
+                err.step = 'venue';
+                throw err;
+            });
+        }
+
+        /* schedule_id is likewise held in state — same retry-safety shape. */
+        function doScheduleSave(venueId) {
+            const kind = schedKindSelect.value;
+            const body = {
+                schedule_id: state.scheduleId || 0,
+                venue_id: venueId,
+                title: schedTitleInput.value.trim() || 'Sunday Service',
+                recurrence_kind: kind,
+                start_time: schedTimeInput.value,
+                duration_mins: parseInt(schedDurInput.value, 10) || 90,
+                is_active: 1,
+                csrf_token: csrfToken,
+            };
+            if (kind === 'one_off') {
+                body.one_off_date = schedOneoffInput.value;
+            } else {
+                body.day_of_week = parseInt(schedDowSelect.value, 10) || 7;
+                if (kind === 'monthly_nth') { body.nth = parseInt(schedNthSelect.value, 10) || 1; }
+            }
+            return svcwizApiCall('org_admin_schedule_save', body).then(function (result) {
+                if (result.status === 200 && result.data && result.data.ok && result.data.schedule) {
+                    return result.data.schedule;
+                }
+                const err = new Error((result.data && result.data.error) || 'Could not save the service time.');
+                err.step = 'schedule';
+                throw err;
+            });
+        }
+
+        /* Driver-key mint is the ONE non-fatal leg — it NEVER rejects. A
+           failure here must never undo the venue/schedule that already
+           saved; the DONE pane reports it and points at the Projector
+           Screen to mint later instead. */
+        function maybeMintDriverKey(venueId, orgId) {
+            if (!dkReady || !dkOptinEl || !dkOptinEl.checked) { return Promise.resolve(null); }
+            const label = dkLabelInput.value.trim();
+            if (!label) { return Promise.resolve(null); }
+            const body = {
+                orgId: orgId,
+                venueId: venueId,
+                label: label,
+                protocol: dkProtocolSel ? dkProtocolSel.value : 'generic',
+                csrf_token: csrfToken,
+            };
+            return svcwizApiCall('service_driver_key_mint', body).then(function (result) {
+                if (result.status === 200 && result.data && result.data.ok) {
+                    return { minted: true, key: result.data.key, prefix: result.data.prefix };
+                }
+                return { minted: false, error: (result.data && result.data.error) || 'Could not mint a driver key.' };
+            }).catch(function () {
+                return { minted: false, error: 'Could not reach the server to mint a driver key.' };
+            });
+        }
+
+        function routeSaveError(err) {
+            const msg = (err && err.message) || 'Something went wrong. Please try again.';
+            if (err && err.step === 'venue') {
+                wizard.goTo(1);
+                showStepError(1, msg);
+            } else if (err && err.step === 'schedule') {
+                wizard.goTo(2);
+                showStepError(2, msg);
+            } else {
+                window.alert(msg);
+            }
+        }
+
+        function showDonePane(info) {
+            if (stepsWrap) { stepsWrap.hidden = true; }
+            if (doneEl) { doneEl.hidden = false; }
+            if (backBtn) { backBtn.hidden = true; }
+            if (nextBtn) { nextBtn.hidden = true; }
+            if (doneCloseBtn) { doneCloseBtn.hidden = false; }
+
+            let html = '';
+            html += '<p><i aria-hidden="true" class="bi bi-check-circle-fill text-success me-1"></i>Venue <strong>'
+                + escapeHtml(info.venueName) + '</strong> is set up.</p>';
+            if (info.scheduleSkipped) {
+                html += '<p>No regular service time saved — add one any time from this page when you have one.</p>';
+            } else {
+                html += '<p>Service time <strong>' + escapeHtml(info.scheduleTitle) + '</strong> saved.</p>';
+            }
+            if (info.mintOutcome && info.mintOutcome.minted) {
+                /* Show-once (mirrors manage/service-projection.php's own
+                   driver-key mint card): the raw key is never stored,
+                   only ever displayed here, and is not sent anywhere
+                   again. */
+                html += '<div class="alert alert-warning py-2 px-3 mb-3">'
+                    + '<strong>Copy this driver key now — it will not be shown again:</strong><br>'
+                    + '<code style="user-select:all;" id="svcwiz-done-key">' + escapeHtml(info.mintOutcome.key) + '</code> '
+                    + '<button type="button" class="btn btn-sm btn-outline-secondary ms-2" id="svcwiz-copy-key">Copy</button>'
+                    + '<span class="small ms-2" id="svcwiz-copy-status" role="status"></span>'
+                    + '<div class="form-text small mb-0">Lost it? Revoke it and mint a new one any time on the Projector Screen.</div>'
+                    + '</div>';
+            } else if (info.mintOutcome && info.mintOutcome.minted === false) {
+                html += '<div class="alert alert-secondary py-2 px-3 mb-3">Driver key not minted — '
+                    + escapeHtml(info.mintOutcome.error) + ' Mint one later on the Projector Screen.</div>';
+            }
+            html += '<p class="mb-2"><a href="/manage/service-projection">Open the Projector Screen</a> to start a '
+                + 'live service, or <a href="/manage/service-lead">Connect &amp; drive</a> from a leader’s device.</p>';
+            html += '<p class="text-secondary small mb-0">This works right now. A congregant’s copyrighted-lyrics '
+                + 'unlock during a service is a separate, dormant setting — it needs Content Gating turned on and a '
+                + 'CCLI licence restriction configured first.</p>';
+
+            if (doneBodyEl) { doneBodyEl.innerHTML = html; }
+            const copyBtn = document.getElementById('svcwiz-copy-key');
+            if (copyBtn) {
+                copyBtn.addEventListener('click', function () {
+                    /* a11y audit F8 — a clipboard write with no visible/
+                       announced outcome leaves a screen-reader (or anyone
+                       not watching the OS clipboard) with no idea whether
+                       the copy worked. Flip the button's own text to
+                       "Copied" (a sighted, at-a-glance confirmation) AND
+                       write the SAME outcome into the adjacent role="status"
+                       span (an ANNOUNCED confirmation) — success and
+                       failure both surfaced, never silently swallowed. */
+                    const codeEl = document.getElementById('svcwiz-done-key');
+                    const statusEl = document.getElementById('svcwiz-copy-status');
+                    const originalLabel = copyBtn.textContent;
+                    if (!codeEl || !navigator.clipboard) {
+                        if (statusEl) { statusEl.textContent = 'Could not copy — select and copy the key manually.'; }
+                        return;
+                    }
+                    navigator.clipboard.writeText(codeEl.textContent).then(function () {
+                        copyBtn.textContent = 'Copied';
+                        if (statusEl) { statusEl.textContent = 'Copied to clipboard.'; }
+                        setTimeout(function () { copyBtn.textContent = originalLabel; }, 2000);
+                    }).catch(function () {
+                        if (statusEl) { statusEl.textContent = 'Could not copy — select and copy the key manually.'; }
+                    });
+                });
+            }
+            const heading = document.getElementById('svcwiz-done-heading');
+            if (heading) { heading.focus(); }
+        }
+
+        function save() {
+            if (nextBtn) { nextBtn.disabled = true; }
+            clearAllStepAlerts();
+            const scheduleSkipped = !!(schedSkipEl && schedSkipEl.checked);
+            const scheduleTitle = schedTitleInput.value.trim() || 'Sunday Service';
+            const venueName = venueNameInput.value.trim();
+
+            doVenueSave()
+                .then(function (venue) {
+                    state.venueId = venue.id;
+                    state.orgId = venue.orgId;
+                    if (scheduleSkipped) { return null; }
+                    return doScheduleSave(venue.id);
+                })
+                .then(function (schedule) {
+                    state.scheduleId = schedule ? schedule.id : 0;
+                    return maybeMintDriverKey(state.venueId, state.orgId);
+                })
+                .then(function (mintOutcome) {
+                    showDonePane({
+                        venueName: venueName,
+                        scheduleSkipped: scheduleSkipped,
+                        scheduleTitle: scheduleTitle,
+                        mintOutcome: mintOutcome,
+                    });
+                })
+                .catch(function (err) { routeSaveError(err); })
+                .finally(function () { if (nextBtn) { nextBtn.disabled = false; } });
+        }
+
+        /* Reset to a clean slate every time the modal is opened again —
+           including collapsing the DONE pane back to the stepper (a
+           reopened wizard always starts a FRESH create, never resumes
+           the previous run's in-memory ids). */
+        modalEl.addEventListener('hidden.bs.modal', function () {
+            clearAllStepAlerts();
+            if (modeSelect) { modeSelect.value = 'service'; }
+            if (orgSelect) { orgSelect.value = orgDefaultValue; }
+            venueNameInput.value = '';
+            placeInput.value = '';
+            placeIdInput.value = '';
+            tzSelect.value = 'Europe/London';
+            if (schedSkipEl) { schedSkipEl.checked = false; }
+            schedTitleInput.value = 'Sunday Service';
+            schedKindSelect.value = 'weekly';
+            schedDowSelect.value = '7';
+            schedTimeInput.value = '10:00';
+            schedDurInput.value = '90';
+            schedNthSelect.value = '1';
+            schedOneoffInput.value = '';
+            svcwizToggleRecurrence();
+            svcwizToggleSchedSkip();
+            if (dkOptinEl) { dkOptinEl.checked = false; }
+            if (dkLabelInput) { dkLabelInput.value = ''; dkLabelInput.disabled = true; }
+            if (dkProtocolSel) { dkProtocolSel.disabled = true; }
+            /* Security audit F1 — the DONE pane's show-once driver key is
+               only ever meant to be visible for this one reveal; clearing
+               its innerHTML here means the raw key no longer lingers
+               (hidden but still in the DOM, readable via devtools/extension)
+               for the rest of the tab's life once the modal is closed. */
+            if (doneBodyEl) { doneBodyEl.innerHTML = ''; }
+            state.venueId = 0; state.scheduleId = 0; state.orgId = 0;
+            if (stepsWrap) { stepsWrap.hidden = false; }
+            if (doneEl) { doneEl.hidden = true; }
+            if (backBtn) { backBtn.hidden = true; }
+            if (nextBtn) { nextBtn.hidden = false; nextBtn.textContent = 'Next'; nextBtn.disabled = false; }
+            if (doneCloseBtn) { doneCloseBtn.hidden = true; }
+            wizard.goTo(0);
+        });
+    })();
+    </script>
+    <?php /* #1995 — Live Service setup wizard: modal + wiring. END */ ?>
+    <?php endif; ?>
+
 
     <!-- Sortable table headers (#1786 sweep). -->
     <script type="module">

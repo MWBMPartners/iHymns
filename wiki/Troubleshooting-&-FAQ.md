@@ -202,3 +202,6 @@ A: That's deliberate (#1905). A path the app doesn't own — a `/wp-admin/` scan
 
 **Q: What is the `X-Powered-By: iHymns/<version>` response header?**
 A: Part of a defensive hardening pass (#1906). The header now advertises our own `iHymns/<version>` identity, and the PHP runtime version is suppressed at source (`expose_php=Off`) so a scanner can't read the exact PHP build off the response. The same pass added security headers/CSP to the admin area and the social-card endpoint, per-email brute-force buckets, a session-fixation fix, and rate limits on several heavy public endpoints — all entirely behind the scenes, with no user-visible behaviour change.
+
+**Q: Why isn't beta/dev showing up on Google? / Why did pages drop out of search?**
+A: Almost certainly the new "Search engine visibility" card on `/manage/configuration` (#2024/#2025) — beta and dev are hidden from search engines by default (only production is listed out of the box), and an admin can also switch production off deliberately. Check that card first; the change takes days to weeks to be reflected in search results either way, since search engines only update on their next crawl of a page. See [[Deployment & CI-CD]]'s "Per-channel search-engine visibility" section for the full mechanics.

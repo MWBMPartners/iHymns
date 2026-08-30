@@ -153,7 +153,7 @@ $joinBase = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
     <div class="container-admin py-4">
-        <h1 class="h4 mb-2"><i class="bi bi-music-note-list me-2"></i>Lead a Service</h1>
+        <h1 class="h4 mb-2"><i aria-hidden="true" class="bi bi-music-note-list me-2"></i>Lead a Service</h1>
         <p class="text-secondary small mb-4" style="max-width: 62ch;">
             Connect to a live service running on your projector and drive the songs from this device.
             Congregants following the service see whatever you choose here. To start a service (and show
@@ -162,9 +162,9 @@ $joinBase = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https
 
         <?php if (!$schemaReady): ?>
             <div class="card border-warning"><div class="card-body">
-                <h2 class="h6 text-warning-emphasis"><i class="bi bi-database-exclamation me-1"></i>Service Mode not migrated yet</h2>
+                <h2 class="h6 text-warning-emphasis"><i aria-hidden="true" class="bi bi-database-exclamation me-1"></i>Service Mode not migrated yet</h2>
                 <p class="small mb-2">The Service Mode tables don't exist on this environment yet (migrations aren't auto-applied).</p>
-                <a class="btn btn-sm btn-amber-solid" href="/manage/setup-database"><i class="bi bi-database-gear me-1"></i>Run “Service Mode sessions” in Database Setup</a>
+                <a class="btn btn-sm btn-amber-solid" href="/manage/setup-database"><i aria-hidden="true" class="bi bi-database-gear me-1"></i>Run “Service Mode sessions” in Database Setup</a>
             </div></div>
         <?php elseif (!$sessionList): ?>
             <div class="alert alert-info">
@@ -179,7 +179,7 @@ $joinBase = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https
                         <label class="form-label small fw-semibold" for="svc-lead-session">Live service</label>
                         <select id="svc-lead-session" class="form-select"></select>
                     </div>
-                    <button type="button" id="svc-lead-connect-btn" class="btn btn-amber-solid"><i class="bi bi-broadcast me-1"></i>Connect &amp; drive</button>
+                    <button type="button" id="svc-lead-connect-btn" class="btn btn-amber-solid"><i aria-hidden="true" class="bi bi-broadcast me-1"></i>Connect &amp; drive</button>
                     <div id="svc-lead-connect-error" class="text-danger small mt-2" role="alert"></div>
                 </div>
             </div>
@@ -197,8 +197,8 @@ $joinBase = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https
                             <div class="text-secondary small">Congregants: open <strong><?= htmlspecialchars(preg_replace('#^https?://#', '', $joinBase)) ?></strong> → Join service</div>
                         </div>
                         <div class="d-flex gap-2">
-                            <button type="button" id="svc-lead-stop" class="btn btn-sm btn-outline-secondary"><i class="bi bi-box-arrow-left me-1"></i>Stop driving</button>
-                            <button type="button" id="svc-lead-end" class="btn btn-sm btn-outline-danger"><i class="bi bi-stop-circle me-1"></i>End service</button>
+                            <button type="button" id="svc-lead-stop" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-box-arrow-left me-1"></i>Stop driving</button>
+                            <button type="button" id="svc-lead-end" class="btn btn-sm btn-outline-danger"><i aria-hidden="true" class="bi bi-stop-circle me-1"></i>End service</button>
                         </div>
                     </div>
                     <div id="svc-lead-console"></div>

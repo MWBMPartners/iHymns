@@ -562,7 +562,7 @@ foreach ($components as $_c) {
             <div class="d-flex align-items-start gap-3 mb-3">
                 <?php if ($songNumber !== null): ?>
                 <span class="song-number-badge-lg" data-songbook="<?= htmlspecialchars($songbook) ?>"
-                      aria-label="Song number <?= (int)$songNumber ?>">
+                      role="img" aria-label="Song number <?= (int)$songNumber ?>">
                     <?= (int)$songNumber ?>
                 </span>
                 <?php endif; ?>
@@ -954,8 +954,13 @@ foreach ($components as $_c) {
                 <small class="text-muted" id="song-key-info"></small>
             </div>
 
-            <!-- Action buttons row -->
-            <div class="d-flex flex-wrap gap-2">
+            <!-- Action buttons row. `song-actions` is the named mount-point
+                 contract js/modules/live-follow.js's _mountControls() looks
+                 for first (falling back to the structural
+                 `.d-flex.flex-wrap.gap-2` selector if this class is ever
+                 renamed) — see the silent-wiring sweep, rule #34. Keep this
+                 class on this row even if the utility classes change. -->
+            <div class="song-actions d-flex flex-wrap gap-2">
                 <!-- Favourite toggle -->
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-favourite"
@@ -1339,7 +1344,14 @@ foreach ($components as $_c) {
         || (!$fullyPublicDomain && $copyrightDisplay !== '')
         || $fullyPublicDomain
     ): ?>
-        <footer class="song-credits-footer text-end small text-muted mt-4 pt-3 border-top" role="contentinfo">
+        <?php /* a11y audit m1 (2026-08-28): role="contentinfo" here is an explicit
+                 landmark override on a <footer> nested inside the page's <main>/
+                 article content — an un-roled <footer> in that position already
+                 gets NO implicit landmark role (the HTML-AAM "sectioning root"
+                 rule), so this created a SECOND contentinfo landmark competing
+                 with the real page-level footer. Dropping the role lets it scope
+                 correctly on its own. */ ?>
+        <footer class="song-credits-footer text-end small text-muted mt-4 pt-3 border-top">
             <?php if ($_hasAnyCredit): ?>
                 <?php foreach ($_creditRows as $row): ?>
                     <?php [$rowId, $rowLabel, , $rowNames] = $row; ?>
@@ -1529,10 +1541,17 @@ foreach ($components as $_c) {
 
     <!-- Song translations (#352) — populated client-side from API -->
     <section id="song-translations" class="song-translations mt-4 pt-3 border-top d-none" aria-label="Translations">
-        <h2 class="h6 mb-3 d-flex align-items-center gap-2" role="button" data-bs-toggle="collapse" data-bs-target="#song-translations-list" aria-expanded="true" aria-controls="song-translations-list">
-            <i class="fa-solid fa-language me-1 text-muted" aria-hidden="true"></i>
-            Translations
-            <i class="fa-solid fa-chevron-down ms-auto small text-muted" aria-hidden="true"></i>
+        <h2 class="mb-3">
+            <?php /* a11y audit M1 (2026-08-28) — was <h2 role="button"> with no tabindex: never
+                     focusable, and Bootstrap's collapse data-API only listens for click, so
+                     Enter/Space couldn't toggle it from the keyboard. A real <button> inside the
+                     heading keeps the heading in the outline AND makes the toggle reachable/
+                     operable; the button-reset styling is `.section-toggle-btn` in app.css. */ ?>
+            <button type="button" class="section-toggle-btn h6 mb-0 d-flex align-items-center gap-2 w-100" data-bs-toggle="collapse" data-bs-target="#song-translations-list" aria-expanded="true" aria-controls="song-translations-list">
+                <i class="fa-solid fa-language me-1 text-muted" aria-hidden="true"></i>
+                Translations
+                <i class="fa-solid fa-chevron-down ms-auto small text-muted" aria-hidden="true"></i>
+            </button>
         </h2>
         <div class="collapse show" id="song-translations-list">
             <div class="list-group list-group-flush" id="song-translations-items" role="list">
@@ -1552,7 +1571,7 @@ foreach ($components as $_c) {
         $songMedia = $song['media'] ?? [];
         if (!empty($songMedia)):
             $mediaByKind = [
-                'audio' => [], 'sheet-music' => [], 'midi' => [], 'musicxml' => [],
+                'audio' => [], 'video' => [], 'image' => [], 'sheet-music' => [], 'midi' => [], 'musicxml' => [],
             ];
             foreach ($songMedia as $m) {
                 $k = (string)($m['kind'] ?? '');
@@ -1582,6 +1601,46 @@ foreach ($components as $_c) {
                             <a href="<?= htmlspecialchars($m['streamUrl']) ?>">Download <?= htmlspecialchars($m['fileName']) ?></a>.
                         </audio>
                     </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <?php /* #1968 P4 — video: inline HTML5 player (Range-seekable via the
+                 same 206 streaming endpoint as audio). Only PUBLIC rows reach
+                 here — SongData::_songMediaMap() strips admin-only media
+                 server-side, so publishing a row is what makes it appear
+                 (rule #33). Plain markup, no inline script (CSP untouched, #30). */ ?>
+        <?php if (!empty($mediaByKind['video'])): ?>
+            <div class="song-media-video mb-3">
+                <?php foreach ($mediaByKind['video'] as $m): ?>
+                    <div class="mb-2">
+                        <div class="small text-muted mb-1">
+                            <?= htmlspecialchars($m['fileName']) ?>
+                            <?php if (!empty($m['annotation'])): ?>
+                                — <em><?= htmlspecialchars($m['annotation']) ?></em>
+                            <?php endif; ?>
+                        </div>
+                        <video controls preload="none" class="w-100 rounded"
+                               src="<?= htmlspecialchars($m['streamUrl']) ?>">
+                            Your browser doesn't support the video element.
+                            <a href="<?= htmlspecialchars($m['streamUrl']) ?>">Download <?= htmlspecialchars($m['fileName']) ?></a>.
+                        </video>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <?php if (!empty($mediaByKind['image'])): ?>
+            <div class="song-media-image mb-3 d-flex flex-wrap gap-2">
+                <?php foreach ($mediaByKind['image'] as $m): ?>
+                    <figure class="mb-0">
+                        <img loading="lazy" class="rounded" style="max-width: 100%; max-height: 280px;"
+                             src="<?= htmlspecialchars($m['streamUrl']) ?>"
+                             alt="<?= htmlspecialchars(($m['annotation'] ?? '') !== '' ? $m['annotation'] : $m['fileName']) ?>">
+                        <?php if (!empty($m['annotation'])): ?>
+                            <figcaption class="small text-muted mt-1"><?= htmlspecialchars($m['annotation']) ?></figcaption>
+                        <?php endif; ?>
+                    </figure>
                 <?php endforeach; ?>
             </div>
         <?php endif; ?>
@@ -1701,7 +1760,7 @@ foreach ($components as $_c) {
                                 <?php endif; ?>
                                 <span class="flex-grow-1"><?= htmlspecialchars(toTitleCase((string)$m['title'])) ?></span>
                                 <?php if (!empty($m['isCanonical'])): ?>
-                                    <i class="fa-solid fa-star text-warning small" aria-label="Canonical version" title="Canonical version"></i>
+                                    <i class="fa-solid fa-star text-warning small" role="img" aria-label="Canonical version" title="Canonical version"></i>
                                 <?php endif; ?>
                                 <i class="fa-solid fa-chevron-right text-muted small" aria-hidden="true"></i>
                             </a>
@@ -1762,7 +1821,7 @@ foreach ($components as $_c) {
                                 <span class="text-muted small">— <?= htmlspecialchars($l['note']) ?></span>
                             <?php endif; ?>
                             <?php if (!empty($l['verified'])): ?>
-                                <i class="fa-solid fa-circle-check text-success small" aria-label="Verified" title="Verified"></i>
+                                <i class="fa-solid fa-circle-check text-success small" role="img" aria-label="Verified" title="Verified"></i>
                             <?php endif; ?>
                         </a>
                     <?php endforeach; ?>
@@ -1774,10 +1833,13 @@ foreach ($components as $_c) {
 
     <!-- Related songs (#118) — populated client-side from songs.json -->
     <section id="related-songs" class="related-songs mt-4 pt-3 border-top d-none" aria-label="Related songs">
-        <h2 class="h6 mb-3 d-flex align-items-center gap-2" role="button" data-bs-toggle="collapse" data-bs-target="#related-songs-list" aria-expanded="true" aria-controls="related-songs-list">
-            <i class="fa-solid fa-music me-1 text-muted" aria-hidden="true"></i>
-            Related Songs
-            <i class="fa-solid fa-chevron-down ms-auto small text-muted related-songs-chevron" aria-hidden="true"></i>
+        <h2 class="mb-3">
+            <?php /* a11y audit M1 — see the matching comment on the Translations heading above. */ ?>
+            <button type="button" class="section-toggle-btn h6 mb-0 d-flex align-items-center gap-2 w-100" data-bs-toggle="collapse" data-bs-target="#related-songs-list" aria-expanded="true" aria-controls="related-songs-list">
+                <i class="fa-solid fa-music me-1 text-muted" aria-hidden="true"></i>
+                Related Songs
+                <i class="fa-solid fa-chevron-down ms-auto small text-muted related-songs-chevron" aria-hidden="true"></i>
+            </button>
         </h2>
         <div class="collapse show" id="related-songs-list">
             <div class="list-group list-group-flush" id="related-songs-items" role="list">

@@ -150,6 +150,26 @@ This batch landed several feature families as additive, dormant, forward-looking
 
 **Migration cards:** `migrate-ilyrics-internal-ids` (creates + seeds `tblIlyricsIdSequence`, adds the 8 `IlId` columns — additive, dormant until Phase 2 mint-on-create + the go-live A/B/C commits wired every write funnel), `migrate-song-pd-from-year` (adds the two `PdFromYear` columns + a chunked backfill using the same live fold the write path uses), `migrate-reconcile-media-flags` (`'manual'` + `dryRunnable` — a one-time, docroot-sensitive `HasAudio`/`HasSheetMusic` reconcile; no new columns, those predate this batch).
 
+### ProPresenter interop — media, chords, and dormant timeline groundwork (epic #1968)
+
+Media referenced by an imported ProPresenter `.probundle`/`.proplaylist` (background videos, images) is ingested into `tblSongMedia` linked to the song, **admin-only until a curator publishes it** (owner decision D1, Phase 4). One additive, dormant column drives it:
+
+- **`tblSongMedia.Visibility`** `VARCHAR(20) NOT NULL DEFAULT 'public'` — a per-row publish state (`public | admin`; `org`/`pending` reserved), app-validated via `IHYMNS_SONG_MEDIA_VISIBILITIES` (`includes/song_media_visibility.php`), VARCHAR-not-ENUM (a growable vocabulary). A **verified no-op** for all existing rows (each stamped `public`) and on un-migrated installs.
+
+The serving gate (`includes/song_media_visibility.php`) is the ONE place that decides "may this be served publicly," at both grains — the list-emit SQL filter (every public `FROM tblSongMedia` read) and the `song-media.php` byte gate (404-no-body for an admin row to a non-curator). It is **always active** (an editorial publish state, not a tier cap — so NOT behind `content_gating_enabled`), a no-op for `public` rows, and fail-CLOSED on the serve axis for any unknown value. Ingest itself is **entirely dormant** behind `tblAppSettings.pp7_media_ingest_enabled` (default `'0'`), which the owner flips only after this reaches `main` (a mechanism against the shared-DB cross-channel leak). A single-song export can also **embed** a song's published background media into the `.probundle` it produces (#1979) — read-only against this same table, no additional schema.
+
+**Migration card:** `migrate-song-media-visibility` (additive, idempotent, existence-guarded; no docroot include path, rule #41). Video/image media KINDS are app-level only (`Kind` has been VARCHAR since #1090 — no DDL).
+
+**Chord round-trip (#1968 P6) — no new schema.** PP7 stores chords as positioned protobuf `CustomAttribute` rows over clean plain text, not inline `[G]` brackets, so the decoder/importer buckets them straight into the **existing** per-line positioned `chords` cells and rides the untouched `lyricLinesWriteComponents()` funnel (rule #25) — nothing new to add here.
+
+**Presentation timeline groundwork (#1968 P6) — dormant, off by default.**
+
+| Table | Purpose |
+|---|---|
+| `tblSongPresentationCues` | The auto-advance slide-cue schedule decoded from a `.pro`'s `Presentation.timeline` (`trigger_time` / `cue_id` / `name`), one row per cue. `Source` is `VARCHAR` (rule #20); `ArrangementName` is a multiplicity discriminator (a song can carry more than one arrangement's timeline); `ComponentId` is reserved `NULL` for later mapping work. Capture is gated behind `tblAppSettings.pp7_timeline_import_enabled` (seeded `'0'`) and wired into the shared import pipeline behind its own try/catch — a verified no-op at the toggle's shipped default. **No playback or auto-advance UI exists yet** — this is schema + capture only. |
+
+**Migration card:** `migrate-pp7-timeline-groundwork` (additive, idempotent).
+
 ### User & Access Control Tables
 
 | Table | Purpose |
@@ -157,7 +177,8 @@ This batch landed several feature families as additive, dormant, forward-looking
 | `tblUserGroups` | Groups with version channel access flags (Alpha/Beta/RC/RTW) |
 | `tblUsers` | Accounts with role, group link, EmailVerified, LastLoginAt, LoginCount, AccessTier, CcliNumber, CcliVerified, and the `Status` / `StatusChangedAt` lifecycle pair (#1698 — `active` / `disabled` / `deleted`; see [[User Accounts & Roles]]) |
 | `tblSessions` | Server-side admin panel sessions |
-| `tblApiTokens` | Bearer tokens for PWA/native app auth (64-char hex, 30-day expiry) |
+| `tblApiTokens` | Bearer tokens for PWA/native app auth (64-char hex, 30-day expiry). As of the 2026-08-28/29 API-coverage program, the same token also authenticates against the song-editor API (`manage/editor/api2.php` + the legacy `api.php` shim), `manage/places-api.php`, and `manage/print-pdf.php` — see [[Architecture]] § API coverage. |
+| `tblPushTokens` | (API-coverage plan C1, 2026-08-28) Android/FireOS push registration tokens — `Provider` (`fcm` \| `adm`, `VARCHAR` not `ENUM`, rule #20) discriminates ordinary-Android Google FCM from Fire-OS-only Amazon ADM in one table rather than forking a near-identical second one. `UNIQUE(Provider, Token)`; `UserId` FK, `CASCADE` on delete. Distinct from the existing (undocumented-here) `tblApnsTokens` (Apple) and `tblPushSubscriptions` (Web Push/VAPID, keyed by browser endpoint URL). **Entirely dormant** until `includes/fcm.php` is keyed AND a live trigger calls its `fcmSend()` — neither is true yet; see [[Native Apps (Apple & Android)]] § Push notifications. Migration: `migrate-add-push-tokens.php`. |
 | `tblPasswordResetTokens` | Single-use password reset tokens (48-char hex, 1-hour expiry) |
 | `tblEmailLoginTokens` | Magic link tokens + 6-digit codes for passwordless email login (10-min expiry) |
 | `tblUserGroupMembers` | Many-to-many user-to-group membership |

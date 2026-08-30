@@ -554,12 +554,18 @@ _wpAssert(!preg_match('/INSERT INTO tblAppSettings/', $notifSrc),
 
 /* configuration.php must delegate to the same rule rather than keeping a copy —
    two implementations of "encrypt secrets at rest" is the duplication whose
-   divergence is invisible until a secret is sitting in the clear. */
+   divergence is invisible until a secret is sitting in the clear.
+   #2006 (epic #2002) finished this: configuration.php's $saveSetting closure
+   now calls setAppSetting() DIRECTLY (the exact same function notifications.php
+   calls above), not just the shared appSettingValueForStorage() decision one
+   level down — a STRONGER guarantee than this assertion originally checked
+   for, so the check moves to the stronger claim rather than the literal
+   string this file used to contain. */
 $confSrc = _wpStrip((string)file_get_contents(
     dirname(__DIR__, 2) . '/appWeb/public_html/manage/configuration.php'
 ));
-_wpAssert(str_contains($confSrc, 'appSettingValueForStorage('),
-    'manage/configuration.php delegates to the shared storage rule');
+_wpAssert(str_contains($confSrc, 'setAppSetting($db, $key, $value)'),
+    'manage/configuration.php delegates to the shared storage rule (setAppSetting(), same as notifications.php)');
 _wpAssert(!str_contains($confSrc, 'refusing to store'),
     'manage/configuration.php no longer carries its own copy of the fail-closed branch');
 

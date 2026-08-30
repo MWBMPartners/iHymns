@@ -10,6 +10,153 @@ with none of the behind-the-scenes technical detail.
 > `## <version> — <date>` heading style and `- ` bullets so the app can display
 > it. See `.claude/whats-new-style.md` for the full house style.
 
+## 1.4.0 — 30 August 2026
+
+- **Clearer colours and better keyboard/screen-reader support** — A pass
+  through the whole app to make it easier to use for people with low
+  vision or who rely on a keyboard or screen reader. Some admin buttons
+  and status badges now use easier-to-read colours; several pop-up panels
+  (the keyboard-shortcuts guide, presentation mode, song comparison, and
+  the quick song-number picker) now properly keep your keyboard focus
+  inside them and hand it back to where you were once you close them;
+  browser tabs and page titles for songs, songbooks, themes, people,
+  publishers, tunes and works now show the actual name instead of a
+  generic label; the "Emphasise Links" accessibility option now adds an
+  underline as well as colour, so links stand out clearly for everyone
+  who turns it on; and dozens of smaller wording and labelling gaps were
+  filled in across the admin area and the classic song editor.
+- **Choose which sites appear in search engines** — Admins can now control
+  whether each copy of iHymns — the live site, the beta preview, and the
+  dev site — shows up in search engines like Google. The live site is
+  listed as before; the preview and dev sites are now kept out of search
+  results by default, so an in-progress version of a song page can no
+  longer turn up in a web search. Each can be switched on or off from the
+  admin Settings page, and the site itself keeps working normally either
+  way — this only changes whether it's listed.
+
+## 1.3.0 — 29 August 2026
+
+- **A guided helper for switching content locking on** — Turning on the
+  setting that limits copyrighted songs to the right membership level is
+  now a short, step-by-step guide instead of a bare switch: it explains
+  what will change, shows you the numbers first (how many songs, how much
+  audio and sheet music), checks that a licence is actually in place, lets
+  you try it out on one real song before committing, and gives you a
+  one-click way to undo it afterwards. The plain switch is still there if
+  you'd rather flip it yourself.
+- **A guided setup helper for connected services** — Admins can now turn on
+  three optional extras — QR codes, bot protection on sign-up/sign-in forms,
+  and the connected-apps switchboard — with a short, step-by-step guide
+  instead of a bare settings form: what you'll need, where to paste it, and
+  a built-in "test the connection" check before you're done, so you know
+  straight away whether it's actually working. The full settings screen is
+  still there if you'd rather set it up yourself.
+- **The guided set-up helper now also covers email, Apple sign-in and
+  webhooks** — the same step-by-step "what you'll need, where to paste it,
+  test the connection" guide above now also walks admins through setting up
+  the app's email service, Sign in with Apple, and outbound webhooks for
+  partner systems. Each one finishes with a real check — a genuine test
+  email, a check that the saved Apple sign-in key is valid, or a look at
+  whether webhook delivery is switched on — so you know straight away
+  whether it's actually working, without needing to hunt through a long
+  settings form.
+- **A guided walkthrough for getting a brand-new install running** — Setting
+  up iHymns for the first time is now a short, friendly, step-by-step guide
+  instead of one long checklist: connect the database, bring it up to date,
+  see what starter content is already included, optionally connect a few
+  extra services, and finish with a plain "yes, everything's ready" check —
+  each step explained in everyday language along the way. The detailed
+  setup page is still there if you'd rather do it yourself.
+- **Clearer, higher-contrast text and buttons in the admin area** — Several
+  warning and info messages, outlined buttons, and a few links in the admin
+  screens were hard to read against a light background — pale yellow or
+  pale blue text, and links that all but disappeared. They're now easier to
+  read in Light mode, without changing how anything looks in Dark mode.
+- **The guided setup screens are clearer for keyboard and screen-reader
+  users, and safer** — In the step-by-step guides for turning on content
+  locking and setting up the database, a few buttons now clearly announce
+  what just happened instead of staying silent, a broken "undo" button in
+  one of the guides now actually works, and the database setup page's
+  buttons are better protected against being triggered from outside the
+  app.
+- **More of the app works properly with a keyboard and screen reader** —
+  the tag pills in the favourites tag editor can now be reached and turned
+  on/off with the keyboard (they used to be mouse-only); the "add custom
+  tag" box, the "add tag" button, and the compare-with search box now
+  announce what they're for; the link editor used on songs, songbooks,
+  credit people and works pages now properly names its type, URL, note and
+  "Verified" fields; and a couple of small icon-labelling glitches were
+  fixed on the musicians page and the favourites list.
+
+## 1.1.0 — 28 August 2026
+
+- **A guided helper for starting a new song** — Adding a new song to the
+  catalogue can now be a short, friendly walkthrough: pick the songbook,
+  check the number you want is actually free, add a title (and any other
+  names the song is known by), and start it off with a verse/chorus shape —
+  then it opens straight in the editor ready for the words. The plain "New"
+  button is still there if you'd rather jump straight in.
+- **A guided setup helper for new organisations** — Setting up a brand-new
+  organisation is now a short, friendly, step-by-step walkthrough: give it a
+  name, add its licence details, and invite its first members, all in one
+  guided flow — with a summary at the end showing exactly what was created.
+  The familiar form is still there if you'd rather fill everything in
+  yourself.
+- **A guided setup helper for live services** — Organisation admins can now
+  set up a venue and its regular service time in a few friendly steps, with
+  plain-language help explaining the two ways to go live: a quick, no-setup
+  session you start from any song, or a full service with a join code your
+  whole congregation can follow. The step-by-step forms you already know are
+  still there if you'd rather fill them in yourself.
+- **A friendlier start on empty lists** — Landing on an empty list of link
+  types, songbooks, venues or organisations now shows a "Get started" card
+  pointing you straight at the matching guided helper, instead of just a bare
+  "nothing here yet" message.
+- **Bring songs in from ProPresenter** — You can now import songs, bundles and
+  service playlists straight from ProPresenter 7, keeping their verses,
+  choruses, arrangements and copyright details. A ProPresenter service playlist
+  arrives as a ready-made set list.
+- **Chords travel with ProPresenter files** — Importing a song from ProPresenter
+  now brings its chords across, and exporting a song that has chords sends them
+  along too — ready to show on a stage display, while the words stay clean for
+  the congregation.
+- **Your background video travels with a ProPresenter export** — When you send a
+  song that has a background video or image to ProPresenter, that media now goes
+  inside the file, so it's ready to play on the other machine instead of turning
+  up missing.
+- **Name your signed-in devices** — The Signed-in devices list now gives each
+  device a friendly name on its own — like "Chrome on Windows" instead of
+  "Unnamed device" — and you can rename any of them, so it's easy to spot and
+  sign out one you don't recognise.
+- **Record more than one licence for your church** — An organisation can now hold
+  several licences side by side — for example one for the words and a separate
+  one for the music — each with its own number and expiry date, all managed in
+  one place.
+- **Easier to use with a screen reader or keyboard** — A round of accessibility
+  work makes the app and the admin area clearer for people who use a screen
+  reader or navigate by keyboard: buttons and form fields now announce what they
+  do, collapsible sections open from the keyboard, a "skip to main content" link
+  jumps past the menus, admin tables read out their column headings, decorative
+  icons no longer clutter the reading order, and text and badges have stronger
+  colour contrast so they're easier to read.
+- **Make links stand out** — A new accessibility setting under Settings →
+  Appearance lets you turn on stronger, higher-contrast colouring for the links
+  in song details and descriptions, so they're easier to pick out from the words
+  around them. It's off by default and remembered on your device.
+- **Add a new link provider yourself** — Curators managing Link Types can now
+  add a brand-new provider (not just edit the existing ones) with a guided,
+  step-by-step helper that suggests a matching web-address pattern and tests it
+  live against real examples before you save — or fill in the same details
+  yourself with a plain form if you'd rather skip the guided steps.
+- **A guided helper for adding a songbook** — Curators can now add a new
+  songbook with a step-by-step helper that checks the short code as you type
+  and warns you if it's already taken, includes a digit, or would clash with
+  an internal code — so it's right the first time. It also explains, in plain
+  language, that the code becomes part of every song's web address in that
+  book and is best treated as permanent, while the separate display label
+  shown to everyone can be changed any time. The original one-page form is
+  still there too, for anyone who'd rather fill everything in at once.
+
 ## 1.0.0 — 24 August 2026
 
 - **Search suggestions as you type** — Start typing in the search box and a short

@@ -30,6 +30,13 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    require_licence picker sources from (was a const duplicated from
    organisations.php). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+/* #2006 — the extracted restriction validate/create/delete core (epic
+   #2002). RESTRICTIONS_ENTITY_TYPES / RESTRICTIONS_TYPES /
+   RESTRICTIONS_EFFECTS now live there (moved verbatim) so this page and
+   the content-gating activation wizard's row-seeding step (and, per OD-2,
+   api.php's admin_restriction_create/_delete) validate a rule the SAME
+   way — rule #22. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'restriction_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -47,17 +54,11 @@ $error   = '';
 $success = '';
 $db      = getDbMysqli();
 
-/* Allowed vocabularies — kept tight so the UI can't POST rubbish the
-   evaluator will silently ignore. Keep in sync with content_access.php. */
-const RESTRICTIONS_ENTITY_TYPES = ['song', 'songbook', 'feature'];
-const RESTRICTIONS_TYPES = [
-    'block_platform' => 'Block platform',
-    'block_user'     => 'Block user',
-    'block_org'      => 'Block organisation',
-    'require_licence'=> 'Require licence',
-    'require_org'    => 'Require organisation',
-];
-const RESTRICTIONS_EFFECTS = ['deny', 'allow'];
+/* Allowed vocabularies — RESTRICTIONS_ENTITY_TYPES / RESTRICTIONS_TYPES /
+   RESTRICTIONS_EFFECTS moved to includes/restriction_admin.php (#2006) so
+   the validator there and this page's rendering share ONE list. Keep in
+   sync with content_access.php's rule model — that file documents what
+   each RestrictionType actually does at evaluation time. */
 
 /* Picker vocabularies for the #498 name-first form. Hard-coded where
    the list is small and closed (platforms, features), loaded from
@@ -106,66 +107,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         switch ($action) {
             case 'create': {
-                $entityType      = trim((string)($_POST['entity_type']      ?? ''));
-                $entityId        = trim((string)($_POST['entity_id']        ?? ''));
-                $restrictionType = trim((string)($_POST['restriction_type'] ?? ''));
-                $targetType      = trim((string)($_POST['target_type']      ?? ''));
-                $targetId        = trim((string)($_POST['target_id']        ?? ''));
-                $effect          = trim((string)($_POST['effect']           ?? 'deny'));
-                $priority        = (int)  ($_POST['priority']               ?? 0);
-                $reason          = trim((string)($_POST['reason']           ?? ''));
-
-                if (!in_array($entityType, RESTRICTIONS_ENTITY_TYPES, true)) {
-                    $error = 'Invalid entity type.'; break;
+                /* #2006 — delegates to the shared core (includes/restriction_admin.php)
+                   instead of validating + INSERTing inline. Same checks, same
+                   messages, same bind shape — byte-identical behaviour, now
+                   shared with the content-gating wizard's row-seeding step and
+                   (per OD-2) api.php's admin_restriction_create action. */
+                $result = restrictionAdminValidate($_POST);
+                if ($result['error'] !== null) {
+                    $error = $result['error'];
+                    break;
                 }
-                if ($entityId === '') {
-                    $error = 'Entity ID is required (use "*" to target every entity of the type).'; break;
-                }
-                if (!array_key_exists($restrictionType, RESTRICTIONS_TYPES)) {
-                    $error = 'Invalid restriction type.'; break;
-                }
-                /* #1769 P4 Commit E (D10) — Effect HONESTY. content_access.php
-                   IGNORES Effect for every require_* type ("licence found → pass;
-                   absent → deny", never an allow/deny toggle — see that file's
-                   note beside the require_licence branch). Storing Effect='allow'
-                   on such a row is a lie the engine can't honour, so normalise it
-                   to 'deny' server-side. This is ENGINE-DEAD → a provably zero
-                   behaviour change (the value was already ignored), and it stops
-                   the row from claiming a policy it never had. The UI hides the
-                   Effect control for these types too (see the form's JS). */
-                if (str_starts_with($restrictionType, 'require_')) {
-                    $effect = 'deny';
-                }
-                if (!in_array($effect, RESTRICTIONS_EFFECTS, true)) {
-                    $error = 'Effect must be allow or deny.'; break;
-                }
-                if ($priority < 0 || $priority > 1000) {
-                    $error = 'Priority must be between 0 and 1000.'; break;
-                }
-
-                $stmt = $db->prepare(
-                    'INSERT INTO tblContentRestrictions
-                        (EntityType, EntityId, RestrictionType, TargetType, TargetId, Effect, Priority, Reason)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-                );
-                /* Types: six string columns, then Priority(int), then Reason(string). */
-                $stmt->bind_param(
-                    'ssssssis',
-                    $entityType, $entityId, $restrictionType,
-                    $targetType, $targetId, $effect, $priority, $reason
-                );
-                $stmt->execute();
-                $newRestrictionId = (int)$db->insert_id;
-                $stmt->close();
+                $fields = $result['fields'];
+                $newRestrictionId = restrictionAdminCreate($db, $fields);
                 /* #1769 P4 — every gating action is logged (owner directive). */
                 if (function_exists('logActivity')) {
                     logActivity('admin.restrictions.create', 'content_restriction', (string)$newRestrictionId, [
-                        'entityType'      => $entityType,
-                        'entityId'        => $entityId,
-                        'restrictionType' => $restrictionType,
-                        'targetId'        => $targetId,
-                        'effect'          => $effect,
-                        'priority'        => $priority,
+                        'entityType'      => $fields['entityType'],
+                        'entityId'        => $fields['entityId'],
+                        'restrictionType' => $fields['restrictionType'],
+                        'targetId'        => $fields['targetId'],
+                        'effect'          => $fields['effect'],
+                        'priority'        => $fields['priority'],
                     ]);
                 }
                 $success = 'Restriction created.';
@@ -175,10 +137,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             case 'delete': {
                 $id = (int)($_POST['id'] ?? 0);
                 if ($id <= 0) { $error = 'Invalid request.'; break; }
-                $stmt = $db->prepare('DELETE FROM tblContentRestrictions WHERE Id = ?');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
-                $stmt->close();
+                /* #2006 — delegates to the shared core. */
+                restrictionAdminDelete($db, $id);
                 if (function_exists('logActivity')) {
                     logActivity('admin.restrictions.delete', 'content_restriction', (string)$id, []);
                 }
@@ -317,7 +277,7 @@ $csrf = csrfToken();
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-shield-lock me-2"></i>Content Restrictions</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-shield-lock me-2"></i>Content Restrictions</h1>
         <p class="text-secondary small mb-3">
             Set rules that hide specific songs, whole songbooks, or app features from certain people,
             based on their platform, account, organisation, or licence. When two rules clash, the one
@@ -326,7 +286,7 @@ $csrf = csrfToken();
 
         <?php if (!$gatingEnabled): ?>
             <div class="alert alert-warning py-2 mb-3">
-                <i class="bi bi-exclamation-triangle me-1"></i>
+                <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
                 The master switch <code>content_gating_enabled</code> is <strong>OFF</strong>.
                 Rules here are saved but currently have no runtime effect.
                 Flip it in <a href="/manage/configuration#feature-gating" class="alert-link">Configuration &rarr; Feature gating</a>
@@ -353,8 +313,8 @@ $csrf = csrfToken();
         <form method="GET" class="card-admin p-3 mb-3">
             <div class="row g-2 align-items-end">
                 <div class="col-sm-4">
-                    <label class="form-label small mb-1">Entity type</label>
-                    <select name="entity_type" class="form-select form-select-sm">
+                    <label class="form-label small mb-1" for="filter-entity-type">Entity type</label>
+                    <select name="entity_type" id="filter-entity-type" class="form-select form-select-sm">
                         <option value="">All</option>
                         <?php foreach (RESTRICTIONS_ENTITY_TYPES as $et): ?>
                             <option value="<?= htmlspecialchars($et) ?>" <?= $filterEntity === $et ? 'selected' : '' ?>>
@@ -364,8 +324,8 @@ $csrf = csrfToken();
                     </select>
                 </div>
                 <div class="col-sm-5">
-                    <label class="form-label small mb-1">Restriction type</label>
-                    <select name="restriction_type" class="form-select form-select-sm">
+                    <label class="form-label small mb-1" for="filter-restriction-type">Restriction type</label>
+                    <select name="restriction_type" id="filter-restriction-type" class="form-select form-select-sm">
                         <option value="">All</option>
                         <?php foreach (RESTRICTIONS_TYPES as $k => $lbl): ?>
                             <option value="<?= htmlspecialchars($k) ?>" <?= $filterType === $k ? 'selected' : '' ?>>
@@ -376,7 +336,7 @@ $csrf = csrfToken();
                 </div>
                 <div class="col-sm-3 d-grid">
                     <button type="submit" class="btn btn-sm btn-outline-info">
-                        <i class="bi bi-funnel me-1"></i>Apply filter
+                        <i aria-hidden="true" class="bi bi-funnel me-1"></i>Apply filter
                     </button>
                 </div>
             </div>
@@ -389,13 +349,13 @@ $csrf = csrfToken();
                 <table class="table table-sm align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
-                            <th data-sort-key="entity"      data-sort-type="text">Entity</th>
-                            <th data-sort-key="restriction" data-sort-type="text">Restriction</th>
-                            <th data-sort-key="target"      data-sort-type="text">Target</th>
-                            <th class="text-center" data-sort-key="effect"   data-sort-type="text">Effect</th>
-                            <th class="text-center" data-sort-key="priority" data-sort-type="number">Priority</th>
-                            <th data-sort-key="reason" data-sort-type="text">Reason</th>
-                            <th class="text-end">Actions</th>
+                            <th scope="col" data-sort-key="entity"      data-sort-type="text">Entity</th>
+                            <th scope="col" data-sort-key="restriction" data-sort-type="text">Restriction</th>
+                            <th scope="col" data-sort-key="target"      data-sort-type="text">Target</th>
+                            <th scope="col" class="text-center" data-sort-key="effect"   data-sort-type="text">Effect</th>
+                            <th scope="col" class="text-center" data-sort-key="priority" data-sort-type="number">Priority</th>
+                            <th scope="col" data-sort-key="reason" data-sort-type="text">Reason</th>
+                            <th scope="col" class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -460,7 +420,7 @@ $csrf = csrfToken();
         <form method="POST" class="card-admin p-3 mb-4" id="restriction-form">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
-            <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a restriction</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a restriction</h2>
 
             <!-- Hidden canonical fields — populated by JS from whichever
                  picker is visible. The server sees the same names as
@@ -470,7 +430,7 @@ $csrf = csrfToken();
 
             <div class="row g-2 mb-2">
                 <div class="col-sm-3">
-                    <label class="form-label small">Entity type</label>
+                    <label class="form-label small" for="rx-entity-type">Entity type</label>
                     <!-- data-picker-canonical points the shared helper at
                          the hidden canonical input this type-select feeds. -->
                     <select name="entity_type" id="rx-entity-type"
@@ -481,14 +441,15 @@ $csrf = csrfToken();
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div class="col-sm-5" data-picker-group-for="#rx-entity-id">
-                    <label class="form-label small">Entity</label>
+                <div class="col-sm-5" data-picker-group-for="#rx-entity-id" role="group" aria-labelledby="rx-entity-label">
+                    <label class="form-label small" id="rx-entity-label">Entity</label>
 
                     <!-- song picker: live-search combobox -->
                     <div class="rx-picker" data-picker-for="song">
                         <div class="position-relative">
                             <input type="text" class="form-control form-control-sm rx-picker-input"
                                    data-picker-source="song" autocomplete="off"
+                                   aria-label="Search for a song"
                                    placeholder="Type a song title or number — e.g. Amazing Grace">
                             <div class="rx-picker-popover list-group position-absolute w-100 shadow d-none"
                                  style="z-index: 1050; max-height: 240px; overflow-y: auto;"></div>
@@ -498,7 +459,7 @@ $csrf = csrfToken();
 
                     <!-- songbook picker: server-rendered select -->
                     <div class="rx-picker d-none" data-picker-for="songbook">
-                        <select class="form-select form-select-sm rx-picker-select">
+                        <select class="form-select form-select-sm rx-picker-select" aria-label="Select a songbook">
                             <option value="*">* — every songbook</option>
                             <?php foreach ($picker_songbooks as $sb): ?>
                                 <option value="<?= htmlspecialchars($sb['Abbreviation']) ?>">
@@ -511,7 +472,7 @@ $csrf = csrfToken();
 
                     <!-- feature picker: hard-coded select -->
                     <div class="rx-picker d-none" data-picker-for="feature">
-                        <select class="form-select form-select-sm rx-picker-select">
+                        <select class="form-select form-select-sm rx-picker-select" aria-label="Select a feature">
                             <option value="*">* — every feature</option>
                             <?php foreach (RESTRICTIONS_FEATURES as $k => $lbl): ?>
                                 <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
@@ -520,7 +481,7 @@ $csrf = csrfToken();
                     </div>
                 </div>
                 <div class="col-sm-2">
-                    <label class="form-label small">Restriction type</label>
+                    <label class="form-label small" for="rx-restriction-type">Restriction type</label>
                     <select name="restriction_type" id="rx-restriction-type" class="form-select form-select-sm" required>
                         <?php foreach (RESTRICTIONS_TYPES as $k => $lbl): ?>
                             <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
@@ -533,7 +494,7 @@ $csrf = csrfToken();
                      the server normalises those to 'deny' regardless, so the
                      control can never store a policy the engine won't honour. -->
                 <div class="col-sm-2" id="rx-effect-group">
-                    <label class="form-label small">Effect</label>
+                    <label class="form-label small" for="rx-effect">Effect</label>
                     <select name="effect" id="rx-effect" class="form-select form-select-sm">
                         <option value="deny" selected>deny</option>
                         <option value="allow">allow</option>
@@ -543,7 +504,7 @@ $csrf = csrfToken();
 
             <div class="row g-2 mb-2">
                 <div class="col-sm-3">
-                    <label class="form-label small">Target type</label>
+                    <label class="form-label small" for="rx-target-type">Target type</label>
                     <select name="target_type" id="rx-target-type"
                             class="form-select form-select-sm"
                             data-picker-canonical="#rx-target-id">
@@ -554,12 +515,12 @@ $csrf = csrfToken();
                         <option value="licence_type">Licence type</option>
                     </select>
                 </div>
-                <div class="col-sm-5" data-picker-group-for="#rx-target-id">
-                    <label class="form-label small">Target</label>
+                <div class="col-sm-5" data-picker-group-for="#rx-target-id" role="group" aria-labelledby="rx-target-label">
+                    <label class="form-label small" id="rx-target-label">Target</label>
 
                     <!-- platform picker: hard-coded select -->
                     <div class="rx-picker" data-picker-for="platform">
-                        <select class="form-select form-select-sm rx-picker-select">
+                        <select class="form-select form-select-sm rx-picker-select" aria-label="Select a platform">
                             <option value="">— (any platform)</option>
                             <?php foreach (RESTRICTIONS_PLATFORMS as $k => $lbl): ?>
                                 <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
@@ -572,6 +533,7 @@ $csrf = csrfToken();
                         <div class="position-relative">
                             <input type="text" class="form-control form-control-sm rx-picker-input"
                                    data-picker-source="user" autocomplete="off"
+                                   aria-label="Search for a user"
                                    placeholder="Type a display name or @username">
                             <div class="rx-picker-popover list-group position-absolute w-100 shadow d-none"
                                  style="z-index: 1050; max-height: 240px; overflow-y: auto;"></div>
@@ -580,7 +542,7 @@ $csrf = csrfToken();
 
                     <!-- organisation picker: server-rendered select + live-search fallback -->
                     <div class="rx-picker d-none" data-picker-for="organisation">
-                        <select class="form-select form-select-sm rx-picker-select">
+                        <select class="form-select form-select-sm rx-picker-select" aria-label="Select an organisation">
                             <option value="">— (any organisation)</option>
                             <?php foreach ($picker_organisations as $org): ?>
                                 <option value="<?= (int)$org['Id'] ?>">
@@ -593,7 +555,7 @@ $csrf = csrfToken();
 
                     <!-- licence type picker -->
                     <div class="rx-picker d-none" data-picker-for="licence_type">
-                        <select class="form-select form-select-sm rx-picker-select">
+                        <select class="form-select form-select-sm rx-picker-select" aria-label="Select a licence type">
                             <?php foreach ($RESTRICTIONS_LICENCE_TYPES as $k => $lbl): ?>
                                 <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($lbl) ?></option>
                             <?php endforeach; ?>
@@ -606,19 +568,19 @@ $csrf = csrfToken();
                     </div>
                 </div>
                 <div class="col-sm-2">
-                    <label class="form-label small">Priority</label>
-                    <input type="number" name="priority" class="form-control form-control-sm"
+                    <label class="form-label small" for="rx-priority">Priority</label>
+                    <input type="number" name="priority" id="rx-priority" class="form-control form-control-sm"
                            min="0" max="1000" value="100">
                 </div>
                 <div class="col-sm-2">
-                    <label class="form-label small">Reason (shown to user)</label>
-                    <input type="text" name="reason" class="form-control form-control-sm" maxlength="255"
+                    <label class="form-label small" for="rx-reason">Reason (shown to user)</label>
+                    <input type="text" name="reason" id="rx-reason" class="form-control form-control-sm" maxlength="255"
                            placeholder="e.g. Subscription required">
                 </div>
             </div>
 
             <button type="submit" class="btn btn-amber-solid btn-sm mt-2">
-                <i class="bi bi-plus me-1"></i>Add rule
+                <i aria-hidden="true" class="bi bi-plus me-1"></i>Add rule
             </button>
             <p class="text-muted small mt-3 mb-0">
                 <strong>Tips.</strong>

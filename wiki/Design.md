@@ -87,12 +87,19 @@ Used in the arrangement editor and song display:
 ### Colour Contrast
 - **Target:** all text meets **WCAG 2.1 AA** minimum contrast ratios (4.5:1 normal, 3:1 large).
   ⚠️ This is the design INTENT and, since #1151, is believed true — but it has **never been
-  measured in a browser**. Every ratio quoted on this page is derived from the CSS custom-property
-  cascade, which models the spec faithfully yet cannot account for `backdrop-filter`, shadow
-  layering or renderer differences. No axe, WAVE or devtools contrast pass has been run.
-  **This bullet previously stated the compliance flatly, while High Contrast mode was in fact
-  producing ~1.44:1** — so read it as a goal with a known verification gap, not as a result.
-  #1150 / #1151 stay open for exactly that measurement.
+  measured in a real browser render**. Every ratio quoted on this page (and every ratio the CI
+  guard below checks) is derived from the CSS custom-property cascade, which models the spec
+  faithfully yet cannot account for `backdrop-filter`, shadow layering or renderer differences.
+  No axe, WAVE or devtools contrast pass has been run. #1150 / #1151 stay open for exactly that
+  measurement. **This bullet previously stated the compliance flatly, while High Contrast mode
+  was in fact producing ~1.44:1** — a mistake the 2026-08-30 audit (epic #2027) repeated the
+  pattern of finding elsewhere: `.btn-info` and the opt-in "Emphasise Links" mode's colours both
+  carried a doc-comment claiming a contrast level nobody had actually computed, and both failed
+  once someone did the maths (2.89:1 and 4.47:1/3.27:1 respectively, against a claimed 4.5:1+).
+  Both are now fixed, and a new CI guard (`tests/test-contrast-registry.js`) recomputes WCAG
+  contrast for a registry of colour pairs from the LIVE token values on every run, specifically so
+  a claimed number can never again go unchecked — still the same CSS-cascade method as this whole
+  section, so the "never measured in a real browser" caveat above still stands.
 - Songbook badge text contrast is calculated automatically using relative luminance
 - Badge colours checked against both light and dark backgrounds
 - High Contrast mode (`data-ihymns-contrast="high"`) redefines both Bootstrap's own `--bs-*` tokens AND the app's parallel `--text-primary` / `--text-secondary` / `--text-muted` / `--glass-bg` / `--card-border` custom properties, so a component reading the app's own tokens directly (the bottom nav, header icons, footer) can't silently fall through to its ordinary light-theme values while High Contrast is on. That gap was a real regression (#1151): the bottom nav computed to ~1.8:1 and the header icons to ~1.44:1 — both well under AA — specifically *because* High Contrast mode was switched on, in the one mode whose entire purpose is legibility.

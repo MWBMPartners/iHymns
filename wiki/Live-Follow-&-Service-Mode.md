@@ -173,7 +173,7 @@ Service Mode (and, by the `Channel`-column quirk above, Live Follow too) needs t
 1. **"Org Venues & Service Schedules" (#1325)** — creates the venues/org-venue/schedule tables Service Mode reads from.
 2. **"Service Mode sessions" (#1335)** — creates `tblLiveFollowSessions` / `tblLiveFollowJoinCodes` (and the columns Live Follow's `Channel` stamp depends on). Runs after #1. Idempotent — safe to re-run.
 
-Both cards are OR-probed, so the dashboard's pending count only clears once each is genuinely fully applied. An org additionally needs at least one active **venue** (`/manage/venues`) before "Start & project" or "Connect & drive" will find anything to run.
+Both cards are OR-probed, so the dashboard's pending count only clears once each is genuinely fully applied. An org additionally needs at least one active **venue** (`/manage/venues`) before "Start & project" or "Connect & drive" will find anything to run. Once the migrations above are applied, `/manage/venues`'s **Live Service setup (guided)** button is the fastest path through the rest — it explains Live Follow vs. Service Mode up front, then walks an org admin through the venue, its service time, and an optional presentation-app connection in one flow (see [[Architecture]] § Guided-wizard framework); the manual venue/schedule forms on the same page still work exactly as before.
 
 ---
 

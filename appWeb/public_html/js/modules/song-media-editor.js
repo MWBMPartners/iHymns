@@ -251,7 +251,7 @@ export function bootSongMediaEditor(root) {
                                     ${escapeHtml(row.file_name)}
                                 </a>
                                 <span class="text-muted small">
-                                    ${escapeHtml(row.mime_type)} · ${formatBytes(row.size_bytes)}
+                                    ${(row.visibility === 'admin') ? '<span class="badge text-bg-warning-subtle text-warning-emphasis border border-warning-subtle me-1" title="Not shown on the public site — publish it in the new editor">Admin only</span>' : ''}${escapeHtml(row.mime_type)} · ${formatBytes(row.size_bytes)}
                                 </span>
                             </div>
                             <input type="text"
@@ -267,7 +267,7 @@ export function bootSongMediaEditor(root) {
                         <button type="button"
                                 class="btn btn-sm btn-outline-danger song-media-delete"
                                 title="Remove this file">
-                            <i class="bi bi-trash"></i>
+                            <i class="bi bi-trash" aria-hidden="true"></i>
                         </button>
                     </div>
                 </div>
@@ -285,7 +285,7 @@ export function bootSongMediaEditor(root) {
         return `
             <div class="form-section song-media-block" data-kind="${kind}">
                 <h6 class="section-title d-flex justify-content-between align-items-center">
-                    <span><i class="bi ${escapeHtml(meta.icon)} me-1"></i>${escapeHtml(meta.label)}</span>
+                    <span><i class="bi ${escapeHtml(meta.icon)} me-1" aria-hidden="true"></i>${escapeHtml(meta.label)}</span>
                     <span class="text-muted small fw-normal">${rows.length} file${rows.length === 1 ? '' : 's'}</span>
                 </h6>
                 <div class="text-muted small mb-2">${escapeHtml(meta.helpText)} Max ${capMb} MB.</div>
@@ -309,7 +309,7 @@ export function bootSongMediaEditor(root) {
                                 class="btn btn-sm btn-amber w-100 song-media-upload-btn"
                                 data-upload-kind="${kind}"
                                 disabled>
-                            <i class="bi bi-cloud-upload me-1"></i>Upload
+                            <i class="bi bi-cloud-upload me-1" aria-hidden="true"></i>Upload
                         </button>
                     </div>
                 </div>

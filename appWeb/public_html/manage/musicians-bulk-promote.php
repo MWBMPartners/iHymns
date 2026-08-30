@@ -355,7 +355,7 @@ if (!empty($registryByName)) {
 
     <div class="container-admin py-4">
         <h1 class="h4 mb-1">
-            <i class="bi bi-people me-2"></i>Add Musicians in Bulk
+            <i aria-hidden="true" class="bi bi-people me-2"></i>Add Musicians in Bulk
         </h1>
         <p class="text-secondary small mb-3">
             Names that appear on a song credit but aren't in your Musicians list yet.
@@ -381,26 +381,26 @@ if (!empty($registryByName)) {
         <form method="GET" class="card-admin p-3 mb-3">
             <div class="row g-2 align-items-end">
                 <div class="col-sm-4">
-                    <label class="form-label small">Search candidate name</label>
-                    <input type="search" name="q" value="<?= htmlspecialchars($searchQ) ?>"
+                    <label class="form-label small" for="mbp-filter-q">Search candidate name</label>
+                    <input type="search" name="q" id="mbp-filter-q" value="<?= htmlspecialchars($searchQ) ?>"
                            class="form-control form-control-sm" placeholder="e.g. Newton, J">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Match threshold</label>
-                    <input type="number" name="threshold" value="<?= htmlspecialchars((string)$threshold) ?>"
+                    <label class="form-label small" for="mbp-filter-threshold">Match threshold</label>
+                    <input type="number" name="threshold" id="mbp-filter-threshold" value="<?= htmlspecialchars((string)$threshold) ?>"
                            min="0.5" max="1.0" step="0.01"
                            class="form-control form-control-sm">
                     <div class="form-text small">Higher = stricter. Default 0.85.</div>
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Min total uses</label>
-                    <input type="number" name="min_uses" value="<?= (int)$minUses ?>"
+                    <label class="form-label small" for="mbp-filter-min-uses">Min total uses</label>
+                    <input type="number" name="min_uses" id="mbp-filter-min-uses" value="<?= (int)$minUses ?>"
                            min="1" max="9999"
                            class="form-control form-control-sm">
                 </div>
                 <div class="col-sm-2">
                     <button type="submit" class="btn btn-secondary btn-sm w-100">
-                        <i class="bi bi-funnel me-1"></i>Apply
+                        <i aria-hidden="true" class="bi bi-funnel me-1"></i>Apply
                     </button>
                 </div>
             </div>
@@ -427,16 +427,16 @@ if (!empty($registryByName)) {
             <div class="d-flex flex-wrap gap-2 mb-3">
                 <button type="button" class="btn btn-outline-info btn-sm" data-action="auto-resolve"
                         title="Pre-pick the highest-scoring registry match for every candidate that has one above the threshold.">
-                    <i class="bi bi-magic me-1"></i>Auto-resolve flagged matches
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Auto-resolve flagged matches
                 </button>
                 <button type="button" class="btn btn-outline-secondary btn-sm" data-action="set-all" data-value="register">
-                    <i class="bi bi-plus-circle me-1"></i>Set all to <em>Register as new</em>
+                    <i aria-hidden="true" class="bi bi-plus-circle me-1"></i>Set all to <em>Register as new</em>
                 </button>
                 <button type="button" class="btn btn-outline-secondary btn-sm" data-action="set-all" data-value="skip">
-                    <i class="bi bi-dash-circle me-1"></i>Set all to <em>Skip</em>
+                    <i aria-hidden="true" class="bi bi-dash-circle me-1"></i>Set all to <em>Skip</em>
                 </button>
                 <button type="submit" class="btn btn-amber btn-sm ms-auto">
-                    <i class="bi bi-check2-square me-1"></i>Promote selected
+                    <i aria-hidden="true" class="bi bi-check2-square me-1"></i>Promote selected
                 </button>
             </div>
 
@@ -444,11 +444,11 @@ if (!empty($registryByName)) {
                 <table class="table table-sm table-hover align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
-                            <th data-col-priority="primary"   data-sort-key="name"    data-sort-type="text">Candidate name</th>
-                            <th data-col-priority="primary"   class="text-center" data-sort-key="total" data-sort-type="number">Uses</th>
-                            <th data-col-priority="secondary" class="text-center" data-sort-key="roles" data-sort-type="number">Roles</th>
-                            <th data-col-priority="tertiary"  data-sort-key="best" data-sort-type="number">Best match</th>
-                            <th data-col-priority="primary"   style="min-width:18rem;">Action</th>
+                            <th scope="col" data-col-priority="primary"   data-sort-key="name"    data-sort-type="text">Candidate name</th>
+                            <th scope="col" data-col-priority="primary"   class="text-center" data-sort-key="total" data-sort-type="number">Uses</th>
+                            <th scope="col" data-col-priority="secondary" class="text-center" data-sort-key="roles" data-sort-type="number">Roles</th>
+                            <th scope="col" data-col-priority="tertiary"  data-sort-key="best" data-sort-type="number">Best match</th>
+                            <th scope="col" data-col-priority="primary"   style="min-width:18rem;">Action</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -616,7 +616,7 @@ if (!empty($registryByName)) {
 
             <div class="d-flex mt-3">
                 <button type="submit" class="btn btn-amber ms-auto">
-                    <i class="bi bi-check2-square me-1"></i>Promote selected
+                    <i aria-hidden="true" class="bi bi-check2-square me-1"></i>Promote selected
                 </button>
             </div>
         </form>

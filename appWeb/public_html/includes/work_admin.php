@@ -118,6 +118,14 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'identifier_normalize.php';   // ihymns_canonical_iswc() / ihymns_canonical_ccli() — rule #22, never re-fork
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';            // ilidAllocate() / ilidSequenceReady() — rule #22, never re-fork
+/* #1988 (API-coverage — Works "extras") — the four side-effect-free libs
+   the extras/origin-city write cores below need. Guarded/idempotent like
+   every other require_once in this file; none of the four define an
+   auto-run side effect on inclusion (rule #22 — reuse, never re-fork). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_identifiers.php';     // mediaIdentifierWorkValidate() — workParseExtraFields()'s CCLI/MBID shape check
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'tune_helpers.php';          // tuneFindOrCreateByName() — TuneName<->TuneId lockstep in workPersistExtraFields()
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'publisher_helpers.php';     // publisherResolvePickedOrCreate() — CopyrightHolder<->CopyrightHolderId lockstep
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'places.php';                // placeColumnExists() — the generic INFORMATION_SCHEMA column probe, used for OriginCityId
 
 /**
  * ELI5: "has this install applied the migrations this file needs?" — asked
@@ -1491,6 +1499,402 @@ function workMedleyReplace(\mysqli $db, int $medleyId, array $rows): int
         } catch (\Throwable $e) {
             error_log('[work medley] workMedleyReplace: ' . $e->getMessage());
         }
+    }
+    return $inserted;
+}
+
+/* ============================================================================
+ * EXTRAS / ORIGIN-CITY / MEMBERSHIP WRITE CORES (#1988, API-coverage epic
+ * #1983) — extracted verbatim (page-byte-identical bodies) from the private
+ * closures + inline blocks `manage/works.php` has carried since #1741 P4b /
+ * the places-adoption pass, so `admin_work_create`/`admin_work_update`
+ * (`api.php`) can delegate to the SAME cores the page's own create/update
+ * actions now one-line-delegate to (rule #22 — the `$slugFor` ->
+ * `workSlugify()` precedent a few hundred lines above, applied to six more
+ * closures/blocks). Nothing here changes BEHAVIOUR versus the pre-#1988
+ * inline code — every guard, every column-gate, every lockstep write
+ * (TuneName<->TuneId, CopyrightHolder<->CopyrightHolderId) is unchanged,
+ * only its HOME moved so a second caller (the API) can reuse it instead of
+ * re-typing a drifting copy.
+ *
+ * `workSongsReplace()` is the one exception worth flagging: it owns ONLY
+ * the DELETE-then-INSERT SQL shape (`tblWorkSongs`), not the parse/clamp of
+ * the posted rows — manage/works.php's own `member_song_ids`/`member_sort`/
+ * `member_note` parallel-array parsing (trim/cap-20/dedupe/sort-default/
+ * note-cap) stays exactly where it was, page-local, and the new
+ * `admin_work_members_replace` API action (api.php) does its OWN equivalent
+ * parse over its JSON row-array shape — both callers hand this function an
+ * already-clamped `list<array{songId,isCanonical,sortOrder,note}>`, mirroring
+ * how `workMedleyReplace()` above takes already-shaped rows too.
+ *
+ * @link .claude/api-coverage-2026-08-28.md          the API-coverage program this closes a gap in
+ * @link appWeb/public_html/manage/works.php          every one-line delegate this section backs
+ * @link appWeb/public_html/api.php                   admin_work_create/_update/_members_replace/_external_links_replace
+ * @see #1988 #1983
+ * ========================================================================== */
+
+/**
+ * Cached, per-column INFORMATION_SCHEMA presence probe for the 11
+ * `tblWorks` "extra" columns — the 9 #1741 P1/D5 identity/descriptive
+ * fields (Subtitle/Disambiguation/Ccli/Bowi/TuneName/TuneId/
+ * FirstPublishedYear/CopyrightYears/CopyrightHolder) PLUS the two later
+ * riders `manage/works.php` already probes in the SAME query
+ * (MusicBrainzWorkMBID, #1066; CopyrightHolderId, #1864). Extracted
+ * VERBATIM from that page's inline `$worksExtraCols` probe (its own
+ * doc-comment explains why Bowi is checked independently despite sharing
+ * this query — a different migration card than the other ten).
+ *
+ * Deliberately a SEPARATE probe from `SongData::_worksExtraCols()` (which
+ * covers only the 9 #1741 P1/D5 names, for a DIFFERENT reason — see that
+ * method's own doc-block and `tests/test-native-identity-contract.js`,
+ * which derives its Work-identity-key floor from that exact 9-name array
+ * literal; folding MusicBrainzWorkMBID/CopyrightHolderId into it would
+ * both misattribute two non-#1741 columns to the P4b family AND corrupt
+ * that guard's derived camelCase key list). This probe is for the
+ * WRITE side only — `manage/works.php` create/update and the new
+ * `admin_work_*` API actions — never the read side.
+ *
+ * ELI5: "of these 11 optional Work columns, which ones actually exist on
+ * THIS database right now?" — static-memoised per request, the
+ * `workAdminReady()` idiom above (`:138`), so neither caller re-asks
+ * INFORMATION_SCHEMA the same question twice in one request.
+ *
+ * @param \mysqli $db
+ * @return array<string,true> present column names as keys.
+ */
+function workExtraColumnsPresent(\mysqli $db): array
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    $present = [];
+    try {
+        $extraColNames = [
+            'Subtitle', 'Disambiguation', 'Ccli', 'Bowi', 'TuneName', 'TuneId',
+            'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder', 'MusicBrainzWorkMBID',
+            'CopyrightHolderId', /* #1864 — registry FK; column-gated everywhere TuneId is */
+        ];
+        $ph    = implode(',', array_fill(0, count($extraColNames), '?'));
+        $stmt  = $db->prepare(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorks'
+                AND COLUMN_NAME IN ($ph)"
+        );
+        $types = str_repeat('s', count($extraColNames));
+        $stmt->bind_param($types, ...$extraColNames);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_assoc()) {
+            $present[(string)$row['COLUMN_NAME']] = true;
+        }
+        $stmt->close();
+    } catch (\Throwable $e) {
+        error_log('[work_admin] extra-cols probe failed: ' . $e->getMessage());
+        $present = [];
+    }
+    return $cached = $present;
+}
+
+/**
+ * Extract + shape-validate the 9 #1741 P1/D5 "extra" `tblWorks` fields plus
+ * the MusicBrainzWorkMBID rider from a POST-or-JSON-body-shaped array —
+ * extracted VERBATIM from `manage/works.php`'s `$parseWorkExtraFields`
+ * closure (rule #22). Shared by `manage/works.php`'s create/update AND
+ * (#1988) `admin_work_create`/`admin_work_update` in api.php — the request
+ * body key names (`tune_name`, `first_published_year`, …) are IDENTICAL
+ * between the page's `$_POST` shape and the API's JSON body shape, so the
+ * same function reads both without translation.
+ *
+ * CCLI validates through the shared `mediaIdentifierWorkValidate()`
+ * (includes/media_identifiers.php) — NO inline `preg_match()` here
+ * (rule #35). BOWI has no documented shape, length-checked only.
+ *
+ * @param array<string,mixed> $post
+ * @return array{0: array<string,mixed>, 1: ?string} [$fields, $error] —
+ *         $error is null on success; $fields is [] (unusable) on failure.
+ */
+function workParseExtraFields(array $post): array
+{
+    $subtitle        = mb_substr(trim((string)($post['subtitle'] ?? '')), 0, 255);
+    $disambiguation  = mb_substr(trim((string)($post['disambiguation'] ?? '')), 0, 255);
+    $ccliIn          = trim((string)($post['ccli'] ?? ''));
+    $bowiIn          = mb_substr(trim((string)($post['bowi'] ?? '')), 0, 30);
+    $tuneNameIn      = mb_substr(trim((string)($post['tune_name'] ?? '')), 0, 120);
+    $firstPubIn      = trim((string)($post['first_published_year'] ?? ''));
+    $copyrightYears  = mb_substr(trim((string)($post['copyright_years'] ?? '')), 0, 100);
+    $copyrightHolder = mb_substr(trim((string)($post['copyright_holder'] ?? '')), 0, 255);
+    /* #1864 — the Copyright Holder picker's hidden id, same "cast-or-null"
+       idiom as origin_city_id — 0/absent means "nothing was picked", not
+       "picked publisher #0". Verified server-side by
+       publisherResolvePickedOrCreate() before being trusted (rule #37). */
+    $copyrightHolderIdIn = (int)($post['copyright_holder_id'] ?? 0) ?: null;
+    $mbWorkIn        = trim((string)($post['musicbrainz_work_mbid'] ?? ''));
+
+    if ($ccliIn !== '' && !mediaIdentifierWorkValidate('ccli', $ccliIn)) {
+        return [[], 'CCLI Work Number must be numeric.'];
+    }
+    if ($mbWorkIn !== '' && !mediaIdentifierWorkValidate('musicbrainz-work', $mbWorkIn)) {
+        return [[], 'MusicBrainz Work MBID must look like a UUID (8-4-4-4-12 hex digits).'];
+    }
+    $firstPublishedYear = null;
+    if ($firstPubIn !== '') {
+        /* SMALLINT UNSIGNED on the schema side (schema.sql:3049) —
+           500..2100 keeps the same generous historical floor the column's
+           own comment documents ("hymn works predate" MySQL YEAR's 1901
+           floor) while still rejecting obvious typos. */
+        if (!ctype_digit($firstPubIn) || (int)$firstPubIn < 500 || (int)$firstPubIn > 2100) {
+            return [[], 'First published year must be a year between 500 and 2100.'];
+        }
+        $firstPublishedYear = (int)$firstPubIn;
+    }
+
+    return [[
+        'subtitle'            => $subtitle,
+        'disambiguation'      => $disambiguation,
+        'ccli'                => $ccliIn,
+        'bowi'                => $bowiIn,
+        'tuneName'            => $tuneNameIn,
+        'firstPublishedYear'  => $firstPublishedYear,
+        'copyrightYears'      => $copyrightYears,
+        'copyrightHolder'     => $copyrightHolder,
+        'copyrightHolderId'   => $copyrightHolderIdIn,
+        'musicBrainzWorkMbid' => $mbWorkIn,
+    ], null];
+}
+
+/**
+ * Ccli/Bowi/MusicBrainzWorkMBID uniqueness, gated per-column — extracted
+ * VERBATIM from `manage/works.php`'s `$checkWorkExtraUniqueness` closure
+ * (rule #22). `$excludeId` is null on create, the row's own Id on update.
+ *
+ * @param \mysqli              $db
+ * @param array<string,true>   $worksExtraCols
+ * @param array<string,mixed>  $fields
+ * @param ?int                 $excludeId
+ * @return string|null a user-facing error, or null when clear.
+ */
+function workCheckExtraUniqueness(\mysqli $db, array $worksExtraCols, array $fields, ?int $excludeId): ?string
+{
+    /* Hardcoded (col,val,label) triples from fixed PHP source — the ONLY
+       interpolated identifier below (`{$col}`) is drawn from this literal
+       array, never from request input (rule #5's carve-out). */
+    $checks = [
+        ['col' => 'Ccli', 'val' => (string)$fields['ccli'], 'label' => 'CCLI Work Number'],
+        ['col' => 'Bowi', 'val' => (string)$fields['bowi'], 'label' => 'BOWI'],
+        ['col' => 'MusicBrainzWorkMBID', 'val' => (string)$fields['musicBrainzWorkMbid'], 'label' => 'MusicBrainz Work MBID'],
+    ];
+    foreach ($checks as $check) {
+        $col = $check['col'];
+        $val = $check['val'];
+        if ($val === '' || !isset($worksExtraCols[$col])) continue;
+        if ($excludeId !== null) {
+            $stmt = $db->prepare("SELECT Id FROM tblWorks WHERE {$col} = ? AND Id <> ?");
+            $stmt->bind_param('si', $val, $excludeId);
+        } else {
+            $stmt = $db->prepare("SELECT Id FROM tblWorks WHERE {$col} = ?");
+            $stmt->bind_param('s', $val);
+        }
+        $stmt->execute();
+        $used = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+        if ($used) {
+            return "{$check['label']} '{$val}' is already on another Work.";
+        }
+    }
+    return null;
+}
+
+/**
+ * ONE separate column-gated UPDATE persisting the 9 #1741 P1/D5 extra
+ * fields + the MusicBrainzWorkMBID rider — extracted VERBATIM from
+ * `manage/works.php`'s `$persistWorkExtraFields` closure (rule #22). Each
+ * field drops out of the SET list independently when its own column is
+ * absent. TuneName + TuneId are ALWAYS written TOGETHER via
+ * `tuneFindOrCreateByName()`; CopyrightHolder + CopyrightHolderId are
+ * ALWAYS written together via `publisherResolvePickedOrCreate()` — never
+ * one half of either lockstep alone (that would silently link the wrong
+ * tune/publisher page).
+ *
+ * @param \mysqli              $db
+ * @param array<string,true>   $worksExtraCols
+ * @param int                  $workId
+ * @param array<string,mixed>  $fields
+ */
+function workPersistExtraFields(\mysqli $db, array $worksExtraCols, int $workId, array $fields): void
+{
+    $sets  = [];
+    $types = '';
+    $vals  = [];
+
+    if (isset($worksExtraCols['Subtitle'])) {
+        $sets[] = 'Subtitle = ?'; $types .= 's';
+        $vals[] = $fields['subtitle'] !== '' ? $fields['subtitle'] : null;
+    }
+    if (isset($worksExtraCols['Disambiguation'])) {
+        $sets[] = 'Disambiguation = ?'; $types .= 's';
+        $vals[] = $fields['disambiguation'];
+    }
+    if (isset($worksExtraCols['Ccli'])) {
+        $sets[] = 'Ccli = ?'; $types .= 's';
+        $vals[] = $fields['ccli'] !== '' ? $fields['ccli'] : null;
+    }
+    if (isset($worksExtraCols['Bowi'])) {
+        $sets[] = 'Bowi = ?'; $types .= 's';
+        $vals[] = $fields['bowi'] !== '' ? $fields['bowi'] : null;
+    }
+    if (isset($worksExtraCols['FirstPublishedYear'])) {
+        $sets[] = 'FirstPublishedYear = ?'; $types .= 'i';
+        $vals[] = $fields['firstPublishedYear'];
+    }
+    if (isset($worksExtraCols['CopyrightYears'])) {
+        $sets[] = 'CopyrightYears = ?'; $types .= 's';
+        $vals[] = $fields['copyrightYears'];
+    }
+    if (isset($worksExtraCols['CopyrightHolder'])) {
+        $sets[] = 'CopyrightHolder = ?'; $types .= 's';
+        $vals[] = $fields['copyrightHolder'];
+        /* #1864 — CopyrightHolder + CopyrightHolderId are ALWAYS written
+           TOGETHER, the exact TuneName/TuneId lockstep shape below applied
+           to the publisher registry (rule #37/#43): trusts the picker's
+           claimed id only after verifying it against the typed name, else
+           falls back to publisherFindOrCreateByName(). */
+        if (isset($worksExtraCols['CopyrightHolderId'])) {
+            $sets[] = 'CopyrightHolderId = ?'; $types .= 'i';
+            $vals[] = publisherResolvePickedOrCreate($db, $fields['copyrightHolder'], $fields['copyrightHolderId'] ?? null);
+        }
+    }
+    if (isset($worksExtraCols['MusicBrainzWorkMBID'])) {
+        $sets[] = 'MusicBrainzWorkMBID = ?'; $types .= 's';
+        $vals[] = $fields['musicBrainzWorkMbid'] !== '' ? $fields['musicBrainzWorkMbid'] : null;
+    }
+    if (isset($worksExtraCols['TuneName'])) {
+        $sets[] = 'TuneName = ?'; $types .= 's';
+        $vals[] = $fields['tuneName'] !== '' ? $fields['tuneName'] : null;
+        if (isset($worksExtraCols['TuneId'])) {
+            $sets[] = 'TuneId = ?'; $types .= 'i';
+            $vals[] = tuneFindOrCreateByName($db, $fields['tuneName']);
+        }
+    }
+
+    if (!$sets) return;
+    $stmt = $db->prepare('UPDATE tblWorks SET ' . implode(', ', $sets) . ' WHERE Id = ?');
+    $types .= 'i';
+    $vals[] = $workId;
+    $stmt->bind_param($types, ...$vals);
+    $stmt->execute();
+    $stmt->close();
+}
+
+/**
+ * Persist the places-adoption composition-origin columns
+ * (`OriginCity`/`OriginCityId`) — extracted VERBATIM from the identical
+ * inline block `manage/works.php`'s create AND update actions each carried
+ * (rule #22 — one write, not two copies). No-op (never throws) on an
+ * install that hasn't run the places-adoption migration yet.
+ *
+ * @param \mysqli $db
+ * @param int     $workId
+ * @param ?string $city
+ * @param ?int    $cityId
+ */
+function workPersistOriginCity(\mysqli $db, int $workId, ?string $city, ?int $cityId): void
+{
+    if (!placeColumnExists($db, 'tblWorks', 'OriginCityId')) {
+        return;
+    }
+    $stmt = $db->prepare(
+        'UPDATE tblWorks
+            SET OriginCity = ?, OriginCityId = ?
+          WHERE Id = ?'
+    );
+    $stmt->bind_param('sii', $city, $cityId, $workId);
+    $stmt->execute();
+    $stmt->close();
+}
+
+/**
+ * Verify `$candidateParent` isn't a descendant of `$workId` — prevents
+ * cycle creation when re-parenting. Consolidated (#1988, rule #22) from
+ * TWO byte-identical copies: `manage/works.php`'s `$cycleSafe` closure and
+ * `api.php`'s own `$workCycleSafe` closure, which had independently grown
+ * the exact same walk. Both call sites now delegate here instead.
+ *
+ * Walks the parent chain until null, giving up after `$maxDepth`
+ * iterations as a hard stop in case the table has somehow already become
+ * inconsistent.
+ *
+ * @param \mysqli  $db
+ * @param int      $workId
+ * @param ?int     $candidateParent
+ * @return bool true when `$candidateParent` is safe to set (no cycle).
+ */
+function workParentCycleSafe(\mysqli $db, int $workId, ?int $candidateParent): bool
+{
+    if ($candidateParent === null) return true;
+    if ($candidateParent === $workId) return false;
+    $cur = $candidateParent;
+    $maxDepth = 64;
+    while ($cur !== null && $maxDepth-- > 0) {
+        if ($cur === $workId) return false;
+        $stmt = $db->prepare('SELECT ParentWorkId FROM tblWorks WHERE Id = ?');
+        $stmt->bind_param('i', $cur);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$row) return true;
+        $cur = $row['ParentWorkId'] !== null ? (int)$row['ParentWorkId'] : null;
+    }
+    return false;
+}
+
+/**
+ * Replace a Work's ENTIRE `tblWorkSongs` membership list: DELETE-then-
+ * INSERT, extracted VERBATIM (rule #22) from `manage/works.php`'s update
+ * action (the exact `NULLIF(?, "")` Note shape included). Owns ONLY the SQL
+ * shape — the parse/clamp of posted rows (trim/cap-20 SongId, dedupe,
+ * sort-default `idx*10` clamped 0..65535, note cap 255) stays in EACH
+ * caller (manage/works.php's own parallel-array parsing; the new
+ * `admin_work_members_replace` API action's JSON-row-array parsing) —
+ * mirrors `workMedleyReplace()`'s own division of labour (this file's
+ * medley section above), just without a per-row guard-refusal loop since
+ * `tblWorkSongs` has no self-link/cycle concept to guard.
+ *
+ * The DELETE always runs, even for an empty `$rows` — clearing a Work's
+ * membership is a valid, deliberate edit (mirrors `workMedleyReplace()`'s
+ * own "empty list = clear" posture).
+ *
+ * @param \mysqli $db
+ * @param int     $workId
+ * @param list<array{songId:string,isCanonical:bool,sortOrder:int,note:?string}> $rows
+ * @return int Rows inserted (== count($rows) — every row here is assumed
+ *             already validated/clamped by the caller, unlike
+ *             workMedleyReplace() which itself guard-refuses rows).
+ */
+function workSongsReplace(\mysqli $db, int $workId, array $rows): int
+{
+    $stmt = $db->prepare('DELETE FROM tblWorkSongs WHERE WorkId = ?');
+    $stmt->bind_param('i', $workId);
+    $stmt->execute();
+    $stmt->close();
+
+    $inserted = 0;
+    if ($rows) {
+        $stmt = $db->prepare(
+            'INSERT INTO tblWorkSongs
+                (WorkId, SongId, IsCanonical, SortOrder, Note)
+             VALUES (?, ?, ?, ?, NULLIF(?, ""))'
+        );
+        foreach ($rows as $row) {
+            $sid     = (string)$row['songId'];
+            $isCanon = !empty($row['isCanonical']) ? 1 : 0;
+            $sort    = (int)$row['sortOrder'];
+            $note    = (string)($row['note'] ?? '');
+            $stmt->bind_param('isiis', $workId, $sid, $isCanon, $sort, $note);
+            $stmt->execute();
+            $inserted++;
+        }
+        $stmt->close();
     }
     return $inserted;
 }

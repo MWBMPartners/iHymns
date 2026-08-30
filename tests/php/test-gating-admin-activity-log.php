@@ -80,6 +80,14 @@ function galIsGatingWrite(string $code): bool
     if (preg_match('/\blicenceTypeAdmin(?:Create|Update|Toggle|Delete)\s*\(/', $code)) {
         return true;
     }
+    /* #2006 (epic #2002) — restrictions.php's create/delete SQL moved into
+       the shared includes/restriction_admin.php core
+       (restrictionAdminCreate()/…Delete()), the SAME "core does the SQL,
+       caller does the logging" shape licenceTypeAdmin*() already
+       established above for licence-types.php. */
+    if (preg_match('/\brestrictionAdmin(?:Create|Delete)\s*\(/', $code)) {
+        return true;
+    }
     return false;
 }
 
@@ -92,6 +100,12 @@ if (!galIsGatingWrite("\$db->query(\"INSERT INTO tblAccessTiers (Name) VALUES ('
 }
 if (!galIsGatingWrite('licenceTypeAdminCreate($db, $norm, $uid);')) {
     $mut[] = 'galIsGatingWrite FAILS-HIGH: missed a licenceTypeAdminCreate() call';
+}
+if (!galIsGatingWrite('restrictionAdminCreate($db, $fields);')) {
+    $mut[] = 'galIsGatingWrite FAILS-HIGH: missed a restrictionAdminCreate() call';
+}
+if (!galIsGatingWrite('restrictionAdminDelete($db, $id);')) {
+    $mut[] = 'galIsGatingWrite FAILS-HIGH: missed a restrictionAdminDelete() call';
 }
 if (galIsGatingWrite("\$db->query('SELECT * FROM tblSongs');")) {
     $mut[] = 'galIsGatingWrite FAILS-LOW: flagged a non-gating read';

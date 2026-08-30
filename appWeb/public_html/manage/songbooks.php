@@ -46,6 +46,16 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    list). Falls back to the byte-exact P1 seeds on an un-migrated install. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmitSongbookEvent(), fired beside the songbook.create/edit/delete logActivity (dormant no-op) */
+/* #1993 (rule #22) — the shared songbook CREATE validate+write core. The
+   `create` case below and the new guided-wizard `wizard_create_songbook`
+   case both delegate to songbookAdminValidateCreate()/…Create() — the SAME
+   functions api.php's admin_songbook_create API twin now calls too — so
+   the three create funnels can never drift apart again. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_admin.php';
+/* #1999 — the shared "Get started" empty-state launcher, rendered in the
+   list table's empty row below (points at the SAME guided wizard the
+   header button above already opens — rule #1, one shared partial). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'wizard-empty-state.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -914,316 +924,152 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         switch ($action) {
             case 'create': {
-                /* @disabled-visible: admin surface (#1765) — the songbooks
-                   management API; the abbreviation-uniqueness check spans all
-                   books regardless of public disabled state. */
-                $abbr    = trim((string)($_POST['abbreviation']    ?? ''));
-                $name    = trim((string)($_POST['name']            ?? ''));
-                $colour  = trim((string)($_POST['colour']          ?? ''));
-                $order   = (int)($_POST['display_order']           ?? 0);
-                /* #502 — new metadata columns. All nullable; empty
-                   input normalises to null so the UNIQUE/null-group
-                   semantics work as expected. */
-                $isOfficial = !empty($_POST['is_official']) ? 1 : 0;
-                $publisher  = trim((string)($_POST['publisher']        ?? '')) ?: null;
-                /* #1865 (rule #37/#43) — the create-form Publisher field's
-                   picker-claimed tblPublishers.Id (place-search.js
-                   pickMode:'value', wired below in this page's own <script>).
-                   0/absent means "nothing was picked" — same cast-or-null
-                   idiom as origin_city_id/publication_city_id elsewhere on
-                   this page. Verified server-side by
-                   publisherResolvePickedOrCreate() below before being
-                   trusted — never persisted unverified. */
-                $publisherIdClaimed = (int)($_POST['publisher_id'] ?? 0) ?: null;
-                $pubYear    = trim((string)($_POST['publication_year'] ?? '')) ?: null;
-                $copyright  = trim((string)($_POST['copyright']        ?? '')) ?: null;
-                $affiliation= trim((string)($_POST['affiliation']      ?? '')) ?: null;
-                /* #1332 — optional free-text display label (any chars, ≤30); '' → NULL. */
-                $displayAbbr = trim((string)($_POST['display_abbr']    ?? ''));
-                $displayAbbr = $displayAbbr !== '' ? mb_substr($displayAbbr, 0, 30) : null;
-                /* Places adoption sweep — display string + FK. The
-                   FK is populated by the place-search JS module when
-                   the curator picks a candidate; free-typing leaves
-                   the hidden id empty so we persist the string only. */
-                $publicationCity   = trim((string)($_POST['publication_city']    ?? '')) ?: null;
-                $publicationCityId = (int)($_POST['publication_city_id'] ?? 0) ?: null;
-                /* #673 / #681 — optional language. Empty selection saves
-                   as NULL. Now widened to 35 chars to fit a full IETF
-                   BCP 47 tag (lang[-Script][-Region]) and validated
-                   against the v1 grammar. */
-                $language   = trim((string)($_POST['language']         ?? '')) ?: null;
-                if ($language !== null) {
-                    $language = mb_substr($language, 0, 35);
-                    if ($e = $validateBcp47($language)) { $error = $e; break; }
-                }
+                /* #1993 (rule #22) — re-pointed onto the shared
+                   songbookAdminValidateCreate()/…Create() core
+                   (includes/songbook_admin.php). The field-parsing +
+                   validation + row-write moved there VERBATIM (byte-
+                   identical behaviour); everything that stays PER-FUNNEL —
+                   the logActivity() shape, the affiliation-registry sync,
+                   the songs-cache maintenance sweep, and this success
+                   banner — stays here, reading from $fields (the
+                   validated/normalised shape Validate() returns) exactly
+                   as the pre-#1993 inline code read its own local vars. */
+                [$fields, $err, $errStatus, $errField] = songbookAdminValidateCreate($db, $_POST);
+                if ($err !== null) { $error = $err; break; }
 
-                /* #672 — bibliographic + authority-control identifiers.
-                   All nullable, all VARCHAR. trim()→null normalises
-                   blank inputs so the column actually stores NULL
-                   rather than '' (avoids the typical "is it really
-                   missing" ambiguity in downstream queries). */
-                $websiteUrl   = trim((string)($_POST['website_url']         ?? '')) ?: null;
-                /* #1765 Feature 7 — the dedicated Internet Archive URL input
-                   has been removed from the create form (IA links now go
-                   through the external-links card-list, which for a
-                   brand-new songbook is only reachable after the row
-                   exists — see the edit modal). A fresh row simply starts
-                   with no InternetArchiveUrl; the column stays in the
-                   INSERT's param list unchanged (bound to a hardcoded
-                   null) below rather than reworking the carefully-counted
-                   23-param bind_param() call — see its own #694 comment
-                   for why a stray count mismatch is exactly the failure
-                   mode to avoid. */
-                $iaUrl        = null;
-                $wikipediaUrl = trim((string)($_POST['wikipedia_url']       ?? '')) ?: null;
-                $wikidataId   = trim((string)($_POST['wikidata_id']         ?? '')) ?: null;
-                $oclcNumber   = trim((string)($_POST['oclc_number']         ?? '')) ?: null;
-                $ocnNumber    = trim((string)($_POST['ocn_number']          ?? '')) ?: null;
-                $lcpNumber    = trim((string)($_POST['lcp_number']          ?? '')) ?: null;
-                $isbn         = trim((string)($_POST['isbn']                ?? '')) ?: null;
-                /* #1765 Feature 3 — validated via the ONE shared validator,
-                   mediaIdentifierPublicationClean() (includes/media_identifiers.php);
-                   never a hand-rolled regex. Empty input → null (unchanged
-                   behaviour); a non-empty value that doesn't look like a
-                   real ARK is now rejected with a friendly error instead
-                   of silently persisted (#672 shipped this field with no
-                   validation at all). */
-                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
-                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
-                $arkId    = $arkClean['value'];
-                $isniId       = trim((string)($_POST['isni_id']             ?? '')) ?: null;
-                $viafId       = trim((string)($_POST['viaf_id']             ?? '')) ?: null;
-                $lccn         = trim((string)($_POST['lccn']                ?? '')) ?: null;
-                $lcClass      = trim((string)($_POST['lc_class']            ?? '')) ?: null;
-
-                /* #1765 Feature 2 — public-domain flag (informational only,
-                   never a content gate). Feature 3 — the OpenLibrary Work/
-                   Edition id pair, same validated-via-shared-helper shape
-                   as ArkId above. All three are written in a schema-
-                   tolerant secondary UPDATE after the INSERT below (same
-                   pattern as PublicationCityId/DisplayAbbr) rather than
-                   folded into the 23-param bind, so an un-migrated install
-                   degrades to "field simply isn't offered" instead of a
-                   500. */
-                $isPublicDomain = !empty($_POST['is_public_domain']) ? 1 : 0;
-                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
-                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
-                $olWorkId    = $olWorkClean['value'];
-                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
-                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
-                $olEditionId    = $olEditionClean['value'];
-
-                if ($e = $validateAbbr($abbr))   { $error = $e; break; }
-                if ($name === '')                { $error = 'Name is required.'; break; }
-                if ($e = $validateColour($colour)) { $error = $e; break; }
-
-                /* Auto-colour fallback (#677). When a curator leaves
-                   the Colour field blank, pick a palette colour the
-                   catalogue isn't already using so the new badge is
-                   visually distinct from neighbouring books. An
-                   explicit colour types into the field still wins —
-                   this only fires when $colour is empty after
-                   validation. */
-                if ($colour === '') {
-                    $colour = pickAutoSongbookColour($db, $abbr);
+                try {
+                    $created = songbookAdminCreate($db, $fields, [
+                        'hasPublishersSchema' => $hasPublishersSchema,
+                        'hasPubDomainCol'     => $hasPubDomainCol,
+                        'hasOpenLibraryCols'  => $hasOpenLibraryCols,
+                    ]);
+                } catch (SongbookAdminDuplicateAbbreviationException $e) {
+                    /* #1993 — the INSERT's own 1062 (a curator-vs-curator
+                       race past the Validate() pre-check) surfaces the SAME
+                       friendly banner the pre-check gives, instead of
+                       falling through to this file's generic "Database
+                       error" catch further down. */
+                    $error = $e->getMessage();
+                    break;
                 }
+                $newId  = $created['id'];
+                $colour = $created['colour'];
+                $createPublisherId = $created['publisherId'];
 
-                $stmt = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ?');
-                $stmt->bind_param('s', $abbr);
-                $stmt->execute();
-                $exists = $stmt->get_result()->fetch_row() !== null;
-                $stmt->close();
-                if ($exists) { $error = 'Abbreviation already exists.'; break; }
-
-                $stmt = $db->prepare(
-                    'INSERT INTO tblSongbooks
-                        (Abbreviation, Name, DisplayOrder, Colour,
-                         IsOfficial, Publisher, PublicationYear, Copyright, Affiliation,
-                         Language,
-                         WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
-                         OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
-                         ViafId, Lccn, LcClass)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
-                             ?,
-                             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-                );
-                /* Types breakdown:
-                     Abbr(s), Name(s), DisplayOrder(i), Colour(s),               4
-                     IsOfficial(i), Publisher(s), PubYear(s), Copyright(s),
-                       Affiliation(s),                                            5
-                     Language(s) — #673                                            1
-                     Website(s), IA(s), Wikipedia(s), Wikidata(s),
-                       OCLC(s), OCN(s), LCP(s), ISBN(s), ARK(s), ISNI(s),
-                       VIAF(s), LCCN(s), LcClass(s)                              13
-                                                                            ----
-                                                                              23
-                   mysqli passes NULL correctly when a bound variable is null
-                   even with type 's'. */
-                $orderInt = (int)($order ?: 0);
-                /* Type string is exactly 23 chars to match the 23 bound
-                   values: ssis (Abbr,Name,Order,Colour) + isssss
-                   (IsOfficial,Publisher,Year,Copyright,Affiliation) +
-                   s (Language) + 13 × s (bibliographic). The earlier
-                   24-char form had one stray trailing 's' which made
-                   PHP 8.5 mysqli throw "Number of variables doesn't
-                   match number of parameters" on every create —
-                   surfaced to the curator as the generic "Database
-                   error — check server logs" banner. (#694) */
-                $stmt->bind_param(
-                    'ssisissssssssssssssssss',
-                    $abbr, $name, $orderInt, $colour,
-                    $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
-                    $language,
-                    $websiteUrl, $iaUrl, $wikipediaUrl, $wikidataId,
-                    $oclcNumber, $ocnNumber, $lcpNumber, $isbn, $arkId, $isniId,
-                    $viafId, $lccn, $lcClass
-                );
-                $stmt->execute();
-                $newId = (int)$db->insert_id;
-                $stmt->close();
-                /* #1860 go-live — mint this songbook's permanent IL-id (ILB…). */
-                ilidStampNewRow($db, 'songbook', $newId);
-                /* Place columns — schema-tolerant separate UPDATE
-                   so the carefully-tuned 23-bind INSERT above stays
-                   untouched. Skipped on pre-adoption-migration
-                   installs (probe returns false). */
-                if (placeColumnExists($db, 'tblSongbooks', 'PublicationCityId')) {
-                    $stmt = $db->prepare(
-                        'UPDATE tblSongbooks
-                            SET PublicationCity = ?, PublicationCityId = ?
-                          WHERE Id = ?'
-                    );
-                    $stmt->bind_param('sii', $publicationCity, $publicationCityId, $newId);
-                    $stmt->execute();
-                    $stmt->close();
-                }
-                /* #1332 — display label in a schema-tolerant separate UPDATE
-                   (skipped pre-migration), same pattern as the place columns. */
-                if (placeColumnExists($db, 'tblSongbooks', 'DisplayAbbr')) {
-                    $stmt = $db->prepare('UPDATE tblSongbooks SET DisplayAbbr = ? WHERE Id = ?');
-                    $stmt->bind_param('si', $displayAbbr, $newId);
-                    $stmt->execute();
-                    $stmt->close();
-                }
-                /* #1765 Feature 2 — public-domain flag, schema-tolerant
-                   separate UPDATE (skipped pre-migration). Not folded into
-                   the create logActivity's 'bibliographic' block below —
-                   it's a boolean flag, not a bibliographic identifier. */
-                if ($hasPubDomainCol) {
-                    $stmt = $db->prepare('UPDATE tblSongbooks SET IsPublicDomain = ? WHERE Id = ?');
-                    $stmt->bind_param('ii', $isPublicDomain, $newId);
-                    $stmt->execute();
-                    $stmt->close();
-                }
-                /* #1765 Feature 3 — OpenLibrary Work/Edition id pair, same
-                   schema-tolerant pattern. Written together (both columns
-                   land in the same migration stage) so a partial-apply
-                   install that has neither yet just skips both. */
-                if ($hasOpenLibraryCols) {
-                    $stmt = $db->prepare(
-                        'UPDATE tblSongbooks SET OpenLibraryWorkId = ?, OpenLibraryEditionId = ? WHERE Id = ?'
-                    );
-                    $stmt->bind_param('ssi', $olWorkId, $olEditionId, $newId);
-                    $stmt->execute();
-                    $stmt->close();
-                }
-                /* #1865 (rule #37/#43) — a brand-new songbook has no Edit
-                   modal yet, so the create form's quick Publisher field is
-                   the ONLY publisher-linking surface at create time. Resolve
-                   it through the ONE shared funnel — publisherResolvePickedOrCreate()
-                   (includes/publisher_helpers.php) — trusting a verified
-                   picker claim over a name-only resolve (tblPublishers has no
-                   uq_Name; rule #37), then seed the M:N link exactly the way
-                   the Edit arm's own richer multi-publisher reconciliation
-                   does further down this file (INSERT tblSongbookPublishers +
-                   re-sync the Publisher denorm to the resolved registry
-                   Name) — same tables, same shape, no second sync path. An
-                   empty field, or a pre-migration install without
-                   tblSongbookPublishers, leaves the songbook exactly as
-                   before this feature: display-string-only. */
-                $createPublisherId = null;
-                if ($hasPublishersSchema) {
-                    $createPublisherId = publisherResolvePickedOrCreate($db, (string)$publisher, $publisherIdClaimed);
-                    if ($createPublisherId !== null) {
-                        $pubRole = 'publisher';
-                        $stmt = $db->prepare(
-                            'INSERT INTO tblSongbookPublishers (SongbookId, PublisherId, Role, SortOrder) VALUES (?, ?, ?, 0)'
-                        );
-                        $stmt->bind_param('iis', $newId, $createPublisherId, $pubRole);
-                        $stmt->execute();
-                        $stmt->close();
-
-                        /* Denorm sync — the free-text Publisher mirror
-                           follows the registry Name exactly (rule #37),
-                           same shape as the Edit arm's primary-publisher
-                           resync (see the #93 comment on the reconciliation
-                           block below). */
-                        $nameStmt = $db->prepare('SELECT Name FROM tblPublishers WHERE Id = ?');
-                        $nameStmt->bind_param('i', $createPublisherId);
-                        $nameStmt->execute();
-                        $resolvedName = $nameStmt->get_result()->fetch_assoc()['Name'] ?? null;
-                        $nameStmt->close();
-                        if ($resolvedName !== null) {
-                            $upd = $db->prepare('UPDATE tblSongbooks SET Publisher = ? WHERE Id = ?');
-                            $upd->bind_param('si', $resolvedName, $newId);
-                            $upd->execute();
-                            $upd->close();
-                        }
-                    }
-                }
-                /* #1909 — partner webhook (dormant no-op until enabled). */
-                webhookEmitSongbookEvent($db, 'songbook.created', $abbr,
-                    ['title' => $name, 'is_official' => (bool)$isOfficial], ['source' => 'admin']);
                 logActivity('songbook.create', 'songbook', (string)$newId, [
-                    'abbreviation'    => $abbr,
-                    'name'            => $name,
-                    'display_order'   => $order ?: 0,
+                    'abbreviation'    => $fields['abbr'],
+                    'name'            => $fields['name'],
+                    'display_order'   => $fields['order'] ?: 0,
                     'colour'          => $colour,
-                    'is_official'     => (bool)$isOfficial,
-                    'publisher'       => $publisher,
+                    'is_official'     => (bool)$fields['isOfficial'],
+                    'publisher'       => $fields['publisher'],
                     /* #1865 — only logged when tblSongbookPublishers exists,
-                       matching the schema-tolerant write above. */
+                       matching the schema-tolerant write in the core. */
                     'publisher_id'    => $hasPublishersSchema ? $createPublisherId : null,
-                    'publication_year'=> $pubYear,
-                    'copyright'       => $copyright,
-                    'affiliation'     => $affiliation,
-                    'language'        => $language,
+                    'publication_year'=> $fields['pubYear'],
+                    'copyright'       => $fields['copyright'],
+                    'affiliation'     => $fields['affiliation'],
+                    'language'        => $fields['language'],
                     /* #1765 Feature 2 — only logged when the column exists,
-                       matching the schema-tolerant write above. */
-                    'is_public_domain'=> $hasPubDomainCol ? (bool)$isPublicDomain : null,
+                       matching the schema-tolerant write in the core. */
+                    'is_public_domain'=> $hasPubDomainCol ? (bool)$fields['isPublicDomain'] : null,
                     /* #672 — log only the keys that have a value, so
                        empty bibliographic blocks don't bloat the
                        activity-log row. */
                     'bibliographic'   => array_filter([
-                        'website_url'           => $websiteUrl,
-                        'wikipedia_url'         => $wikipediaUrl,
-                        'wikidata_id'           => $wikidataId,
-                        'oclc_number'           => $oclcNumber,
-                        'ocn_number'            => $ocnNumber,
-                        'lcp_number'            => $lcpNumber,
-                        'isbn'                  => $isbn,
-                        'ark_id'                => $arkId,
+                        'website_url'           => $fields['websiteUrl'],
+                        'wikipedia_url'         => $fields['wikipediaUrl'],
+                        'wikidata_id'           => $fields['wikidataId'],
+                        'oclc_number'           => $fields['oclcNumber'],
+                        'ocn_number'            => $fields['ocnNumber'],
+                        'lcp_number'            => $fields['lcpNumber'],
+                        'isbn'                  => $fields['isbn'],
+                        'ark_id'                => $fields['arkId'],
                         /* #1765 Feature 3 */
-                        'openlibrary_work_id'   => $olWorkId,
-                        'openlibrary_edition_id'=> $olEditionId,
-                        'isni_id'               => $isniId,
-                        'viaf_id'               => $viafId,
-                        'lccn'                  => $lccn,
-                        'lc_class'              => $lcClass,
+                        'openlibrary_work_id'   => $fields['olWorkId'],
+                        'openlibrary_edition_id'=> $fields['olEditionId'],
+                        'isni_id'               => $fields['isniId'],
+                        'viaf_id'               => $fields['viafId'],
+                        'lccn'                  => $fields['lccn'],
+                        'lc_class'              => $fields['lcClass'],
                     ], fn($v) => $v !== null && $v !== ''),
                 ]);
                 /* Self-populate the affiliation registry so the next
                    open of the typeahead surfaces this value (#670). */
-                $registerAffiliation($affiliation);
-                /* #961 — refresh the on-disk songs cache so the Song
-                   Editor's view of songbooks (incl. IsOfficial flag)
-                   stays current. Best-effort — a regen failure must
-                   not undo the create that just committed. */
+                $registerAffiliation($fields['affiliation']);
+                /* #961 — post-write songbook maintenance (orphan SongId-
+                   prefix sweep — see includes/songbook_maintenance.php's
+                   own doc-block; WS-J #1020 removed the old JSON-cache
+                   step this comment used to describe). Best-effort — a
+                   regen failure must not undo the create that just
+                   committed. */
                 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
                     . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
                 songbookMaintenanceRun($db, 'songbooks.create');
-                $success = "Songbook '{$abbr}' created.";
+                $success = "Songbook '{$fields['abbr']}' created.";
                 break;
+            }
+
+            /* #1993 — the guided "New Songbook" wizard's JSON-in/JSON-out
+               AJAX branch, built on the shared stepper (js/modules/admin-
+               wizard.js, #1992). An ORDINARY case in this SAME switch —
+               simpler than external-link-types.php's wizard, because this
+               page's WHOLE POST handler already gates every action behind
+               the top-of-handler validateCsrfRequest() (same-origin
+               X-Requested-With, rule #29) — nothing bespoke needed here.
+               Delegates to the EXACT SAME songbookAdminValidateCreate()/
+               …Create() core the 'create' case above and the API twin
+               (api.php admin_songbook_create) call (rule #22) — never a
+               fourth copy of the field-parsing/INSERT. Its own try/catch
+               ends in exit() so a failure here is ALWAYS JSON, never falls
+               through to this file's generic HTML error catch below. */
+            case 'wizard_create_songbook': {
+                header('Content-Type: application/json; charset=UTF-8');
+                try {
+                    [$fields, $err, $errStatus, $errField] = songbookAdminValidateCreate($db, $_POST);
+                    if ($err !== null) {
+                        http_response_code($errStatus);
+                        echo json_encode(['error' => $err, 'field' => $errField]);
+                        exit;
+                    }
+
+                    try {
+                        $created = songbookAdminCreate($db, $fields, [
+                            'hasPublishersSchema' => $hasPublishersSchema,
+                            'hasPubDomainCol'     => $hasPubDomainCol,
+                            'hasOpenLibraryCols'  => $hasOpenLibraryCols,
+                        ]);
+                    } catch (SongbookAdminDuplicateAbbreviationException $e) {
+                        http_response_code(409);
+                        echo json_encode(['error' => $e->getMessage(), 'field' => 'abbreviation']);
+                        exit;
+                    }
+
+                    logActivity('songbook.create', 'songbook', (string)$created['id'], [
+                        'abbreviation' => $fields['abbr'],
+                        'name'         => $fields['name'],
+                        'is_official'  => (bool)$fields['isOfficial'],
+                        'via'          => 'wizard',
+                    ]);
+                    $registerAffiliation($fields['affiliation']);
+                    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR
+                        . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                    songbookMaintenanceRun($db, 'songbooks.wizard_create');
+
+                    echo json_encode([
+                        'ok'           => true,
+                        'id'           => $created['id'],
+                        'abbreviation' => $fields['abbr'],
+                        'name'         => $fields['name'],
+                        'colour'       => $created['colour'],
+                        'displayAbbr'  => $fields['displayAbbr'],
+                    ]);
+                } catch (\Throwable $e) {
+                    error_log('[songbooks wizard_create_songbook] ' . $e->getMessage());
+                    http_response_code(500);
+                    echo json_encode(['error' => 'Could not create songbook.']);
+                }
+                exit;
             }
 
             case 'marcxml_import': {
@@ -1231,7 +1077,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                    file. MARCXML carries no Abbreviation (the SongId prefix,
                    rule #27), so the curator supplies it; the title (245 $a)
                    and bibliographic fields/identifiers come from the file. A
-                   slightly-off identifier is skipped, not fatal. */
+                   slightly-off identifier is skipped, not fatal.
+                   #1993 — deliberately OUT of the new includes/songbook_admin.php
+                   core (see that file's own "SCOPE — MARCXML stays OUT" doc-
+                   block): this funnel's field set + 4-column INSERT differ
+                   materially from the 23-bind create shape. Folding this in
+                   (and its api.php admin_songbook_marcxml_import sibling) is
+                   a tracked follow-up, not done opportunistically here —
+                   tests/php/test-songbook-wizard.php's INSERT-singleton
+                   guard (b) enumerates this case + the API sibling + the
+                   core file as the three honest `INSERT INTO tblSongbooks`
+                   sites tree-wide, so a stray 4th copy fails the build. */
                 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
                 $parsed = marcxmlAdmin_parseUpload($_FILES['marcxml_file'] ?? [], 'songbook');
                 if (!$parsed['ok']) { $error = $parsed['error']; break; }
@@ -3060,6 +2916,26 @@ try {
 }
 
 $csrf = csrfToken();
+
+/* #1993 — seed for the guided "New Songbook" wizard's live abbreviation-
+   availability check. Same shape as external-link-types.php's
+   window._iHymnsLinkTypes seed: derived from the SAME $rows this page
+   already fetched for the list table, never a second query. The server
+   stays authoritative (Validate()'s own uniqueness pre-check + the
+   INSERT's UNIQUE-key race guard) — this is a same-page UX nicety, not
+   the source of truth. */
+$wizardAbbrs = array_values(array_map(
+    static fn(array $r): string => (string)$r['Abbreviation'],
+    $rows
+));
+
+/* Cache-busted import path for the shared stepper module (#1992/#1993) —
+   same filemtime-as-version-query pattern external-link-types.php and
+   head-libs.php use for every other admin JS load. */
+$_adminWizardPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'admin-wizard.js';
+$adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizardPath) : '1';
+$_ietfPickerPath  = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'ietf-language-picker.js';
+$ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPath) : '1';
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -3076,13 +2952,25 @@ $csrf = csrfToken();
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-book me-2"></i>Songbooks</h1>
-        <p class="text-secondary small mb-4">
-            Add, rename, reorder and remove the songbooks people see in filters,
-            search and the Song Editor. Each song is tied to its songbook by a
-            short code, so changing that code is a deliberate step rather than
-            something that happens automatically.
-        </p>
+        <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+            <div>
+                <h1 class="h4 mb-1"><i aria-hidden="true" class="bi bi-book me-2"></i>Songbooks</h1>
+                <p class="text-secondary small mb-0">
+                    Add, rename, reorder and remove the songbooks people see in filters,
+                    search and the Song Editor. Each song is tied to its songbook by a
+                    short code, so changing that code is a deliberate step rather than
+                    something that happens automatically.
+                </p>
+            </div>
+            <?php /* #1993 — the guided-wizard trigger. The modal markup + its
+                     own wiring script sit further down this page, right after
+                     the manual "Add a songbook"/MARCXML forms (rule #22 —
+                     grouped with the other create funnels) — see the
+                     "New Songbook wizard" comment block below. */ ?>
+            <button type="button" class="btn btn-primary text-nowrap" data-bs-toggle="modal" data-bs-target="#songbookWizardModal">
+                <i aria-hidden="true" class="bi bi-magic me-1"></i>New songbook (guided)
+            </button>
+        </div>
 
         <?php if ($success): ?>
             <div class="alert alert-success py-2"><?= htmlspecialchars($success) ?></div>
@@ -3106,16 +2994,16 @@ $csrf = csrfToken();
             <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
                 <small class="text-muted me-1">Quick sort:</small>
                 <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="name:asc">
-                    <i class="bi bi-sort-alpha-down me-1"></i>Name A→Z
+                    <i aria-hidden="true" class="bi bi-sort-alpha-down me-1"></i>Name A→Z
                 </button>
                 <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="name:desc">
-                    <i class="bi bi-sort-alpha-up-alt me-1"></i>Name Z→A
+                    <i aria-hidden="true" class="bi bi-sort-alpha-up-alt me-1"></i>Name Z→A
                 </button>
                 <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="abbr:asc">
-                    <i class="bi bi-sort-alpha-down me-1"></i>Abbr A→Z
+                    <i aria-hidden="true" class="bi bi-sort-alpha-down me-1"></i>Abbr A→Z
                 </button>
                 <button type="button" class="btn btn-sm btn-outline-secondary" data-sort-preset="abbr:desc">
-                    <i class="bi bi-sort-alpha-up-alt me-1"></i>Abbr Z→A
+                    <i aria-hidden="true" class="bi bi-sort-alpha-up-alt me-1"></i>Abbr Z→A
                 </button>
                 <small class="text-muted ms-1">— preview applied; hit <em>Save display order</em> to persist.</small>
             </div>
@@ -3124,17 +3012,17 @@ $csrf = csrfToken();
             <table class="table table-sm mb-2 align-middle cp-sortable admin-table-responsive" id="songbook-list-table">
                 <thead>
                     <tr class="text-muted small">
-                        <th data-col-priority="tertiary"  style="width:1.5rem" aria-label="Drag to reorder"></th>
-                        <th data-col-priority="tertiary"  style="width:6rem">Order</th>
-                        <th data-col-priority="primary"   data-sort-key="abbr" data-sort-type="text">Abbr</th>
-                        <th data-col-priority="primary"   data-sort-key="name" data-sort-type="text">Name</th>
-                        <th data-col-priority="secondary" class="text-center" data-sort-key="official" data-sort-type="text" title="Official published hymnal (#502)">Official</th>
-                        <th data-col-priority="primary"   class="text-center" data-sort-key="songs" data-sort-type="number">Songs</th>
-                        <th data-col-priority="secondary" data-sort-key="language" data-sort-type="text" title="IETF BCP 47 language tag — empty means multi-lingual / not specified (#778)">Languages</th>
-                        <th data-col-priority="tertiary"  data-sort-key="parent" data-sort-type="text" title="Canonical parent songbook — translations / editions point upward to their source (#782)">Parent</th>
-                        <th data-col-priority="tertiary"  data-sort-key="colour" data-sort-type="text">Colour</th>
-                        <th data-col-priority="secondary" data-sort-key="status" data-sort-type="text" title="Public visibility — a disabled book is hidden from every public page but stays fully editable here (#1765)">Status</th>
-                        <th data-col-priority="primary"   class="text-end">Actions</th>
+                        <th scope="col" data-col-priority="tertiary"  style="width:1.5rem" aria-label="Drag to reorder"></th>
+                        <th scope="col" data-col-priority="tertiary"  style="width:6rem">Order</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="abbr" data-sort-type="text">Abbr</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="name" data-sort-type="text">Name</th>
+                        <th scope="col" data-col-priority="secondary" class="text-center" data-sort-key="official" data-sort-type="text" title="Official published hymnal (#502)">Official</th>
+                        <th scope="col" data-col-priority="primary"   class="text-center" data-sort-key="songs" data-sort-type="number">Songs</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="language" data-sort-type="text" title="IETF BCP 47 language tag — empty means multi-lingual / not specified (#778)">Languages</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="parent" data-sort-type="text" title="Canonical parent songbook — translations / editions point upward to their source (#782)">Parent</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="colour" data-sort-type="text">Colour</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="status" data-sort-type="text" title="Public visibility — a disabled book is hidden from every public page but stays fully editable here (#1765)">Status</th>
+                        <th scope="col" data-col-priority="primary"   class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -3145,7 +3033,7 @@ $csrf = csrfToken();
                             data-sort-abbr="<?= htmlspecialchars($r['Abbreviation']) ?>">
                             <td data-col-priority="tertiary" class="text-center align-middle">
                                 <span class="songbook-drag-handle" title="Drag to reorder" aria-hidden="true">
-                                    <i class="bi bi-grip-vertical"></i>
+                                    <i aria-hidden="true" class="bi bi-grip-vertical"></i>
                                 </span>
                             </td>
                             <td data-col-priority="tertiary">
@@ -3364,7 +3252,7 @@ $csrf = csrfToken();
                                 <button type="button" class="btn btn-sm btn-outline-info"
                                         onclick="openEditModal(<?= htmlspecialchars((string)$editRowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Edit songbook">
-                                    <i class="bi bi-pencil"></i>
+                                    <i aria-hidden="true" class="bi bi-pencil"></i>
                                 </button>
                                 <!-- #1765 Feature 5 — export this songbook as a MARCXML file. -->
                                 <a class="btn btn-sm btn-outline-secondary"
@@ -3395,7 +3283,7 @@ $csrf = csrfToken();
                                                 ? 'Re-enable — make visible to the public again'
                                                 : 'Disable — hide from every public page (stays editable here)'
                                             ?>">
-                                        <i class="bi bi-<?= $rIsDisabled ? 'eye' : 'eye-slash' ?>"></i>
+                                        <i aria-hidden="true" class="bi bi-<?= $rIsDisabled ? 'eye' : 'eye-slash' ?>"></i>
                                     </button>
                                 </form>
                                 <?php endif; ?>
@@ -3416,7 +3304,7 @@ $csrf = csrfToken();
                                         data-songbook-abbrev="<?= htmlspecialchars($r['Abbreviation'], ENT_QUOTES, 'UTF-8') ?>"
                                         data-songbook-name="<?= htmlspecialchars($r['Name'], ENT_QUOTES, 'UTF-8') ?>"
                                         title="Export every song in this songbook as a JSON bundle (filename: &quot;&lt;Title&gt; (&lt;ABBR&gt;) [Bundle].json&quot;).">
-                                    <i class="bi bi-box-arrow-down"></i>
+                                    <i aria-hidden="true" class="bi bi-box-arrow-down"></i>
                                 </button>
                                 <?php
                                     /* Three states for the delete button (#706):
@@ -3444,31 +3332,51 @@ $csrf = csrfToken();
                                 <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick="openDeleteModal(<?= htmlspecialchars((string)$deleteRowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Delete songbook (no songs reference it)">
-                                    <i class="bi bi-trash"></i>
+                                    <i aria-hidden="true" class="bi bi-trash"></i>
                                 </button>
                                 <?php elseif ($isAdmin): ?>
                                 <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick="openCascadeDeleteModal(<?= htmlspecialchars((string)$cascadeRowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Cascade-delete: songbook + <?= $songCnt ?> song(s) + every reference to them">
-                                    <i class="bi bi-trash"></i>
+                                    <i aria-hidden="true" class="bi bi-trash"></i>
                                 </button>
                                 <?php else: ?>
                                 <button type="button" class="btn btn-sm btn-outline-secondary" disabled
                                         title="<?= $songCnt ?> song(s) still reference this abbreviation — admin/global_admin role required for cascade delete">
-                                    <i class="bi bi-trash"></i>
+                                    <i aria-hidden="true" class="bi bi-trash"></i>
                                 </button>
                                 <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
                     <?php if (!$rows): ?>
-                        <tr><td colspan="11" class="text-muted text-center py-4">No songbooks yet. Add one below.</td></tr>
+                        <tr><td colspan="11" class="p-0 border-0">
+                            <?php /* #1999 — empty-state "Get started" launcher, keeping the
+                                     11-column table shape (this <tbody> is #songbook-list-table's
+                                     JS reorder anchor) intact. $error-aware: on a load failure
+                                     there is nothing to "get started" with, so fall back to a
+                                     plain note rather than pointing at a wizard that can't save
+                                     until the underlying error is fixed. */ ?>
+                            <?php if (!$error): ?>
+                                <?= ihymns_wizard_empty_state([
+                                    'icon'        => 'bi-book',
+                                    'heading'     => 'No songbooks yet',
+                                    'body'        => 'Songbooks group the songs people browse, search and print — add your first one to get started.',
+                                    'modalId'     => 'songbookWizardModal',
+                                    'buttonLabel' => 'New songbook (guided)',
+                                    'wrap'        => 'bare',
+                                    'hint'        => 'Prefer to type it yourself? Use the manual "Add a songbook" form below.',
+                                ]) ?>
+                            <?php else: ?>
+                                <span class="text-muted text-center d-block py-4">No songbooks to show.</span>
+                            <?php endif; ?>
+                        </td></tr>
                     <?php endif; ?>
                 </tbody>
             </table>
             <?php if ($rows): ?>
                 <button type="submit" class="btn btn-sm btn-amber-solid">
-                    <i class="bi bi-save me-1"></i>Save display order
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save display order
                 </button>
                 <small class="text-muted ms-2">Lower numbers render first. Any non-negative integer is fine — gaps of 10 between rows give you room to slot in a new book later, but you can use 1, 2, 3, … or anything else (#672).</small>
             <?php endif; ?>
@@ -3479,7 +3387,7 @@ $csrf = csrfToken();
              Two modes: fill (only rows with no colour set) and reassign
              (every row, gated by typed-confirmation). -->
         <div class="card-admin p-3 mb-4">
-            <h2 class="h6 mb-3"><i class="bi bi-palette me-2"></i>Auto-colour songbooks</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-palette me-2"></i>Auto-colour songbooks</h2>
             <p class="small text-muted mb-3">
                 Pick palette colours from the active theme so the catalogue stays visually consistent. Existing curator-typed colours are preserved unless the destructive Reassign mode is used.
             </p>
@@ -3489,7 +3397,7 @@ $csrf = csrfToken();
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="auto_colour_fill">
                     <button type="submit" class="btn btn-amber btn-sm">
-                        <i class="bi bi-droplet-half me-1"></i>Fill missing colours
+                        <i aria-hidden="true" class="bi bi-droplet-half me-1"></i>Fill missing colours
                     </button>
                 </form>
                 <form method="POST" class="d-inline-flex align-items-end gap-2"
@@ -3506,7 +3414,7 @@ $csrf = csrfToken();
                            placeholder="Type: REASSIGN ALL" autocomplete="off"
                            style="max-width: 11rem;">
                     <button type="submit" class="btn btn-outline-danger btn-sm">
-                        <i class="bi bi-shuffle me-1"></i>Reassign all (destructive)
+                        <i aria-hidden="true" class="bi bi-shuffle me-1"></i>Reassign all (destructive)
                     </button>
                 </form>
             </div>
@@ -3528,7 +3436,7 @@ $csrf = csrfToken();
              double-click can't silently rewire a row that already
              pointed at a different parent. -->
         <div class="card-admin p-3 mb-4">
-            <h2 class="h6 mb-2"><i class="bi bi-diagram-3 me-2"></i>Apply family manifest</h2>
+            <h2 class="h6 mb-2"><i aria-hidden="true" class="bi bi-diagram-3 me-2"></i>Apply family manifest</h2>
             <p class="small text-muted mb-3">
                 Upload a JSON file produced by a scraper (e.g. <code>_family-manifest.json</code>
                 from <code>ChristInSong.app.py</code>) to bulk-link vernacular / edition / abridgement
@@ -3540,8 +3448,8 @@ $csrf = csrfToken();
                 <input type="hidden" name="action"     value="family_manifest">
                 <div class="row g-2 align-items-end">
                     <div class="col-sm-6">
-                        <label class="form-label small">Manifest file (JSON, ≤ 1 MB)</label>
-                        <input type="file" name="manifest"
+                        <label class="form-label small" for="family-manifest-file">Manifest file (JSON, ≤ 1 MB)</label>
+                        <input type="file" name="manifest" id="family-manifest-file"
                                class="form-control form-control-sm"
                                accept="application/json,.json" required>
                     </div>
@@ -3566,7 +3474,7 @@ $csrf = csrfToken();
                     </div>
                 </div>
                 <button type="submit" class="btn btn-amber btn-sm mt-3">
-                    <i class="bi bi-eye me-1"></i>Preview / Apply
+                    <i aria-hidden="true" class="bi bi-eye me-1"></i>Preview / Apply
                 </button>
             </form>
 
@@ -3602,11 +3510,11 @@ $csrf = csrfToken();
                 <table class="table table-sm align-middle mb-0">
                     <thead>
                         <tr class="text-muted small">
-                            <th>Child</th>
-                            <th>Parent</th>
-                            <th>Relationship</th>
-                            <th>Action</th>
-                            <th>Note</th>
+                            <th scope="col">Child</th>
+                            <th scope="col">Parent</th>
+                            <th scope="col">Relationship</th>
+                            <th scope="col">Action</th>
+                            <th scope="col">Note</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -3646,7 +3554,7 @@ $csrf = csrfToken();
         <form method="POST" class="card-admin p-3 mb-4">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
-            <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a songbook</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a songbook</h2>
 
             <div class="mb-3">
                 <label class="form-label small" for="create-abbreviation">Abbreviation</label>
@@ -3671,7 +3579,7 @@ $csrf = csrfToken();
             ?>
 
             <button type="submit" class="btn btn-amber-solid btn-sm mt-3">
-                <i class="bi bi-plus me-1"></i>Create songbook
+                <i aria-hidden="true" class="bi bi-plus me-1"></i>Create songbook
             </button>
         </form>
 
@@ -3708,8 +3616,433 @@ $csrf = csrfToken();
 
     </div>
 
+    <?php /* =====================================================================
+             #1993 — guided "New Songbook" wizard: the Bootstrap-modal markup,
+             the window._iHymnsSongbookWizard seed for its live abbreviation-
+             availability check, and the wizard's own wiring. Grouped here
+             with the other two create funnels above (manual form + MARCXML
+             form) per rule #22 — all three, plus the API twin
+             (api.php admin_songbook_create), delegate to the SAME
+             songbookAdminValidateCreate()/…Create() core
+             (includes/songbook_admin.php). Placed BEFORE the page's later
+             non-module <script> blocks (affiliation datalist, publisher
+             search boot, IETF picker boot) so those position-order-
+             dependent querySelectorAll() wireups already see this modal's
+             elements in the DOM by the time they run. */ ?>
+    <script>
+    /* Seeded abbreviation set for the wizard's live availability check —
+       same shape/purpose as external-link-types.php's window._iHymnsLinkTypes
+       seed: derived from the SAME $rows this page already fetched, never a
+       second query. The server (Validate()'s uniqueness pre-check + the
+       INSERT's own UNIQUE-key race guard) stays authoritative either way —
+       this is a same-page nicety, not the source of truth. */
+    window._iHymnsSongbookWizard = {
+        abbrs: <?= json_encode($wizardAbbrs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>,
+        csrf: <?= json_encode($csrf, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>,
+        hasPublishers: <?= $hasPublishersSchema ? 'true' : 'false' ?>
+    };
+    </script>
+
+    <div class="modal fade" id="songbookWizardModal" tabindex="-1" aria-hidden="true" aria-labelledby="songbookWizardModalLabel" data-bs-backdrop="static">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content" id="songbookWizardRoot">
+                <div class="modal-header">
+                    <h2 class="modal-title h5 mb-0" id="songbookWizardModalLabel">New songbook — guided</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div data-wiz-progress class="mb-3"></div>
+
+                    <!-- Step 1 — Identity -->
+                    <section data-wiz-step data-wiz-label="Identity">
+                        <h3 data-wiz-heading class="h6 mb-3">1. What's it called?</h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <div class="mb-3">
+                            <label class="form-label" for="sbwiz-name">Name</label>
+                            <input type="text" class="form-control" id="sbwiz-name" maxlength="255" placeholder="e.g. Christian Praise" aria-required="true">
+                        </div>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" id="sbwiz-is-official">
+                            <label class="form-check-label" for="sbwiz-is-official">Official published hymnal</label>
+                        </div>
+                        <div class="form-text small">
+                            Leave unticked for a curated grouping / pseudo-songbook (rule #24) — tick it only for a
+                            genuine published hymnal.
+                        </div>
+                    </section>
+
+                    <!-- Step 2 — Code (the highest-value step: rule #27) -->
+                    <section data-wiz-step data-wiz-label="Code" hidden>
+                        <h3 data-wiz-heading class="h6 mb-3">2. Its short code</h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <div class="mb-2">
+                            <label class="form-label" for="sbwiz-abbreviation">Abbreviation</label>
+                            <input type="text" class="form-control" id="sbwiz-abbreviation"
+                                   maxlength="10" pattern="[A-Za-z0-9]+" placeholder="e.g. CP" autocomplete="off"
+                                   aria-required="true" aria-describedby="sbwiz-abbr-status">
+                            <div class="form-text small" id="sbwiz-abbr-status" role="status">
+                                Letters and numbers only, up to 10 characters. We'll suggest one from the name above.
+                            </div>
+                        </div>
+                        <div class="alert alert-secondary py-2 small mb-3">
+                            <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
+                            This code becomes part of every song's web address in this songbook (e.g.
+                            <code>CP-101</code>) — it's effectively permanent, since renaming it later means
+                            updating every song that uses it. The display label below is just what people
+                            <em>see</em> instead of the code, and you can change that any time.
+                        </div>
+                        <div class="mb-1">
+                            <label class="form-label" for="sbwiz-display-abbr">
+                                Display label <span class="text-muted">(optional)</span>
+                            </label>
+                            <input type="text" class="form-control" id="sbwiz-display-abbr" maxlength="30"
+                                   placeholder="e.g. AH-OLD — shown instead of the abbreviation">
+                            <div class="form-text small">Leave blank to just show the abbreviation itself.</div>
+                        </div>
+                    </section>
+
+                    <!-- Step 3 — Details (all optional: rule #44 lean subset) -->
+                    <section data-wiz-step data-wiz-label="Details" hidden>
+                        <h3 data-wiz-heading class="h6 mb-3">3. A few more details <span class="text-muted small">(all optional)</span></h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <div class="mb-3">
+                            <label class="form-label" for="sbwiz-publisher">Publisher</label>
+                            <input type="text" class="form-control" id="sbwiz-publisher" maxlength="255"
+                                   placeholder="e.g. Praise Trust" autocomplete="off">
+                            <input type="hidden" id="sbwiz-publisher-id" value="">
+                        </div>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label" for="sbwiz-publication-year">Publication year / edition</label>
+                                <input type="text" class="form-control" id="sbwiz-publication-year" maxlength="50"
+                                       placeholder="e.g. 1986">
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label" for="sbwiz-affiliation">Affiliation</label>
+                                <input type="text" class="form-control js-affiliation-input" id="sbwiz-affiliation"
+                                       list="affiliations-datalist" autocomplete="off" maxlength="120"
+                                       placeholder="e.g. Non-denominational">
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label" for="sbwiz-copyright">Copyright</label>
+                            <input type="text" class="form-control" id="sbwiz-copyright" maxlength="500"
+                                   placeholder="e.g. © 2012 Praise Trust, All Rights Reserved">
+                        </div>
+                        <?php
+                            /* #681 — reuse the SAME shared IETF BCP 47 composite
+                               picker partial the manual create form + edit modal
+                               use (rule #22 — a third hand-rolled language input
+                               is exactly what this partial exists to prevent).
+                               $name is a dummy id — never read server-side; the
+                               wizard's own save() reads the composed tag straight
+                               off this instance via bootIetfLanguagePicker()'s
+                               returned getTag(), so this hidden field carries no
+                               real name= (rule #43's "no name= on wizard inputs"
+                               — the ONE name this partial itself always emits is
+                               deliberately routed to an inert key, never a real
+                               POST field, so it can never collide with the
+                               shared songbook-form-fields.php partial's OWN
+                               `language` field the parity guard polices). */
+                            $idPrefix = 'sbwiz-songbook';
+                            $name     = 'sbwiz_language_unused';
+                            $tag      = '';
+                            $label    = 'Language (IETF BCP 47, optional)';
+                            $help     = 'Empty = "not specified" (multi-lingual collection).';
+                            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'ietf-language-picker.php';
+                            unset($idPrefix, $name, $tag, $label, $help);
+                        ?>
+                    </section>
+
+                    <!-- Step 4 — Review -->
+                    <section data-wiz-step data-wiz-label="Review" hidden>
+                        <h3 data-wiz-heading class="h6 mb-3">4. Review &amp; create</h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <dl class="row small mb-0" id="sbwiz-review-summary"></dl>
+                    </section>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-secondary" data-wiz-back hidden>Back</button>
+                    <button type="button" class="btn btn-amber" data-wiz-next>Next</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+    /* #1993 — guided "New Songbook" wizard wiring, built on the shared
+       stepper (js/modules/admin-wizard.js, #1992). Domain logic only — the
+       framework itself knows nothing about songbooks (module doc-block).
+       Mirrors manage/external-link-types.php's wizard shape; the one
+       structural difference is CSRF — this page's WHOLE POST handler
+       already gates on validateCsrfRequest() (rule #29), so save() below
+       needs no bespoke CSRF branch, just the X-Requested-With header every
+       fetch() from this module sends. */
+    import { createWizard } from '/js/modules/admin-wizard.js?v=<?= htmlspecialchars($adminWizardVer, ENT_QUOTES) ?>';
+    import { bootIetfLanguagePicker } from '/js/modules/ietf-language-picker.js?v=<?= htmlspecialchars($ietfPickerVer, ENT_QUOTES) ?>';
+
+    (function () {
+        'use strict';
+        const modalEl = document.getElementById('songbookWizardModal');
+        if (!modalEl) { return; }
+
+        const csrfToken = (window._iHymnsSongbookWizard && window._iHymnsSongbookWizard.csrf) || '';
+        const seededAbbrs = (window._iHymnsSongbookWizard && window._iHymnsSongbookWizard.abbrs) || [];
+
+        const nameInput        = document.getElementById('sbwiz-name');
+        const isOfficialEl     = document.getElementById('sbwiz-is-official');
+        const abbrInput        = document.getElementById('sbwiz-abbreviation');
+        const abbrStatusEl     = document.getElementById('sbwiz-abbr-status');
+        const displayAbbrInput = document.getElementById('sbwiz-display-abbr');
+        const publisherInput   = document.getElementById('sbwiz-publisher');
+        const publisherIdInput = document.getElementById('sbwiz-publisher-id');
+        const pubYearInput     = document.getElementById('sbwiz-publication-year');
+        const copyrightInput   = document.getElementById('sbwiz-copyright');
+        const affiliationInput = document.getElementById('sbwiz-affiliation');
+        const reviewSummary    = document.getElementById('sbwiz-review-summary');
+        const nextBtn          = modalEl.querySelector('[data-wiz-next]');
+
+        let abbrManuallyEdited = false;
+
+        function escapeHtml(s) {
+            return String(s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        /* ---- Publisher live-search (rule #43) — mirrors the create form's
+           own attach() call below in this file exactly (pickMode:'value',
+           the SAME ?action=publisher_search endpoint). ---- */
+        if (window.iHymnsPlaceSearch && publisherInput && publisherIdInput) {
+            window.iHymnsPlaceSearch.attach(publisherInput, {
+                hiddenIdInput: publisherIdInput,
+                minChars: 2,
+                pickMode: 'value',
+                noun: { singular: 'publisher', plural: 'publishers' },
+                searchUrl: (q) => '/manage/songbooks?action=publisher_search&q=' + encodeURIComponent(q) + '&limit=10',
+                parseResults: (d) => (d.suggestions || []).map((s) => ({
+                    id: s.id,
+                    display_name: s.name,
+                    hint: s.kind || '',
+                })),
+            });
+        }
+
+        /* ---- the wizard's own IETF picker instance ---- */
+        const sbwizLangRoot = modalEl.querySelector('[data-ietf-picker-id="sbwiz-songbook"]');
+        const sbwizLangPicker = sbwizLangRoot ? bootIetfLanguagePicker(sbwizLangRoot) : null;
+
+        /* ---- Name → Abbreviation auto-suggest ---- */
+        function suggestAbbrFromName(name) {
+            const words = String(name || '').trim().split(/\s+/).filter(Boolean);
+            if (words.length === 0) { return ''; }
+            if (words.length === 1) {
+                return words[0].replace(/[^A-Za-z0-9]/g, '').slice(0, 4).toUpperCase();
+            }
+            return words.map((w) => w.charAt(0)).join('').replace(/[^A-Za-z0-9]/g, '').slice(0, 10).toUpperCase();
+        }
+        nameInput.addEventListener('input', function () {
+            if (!abbrManuallyEdited) {
+                abbrInput.value = suggestAbbrFromName(nameInput.value);
+                checkAbbr();
+            }
+        });
+
+        /* ---- Abbreviation validation — mirrors validateSongbookAbbr()
+           (includes/songbook_validation.php) + ilidAbbrIsReserved()
+           (includes/ilyrics_id.php) exactly, plus the seeded-set live
+           uniqueness check and a NON-BLOCKING digit warning (rule #27 —
+           a digit code still validates server-side but silently degrades
+           the router / favorites / related-songs / OG-image consumers
+           that assume letters-only). The server stays authoritative
+           either way: a genuine collision still comes back 409 from
+           save(). ---- */
+        function abbrValidate(raw) {
+            const v = String(raw || '').trim();
+            if (v === '') {
+                return { ok: false, level: 'error', message: 'Abbreviation is required.' };
+            }
+            if (v.length > 10) {
+                return { ok: false, level: 'error', message: 'Abbreviation must be 10 characters or fewer.' };
+            }
+            if (!/^[A-Za-z0-9]+$/.test(v)) {
+                return { ok: false, level: 'error', message: 'Letters and numbers only — no spaces or punctuation.' };
+            }
+            if (/^IL[A-Za-z]?$/i.test(v)) {
+                return { ok: false, level: 'error', message: '"IL" and "IL" plus one letter are reserved for iLyrics internal IDs.' };
+            }
+            const upper = v.toUpperCase();
+            if (seededAbbrs.some((a) => String(a).toUpperCase() === upper)) {
+                return { ok: false, level: 'error', message: 'That abbreviation is already in use — pick another.' };
+            }
+            if (/[0-9]/.test(v)) {
+                return {
+                    ok: true, level: 'warn',
+                    message: 'A digit in the code can trip up a few features that assume letters-only (favorites, related songs, share images). It will still work — letters-only is just the safest choice.',
+                };
+            }
+            return { ok: true, level: 'ok', message: 'Available.' };
+        }
+
+        function checkAbbr() {
+            abbrInput.value = abbrInput.value.toUpperCase();
+            const result = abbrValidate(abbrInput.value);
+            if (!abbrStatusEl) { return result; }
+            const icon = result.level === 'ok' ? '✅' : (result.level === 'warn' ? '⚠️' : '❌');
+            abbrStatusEl.textContent = icon + ' ' + result.message;
+            abbrStatusEl.className = 'form-text small ' +
+                (result.level === 'ok' ? 'text-success-emphasis' : (result.level === 'warn' ? 'text-warning-emphasis' : 'text-danger-emphasis'));
+            return result;
+        }
+        abbrInput.addEventListener('input', function () {
+            abbrManuallyEdited = true;
+            checkAbbr();
+        });
+
+        /* ---- review ---- */
+        function updateReview() {
+            if (!reviewSummary) { return; }
+            const language = sbwizLangPicker ? sbwizLangPicker.getTag() : '';
+            reviewSummary.innerHTML =
+                '<dt class="col-sm-4">Name</dt><dd class="col-sm-8">' + escapeHtml(nameInput.value) + '</dd>' +
+                '<dt class="col-sm-4">Abbreviation</dt><dd class="col-sm-8"><code>' + escapeHtml(abbrInput.value) + '</code>' +
+                '<div class="text-muted">This code is permanent — the display label is not.</div></dd>' +
+                (displayAbbrInput.value.trim() !== ''
+                    ? '<dt class="col-sm-4">Display label</dt><dd class="col-sm-8">' + escapeHtml(displayAbbrInput.value) + '</dd>' : '') +
+                '<dt class="col-sm-4">Official hymnal</dt><dd class="col-sm-8">' + (isOfficialEl.checked ? 'Yes' : 'No — curated grouping') + '</dd>' +
+                (publisherInput.value.trim() !== ''
+                    ? '<dt class="col-sm-4">Publisher</dt><dd class="col-sm-8">' + escapeHtml(publisherInput.value) + '</dd>' : '') +
+                (pubYearInput.value.trim() !== ''
+                    ? '<dt class="col-sm-4">Publication year</dt><dd class="col-sm-8">' + escapeHtml(pubYearInput.value) + '</dd>' : '') +
+                (affiliationInput.value.trim() !== ''
+                    ? '<dt class="col-sm-4">Affiliation</dt><dd class="col-sm-8">' + escapeHtml(affiliationInput.value) + '</dd>' : '') +
+                (language ? '<dt class="col-sm-4">Language</dt><dd class="col-sm-8">' + escapeHtml(language) + '</dd>' : '');
+        }
+
+        /* ---- the wizard itself ---- */
+        const wizard = createWizard(modalEl, {
+            host: 'bootstrap-modal',
+            validateStep: function (index) {
+                if (index === 0) {
+                    if (!nameInput.value.trim()) {
+                        return { ok: false, message: 'Name is required.', focus: nameInput };
+                    }
+                    return true;
+                }
+                if (index === 1) {
+                    const result = checkAbbr();
+                    if (!result.ok) {
+                        return { ok: false, message: result.message, focus: abbrInput };
+                    }
+                    return true;
+                }
+                if (index === 2) {
+                    updateReview();
+                    return true;
+                }
+                return true;
+            },
+            onStepChange: function (from, to) {
+                if (nextBtn) { nextBtn.textContent = (to === 3) ? 'Create songbook' : 'Next'; }
+                if (to === 3) { updateReview(); }
+            },
+            onFinish: save,
+        });
+
+        /* Step routing for a server-side rejection (rule #35 — branch on
+           the structured `field`/status the server sends, never match the
+           error PROSE). */
+        const FIELD_TO_STEP = { name: 0, abbreviation: 1, colour: 1, language: 2 };
+        function showStepError(index, message) {
+            const panes = modalEl.querySelectorAll('[data-wiz-step]');
+            const pane = panes[index];
+            if (!pane) { return; }
+            const alertEl = pane.querySelector('[data-wiz-alert]');
+            if (alertEl) {
+                alertEl.hidden = false;
+                alertEl.textContent = message;
+                alertEl.focus();
+            }
+        }
+
+        function collectFormBody() {
+            const body = new URLSearchParams();
+            body.set('action', 'wizard_create_songbook');
+            body.set('csrf_token', csrfToken);
+            body.set('name', nameInput.value.trim());
+            body.set('is_official', isOfficialEl.checked ? '1' : '');
+            body.set('abbreviation', abbrInput.value.trim());
+            body.set('display_abbr', displayAbbrInput.value.trim());
+            body.set('publisher', publisherInput.value.trim());
+            body.set('publisher_id', publisherIdInput.value || '');
+            body.set('publication_year', pubYearInput.value.trim());
+            body.set('copyright', copyrightInput.value.trim());
+            body.set('affiliation', affiliationInput.value.trim());
+            body.set('language', sbwizLangPicker ? sbwizLangPicker.getTag() : '');
+            return body;
+        }
+
+        function save() {
+            if (nextBtn) { nextBtn.disabled = true; }
+            fetch(window.location.pathname, {
+                method: 'POST',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                body: collectFormBody(),
+            }).then(function (res) {
+                return res.json().then(function (data) { return { status: res.status, data: data }; })
+                    .catch(function () { return { status: res.status, data: null }; });
+            }).then(function (result) {
+                if (result.data && result.data.ok) {
+                    window.location.reload();
+                    return;
+                }
+                /* A non-JSON response (e.g. a text/plain 403 from a CSRF
+                   failure) lands here with data === null. */
+                const message = (result.data && result.data.error) || 'Could not create songbook — please retry.';
+                if (result.status === 409) {
+                    wizard.goTo(1);
+                    showStepError(1, message);
+                } else if (result.status === 400 && result.data && result.data.field && FIELD_TO_STEP[result.data.field] !== undefined) {
+                    const step = FIELD_TO_STEP[result.data.field];
+                    wizard.goTo(step);
+                    showStepError(step, message);
+                } else {
+                    window.alert(message);
+                }
+            }).catch(function () {
+                window.alert('Could not reach the server. Please try again.');
+            }).finally(function () {
+                if (nextBtn) { nextBtn.disabled = false; }
+            });
+        }
+
+        /* Reset to a clean slate every time the modal is opened again. */
+        modalEl.addEventListener('hidden.bs.modal', function () {
+            modalEl.querySelectorAll('[data-wiz-alert]').forEach(function (el) { el.hidden = true; el.textContent = ''; });
+            nameInput.value = '';
+            isOfficialEl.checked = false;
+            abbrInput.value = '';
+            abbrManuallyEdited = false;
+            if (abbrStatusEl) {
+                abbrStatusEl.textContent = 'Letters and numbers only, up to 10 characters. We\'ll suggest one from the name above.';
+                abbrStatusEl.className = 'form-text small';
+            }
+            displayAbbrInput.value = '';
+            publisherInput.value = '';
+            publisherIdInput.value = '';
+            pubYearInput.value = '';
+            copyrightInput.value = '';
+            affiliationInput.value = '';
+            if (sbwizLangPicker) { sbwizLangPicker.setTag(''); }
+            if (nextBtn) { nextBtn.textContent = 'Next'; }
+            wizard.goTo(0);
+        });
+    })();
+    </script>
+
     <!-- Edit Modal -->
-    <div class="modal fade" id="editModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30, M6 pattern): wire the modal-title heading to the dialog. -->
+    <div class="modal fade" id="editModal" tabindex="-1" aria-labelledby="editModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -3717,8 +4050,8 @@ $csrf = csrfToken();
                     <input type="hidden" name="action" value="update">
                     <input type="hidden" name="id" id="edit-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title">
-                            <i class="bi bi-pencil me-2"></i>Edit songbook — <code id="edit-abbr-label"></code>
+                        <h5 class="modal-title" id="editModal-label">
+                            <i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit songbook — <code id="edit-abbr-label"></code>
                             <!-- Feature 1 (#1765) — read-only reflection of the current
                                  disable state (populated by openEditModal()); the
                                  actual toggle lives on the list row so the one
@@ -3728,7 +4061,7 @@ $csrf = csrfToken();
                                 <i class="bi bi-eye-slash me-1" aria-hidden="true"></i>Disabled — hidden from the public site
                             </span>
                         </h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <?php
@@ -3757,9 +4090,9 @@ $csrf = csrfToken();
                              rights key yet. Edit-modal only (needs an existing songbook Id);
                              stays outside the shared Add/Edit partial by design (#1765 rule
                              #22 — the create form has no songs to apply defaults to). */ -->
-                        <div class="mb-3 border-top pt-2">
-                            <label class="form-label small text-muted d-block mb-1">
-                                <i class="bi bi-patch-check me-1"></i>Default rights (prefill hint for songs in this book)
+                        <div class="mb-3 border-top pt-2" role="group" aria-labelledby="edit-default-rights-label">
+                            <label class="form-label small text-muted d-block mb-1" id="edit-default-rights-label">
+                                <i aria-hidden="true" class="bi bi-patch-check me-1"></i>Default rights (prefill hint for songs in this book)
                             </label>
                             <div class="row g-2">
                                 <div class="col-12 col-md-6">
@@ -3805,7 +4138,7 @@ $csrf = csrfToken();
                         <div class="mb-3 border-top pt-2" id="edit-apply-song-language-block">
                             <details>
                                 <summary class="form-label small text-muted" style="cursor:pointer;">
-                                    <i class="bi bi-translate me-1"></i>Apply this language to all songs in this songbook
+                                    <i aria-hidden="true" class="bi bi-translate me-1"></i>Apply this language to all songs in this songbook
                                 </summary>
                                 <div class="mt-2 small">
                                     <p class="text-muted mb-2">
@@ -3826,7 +4159,7 @@ $csrf = csrfToken();
                                             class="btn btn-sm btn-outline-info"
                                             id="edit-apply-song-language-btn"
                                             disabled>
-                                        <i class="bi bi-arrow-down-circle me-1"></i>
+                                        <i aria-hidden="true" class="bi bi-arrow-down-circle me-1"></i>
                                         <span id="edit-apply-song-language-label">Apply to songs</span>
                                     </button>
                                     <span id="edit-apply-song-language-status"
@@ -3843,7 +4176,7 @@ $csrf = csrfToken();
                              at the bottom of the page (search "parent-typeahead"). -->
                         <div class="row g-2 mb-3" id="edit-parent-block">
                             <div class="col-sm-7">
-                                <label class="form-label">Parent songbook (optional)</label>
+                                <label class="form-label" for="edit-parent-search">Parent songbook (optional)</label>
                                 <input type="hidden" name="parent_songbook_id" id="edit-parent-id" value="">
                                 <div class="d-flex gap-1">
                                     <input type="text"
@@ -3871,7 +4204,7 @@ $csrf = csrfToken();
                                 </div>
                             </div>
                             <div class="col-sm-5">
-                                <label class="form-label">Relationship</label>
+                                <label class="form-label" for="edit-parent-relationship">Relationship</label>
                                 <select class="form-select"
                                         name="parent_relationship"
                                         id="edit-parent-relationship">
@@ -3896,13 +4229,13 @@ $csrf = csrfToken();
                              (sort-order, note) curators use the dedicated
                              /manage/songbook-series page. -->
                         <div class="mb-3" id="edit-series-block">
-                            <label class="form-label d-flex justify-content-between align-items-center">
+                            <div class="form-label d-flex justify-content-between align-items-center">
                                 <span>Series memberships</span>
                                 <a href="/manage/songbook-series" class="small text-info"
                                    title="Manage series — names, slugs, sort order, member adds">
                                     <i class="bi bi-collection me-1" aria-hidden="true"></i>Manage series
                                 </a>
-                            </label>
+                            </div>
                             <?php if (!$allSeries): ?>
                                 <div class="form-text small">
                                     No series defined yet. <a href="/manage/songbook-series">Create one</a>
@@ -3943,13 +4276,13 @@ $csrf = csrfToken();
                              compiler_person_ids[] / compiler_notes[] in
                              parallel arrays. -->
                         <div class="mb-3" id="edit-compilers-block">
-                            <label class="form-label d-flex justify-content-between align-items-center">
+                            <div class="form-label d-flex justify-content-between align-items-center">
                                 <span>Compilers / Editors</span>
                                 <a href="/manage/musicians" class="small text-info"
                                    title="Manage credit people — add a person, set bio, slug, …">
                                     <i class="bi bi-person-badge me-1" aria-hidden="true"></i>Manage people
                                 </a>
-                            </label>
+                            </div>
                             <div class="form-text small mb-2">
                                 The person(s) who compiled / edited this hymnal —
                                 e.g. <em>Mission Praise</em> by Peter Horrobin &amp; Greg Leavers.
@@ -4001,13 +4334,13 @@ $csrf = csrfToken();
                              is the primary publisher and re-syncs the free-text
                              Publisher field above on save. -->
                         <div class="mb-3" id="edit-publishers-block">
-                            <label class="form-label d-flex justify-content-between align-items-center">
+                            <div class="form-label d-flex justify-content-between align-items-center">
                                 <span>Publishers <span class="text-muted small">(registry)</span></span>
                                 <a href="/manage/publishers" class="small text-info"
                                    title="Manage publishers — add a company/person, set imprint parent, aliases, …">
                                     <i class="bi bi-building me-1" aria-hidden="true"></i>Manage publishers
                                 </a>
-                            </label>
+                            </div>
                             <div class="form-text small mb-2">
                                 One or more publishers for this book (multi-publisher copyright). The
                                 first-listed publisher becomes the primary and updates the free-text
@@ -4051,8 +4384,8 @@ $csrf = csrfToken();
                              ("vernacular", "older form", "transliteration", …).
                              Reorder via drag handle persists via array index ⇒
                              SortOrder on save. -->
-                        <div class="mb-3" id="edit-alt-names-block">
-                            <label class="form-label">Alternative names <span class="text-muted small">(optional)</span></label>
+                        <div class="mb-3" id="edit-alt-names-block" role="group" aria-labelledby="edit-alt-names-label">
+                            <label class="form-label" id="edit-alt-names-label">Alternative names <span class="text-muted small">(optional)</span></label>
                             <div class="form-text small mb-2">
                                 "Also known as …" — vernacular names, older spellings,
                                 or originals. Searched alongside the canonical name and
@@ -4106,7 +4439,7 @@ $csrf = csrfToken();
 
                         <hr>
                         <div class="mb-3">
-                            <label class="form-label">New abbreviation (optional)</label>
+                            <label class="form-label" for="edit-new-abbr">New abbreviation (optional)</label>
                             <input type="text" class="form-control" name="new_abbreviation" id="edit-new-abbr"
                                    pattern="[A-Za-z0-9]+" maxlength="10"
                                    placeholder="Leave blank to keep current">
@@ -4131,7 +4464,8 @@ $csrf = csrfToken();
     </div>
 
     <!-- Delete Modal -->
-    <div class="modal fade" id="deleteModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30) — see the editModal comment above. -->
+    <div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -4139,8 +4473,8 @@ $csrf = csrfToken();
                     <input type="hidden" name="action" value="delete">
                     <input type="hidden" name="id" id="delete-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title"><i class="bi bi-trash me-2"></i>Delete — <code id="delete-abbr-label"></code></h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <h5 class="modal-title" id="deleteModal-label"><i aria-hidden="true" class="bi bi-trash me-2"></i>Delete — <code id="delete-abbr-label"></code></h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <p>Remove this songbook? This is only allowed if no songs reference the abbreviation.</p>
@@ -4159,7 +4493,8 @@ $csrf = csrfToken();
          red text, (2) types the songbook abbreviation back into a field
          that gates the Delete button. The submit button stays disabled
          until window.cascadeDeleteAbbr === the typed value. -->
-    <div class="modal fade" id="cascadeDeleteModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30) — see the editModal comment above. -->
+    <div class="modal fade" id="cascadeDeleteModal" tabindex="-1" aria-labelledby="cascadeDeleteModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST" id="cascadeDeleteForm">
@@ -4167,11 +4502,11 @@ $csrf = csrfToken();
                     <input type="hidden" name="action" value="delete_cascade">
                     <input type="hidden" name="id" id="cascade-delete-id">
                     <div class="modal-header" style="border-color: var(--ih-border); background: rgba(220,53,69,0.15);">
-                        <h5 class="modal-title">
-                            <i class="bi bi-exclamation-triangle-fill me-2 text-danger"></i>
+                        <h5 class="modal-title" id="cascadeDeleteModal-label">
+                            <i aria-hidden="true" class="bi bi-exclamation-triangle-fill me-2 text-danger"></i>
                             Cascade delete — <code id="cascade-delete-abbr-label"></code>
                         </h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <p class="text-danger">
@@ -4197,7 +4532,7 @@ $csrf = csrfToken();
                     <div class="modal-footer" style="border-color: var(--ih-border);">
                         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
                         <button type="submit" class="btn btn-danger" id="cascade-delete-submit" disabled>
-                            <i class="bi bi-trash me-1"></i>Delete songbook + all songs
+                            <i aria-hidden="true" class="bi bi-trash me-1"></i>Delete songbook + all songs
                         </button>
                     </div>
                 </form>
@@ -5147,7 +5482,7 @@ $csrf = csrfToken();
                     '</div>' +
                     '<button type="button" class="btn btn-sm btn-outline-danger" ' +
                             'data-action="remove-compiler" title="Remove this compiler">' +
-                      '<i class="bi bi-x-lg"></i>' +
+                      '<i aria-hidden="true" class="bi bi-x-lg"></i>' +
                     '</button>' +
                   '</div>' +
                 '</div>';
@@ -5278,7 +5613,7 @@ $csrf = csrfToken();
                     '</div>' +
                     '<button type="button" class="btn btn-sm btn-outline-danger" ' +
                             'data-action="remove-publisher" title="Remove this publisher">' +
-                      '<i class="bi bi-x-lg"></i>' +
+                      '<i aria-hidden="true" class="bi bi-x-lg"></i>' +
                     '</button>' +
                   '</div>' +
                 '</div>';
@@ -5352,7 +5687,7 @@ $csrf = csrfToken();
                     '</div>' +
                     '<button type="button" class="btn btn-sm btn-outline-danger" ' +
                             'data-action="remove-alt-name" title="Remove this alt name">' +
-                      '<i class="bi bi-x-lg"></i>' +
+                      '<i aria-hidden="true" class="bi bi-x-lg"></i>' +
                     '</button>' +
                   '</div>' +
                 '</div>';

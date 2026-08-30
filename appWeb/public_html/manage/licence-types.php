@@ -143,7 +143,7 @@ $coverageKinds = LICENCE_COVERAGE_KINDS; // slug => human label
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-patch-check me-2"></i>Licence Types</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-patch-check me-2"></i>Licence Types</h1>
         <p class="text-secondary small mb-3">
             The list of licence types the site knows about — such as CCLI or MRL — with what each one
             legally <em>allows</em> (showing or printing lyrics, reproducing music, playing audio) and any
@@ -151,7 +151,7 @@ $coverageKinds = LICENCE_COVERAGE_KINDS; // slug => human label
             A licence's short code can't be changed once it's created; everything else can.
         </p>
         <div class="alert alert-warning py-2 small" role="note">
-            <i class="bi bi-exclamation-triangle me-1"></i>
+            <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
             Changing a licence’s <strong>Confers-tier</strong> or <strong>Enabled</strong> state affects members’
             effective access tier <strong>immediately</strong> — even while content gating is switched off.
         </div>
@@ -179,14 +179,14 @@ $coverageKinds = LICENCE_COVERAGE_KINDS; // slug => human label
                 <table class="table table-sm align-middle mb-0 admin-table-responsive cp-sortable" data-default-sort-key="sort" data-default-sort-dir="asc">
                     <thead>
                         <tr class="text-muted small">
-                            <th data-col-priority="primary"   data-sort-key="key">Key</th>
-                            <th data-col-priority="primary"   data-sort-key="label">Label</th>
-                            <th data-col-priority="secondary" data-sort-key="confers">Confers tier</th>
-                            <th data-col-priority="secondary" data-sort-key="covers" data-sort-type="text">Covers</th>
-                            <th data-col-priority="tertiary"  data-sort-key="number">Needs number</th>
-                            <th data-col-priority="tertiary"  data-sort-key="source">Source</th>
-                            <th data-col-priority="primary"   data-sort-key="enabled">Enabled</th>
-                            <th data-col-priority="primary" class="text-end">Actions</th>
+                            <th scope="col" data-col-priority="primary"   data-sort-key="key">Key</th>
+                            <th scope="col" data-col-priority="primary"   data-sort-key="label">Label</th>
+                            <th scope="col" data-col-priority="secondary" data-sort-key="confers">Confers tier</th>
+                            <th scope="col" data-col-priority="secondary" data-sort-key="covers" data-sort-type="text">Covers</th>
+                            <th scope="col" data-col-priority="tertiary"  data-sort-key="number">Needs number</th>
+                            <th scope="col" data-col-priority="tertiary"  data-sort-key="source">Source</th>
+                            <th scope="col" data-col-priority="primary"   data-sort-key="enabled">Enabled</th>
+                            <th scope="col" data-col-priority="primary" class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -268,8 +268,8 @@ $coverageKinds = LICENCE_COVERAGE_KINDS; // slug => human label
                         <label class="form-label small" for="lt-description">Description</label>
                         <input type="text" class="form-control form-control-sm" id="lt-description" name="description" maxlength="255">
                     </div>
-                    <div class="col-md-6">
-                        <label class="form-label small d-block">Covers</label>
+                    <div class="col-md-6" role="group" aria-labelledby="lt-covers-label">
+                        <label class="form-label small d-block" id="lt-covers-label">Covers</label>
                         <?php foreach ($coverageKinds as $slug => $human): ?>
                             <div class="form-check form-check-inline">
                                 <input class="form-check-input lt-cover" type="checkbox" name="covers[]"

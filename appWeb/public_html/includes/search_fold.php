@@ -3,6 +3,18 @@
  * search_fold.php — the ONE write path for the diacritic-folded search mirror (#1039 Part A)
  * ==========================================================================================
  *
+ * ELI5
+ * ----
+ * Someone searching for a song types "milosc" on a plain keyboard, but the
+ * song's real title is "Miłość" (with the accented ł and ś). A database
+ * search for the exact text "milosc" would never find it — the characters
+ * genuinely differ. So every time a song's title or lyrics are saved, this
+ * file ALSO saves a second, "flattened" copy with the accents stripped off
+ * (Miłość → milosc), and the search feature matches against THAT copy
+ * instead. Whenever you see "folded" in this codebase, it means "accents
+ * removed for matching purposes" — the display copy the reader sees always
+ * keeps its real accents; only this hidden search mirror is flattened.
+ *
  * Maintains the two app-owned search-fold columns on tblSongs so a reader typing
  * plain ASCII ("milosc", "arent") still matches an accented / apostrophised song
  * ("Miłość", "aren’t"):
@@ -98,6 +110,13 @@ if (!function_exists('searchFoldSyncSong')) {
      * Maintain the folded search mirror + repair NormalizedTitle for ONE song, in
      * a single small gated UPDATE — the established "separate small UPDATE after the
      * tuned UPSERT" pattern (save_song_core.php's OriginCity / TuneId blocks).
+     *
+     * ELI5: called right after a song's title or lyrics are saved — "now go
+     * refresh that song's flattened search copy so it matches what was just
+     * saved." Every save funnel in the app (the editor, the importers, the
+     * lyrics pipeline) calls this ONE function rather than each doing its
+     * own flattening, so the flattened copy can never fall out of step with
+     * what a reader is actually searching for.
      *
      * A no-op (returns immediately) when the fold schema isn't live, so an
      * un-migrated install is byte-identical and STRICT mysqli never throws on an

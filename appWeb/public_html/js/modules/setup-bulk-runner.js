@@ -123,7 +123,13 @@ async function runSequence(scope, triggerBtn, pending) {
 
         try {
             const result = await runOne(action);
-            const ms = result.elapsedMs > 0 ? `${result.elapsedMs} ms` : '';
+            /* a11y audit A14 (2026-08-30) — the ○/⟳/✓/✗ icon above is
+               aria-hidden, so this meta text is the ONLY textual state a
+               screen-reader user gets — and it used to go BLANK on success
+               whenever elapsedMs was 0 (a near-instant migration), leaving a
+               successful row indistinguishable from an untouched one except
+               by colour. Always say "Done", timing as an optional extra. */
+            const ms = result.elapsedMs > 0 ? `Done · ${result.elapsedMs} ms` : 'Done';
             if (result.ok) {
                 icon.textContent = '✓';
                 icon.classList.remove('text-warning');
@@ -135,7 +141,7 @@ async function runSequence(scope, triggerBtn, pending) {
                 icon.textContent = '✗';
                 icon.classList.remove('text-warning');
                 icon.classList.add('text-danger');
-                meta.textContent = result.error || 'Failed';
+                meta.textContent = 'Failed — ' + (result.error || 'unknown error');
                 appendLog(panel, action, result.output, false, result.error);
                 failed = true;
                 break;
@@ -144,7 +150,7 @@ async function runSequence(scope, triggerBtn, pending) {
             icon.textContent = '✗';
             icon.classList.remove('text-warning');
             icon.classList.add('text-danger');
-            meta.textContent = err.message || 'Network error';
+            meta.textContent = 'Failed — ' + (err.message || 'network error');
             appendLog(panel, action, '', false, err.message || String(err));
             failed = true;
             break;
@@ -202,9 +208,22 @@ function addRefreshButton(panel) {
 
 /**
  * Run one migration via the text-format endpoint.
+ *
+ * ELI5: this is the one function that actually "presses the button" for a
+ * single migration and reads back whether it worked.
+ *
+ * Detailed: exported (#2005) so the guided setup wizard (setup-wizard.js)
+ * can drive the SAME migrations one at a time, in the SAME way, instead of
+ * re-implementing its own copy of "fetch this URL, parse this envelope"
+ * (CLAUDE.md rule #22 — delegate, never fork). Nothing about the function's
+ * own behaviour changes; it is still called by `runSequence()` above exactly
+ * as before. The wizard supplies its OWN pending-migration list read from
+ * the very same `[data-bulk-runner-trigger]` attribute this file's own
+ * `bootSetupBulkRunner()` reads, so both callers always agree on what
+ * "pending" means.
  * @returns {Promise<{ok:boolean, output:string, elapsedMs:number, error?:string}>}
  */
-async function runOne(action) {
+export async function runOne(action) {
     const url = `${ENDPOINT}?action=${encodeURIComponent(action)}&format=text`;
     const res = await apiFetch(url, {
         credentials: 'same-origin',
@@ -216,8 +235,19 @@ async function runOne(action) {
 
 /**
  * Parse the server's `STATUS / ACTION / ... --- output` envelope.
+ *
+ * ELI5: turns the plain-text reply the server sends back into a normal
+ * JavaScript object we can check ("did it work?", "what did it print?").
+ *
+ * Detailed: exported alongside `runOne()` (#2005) for the same reason —
+ * `runOne()` already calls this internally, and the guided setup wizard
+ * needs the identical parsing so a `STATUS: error` (including a 403
+ * rendered in envelope form by the per-action entitlement gate) reads the
+ * same way everywhere it is handled, rather than a second regex living in
+ * a second file (rule #35 — cross-file agreement needs a shared function,
+ * not a repeated pattern that could quietly drift).
  */
-function parseEnvelope(text, httpOk) {
+export function parseEnvelope(text, httpOk) {
     const sepIdx = text.indexOf('\n---\n');
     let header = '';
     let output = '';
@@ -244,6 +274,17 @@ function parseEnvelope(text, httpOk) {
 
 /**
  * Lazily create the inline progress panel + return it.
+ *
+ * a11y audit A10/A11 (2026-08-30): `data-bulk-status` now carries
+ * `aria-live="polite"` — it's the running "N / M" progress + final verdict
+ * text, and without it a screen-reader user gets no announcement at all as
+ * the run proceeds (the NEW setup wizard's sibling status paragraph,
+ * `data-setup-wiz-run-status`, already had this). `data-bulk-log`'s `<pre>`
+ * is a fixed-height, `overflow:auto` scroll region with no button/link
+ * inside it — WCAG 2.1.1's standard "scrollable region with no focusable
+ * content" trap, since a mouse-only `overflow:auto` box can't be scrolled
+ * from the keyboard at all. `tabindex="0" role="region" aria-label="…"`
+ * makes it a reachable, named, keyboard-scrollable landmark.
  */
 function ensurePanel(scope) {
     let panel = scope.querySelector('[data-bulk-runner-panel]');
@@ -261,7 +302,7 @@ function ensurePanel(scope) {
                 <span>Apply All Pending Migrations</span>
                 <span class="badge bg-warning text-dark" data-bulk-status-badge>Running</span>
             </h4>
-            <p class="text-muted small mb-3" data-bulk-status>Preparing…</p>
+            <p class="text-muted small mb-3" data-bulk-status aria-live="polite">Preparing…</p>
             <div data-bulk-list class="mb-3"></div>
             <details>
                 <summary class="text-muted small" style="cursor:pointer;">
@@ -269,6 +310,7 @@ function ensurePanel(scope) {
                 </summary>
                 <pre class="bg-black text-light small p-3 mt-2 mb-0"
                      data-bulk-log
+                     tabindex="0" role="region" aria-label="Migration output log"
                      style="max-height:400px;overflow:auto;"></pre>
             </details>
         </div>

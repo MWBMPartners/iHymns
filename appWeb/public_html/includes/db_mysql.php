@@ -7,10 +7,29 @@ declare(strict_types=1);
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
- * PURPOSE:
+ * ELI5
+ * ----
+ * Every single page in this app that needs to read or write the database —
+ * every song, every admin screen, every migration script — gets its
+ * connection to MySQL from this one small file. Think of it as the one
+ * phone line into the database office: instead of every page dialling a
+ * fresh number (slow, and easy to get wrong), everyone picks up the SAME
+ * line that's already connected. This is the single most-loaded file in
+ * the whole codebase (well over 200 other files `require_once` it), so
+ * a bug here would not break one page — it would break EVERY page at once.
+ * That is why the two functions below (`getDbMysqli()` and
+ * `bindParamSafe()`) are deliberately small, defensive, and slow to change.
+ *
+ * PURPOSE
+ * -------
  * Provides a shared MySQLi connection for song data queries.
  * Credentials are loaded from appWeb/.auth/db_credentials.php.
- * Connection is created once per request and reused (singleton pattern).
+ * Connection is created once per request and reused (singleton pattern) —
+ * see rule #5 in `.claude/CLAUDE.md`: this is the ONE place `new mysqli(...)`
+ * is allowed to appear in the normal request-serving path (standalone CLI
+ * migration/backup scripts under `appWeb/.sql/` are the one documented
+ * exception — they run outside a web request and read credentials
+ * themselves, see that folder's own scripts for why).
  *
  * USAGE:
  *   require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
@@ -18,6 +37,8 @@ declare(strict_types=1);
  *   $stmt = $db->prepare("SELECT * FROM songs WHERE song_id = ?");
  *
  * @requires PHP 8.1+ with mysqli extension
+ * @see .claude/CLAUDE.md rule #5   the "never instantiate mysqli directly" convention this file exists to satisfy
+ * @link https://www.php.net/manual/en/book.mysqli.php   PHP's own mysqli extension manual
  */
 
 /* =========================================================================
@@ -46,6 +67,11 @@ $_mysqliConnection = null;
 
 /**
  * Get the shared MySQLi database connection.
+ *
+ * ELI5: "give me the database connection" — the first time anything on this
+ * page calls this, it dials MySQL for real; every OTHER call in the SAME
+ * page load just hands back that same already-connected line instead of
+ * dialling again.
  *
  * Creates the connection on first call and reuses it for subsequent calls
  * within the same PHP request.
@@ -84,10 +110,16 @@ function getDbMysqli(): mysqli
         );
     }
 
+    /* This one line is WHY every failing query in this app THROWS instead of
+       returning `false` — mysqli's default mode is the old-PHP style where
+       you have to remember to check every single call yourself. Turning
+       STRICT reporting on here, once, for the whole app, means a broken
+       query can never be silently ignored (see the "never treat query() as
+       returning false" red flag in .claude/CLAUDE.md). */
     mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
-    $port = defined('DB_PORT') ? (int)DB_PORT : 3306;
-    $charset = defined('DB_CHARSET') ? DB_CHARSET : 'utf8mb4';
+    $port = defined('DB_PORT') ? (int)DB_PORT : 3306;         // 3306 is MySQL's own default port
+    $charset = defined('DB_CHARSET') ? DB_CHARSET : 'utf8mb4'; // utf8mb4, not utf8 — MySQL's "utf8" can't hold every emoji/character
 
     $_mysqliConnection = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, $port);
     $_mysqliConnection->set_charset($charset);
@@ -101,6 +133,11 @@ function getDbMysqli(): mysqli
  * credentials — as opposed to an ordinary query error (which should stay a
  * 500)? The public entry points map a true result to a transient 503 +
  * Retry-After so a DB outage degrades gracefully (WS-K #1021).
+ *
+ * ELI5: tells the difference between "the database itself is unreachable
+ * right now" (show a friendly "try again shortly" page) and "this ONE
+ * query has a bug" (that's a real error and should look like one, not get
+ * papered over as a maintenance blip).
  *
  * @param \Throwable $e
  * @return bool
@@ -127,6 +164,15 @@ function isDbConnectionFailure(\Throwable $e): bool
  * calling site rather than mysqli's generic "Number of elements in
  * type definition string doesn't match number of bind variables"
  * which is easy to misattribute to a query-level problem.
+ *
+ * ELI5: `bind_param('issi', $a, $b, $c)` is PHP's way of plugging real
+ * values into a query's `?` placeholders, one letter of the type-string
+ * per value ('i' = integer, 's' = string, and so on). Get the number of
+ * letters wrong — one too many or too few — and mysqli's own error
+ * message is generic enough that nobody can tell WHICH of the app's
+ * thousands of queries broke. This wrapper checks the count itself
+ * first and names the caller in the error, so the fix is a five-second
+ * grep instead of a bisect.
  *
  * Motivated by #923 — a one-character typo in
  * `activity_log.php`'s INSERT type string (`'isssssssssssssi'`,

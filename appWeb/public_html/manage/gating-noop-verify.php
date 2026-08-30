@@ -322,7 +322,7 @@ function gatingNoop_statusFromHeaders(array $headers): int
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-shield-check me-2"></i>Content Lock Safety Check</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-shield-check me-2"></i>Content Lock Safety Check</h1>
         <p class="text-secondary small mb-4">
             Before you ever turn content locking on, this confirms it would
             change nothing yet — every checked song still looks exactly the
@@ -332,14 +332,14 @@ function gatingNoop_statusFromHeaders(array $headers): int
 
         <?php if ($pageError !== null): ?>
             <div class="alert alert-danger py-2">
-                <i class="bi bi-exclamation-octagon me-1"></i>
+                <i aria-hidden="true" class="bi bi-exclamation-octagon me-1"></i>
                 <?= htmlspecialchars($pageError, ENT_QUOTES, 'UTF-8') ?>
             </div>
         <?php endif; ?>
 
         <?php if ($gatingOn): ?>
             <div class="alert alert-warning py-2">
-                <i class="bi bi-exclamation-triangle me-1"></i>
+                <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
                 <strong>content_gating_enabled='1'</strong> — this verifier only runs
                 as the OFF reference (the no-op baseline is meaningless once gating is
                 on). Capture/Verify are disabled.
@@ -348,20 +348,20 @@ function gatingNoop_statusFromHeaders(array $headers): int
 
         <?php if ($captureResult !== null): ?>
             <div class="alert alert-success py-2">
-                <i class="bi bi-check-circle me-1"></i>
+                <i aria-hidden="true" class="bi bi-check-circle me-1"></i>
                 Baseline captured for <strong><?= (int)$captureResult ?></strong> songs.
             </div>
         <?php endif; ?>
 
         <?php if ($verifyAllSame === true): ?>
             <div class="alert alert-success py-2">
-                <i class="bi bi-check2-all me-1"></i>
+                <i aria-hidden="true" class="bi bi-check2-all me-1"></i>
                 <strong>BYTE-IDENTICAL — safe to proceed.</strong>
                 All <?= count($verifyRows) ?> sampled songs hash identically to the baseline.
             </div>
         <?php elseif ($verifyAllSame === false): ?>
             <div class="alert alert-danger py-2">
-                <i class="bi bi-x-octagon me-1"></i>
+                <i aria-hidden="true" class="bi bi-x-octagon me-1"></i>
                 <strong>DRIFT DETECTED</strong> — at least one song no longer hashes
                 identically. Investigate before proceeding (a no-op was supposed to be
                 guaranteed while gating is off).
@@ -371,14 +371,14 @@ function gatingNoop_statusFromHeaders(array $headers): int
         <div class="d-flex flex-wrap gap-2 mb-4">
             <a class="btn btn-sm btn-primary<?= $gatingOn ? ' disabled' : '' ?>"
                href="?action=capture">
-                <i class="bi bi-camera me-1"></i>Capture baseline
+                <i aria-hidden="true" class="bi bi-camera me-1"></i>Capture baseline
             </a>
             <a class="btn btn-sm btn-outline-secondary<?= $gatingOn ? ' disabled' : '' ?>"
                href="?action=verify">
-                <i class="bi bi-check2-square me-1"></i>Verify
+                <i aria-hidden="true" class="bi bi-check2-square me-1"></i>Verify
             </a>
             <a class="btn btn-sm btn-outline-secondary" href="?action=probe-audio">
-                <i class="bi bi-soundwave me-1"></i>Probe audio routes
+                <i aria-hidden="true" class="bi bi-soundwave me-1"></i>Probe audio routes
             </a>
         </div>
 
@@ -387,9 +387,9 @@ function gatingNoop_statusFromHeaders(array $headers): int
             <table class="table table-sm admin-table-responsive mb-4">
                 <thead>
                     <tr>
-                        <th data-col-priority="primary">SongId</th>
-                        <th data-col-priority="secondary">HTML</th>
-                        <th data-col-priority="secondary">JSON</th>
+                        <th scope="col" data-col-priority="primary">SongId</th>
+                        <th scope="col" data-col-priority="secondary">HTML</th>
+                        <th scope="col" data-col-priority="secondary">JSON</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -431,8 +431,8 @@ function gatingNoop_statusFromHeaders(array $headers): int
             <table class="table table-sm admin-table-responsive mb-4">
                 <thead>
                     <tr>
-                        <th data-col-priority="primary">URL</th>
-                        <th data-col-priority="secondary">HTTP status</th>
+                        <th scope="col" data-col-priority="primary">URL</th>
+                        <th scope="col" data-col-priority="secondary">HTTP status</th>
                     </tr>
                 </thead>
                 <tbody>

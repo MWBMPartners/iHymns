@@ -312,6 +312,12 @@ jobs:
       # quoted string, so `= "` never matches it there). Verified against the
       # real file — see tests/test-versioning-pipeline.js's committed-anchor
       # check, which is mutation-proven against exactly this confusion.
+      #
+      # `mmp` is the FULL committed `X.Y.Z` — the marketing version deployed
+      # VERBATIM when no bump landed this run, and the source of the current
+      # PATCH digit for a patch bump (#<version-scheme-separation>, see rule
+      # #46 in .claude/CLAUDE.md). `mm` stays two-part because the bump
+      # step's arithmetic below splits it on the first dot.
       - name: Resolve committed version anchor
         id: relanchor
         run: |
@@ -319,23 +325,29 @@ jobs:
           SOURCE_DIR="${{ steps.target.outputs.source_dir }}"
           VERFILE="${SOURCE_DIR}includes/infoAppVer.php"
           MM=$(grep -oP '\["Number"\]\s*=\s*"\K[0-9]+\.[0-9]+' "$VERFILE" | head -1)
+          MMP=$(grep -oP '\["Number"\]\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' "$VERFILE" | head -1)
           echo "mm=$MM" >> "$GITHUB_OUTPUT"
-          echo "Committed version anchor (MAJOR.MINOR): ${MM:-<none>}"
+          echo "mmp=$MMP" >> "$GITHUB_OUTPUT"
+          echo "Committed version anchor: ${MMP:-<none>} (MAJOR.MINOR ${MM:-<none>})"
 
       # -- Classify commits since the anchor and, on alpha only, bump the
       #    COMMITTED MAJOR.MINOR (never a tag) --
       #
       # ELI5: look at every commit that landed on alpha since the version
       # number in the source code was last hand-changed, and ask — using the
-      # Conventional Commits rules — "does any of this deserve a bigger
-      # version?" A breaking change bumps MAJOR, a plain `feat` bumps MINOR,
-      # and everything else (fix/docs/chore/refactor/perf/ci/…) is just a
-      # build — the number stays put and only the per-commit BUILD NUMBER
-      # (the patch slot, injected further down from `git rev-list --count
-      # HEAD`) moves. If it IS a bump, edit infoAppVer.php's committed
-      # MAJOR.MINOR right there in the source — plus the two lockstep-guarded
-      # mirrors, api-docs.yaml and manifest.json — and commit that edit back
-      # to alpha. No tag, just a normal branch push.
+      # Conventional Commits rules PLUS one house marker — "does any of this
+      # deserve a bigger version?" A breaking change bumps MAJOR, a plain
+      # `feat` bumps MINOR, an explicit `Release: patch` footer bumps PATCH
+      # (a deliberate bug-fix release — see classify-bump.sh's own header),
+      # and everything else (fix/docs/chore/refactor/perf/ci/… with no such
+      # footer) is just a build — the marketing version stays put and only
+      # the SEPARATE per-commit BUILD NUMBER (its own field,
+      # Version.Build.Number, injected further down from `git rev-list
+      # --count HEAD` — never the version's patch slot) moves. If it IS a
+      # bump, edit infoAppVer.php's committed MAJOR.MINOR.PATCH right there
+      # in the source — plus the two lockstep-guarded mirrors, api-docs.yaml
+      # and manifest.json — and commit that edit back to alpha. No tag, just
+      # a normal branch push.
       #
       # ANCHOR RANGE: `git log -1 --format=%H -G'\["Number"\]\s*=\s*"[0-9]'
       # -- "$VERFILE"` is a git PICKAXE search
@@ -399,6 +411,7 @@ jobs:
         if: github.ref_name == 'alpha'
         env:
           CUR: ${{ steps.relanchor.outputs.mm }}
+          CURP: ${{ steps.relanchor.outputs.mmp }}
         run: |
           set -euo pipefail
           SOURCE_DIR="${{ steps.target.outputs.source_dir }}"
@@ -416,28 +429,38 @@ jobs:
 
           if [[ "$BUMP" == "none" ]]; then
             echo "bumped=false" >> "$GITHUB_OUTPUT"
-            echo "No feat/breaking-change commits since the committed anchor — build-only, no version bump."
+            echo "No feat/breaking-change/Release:-patch commits since the committed anchor — build-only, no version bump."
             exit 0
           fi
 
-          if [[ -z "$CUR" ]]; then
-            echo "::warning::No committed MAJOR.MINOR anchor was resolved — cannot compute a bump. Skipping."
+          if [[ -z "$CUR" || -z "$CURP" ]]; then
+            echo "::warning::No committed version anchor was resolved — cannot compute a bump. Skipping."
             echo "bumped=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
+          # Parse-and-increment from the COMMITTED anchor (never a running
+          # tally — self-heals a hand edit). Three levels now: a breaking
+          # change starts a new MAJOR line (X+1 .0.0), a feat starts a new
+          # MINOR line (X.Y+1 .0 — patch starts again at 0, standard semver),
+          # and an explicit `Release: patch` footer moves ONLY the third
+          # digit (X.Y.Z+1) — nothing else changes, and the separate build
+          # number (a plain commit count, injected further down) is
+          # untouched either way.
           MAJOR="${CUR%%.*}"
           MINOR="${CUR#*.}"
           if [[ "$BUMP" == "major" ]]; then
-            NEXT_MM="$((MAJOR + 1)).0"
+            NEXT="$((MAJOR + 1)).0.0"
+          elif [[ "$BUMP" == "minor" ]]; then
+            NEXT="${MAJOR}.$((MINOR + 1)).0"
           else
-            NEXT_MM="${MAJOR}.$((MINOR + 1))"
+            PATCH="${CURP##*.}"
+            NEXT="${MAJOR}.${MINOR}.$((PATCH + 1))"
           fi
-          NEXT="${NEXT_MM}.0"
 
           echo "bumped=true" >> "$GITHUB_OUTPUT"
-          echo "next_mm=$NEXT_MM" >> "$GITHUB_OUTPUT"
-          echo "::notice::Classified ${BUMP} bump — committed version moves ${CUR} -> ${NEXT_MM} (persisting ${NEXT})."
+          echo "next_version=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "::notice::Classified ${BUMP} bump — committed version moves ${CURP} -> ${NEXT}."
 
           git worktree add /tmp/vbump origin/alpha
 
@@ -728,41 +751,44 @@ jobs:
             sed -i "s|\[\"Build\"\]\[\"Number\"\] = NULL|\[\"Build\"\]\[\"Number\"\] = ${BUILD_NUMBER}|" "$VERFILE"
             echo "Injected build info into infoAppVer.php - ${SHORT_SHA} @ ${COMMIT_DATE} (build ${BUILD_NUMBER})"
 
-            # Release version — TAG-FREE COMMITTED-ANCHOR MODEL (#1965,
-            # replacing #1899/#1963's git-tag scheme; see this job's
-            # "Classify and bump committed version" step for the full
-            # rationale). MAJOR.MINOR comes from whichever of THIS job's own
-            # prior steps resolved it — the alpha-only bump if one just
-            # landed, else the committed anchor every branch reads — and the
-            # per-commit BUILD NUMBER fills the patch slot. ALWAYS injected:
-            # there is no tag-dormant "no release yet" branch any more,
-            # because there is no tag to be dormant on — the committed value
-            # in infoAppVer.php IS the source of truth, on every branch, from
-            # the very first commit.
+            # Marketing version — CLEAN SEMVER, SEPARATED FROM THE BUILD NUMBER
+            # (marketing-version/build-number split + deliberate patch releases,
+            # supersedes the #1965 shape that wrote the commit count into the
+            # patch slot — see rule #46 in .claude/CLAUDE.md). Version.Number is
+            # now MAJOR.MINOR.PATCH everywhere — committed AND deployed — and
+            # the commit count lives ONLY in the ["Build"]["Number"] sed above.
+            # ${BUILD_NUMBER} MUST NEVER appear in the sed below again
+            # (tests/test-versioning-pipeline.js's "separation invariant" check
+            # pins this). The PATCH digit is a real release level, moved only
+            # by the classifier's explicit `Release: patch` footer signal —
+            # never by this step.
             #
-            # `steps.versionbump.outputs.next_mm || steps.relanchor.outputs.mm`
-            # picks the alpha classifier's freshly-bumped MAJOR.MINOR when it
-            # ran and actually found something feat/breaking-level, and falls
-            # back to the plain committed-anchor read otherwise — on
-            # beta/main, where the alpha-only bump step never runs at all, or
-            # on alpha when the classifier found nothing to report this run.
+            # When the alpha classifier just minted a bump, its next_version
+            # output wins (the checkout being deployed still carries the OLD
+            # committed value — the bump commit was pushed to alpha's tip, not
+            # to this run's HEAD); otherwise the full committed X.Y.Z
+            # (relanchor's mmp) deploys verbatim — on beta/main this sed is
+            # then a content no-op, kept so the step ALWAYS injects (the
+            # guard's invariant) and any drift is normalised. A missing anchor
+            # degrades to deploying the committed file unchanged — never a red
+            # deploy (same non-fatal posture as the whole versioning block).
             # tests/test-versioning-pipeline.js asserts this step reads
             # `steps.*.outputs` rather than re-resolving anything itself
             # (rule #35 — no second copy of the anchor-reading logic), and
             # that no `git tag -l` grep or `LATEST_TAG`-shaped tag variable
             # remains anywhere in this file (the tag-free invariant, #1965).
-            # The `= "` in the Version.Number pattern below makes the line-29
-            # usage docblock (`echo $app[...]["Number"];`, no `= "`) a
-            # non-match; verified.
-            MM="${{ steps.versionbump.outputs.next_mm || steps.relanchor.outputs.mm }}"
-            if [[ -n "$MM" ]]; then
-              DEPLOY_VERSION="${MM}.${BUILD_NUMBER}"
-              sed -i "s|\(\[\"Version\"\]\[\"Number\"\] = \"\)[^\"]*\"|\1${DEPLOY_VERSION}\"|" "$VERFILE"
+            NEXT_VERSION="${{ steps.versionbump.outputs.next_version }}"
+            MARKETING_VERSION="${{ steps.relanchor.outputs.mmp }}"
+            if [[ -n "$NEXT_VERSION" ]]; then
+              MARKETING_VERSION="$NEXT_VERSION"
+            fi
+            if [[ -n "$MARKETING_VERSION" ]]; then
+              sed -i "s|\(\[\"Version\"\]\[\"Number\"\] = \"\)[^\"]*\"|\1${MARKETING_VERSION}\"|" "$VERFILE"
               SPEC_FILE="${SOURCE_DIR}api-docs.yaml"
               if [[ -f "$SPEC_FILE" ]]; then
-                sed -i "s|^\(  version: \"\)[^\"]*\"|\1${DEPLOY_VERSION}\"|" "$SPEC_FILE"
+                sed -i "s|^\(  version: \"\)[^\"]*\"|\1${MARKETING_VERSION}\"|" "$SPEC_FILE"
               fi
-              echo "Injected version ${DEPLOY_VERSION} (committed anchor ${MM}, build ${BUILD_NUMBER})"
+              echo "Injected marketing version ${MARKETING_VERSION} (build ${BUILD_NUMBER} kept separate in Build.Number)"
             fi
           fi
 
@@ -786,8 +812,8 @@ jobs:
               echo "Manifest description synced from infoAppVer.php"
             fi
             # Sync manifest version (#1899): read back what was actually injected
-            # into Version.Number above (the release value if a tag existed, else
-            # the committed value) — never recompute (rule #35). Closes the
+            # into Version.Number above (the marketing version injected by the
+            # "Inject build info" step) — never recompute (rule #35). Closes the
             # manifest.json:8 gap where the hardcoded version was never synced.
             APP_VER=$(grep -oP '\["Version"\]\["Number"\] = "\K[^"]+' "$VERFILE" | head -1)
             if [[ -n "$APP_VER" ]]; then

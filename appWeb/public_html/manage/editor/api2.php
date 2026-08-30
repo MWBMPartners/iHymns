@@ -15,11 +15,16 @@ declare(strict_types=1);
  * API + OpenAPI docs to be redone next (tracked follow-up).
  *
  * Wire format: `action` via query string (GET reads) or JSON body (POST writes).
- * Every POST requires the `X-Requested-With: XMLHttpRequest` header — the same
- * same-origin AJAX CSRF defence as the public api.php (#293), chosen over a
- * per-form session token because the embedded token went stale / absent under
- * the cross-subdomain token-adopted admin session and 403'd every POST (#1307).
- * All values are bound (`bind_param`), every
+ * Auth: a `/manage/` session cookie (or the cross-subdomain `ihymns_auth`
+ * cookie adopted into one) OR an `Authorization: Bearer <token>` header
+ * resolved via the same `tblApiTokens` path `api.php` uses (`.claude/
+ * api-coverage-2026-08-28.md` §3 X1 — native curator apps have no cookie
+ * jar). Every COOKIE-authed POST requires the `X-Requested-With:
+ * XMLHttpRequest` header — the same same-origin AJAX CSRF defence as the
+ * public api.php (#293), chosen over a per-form session token because the
+ * embedded token went stale / absent under the cross-subdomain token-adopted
+ * admin session and 403'd every POST (#1307); a BEARER-authed POST is exempt
+ * from that header (see the CSRF-gate comment below for why). All values are bound (`bind_param`), every
  * mutation writes a `logActivity` row + a coalesced `tblSongRevisions` snapshot,
  * and every response is `{ ok, ... }` with the TRUE result (never a false
  * success — the lesson from the client-only `deleteSong()` that lied).
@@ -355,6 +360,12 @@ declare(strict_types=1);
 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* apiTokenResolveBearerUser() — the shared Authorization: Bearer verification
+   core (`.claude/api-coverage-2026-08-28.md` §3 X1) the guard below uses to
+   let a native curator app authenticate without a /manage/ session cookie.
+   auth.php only loads this file lazily inside one function, so it's required
+   unconditionally here (require_once dedupes if that path also fires). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmit() for songbook.import_completed (ONE summary event per import, dormant no-op) */
 /* The ONE in-app notification writer (#1638) — notifyUser(). Replaces this
@@ -370,6 +381,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 /* Song media storage layer (#853) — kind→backend routing, MIME-sniff
    validation, FS/DB staging, the same class the streaming route uses. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongMediaStorage.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_media_visibility.php';   /* #1968 P4 — visibility vocabulary + Visibility select fragment for the media tab */
 /* Shared song importers (#1200 Phase 4b) — the SAME bulk-import parsers +
    universal saver the legacy api.php uses (extracted to a shared include so v2
    reuses, never forks, them). Provides _bulkImport_process*() + _bulkImport_dedupeMode(). */
@@ -486,11 +498,59 @@ function ed2_respond(array $payload, int $code = 200): void {
     exit;
 }
 
-/* ---------------------------------------------------------------- Guard ---- */
-if (!isAuthenticated()) {
-    ed2_respond(['ok' => false, 'error' => 'Authentication required.'], 401);
+/**
+ * Resolve an `Authorization: Bearer <token>` request into a user row, or
+ * null when no Bearer header is present / the token doesn't verify
+ * (`.claude/api-coverage-2026-08-28.md` §3 X1 — native curator apps).
+ *
+ * ELI5: the web editor proves who you are with a browser cookie; a native
+ * app has no cookie jar, so it proves who it is with a bearer token instead
+ * — this just hands the request off to the ONE place that checks what such
+ * a token means.
+ *
+ * DETAILED — a thin wrapper over `apiTokenResolveBearerUser()`
+ * (`includes/api_tokens.php`), the shared verification core every
+ * Bearer-capable endpoint delegates to (rule #22 — this file, the legacy
+ * `manage/editor/api.php`, and `manage/places-api.php` all call the SAME
+ * function rather than each forking its own copy of the sha256-hash /
+ * `tblApiTokens` JOIN `tblUsers` query). Returned in the exact lowercase-key
+ * shape `getCurrentUser()` returns (`id`/`username`/`display_name`/`role`/
+ * `email`), so `hasRole()`, `userHasEntitlement()`, and every handler below
+ * that reads `$currentUser['role']`/`['id']` work completely unchanged
+ * regardless of which auth path populated it. See that function's doc-block
+ * for why it is deliberately stateless (no `$_SESSION` write, no expiry
+ * slide).
+ *
+ * @return array{id:int,username:string,display_name:?string,role:string,email:?string}|null
+ */
+function ed2_resolveBearerUser(): ?array
+{
+    return apiTokenResolveBearerUser(getDbMysqli());
 }
-$currentUser = getCurrentUser();
+
+/* ---------------------------------------------------------------- Guard ---- */
+/* `.claude/api-coverage-2026-08-28.md` §3 X1 — Bearer-then-cookie auth,
+ * mirroring the public api.php's two-source pattern. A Bearer token is tried
+ * FIRST and
+ * entirely independently of the cookie/session path below: on a miss (no
+ * header, malformed, expired, unknown, inactive user) `ed2_resolveBearerUser()`
+ * returns null and control falls through to EXACTLY the pre-existing
+ * `isAuthenticated()` / `getCurrentUser()` cookie check, unchanged in every
+ * particular (same functions, same order, same 401/403 shape) — so an
+ * existing web-editor request that carries no `Authorization` header runs
+ * through the SAME code path it always did. $ed2BearerAuthed is read by the
+ * CSRF gate just below.
+ */
+$ed2BearerUser    = ed2_resolveBearerUser();
+$ed2BearerAuthed  = ($ed2BearerUser !== null);
+if ($ed2BearerAuthed) {
+    $currentUser = $ed2BearerUser;
+} else {
+    if (!isAuthenticated()) {
+        ed2_respond(['ok' => false, 'error' => 'Authentication required.'], 401);
+    }
+    $currentUser = getCurrentUser();
+}
 if (!$currentUser || !hasRole((string)($currentUser['role'] ?? ''), 'editor')) {
     ed2_respond(['ok' => false, 'error' => 'Editor access required.'], 403);
 }
@@ -551,10 +611,69 @@ if ($method === 'POST') {
        origin <form>/navigation cannot set without a CORS preflight we never
        honour — so only same-origin `fetch()` (editor.js ed2EnrichApi, which
        already sends it) reaches here. That eliminates the classic CSRF surface
-       without depending on a fragile embedded token. */
-    if (($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') !== 'XMLHttpRequest') {
+       without depending on a fragile embedded token.
+       BEARER EXEMPTION (`.claude/api-coverage-2026-08-28.md` §3 X1): a
+       Bearer-authenticated POST carries no ambient browser credential at
+       all — the `Authorization` header is an explicit, out-of-band value a
+       cross-site page cannot attach to a forged request (unlike a cookie,
+       which the browser attaches automatically), so it is CSRF-immune BY
+       CONSTRUCTION, the same way a hand-typed API key on `curl` is. The
+       `X-Requested-With` requirement below therefore applies ONLY to a
+       COOKIE-authenticated POST ($ed2BearerAuthed === false); a native
+       client's Bearer POST is accepted without it. The L-1 GET-write rule
+       just below still applies to EVERY request regardless of auth method —
+       native clients POST writes anyway, so this costs them nothing. */
+    if (!$ed2BearerAuthed && ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') !== 'XMLHttpRequest') {
         ed2_respond(['ok' => false, 'error' => 'Cross-site POST blocked: missing or invalid X-Requested-With header.'], 403);
     }
+}
+
+/**
+ * GET-safe READ actions — the ONLY actions this endpoint will dispatch on a
+ * non-POST request (CONFIRMED-Low finding, security review 2026-08-28: the
+ * CSRF check just above ran only inside `if ($method === 'POST')`, but the
+ * action switch below executed on ANY method, so a state-changing action
+ * (e.g. `create_song`) reached via a plain cross-site GET/top-level
+ * navigation bypassed the X-Requested-With check entirely — the
+ * `ihymns_auth` cookie is SameSite=Lax, so isAuthenticated() still adopted
+ * it on a cross-site navigation. Secure-by-default fix: every action NOT on
+ * this allow-list now requires POST, closing the class rather than patching
+ * one action.
+ *
+ * ELI5: most of what this file does is "look something up" (safe on any
+ * method) or "change something" (must prove it came from our own page).
+ * This is the list of "look something up" actions; everything else now has
+ * to arrive as a POST so the CSRF check above actually runs.
+ *
+ * HOW THIS LIST WAS BUILT — two independent checks, intersected (never
+ * guessed): (a) the case body performs NO state change — no INSERT/UPDATE/
+ * DELETE/REPLACE, no logActivity() write, no file write — purely SELECT /
+ * compute / respond; (b) the ONLY client(s) that call the action do so with
+ * a GET request — v2/api-client.js's getJson() helper, plus the three
+ * out-of-editor GET call sites (renderEntityPicker.js for user_search /
+ * org_search, export.js for easyworship_export, bulk-import-progress.js for
+ * import_zip_status). Every action below satisfied BOTH checks; nothing
+ * satisfied only one (see tests/php/test-editor-api-write-method.php for
+ * the guard this backs, and the fix's PR description for the full
+ * per-action evidence table).
+ *
+ * Adding a new action here without re-doing BOTH checks reopens this exact
+ * bug for that action — never add to this list on handler-shape alone (a
+ * SELECT-only case is still wrong here if some client ever POSTs it) or on
+ * client-usage alone (a client calling GET proves nothing if the handler
+ * writes).
+ */
+const ED2_GET_SAFE_ACTIONS = [
+    'load_song', 'load_index',
+    'song_copyright_holders', 'tag_list', 'tag_search', 'tune_search',
+    'publisher_search', 'work_search', 'song_links', 'song_link_suggestions',
+    'song_external_ids', 'song_alt_titles', 'media_list',
+    'import_zip_status', 'import_zip_skipped_csv',
+    'credit_search', 'user_search', 'org_search', 'easyworship_export',
+    'revision_list', 'revision_snapshots', 'revision_get',
+];
+if ($method !== 'POST' && !in_array($action, ED2_GET_SAFE_ACTIONS, true)) {
+    ed2_respond(['ok' => false, 'error' => 'POST required for this action.'], 405);
 }
 
 /* ------------------------------------------------------------- Constants --- */
@@ -1179,6 +1298,9 @@ function ed2_mediaRowShape(array $r): array {
         'storageBackend' => (string)($r['StorageBackend'] ?? ''),
         'uploadedAt'     => (string)($r['UploadedAt'] ?? ''),
         'streamUrl'      => '/song-media/' . (int)$r['Id'],
+        /* #1968 P4 — the curator surface BADGES admin-only rows (it never hides
+           them); 'public' when the probe-gated Visibility select was absent. */
+        'visibility'     => (string)($r['Visibility'] ?? 'public'),
     ];
 }
 
@@ -2102,7 +2224,8 @@ try {
         if (ed2_songMediaTableExists($db)) {
             $ms = $db->prepare(
                 'SELECT Id, Kind, StorageBackend, FileName, MimeType, SizeBytes,
-                        Annotation, SortOrder, UploadedBy, UploadedAt
+                        Annotation, SortOrder, UploadedBy, UploadedAt'
+                 . songMediaVisibilitySelectFragment($db) . '
                    FROM tblSongMedia WHERE SongId = ?
                   ORDER BY Kind ASC, SortOrder ASC, Id ASC'
             );
@@ -5073,7 +5196,8 @@ try {
         if (ed2_songMediaTableExists($db)) {
             $ms = $db->prepare(
                 'SELECT Id, Kind, StorageBackend, FileName, MimeType, SizeBytes,
-                        Annotation, SortOrder, UploadedBy, UploadedAt
+                        Annotation, SortOrder, UploadedBy, UploadedAt'
+                 . songMediaVisibilitySelectFragment($db) . '
                    FROM tblSongMedia WHERE SongId = ?
                   ORDER BY Kind ASC, SortOrder ASC, Id ASC'
             );
@@ -5230,6 +5354,48 @@ try {
         }
         logActivity('song-media.update', 'song', $mSongId, ['mediaId' => $mediaId]);
         ed2_respond(['ok' => true, 'mediaId' => $mediaId]);
+        break;
+    }
+
+    /* ---- media_set_visibility (POST JSON) — publish/unpublish one media row
+           (#1968 P4, owner decision D1). Gates come free + are sufficient: the
+           file-wide session + editor gate and the top-of-file X-Requested-With
+           validateCsrfRequest() POST gate (rule #29) cover this. NO new
+           entitlement is minted — a curator who can media_upload instantly-public
+           media today gains no new exposure class by publishing imported media
+           (rule #44's discipline applied to entitlements). 503 (status is the
+           contract, rule #35) when the Visibility column is un-migrated. ---- */
+    case 'media_set_visibility': {
+        if ($method !== 'POST') { ed2_respond(['ok' => false, 'error' => 'POST required.'], 405); }
+        $mediaId    = (int)($body['mediaId'] ?? 0);
+        $visibility = trim((string)($body['visibility'] ?? ''));
+        if ($mediaId <= 0) { ed2_respond(['ok' => false, 'error' => 'mediaId is required.'], 400); }
+        if (!ed2_songMediaTableExists($db)) { ed2_respond(['ok' => false, 'error' => 'Song Media migration has not been run.'], 503); }
+        if (!songMediaVisibilityColumnExists($db)) { ed2_respond(['ok' => false, 'error' => 'Media visibility migration has not been run.'], 503); }
+        if (!songMediaVisibilityIsValid($visibility)) { ed2_respond(['ok' => false, 'error' => 'Invalid visibility value.'], 400); }
+
+        $sel = $db->prepare('SELECT SongId FROM tblSongMedia WHERE Id = ? LIMIT 1');
+        $sel->bind_param('i', $mediaId);
+        $sel->execute();
+        $mrow = $sel->get_result()->fetch_assoc();
+        $sel->close();
+        if (!$mrow) { ed2_respond(['ok' => false, 'error' => 'Media not found.'], 404); }
+        $mSongId = (string)$mrow['SongId'];
+
+        $db->begin_transaction();
+        try {
+            $u = $db->prepare('UPDATE tblSongMedia SET Visibility = ? WHERE Id = ?');
+            $u->bind_param('si', $visibility, $mediaId);
+            $u->execute();
+            $u->close();
+            ed2_touchRevision($db, $mSongId, $ed2UserId, 'media');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song-media.visibility', 'song', $mSongId, ['media_id' => $mediaId, 'visibility' => $visibility]);
+        ed2_respond(['ok' => true, 'mediaId' => $mediaId, 'visibility' => $visibility]);
         break;
     }
 
@@ -5559,8 +5725,8 @@ try {
                     'opensong'   => _bulkImport_processOpenSong($content, $origName),    // #882
                     'xmlauto'    => _bulkImport_processXmlAuto($content, $origName),     // #882
                     'pro6'       => _bulkImport_processPro6($content, $origName),
-                    'pro7'       => _bulkImport_processPro7($content, $origName),        // epic #1968 / #885
-                    'probundle'  => _bulkImport_processProbundle($content, $origName),   // epic #1968 P2
+                    'pro7'       => _bulkImport_processPro7($content, $origName, true),  // epic #1968 / #885 (+P4 bare-media warn)
+                    'probundle'  => _bulkImport_processProbundle($content, $origName, ((int)($ed2UserId ?? 0)) > 0 ? (int)$ed2UserId : null),   // epic #1968 P2 + P4 media ingest (UploadedBy)
                     /* epic #1968 PR-3 — unlike every other arm above, this one
                        creates a SET LIST, not just song(s), so it needs the
                        resolved session user id as its owner. $ed2UserId is

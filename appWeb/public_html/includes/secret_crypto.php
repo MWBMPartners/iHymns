@@ -512,6 +512,24 @@ function secretSettingKeys(): array
            the encryption layer directly — same custody pattern as
            webhook_drain_key immediately above). */
         'language_registry_refresh_key',
+        /* API-coverage plan 2026-08-28 C1/X2 — Android/FireOS push credentials.
+           NOT yet writable via any admin-UI field (manage/configuration.php has
+           no push card in this change — see includes/fcm.php's file-header "NOT
+           IN SCOPE" note), so these keys currently have NO row in
+           tblAppSettings on any docroot. Adding them here now is a zero-risk,
+           purely-additive registration — every consumer of secretSettingKeys()
+           (secretInventory(), secretEncryptInPlace(), secretRotateReencrypt())
+           explicitly skips a key with no row / an empty value — so this has NO
+           effect until a future PR adds the admin-UI card AND an owner pastes
+           real credentials, at which point they are encrypted at rest from the
+           very first save, mirroring apple_apns_private_key's custody exactly.
+           `fcm_server_key` authorises sending via Google FCM; `adm_client_id`/
+           `adm_client_secret` are the Login-With-Amazon pair ADM sends need
+           (both required together — Amazon's OAuth2 client-credentials flow
+           needs the pair, not either alone). */
+        'fcm_server_key',
+        'adm_client_id',
+        'adm_client_secret',
     ];
 }
 

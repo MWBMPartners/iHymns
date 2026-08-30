@@ -166,8 +166,8 @@ $proFixtures = glob($fixturesDir . '/*.pro') ?: [];
 sort($proFixtures);
 
 // Coverage floor (rule #34's under-report clause) — mirrors test-pp7-decode.php's identical guard.
-ok('at least 8 committed .pro fixtures exist to parse-validate against (found ' . count($proFixtures) . ')',
-    count($proFixtures) >= 8);
+ok('at least 11 committed .pro fixtures exist to parse-validate against (found ' . count($proFixtures) . ')',
+    count($proFixtures) >= 11);
 
 foreach ($proFixtures as $proPath) {
     $base = basename($proPath, '.pro');

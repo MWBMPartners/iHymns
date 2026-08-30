@@ -257,7 +257,7 @@ $csrf = csrfToken();
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-people-fill me-2"></i>User Groups</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-people-fill me-2"></i>User Groups</h1>
         <p class="text-secondary small mb-4">
             Group users together to control which early-access builds of iHymns they can use —
             alpha, beta, release candidate, and the public release. Each user belongs to one group at a time.
@@ -277,14 +277,14 @@ $csrf = csrfToken();
                 <table class="table table-sm mb-0 align-middle cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
-                            <th data-sort-key="name"        data-sort-type="text">Name</th>
-                            <th data-sort-key="description" data-sort-type="text">Description</th>
-                            <th class="text-center" title="Alpha" data-sort-key="alpha" data-sort-type="number">α</th>
-                            <th class="text-center" title="Beta" data-sort-key="beta" data-sort-type="number">β</th>
-                            <th class="text-center" title="Release Candidate" data-sort-key="rc" data-sort-type="number">RC</th>
-                            <th class="text-center" title="Release to Web" data-sort-key="rtw" data-sort-type="number">RTW</th>
-                            <th class="text-center" data-sort-key="members" data-sort-type="number">Members</th>
-                            <th class="text-end">Actions</th>
+                            <th scope="col" data-sort-key="name"        data-sort-type="text">Name</th>
+                            <th scope="col" data-sort-key="description" data-sort-type="text">Description</th>
+                            <th scope="col" class="text-center" title="Alpha" data-sort-key="alpha" data-sort-type="number">α</th>
+                            <th scope="col" class="text-center" title="Beta" data-sort-key="beta" data-sort-type="number">β</th>
+                            <th scope="col" class="text-center" title="Release Candidate" data-sort-key="rc" data-sort-type="number">RC</th>
+                            <th scope="col" class="text-center" title="Release to Web" data-sort-key="rtw" data-sort-type="number">RTW</th>
+                            <th scope="col" class="text-center" data-sort-key="members" data-sort-type="number">Members</th>
+                            <th scope="col" class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -294,7 +294,7 @@ $csrf = csrfToken();
                                 <td class="text-muted small"><?= htmlspecialchars(mb_substr((string)$g['Description'], 0, 120)) ?></td>
                                 <?php foreach (['AccessAlpha', 'AccessBeta', 'AccessRc', 'AccessRtw'] as $k): ?>
                                     <td class="text-center" data-sort-value="<?= (int)$g[$k] ?>">
-                                        <?= (int)$g[$k] ? '<i class="bi bi-check-circle text-success"></i>' : '<i class="bi bi-dash text-muted"></i>' ?>
+                                        <?= (int)$g[$k] ? '<i aria-hidden="true" class="bi bi-check-circle text-success"></i>' : '<i aria-hidden="true" class="bi bi-dash text-muted"></i>' ?>
                                     </td>
                                 <?php endforeach; ?>
                                 <td class="text-center"><?= (int)$g['MemberCount'] ?></td>
@@ -329,7 +329,7 @@ $csrf = csrfToken();
             <form method="POST" class="card-admin p-3 mb-4">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action" value="create">
-                <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a group</h2>
+                <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a group</h2>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
                         <label class="form-label small" for="new-group-name">Name</label>
@@ -354,7 +354,7 @@ $csrf = csrfToken();
                     <?php endforeach; ?>
                 </div>
                 <button type="submit" class="btn btn-amber-solid btn-sm mt-3">
-                    <i class="bi bi-plus me-1"></i>Create group
+                    <i aria-hidden="true" class="bi bi-plus me-1"></i>Create group
                 </button>
             </form>
 
@@ -363,7 +363,7 @@ $csrf = csrfToken();
             <!-- Edit Group: settings + members -->
             <div class="mb-3">
                 <a href="/manage/groups" class="btn btn-sm btn-outline-secondary">
-                    <i class="bi bi-arrow-left me-1"></i>Back to group list
+                    <i aria-hidden="true" class="bi bi-arrow-left me-1"></i>Back to group list
                 </a>
             </div>
 
@@ -371,16 +371,16 @@ $csrf = csrfToken();
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action" value="update">
                 <input type="hidden" name="id" value="<?= (int)$editGroup['Id'] ?>">
-                <h2 class="h6 mb-3"><i class="bi bi-sliders me-2"></i>Settings — <?= htmlspecialchars($editGroup['Name']) ?></h2>
+                <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-sliders me-2"></i>Settings — <?= htmlspecialchars($editGroup['Name']) ?></h2>
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
-                        <label class="form-label small">Name</label>
-                        <input type="text" name="name" class="form-control form-control-sm" maxlength="100" required
+                        <label class="form-label small" for="edit-group-name">Name</label>
+                        <input type="text" name="name" id="edit-group-name" class="form-control form-control-sm" maxlength="100" required
                                value="<?= htmlspecialchars($editGroup['Name']) ?>">
                     </div>
                     <div class="col-sm-8">
-                        <label class="form-label small">Description</label>
-                        <input type="text" name="description" class="form-control form-control-sm"
+                        <label class="form-label small" for="edit-group-description">Description</label>
+                        <input type="text" name="description" id="edit-group-description" class="form-control form-control-sm"
                                value="<?= htmlspecialchars($editGroup['Description']) ?>">
                     </div>
                 </div>
@@ -399,7 +399,7 @@ $csrf = csrfToken();
                     <?php endforeach; ?>
                 </div>
                 <button type="submit" class="btn btn-amber-solid btn-sm mt-3">
-                    <i class="bi bi-save me-1"></i>Save settings
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save settings
                 </button>
             </form>
 
@@ -407,7 +407,7 @@ $csrf = csrfToken();
                 <!-- Current members -->
                 <div class="col-md-6">
                     <div class="card-admin p-3 h-100">
-                        <h2 class="h6 mb-3"><i class="bi bi-people me-2"></i>Members (<?= count($editMembers) ?>)</h2>
+                        <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-people me-2"></i>Members (<?= count($editMembers) ?>)</h2>
                         <?php if (!$editMembers): ?>
                             <p class="text-muted small mb-0">No members yet — add from the list on the right.</p>
                         <?php else: ?>
@@ -442,7 +442,7 @@ $csrf = csrfToken();
                      a real tblUsers row before writing it. -->
                 <div class="col-md-6">
                     <div class="card-admin p-3 h-100">
-                        <h2 class="h6 mb-3"><i class="bi bi-person-plus me-2"></i>Add a member</h2>
+                        <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-person-plus me-2"></i>Add a member</h2>
                         <form method="POST" class="d-flex gap-2" id="add-member-form">
                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                             <input type="hidden" name="action"     value="add_member">

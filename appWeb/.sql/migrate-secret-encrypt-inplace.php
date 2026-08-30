@@ -56,6 +56,15 @@ declare(strict_types=1);
  * `@migration-adds` / `@migration-drops` doctag is required or applicable (rule #19
  * only governs schema-SHAPE changes — CREATE TABLE / ADD COLUMN — not data rewrites).
  *
+ * #1989 — ALSO re-wraps the ONE table-held recoverable secret: `tblWebhookSubscriptions
+ * .Secret`/`.SecretPrevious` (the outbound-webhook HMAC signing secret; every other
+ * table-held credential in this app is a SHA-256 hash, not a recoverable secret, so this
+ * is the only column that needed adding). `secretEncryptInPlace()` now does this itself
+ * (see `includes/secret_crypto_admin.php`'s `_secretAdminRewrapTableSecrets()`) — this
+ * script's only #1989 change is the RE-RUNNABILITY fix below: without it, a shared DB
+ * that already completed the settings-only cutover would refuse to run this card again,
+ * so a pre-cutover plaintext webhook secret could never be reached.
+ *
  * USAGE:
  *   Web:  /manage/setup-database → "🔐 Encrypt secrets at rest — ENCRYPT-IN-PLACE (#1466)"
  *         (the card auto-appends &confirm=1 for a `manual` registry entry; see
@@ -95,11 +104,21 @@ try {
 
     mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
-    /* --- Idempotency: already fully encrypted (flag set AND 0 legacy left)? --- */
+    /* --- Idempotency: already fully encrypted (flag set AND 0 legacy left, IN
+       BOTH the tblAppSettings rows AND the #1989 table-held webhook secrets)?
+       WHY the table check too: on the real shared DB the settings-only
+       cutover already ran long ago (flag='1', 0 legacy settings). Without
+       ALSO checking the table, this card would refuse to re-run forever, and
+       any pre-cutover plaintext webhook signing secret could NEVER be
+       encrypted — defeating the entire point of #1989. secretTableSecretInventory()
+       never throws, so it's safe to call even on an un-migrated install
+       (present=false, legacy=0 — the check below then falls through exactly
+       as it did before #1989). */
+    $tableInv = secretTableSecretInventory($db);
     if (secretEncryptionActive($db)) {
         $existingInv = secretInventory($db);
-        if ((int)$existingInv['legacy'] === 0) {
-            _migSecEnc_out('[SKIP] already encrypted-at-rest (flag set, 0 legacy values).');
+        if ((int)$existingInv['legacy'] === 0 && (int)$tableInv['legacy'] === 0) {
+            _migSecEnc_out('[SKIP] already encrypted-at-rest (flag set, 0 legacy values in settings or table-held secrets).');
             return;
         }
     }
@@ -134,6 +153,10 @@ try {
     /* ================= DO THE WORK ================= */
     $before = secretInventory($db);
     _migSecEnc_out("  Before: {$before['legacy']} legacy-plaintext, {$before['encrypted']} already-encrypted, {$before['empty']} empty (of 8 tracked secrets).");
+    $tableBefore = secretTableSecretInventory($db);
+    _migSecEnc_out($tableBefore['present']
+        ? "  Webhook signing secrets: {$tableBefore['legacy']} plaintext-bridge / {$tableBefore['encrypted']} enveloped / {$tableBefore['empty']} empty of {$tableBefore['rows']} column-values."
+        : '  Webhook signing secrets: table not migrated — skipped.');
 
     /* Audit callback: key NAMES only, never the plaintext/ciphertext value —
        per strategy §10's "audit-log every decrypt" requirement. */
@@ -150,6 +173,10 @@ try {
     _migSecEnc_out('  Skipped (already encrypted / empty): ' . count($report['skipped']));
     _migSecEnc_out('  Cutover flag (secret_encryption_active) set: ' . ($report['flag_set'] ? 'yes' : 'no'));
     _migSecEnc_out("  After: {$after['legacy']} legacy-plaintext, {$after['encrypted']} encrypted, {$after['empty']} empty (of 8 tracked secrets).");
+    $tableAfter = secretTableSecretInventory($db);
+    _migSecEnc_out($tableAfter['present']
+        ? "  Webhook signing secrets after: {$tableAfter['legacy']} plaintext-bridge / {$tableAfter['encrypted']} enveloped / {$tableAfter['empty']} empty of {$tableAfter['rows']} column-values."
+        : '  Webhook signing secrets after: table not migrated — skipped.');
 
     if (function_exists('logActivity')) {
         try {

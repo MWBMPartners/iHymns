@@ -6,21 +6,34 @@
 > `project-rules.md` (detailed rules), and `sessions/<date>-HANDOFF.md` (session history).
 > When something here goes stale, fix it **here and in the file it mirrors**.
 
-_Last updated: 2026-08-26 (branch `claude/dormant-features-settings-1sdw4t` — offline version-proofing #1962 + tag-free Conventional-Commit versioning #1963→#1965 on alpha)._
+_Last updated: 2026-08-28 (branch `claude/dormant-features-settings-1sdw4t` — ProPresenter interop epic #1968 complete through P6 chords + dormant timeline; multi-licence orgs #1969; device management #1975; docs + security + a11y sweep in flight)._
 
 ## Where things stand
-- **Version:** committed `MAJOR.MINOR` in `includes/infoAppVer.php` (currently **`1.1`**) is the anchor;
-  deploy injects `MAJOR.MINOR.<git rev-list --count HEAD>` for display (the PWA SW cache version + every
-  `?v=` cache-buster auto-sync off it, #81). Docs that hardcode a version rot within days — point at the
-  file. **⚠️ VERSIONING IS TAG-FREE (#1965, 2026-08-26 — supersedes #1899's tag scheme):** iHymns deploys
-  DIRECT via SFTP with **NO git tags and NO GitHub Releases**. On alpha, `deploy.yml` classifies the
-  squash-merge subject via `.github/workflows/scripts/classify-bump.sh` — `feat:`→**minor**, `!` /
-  line-anchored `BREAKING CHANGE:`→**major**, everything else→**build-only** — and on a minor/major edits
-  the committed `Version.Number` and commits it back `[skip ci]` (a branch push, NEVER a tag). SAFE DEFAULT
-  = build-only, so **a feature merged WITHOUT a `feat:` prefix silently won't bump the minor** (a soft,
-  safe miss) — title every PR/squash with a Conventional-Commit prefix (mint on clear signals only). Full
-  contract = CLAUDE.md rule #46; guard = `tests/test-versioning-pipeline.js`; classifier truth-table =
-  `tests/test-bump-classifier.js`. The old minute-bumper `version-bump.yml` stays RETIRED (#1899/#1596/#1622
+- **Active branch — `claude/dormant-features-settings-1sdw4t`** (2026-08-28): the ProPresenter 7+
+  interoperability program (epic #1968) — import `.pro`/`.probundle`/`.proplaylist`, export, media
+  ingest into `tblSongMedia`, the **chord round-trip** (positioned `custom_attributes` over CLEAN
+  RTF — NEVER inline `[G]`; premise-guard mutation-proven) and **dormant timeline groundwork**
+  (`tblSongPresentationCues`, `Timeline.cues` field 1 not `cues_v2`, off by default) — full contract
+  = CLAUDE.md rule #47. Plus multi-licence orgs (#1969, `org_licence_admin.php`), device rename/auto-name
+  (#1975). Gate green: node 82/82, php 219/219. Owner checklist D4 (real chord/timeline `.pro`) is the
+  only outstanding validation, non-blocking. NO PR open (owner hasn't asked — same-branch program).
+- **Version:** committed marketing `MAJOR.MINOR.PATCH` in `includes/infoAppVer.php` (currently **`1.3.0`**)
+  is the anchor and deploys VERBATIM — the build count NO LONGER lives in it (the pre-split `1.1.1017`
+  shape, where the commit count masqueraded as a semver patch, is RETIRED as of the 2026-08-29 split). The
+  **build number is a SEPARATE field** (`Version.Build.Number`) — `deploy.yml` injects `git rev-list --count
+  HEAD` there every deploy, monotonic + never resetting — and the display shows both, always with the plain
+  word "build": footer `iHymns v1.3.0 · build <n>[ · Alpha|Beta]`, Settings→About as labelled rows. The CSS
+  `?v=` cache-busters fold in the build number (the marketing version alone no longer changes per deploy).
+  Docs that hardcode a version rot within days — point at the file. **⚠️ VERSIONING IS TAG-FREE (#1965 →
+  the 2026-08-29 split):** iHymns deploys DIRECT via SFTP with **NO git tags and NO GitHub Releases**. On
+  alpha, `deploy.yml` classifies the squash-merge subject via `.github/workflows/scripts/classify-bump.sh`
+  — `feat:`→**minor**, `!` / line-anchored `BREAKING CHANGE:`→**major**, a whole-line `Release: patch` body
+  footer→**patch** (deliberate bug-fix release), everything else→**build-only** — and on a minor/major/patch
+  edits the committed `Version.Number` and commits it back `[skip ci]` (a branch push, NEVER a tag). SAFE
+  DEFAULT = build-only, so **a feature merged WITHOUT a `feat:` prefix silently won't bump the minor** (a
+  soft, safe miss), and a bare `fix:` never implies a patch — title every PR/squash with a Conventional-
+  Commit prefix (mint on clear signals only). Full contract = CLAUDE.md rule #46; guard =
+  `tests/test-versioning-pipeline.js`; classifier truth-table = `tests/test-bump-classifier.js`. The old minute-bumper `version-bump.yml` stays RETIRED (#1899/#1596/#1622
   — never reintroduce a commit-message-interpolating bumper); `promotion-deploy-bridge.yml` mints nothing
   now (just dispatches the deploy). beta/main show their own committed anchor (it travels with promoted
   content — no tag reachability needed).

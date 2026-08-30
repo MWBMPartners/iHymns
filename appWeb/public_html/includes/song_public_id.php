@@ -7,6 +7,18 @@ declare(strict_types=1);
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
+ * ELI5
+ * ----
+ * A song's normal id (`SongId`, e.g. `MP-1008`) is really a shelf
+ * reference — "songbook MP, song 1008 on that shelf". If a curator later
+ * moves the song to a different songbook, or renumbers it, that old
+ * shared link stops working — the shelf reference changed even though
+ * it's still the SAME song. `PublicId` is a second, permanent id that
+ * never changes no matter what happens to the song's shelf position — a
+ * random 10-character code like `7F3K9M2QRT` that this file mints once,
+ * checks isn't already taken, and hands out. `/song/7F3K9M2QRT` keeps
+ * working forever, even if the song moves shelves five times.
+ *
  * PURPOSE:
  * An opaque, location-INDEPENDENT permalink id for a song. The SongId
  * (<Abbreviation>-<number>) is the PRIMARY KEY and stays the internal id (rule
@@ -71,6 +83,12 @@ function songPublicId_generate(int $len = SONG_PUBLIC_ID_LENGTH): string
  * Mint a fresh, GLOBALLY-UNIQUE PublicId (retries against the live UNIQUE).
  * Caller must have verified songPublicId_columnReady($db). Throws after a bounded
  * number of collisions rather than risk inserting a duplicate.
+ *
+ * ELI5: roll the random 10-character code, ask the database "is this one
+ * already used?", and if so roll again — up to 12 times — before giving
+ * up. With ~590 trillion possible codes and only ~16,000 songs, a real
+ * collision is astronomically unlikely; the retry loop is a safety net,
+ * not something expected to actually run more than once.
  */
 function songPublicId_mintUnique(\mysqli $db, int $maxTries = 12): string
 {
@@ -104,6 +122,12 @@ function songPublicId_looksLikePublicId(string $id): bool
  * SongId. Returns the SongId if $id is a known PublicId; otherwise returns $id
  * UNCHANGED (so a real SongId, a padding alias, or an unknown id passes straight
  * through to the existing SongId-keyed logic). Gated + bound.
+ *
+ * ELI5: translates the permanent "outside" id back into the "shelf
+ * reference" id that everything internal (favourites, history, …) still
+ * expects. If what's passed in doesn't actually look like a PublicId,
+ * it's handed back exactly as given — this function only ever
+ * TRANSLATES, it never invents or rejects an id.
  */
 function songPublicId_resolveToSongId(\mysqli $db, string $id): string
 {

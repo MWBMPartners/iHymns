@@ -193,6 +193,22 @@ $fixtures = [
         'expectedArrangement'    => [2, 0, 2, 1, 2],
         'expectedWarningNeedles' => ['translation layer', 'artist_credits'],
     ],
+    // #1968 P4 — the lyric-sanitised derivative of the owner's genuine v21.4 media bundle (decision
+    // D3; tools/pp7-sanitise-fixture.js). This is the fixture that proves a REAL v21.4 song parses
+    // through the bundle path (39 cues → 7 lyric components, a resolved arrangement, real CCLI),
+    // with its motion-loop media entry preserved by NAME (the absolute-path media resolution
+    // coverage P4's ingest keys on) but its bytes swapped for the tiny stub. The visible lyrics are
+    // "Sanitised line N" — the parse SHAPE is what this asserts, never the (removed) lyric text.
+    'owner-v21-001-media-sanitised.probundle' => [
+        'proName'          => '001 (SDAH) - Praise To The Lord The Almighty (Lobe den Herren).pro',
+        'mediaNames'       => ['/Users/church/Library/CloudStorage/OneDrive-SharedLibraries-CambridgeSeventh-dayAdventistChurch/ProjectionMedia - Documents/[Backgrounds]/Music/Music Notes.mp4'],
+        'parses'           => true,
+        'expectedTitle'    => 'Praise To The Lord The Almighty (Lobe den Herren)',
+        'expectedCcli'     => '43073',
+        'expectedComponentCount' => 7,
+        'expectedArrangement'    => [0, 2, 3, 4, 5, 6],
+        'expectedWarningNeedles' => ['skipped non-lyric group'],
+    ],
 ];
 
 // Coverage floor (rule #34's under-report clause): every committed .probundle fixture must have
@@ -200,8 +216,8 @@ $fixtures = [
 // rather than being silently skipped.
 $bundleFixturePaths = glob($fixturesDir . '/*.probundle') ?: [];
 sort($bundleFixturePaths);
-ok('at least 3 committed .probundle fixtures exist (found ' . count($bundleFixturePaths) . ')',
-    count($bundleFixturePaths) >= 3);
+ok('at least 4 committed .probundle fixtures exist (found ' . count($bundleFixturePaths) . ')',
+    count($bundleFixturePaths) >= 4);
 foreach ($bundleFixturePaths as $path) {
     $base = basename($path);
     ok("{$base} has a matching expected-content entry in this test", isset($fixtures[$base]));

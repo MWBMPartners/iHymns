@@ -33,7 +33,12 @@ declare(strict_types=1);
  * (manage/venues.php does exactly this) — no HTTP round trip needed for a
  * same-process read.
  *
- * Auth: editor+ (read + write). Curators are the only audience.
+ * Auth: editor+ (read + write). Curators are the only audience — a
+ * /manage/ session cookie (or the cross-subdomain `ihymns_auth` cookie
+ * adopted into one) OR an `Authorization: Bearer <token>` header resolved
+ * via the same `tblApiTokens` path api.php uses (`.claude/
+ * api-coverage-2026-08-28.md` §3 X3 — a native venue/place picker has no
+ * cookie jar).
  */
 
 /* A require/parse FATAL before the try/catch further down surfaces as a BARE HTTP 500
@@ -67,16 +72,38 @@ register_shutdown_function(static function (): void {
    the place typeahead never worked (#1365). db_mysql.php / places.php below DO live in
    the public includes/ and so correctly keep dirname(__DIR__). */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+/* apiTokenResolveBearerUser() — the shared Authorization: Bearer verification
+   core (includes/api_tokens.php; `.claude/api-coverage-2026-08-28.md` §3 X3
+   — a native venue/place picker has no /manage/ session cookie), the SAME
+   function manage/editor/api2.php's and the legacy manage/editor/api.php's
+   seams delegate to (rule #22 — one verification core, not a third copy
+   forked here). auth.php (required above) already pulls in db_mysql.php, so
+   getDbMysqli() below needs no extra require. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 
-if (!isAuthenticated()) {
-    http_response_code(401);
-    echo json_encode(['error' => 'Authentication required.']);
-    exit;
+/* BEARER-THEN-COOKIE (`.claude/api-coverage-2026-08-28.md` §3 X3): a Bearer
+ * token is tried FIRST and entirely independently of the cookie/session path
+ * below — on a miss (no header, malformed, expired, unknown, inactive user)
+ * apiTokenResolveBearerUser() returns null and control falls through to
+ * EXACTLY the pre-existing isAuthenticated()/getCurrentUser() cookie check,
+ * unchanged in every particular, so an existing web-admin request that
+ * carries no Authorization header runs through the SAME code path it always
+ * did. $placesBearerAuthed is read by the CSRF gate on the upsert action
+ * further down (mirrors the api2.php / legacy api.php exemption). */
+$placesBearerUser    = apiTokenResolveBearerUser(getDbMysqli());
+$placesBearerAuthed  = ($placesBearerUser !== null);
+if ($placesBearerAuthed) {
+    $currentUser = $placesBearerUser;
+} else {
+    if (!isAuthenticated()) {
+        http_response_code(401);
+        echo json_encode(['error' => 'Authentication required.']);
+        exit;
+    }
+    $currentUser = getCurrentUser();
 }
-
-$currentUser = getCurrentUser();
 if (!$currentUser || !hasRole($currentUser['role'], 'editor')) {
     http_response_code(403);
     echo json_encode(['error' => 'Editor access required.']);
@@ -166,8 +193,18 @@ try {
     if ($method === 'POST' && $action === 'upsert') {
         /* CSRF (security sweep): this write previously had NO CSRF check. Robust
            same-origin validation (the place-search client sends X-Requested-With); a
-           header token is accepted too. Editor auth already enforced above. */
-        if (!validateCsrfRequest($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
+           header token is accepted too. Editor auth already enforced above.
+           BEARER EXEMPTION (`.claude/api-coverage-2026-08-28.md` §3 X3): a
+           Bearer-authenticated POST carries no ambient browser credential at
+           all — the Authorization header is an explicit, out-of-band value a
+           cross-site page cannot attach to a forged request (unlike a
+           cookie, which the browser attaches automatically), so it is
+           CSRF-immune BY CONSTRUCTION. validateCsrfRequest() is skipped
+           entirely for a Bearer-authed request ($placesBearerAuthed ===
+           true, set by the guard above) — it only ever runs for the COOKIE
+           path, mirroring the same exemption in api2.php / the legacy
+           editor api.php. */
+        if (!$placesBearerAuthed && !validateCsrfRequest($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
             http_response_code(403);
             echo json_encode(['error' => 'CSRF check failed — please retry.']);
             exit;

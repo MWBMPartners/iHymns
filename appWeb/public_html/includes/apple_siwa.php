@@ -101,6 +101,28 @@ const IHYMNS_SIWA_CLIENT_ID = 'app.ihymns';
  */
 const APPLE_SIWA_WEB_RETURN_PATH = '/';
 
+/**
+ * #2004 (epic #2002) — the `tblAppSettings` key literals `save_apple`
+ * (`manage/configuration.php`) has always used, named ONCE here so the
+ * "Connect a service" guided wizard's registry entry for Sign in with Apple
+ * (`includes/integration_registry.php`) can reference the SAME constants a
+ * future rename of one of these keys would be a compile error against —
+ * never a re-typed string literal (rule #35). `save_apple` ITSELF is
+ * deliberately left untouched (still its own literal `$_POST[...]` reads) —
+ * mass-rewriting a working, carefully-validated handler in the same pass
+ * that only needed to ADD a reader is exactly the "don't touch what isn't
+ * broken" posture rule #28 warns about; the two staying in agreement is
+ * enforced by a MECHANISM instead (the standing guard's tree-derived
+ * carry-safety check, `tests/php/test-integration-connect-wizard.php`),
+ * never by a comment asking a human to keep them in sync (rule #35).
+ */
+const APPLE_SETTING_TEAM_ID              = 'apple_team_id';
+const APPLE_SETTING_SIWA_KEY_ID          = 'apple_siwa_key_id';
+const APPLE_SETTING_SIWA_PRIVATE_KEY     = 'apple_siwa_private_key';
+const APPLE_SETTING_SIWA_SERVICES_ID     = 'apple_siwa_services_id';
+const APPLE_SETTING_WEB_LOGIN_ENABLED    = 'apple_web_login_enabled';
+const APPLE_SETTING_APNS_KEY_ID          = 'apple_apns_key_id';
+
 /** DER encoding of AlgorithmIdentifier { rsaEncryption, NULL } — the fixed prefix
  *  every RSA SubjectPublicKeyInfo carries. OID 1.2.840.113549.1.1.1. */
 const _APPLE_SIWA_RSA_ALGID_DER = "\x30\x0D\x06\x09\x2A\x86\x48\x86\xF7\x0D\x01\x01\x01\x05\x00";
@@ -563,6 +585,36 @@ function appleSiwaBuildClientSecret(string $teamId, string $keyId, string $clien
  * to false via its PURE core before ever inspecting the channel allow-list,
  * so `platform=web` 503s exactly like today's un-migrated-table gate.
  * ========================================================================== */
+
+/**
+ * Is the native Sign in with Apple trio (Team ID + SIWA Key ID + .p8 key)
+ * actually saved right now? The "Connect a service" guided wizard's
+ * registry `statusFn` for the `siwa` entry (#2004,
+ * `includes/integration_registry.php`) — mirrors `appleWebLoginEnabledForChannel()`
+ * immediately below in reading through `getAppSetting()` defensively (a
+ * bare `function_exists()` guard, never a hard call) so this function stays
+ * safe to invoke even on a request that hasn't loaded `maintenance.php`.
+ *
+ * ELI5: "has an admin finished pasting in the three Sign in with Apple
+ * pieces?" — true only once all three are non-empty. Verifying an identity
+ * token at sign-in needs NONE of these (Apple's public key set is fetched
+ * directly, see `appleSiwaVerifyIdentityToken()`'s own docblock) — this
+ * only answers "is the OPTIONAL refresh-token / revoke trio configured?",
+ * exactly like the Apple native app card's own "Key ID set" / ".p8 key set"
+ * badges already do (`manage/configuration.php`).
+ *
+ * @return bool
+ */
+function appleSiwaConfigured(): bool
+{
+    if (!function_exists('getAppSetting')) {
+        return false;
+    }
+    $teamId = (string)(getAppSetting(APPLE_SETTING_TEAM_ID, '') ?? '');
+    $keyId  = (string)(getAppSetting(APPLE_SETTING_SIWA_KEY_ID, '') ?? '');
+    $p8     = (string)(getAppSetting(APPLE_SETTING_SIWA_PRIVATE_KEY, '') ?? '');
+    return $teamId !== '' && $keyId !== '' && $p8 !== '';
+}
 
 /**
  * Is Sign in with Apple for WEB enabled on the CURRENT deploy channel?

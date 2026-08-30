@@ -167,6 +167,17 @@ $expectedInventory = [
         '/Users/curator/Downloads/pp-test/Media/dummy.png' => ['method' => 0, 'size' => 210],
         'Test.pro'                                          => ['method' => 0, 'size' => 7779],
     ],
+    // #1968 P4 — a LYRIC-SANITISED derivative of the owner's genuine v21.4 media bundle
+    // (`001 (SDAH) …probundle`, owner decision D3), produced by tools/pp7-sanitise-fixture.js:
+    // the inner .pro's visible lyrics are replaced with "Sanitised line N" (dialect header, groups,
+    // CCLI, arrangements + the ABSOLUTE-PATH media entry NAME all preserved — the name IS the P4
+    // resolution coverage), and the multi-MB real motion loop is swapped for the tiny finfo-sniffable
+    // assets/tiny.mp4 stub. Re-emitted as a CLEAN STORED zip (both entries method 0), so — unlike the
+    // broken-EOCD synthetic-zip64 fixture — ZipArchive opens it and section (b)'s oracle covers it too.
+    'owner-v21-001-media-sanitised.probundle' => [
+        '/Users/church/Library/CloudStorage/OneDrive-SharedLibraries-CambridgeSeventh-dayAdventistChurch/ProjectionMedia - Documents/[Backgrounds]/Music/Music Notes.mp4' => ['method' => 0, 'size' => 20480],
+        '001 (SDAH) - Praise To The Lord The Almighty (Lobe den Herren).pro'                                                                                              => ['method' => 0, 'size' => 54708],
+    ],
 ];
 
 $bundleFixtures = glob($fixturesDir . '/*.probundle') ?: [];
@@ -174,8 +185,8 @@ sort($bundleFixtures);
 
 // Coverage floor (rule #34's under-report clause): guards against the glob silently matching
 // fewer files than the corpus actually has.
-ok('at least 2 committed .probundle fixtures exist (found ' . count($bundleFixtures) . ')',
-    count($bundleFixtures) >= 2);
+ok('at least 4 committed .probundle fixtures exist (found ' . count($bundleFixtures) . ')',
+    count($bundleFixtures) >= 4);
 
 $decodedProBytesByBundle = []; // basename => extracted .pro bytes, reused in section (c)
 

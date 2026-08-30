@@ -16,6 +16,7 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'analytics_ingest.php'; // #1969 API-coverage Batch 5 — analyticsTopSongs()/analyticsTopBooks(), shared with api.php's admin_analytics_top
 requireAuth();
 $currentUser = getCurrentUser();
 /* Gate on the SAME entitlement the nav advertises (#1648 item 1).
@@ -65,46 +66,17 @@ if ($exportPanel !== '') {
         switch ($exportPanel) {
             case 'top_songs':
                 ihymns_fputcsv($fp, ['SongId', 'Title', 'SongbookAbbr', 'Number', 'Views']);
-                /* @deleted-visible: historical analytics (#1694) — a view that
-                   happened, happened; the tblSongs join only labels/groups it.
-                   Hiding a soft-deleted song here would misstate real usage.
-                   @disabled-visible: admin reporting (#1765) — counts/stats
-                   over all books; a book being disabled today must not erase
-                   its past view history from this admin-only export. */
-                $stmt = $db->prepare(
-                    'SELECT h.SongId, s.Title, s.SongbookAbbr, s.Number, COUNT(*) AS views
-                       FROM tblSongHistory h
-                       LEFT JOIN tblSongs s ON s.SongId = h.SongId
-                      WHERE h.ViewedAt >= ?
-                      GROUP BY h.SongId
-                      ORDER BY views DESC'
-                );
-                $stmt->bind_param('s', $since);
-                $stmt->execute();
-                $res = $stmt->get_result();
-                while ($row = $res->fetch_row()) { ihymns_fputcsv($fp, $row); }
-                $stmt->close();
+                /* #1969 API-coverage Batch 5 — the query now lives in the ONE
+                   shared core (includes/analytics_ingest.php,
+                   analyticsTopSongs()), reused verbatim by api.php's new
+                   admin_analytics_top action. @deleted-visible/@disabled-visible
+                   reasoning documented on that function. */
+                foreach (analyticsTopSongs($db, $since) as $row) { ihymns_fputcsv($fp, $row); }
                 break;
             case 'top_books':
                 ihymns_fputcsv($fp, ['SongbookAbbr', 'Views']);
-                /* @deleted-visible: historical analytics (#1694) — a view that
-                   happened, happened; the tblSongs join only labels/groups it.
-                   Hiding a soft-deleted song here would misstate real usage.
-                   @disabled-visible: admin reporting (#1765) — same reasoning
-                   as the top_songs export above. */
-                $stmt = $db->prepare(
-                    'SELECT s.SongbookAbbr, COUNT(*) AS views
-                       FROM tblSongHistory h
-                       JOIN tblSongs s ON s.SongId = h.SongId
-                      WHERE h.ViewedAt >= ?
-                      GROUP BY s.SongbookAbbr
-                      ORDER BY views DESC'
-                );
-                $stmt->bind_param('s', $since);
-                $stmt->execute();
-                $res = $stmt->get_result();
-                while ($row = $res->fetch_row()) { ihymns_fputcsv($fp, $row); }
-                $stmt->close();
+                /* #1969 API-coverage Batch 5 — shared core (analyticsTopBooks()). */
+                foreach (analyticsTopBooks($db, $since) as $row) { ihymns_fputcsv($fp, $row); }
                 break;
             case 'searches':
                 ihymns_fputcsv($fp, ['Query', 'ResultCount', 'Hits']);
@@ -269,14 +241,14 @@ try {
     <!-- Top songs -->
     <div class="card-admin p-3 mb-4">
         <div class="d-flex align-items-center justify-content-between mb-3">
-            <h2 class="h6 mb-0"><i class="bi bi-fire me-2"></i>Top songs</h2>
+            <h2 class="h6 mb-0"><i aria-hidden="true" class="bi bi-fire me-2"></i>Top songs</h2>
             <a class="btn btn-sm btn-outline-secondary" href="?range=<?= (int)$range ?>&export=top_songs">CSV</a>
         </div>
         <?php if (!$topSongs): ?>
             <p class="text-muted small mb-0">No song views in this period yet.</p>
         <?php else: ?>
             <table class="table table-sm table-hover mb-0">
-                <thead><tr><th>Song</th><th>Songbook</th><th class="text-end">Views</th></tr></thead>
+                <thead><tr><th scope="col">Song</th><th scope="col">Songbook</th><th scope="col" class="text-end">Views</th></tr></thead>
                 <tbody>
                 <?php foreach ($topSongs as $s):
                     $num = $s['Number'] ?? null;
@@ -296,7 +268,7 @@ try {
     <!-- Top search queries -->
     <div class="card-admin p-3 mb-4">
         <div class="d-flex align-items-center justify-content-between mb-3">
-            <h2 class="h6 mb-0"><i class="bi bi-search me-2"></i>Top search queries</h2>
+            <h2 class="h6 mb-0"><i aria-hidden="true" class="bi bi-search me-2"></i>Top search queries</h2>
             <a class="btn btn-sm btn-outline-secondary" href="?range=<?= (int)$range ?>&export=searches">CSV</a>
         </div>
         <?php
@@ -334,7 +306,7 @@ try {
             <p class="text-muted small mb-0">No search activity yet (or the tblSearchQueries table hasn't been created — re-run install).</p>
         <?php else: ?>
             <table class="table table-sm table-hover mb-0">
-                <thead><tr><th>Query</th><th class="text-end">Hits</th></tr></thead>
+                <thead><tr><th scope="col">Query</th><th scope="col" class="text-end">Hits</th></tr></thead>
                 <tbody>
                 <?php foreach ($topSearches as $s): ?>
                     <tr>
@@ -350,7 +322,7 @@ try {
     <!-- Zero-result queries -->
     <?php if ($zeroResults): ?>
     <div class="card-admin p-3 mb-4 border-warning">
-        <h2 class="h6 mb-3"><i class="bi bi-question-circle me-2"></i>Zero-result queries — candidates for tagging or new songs</h2>
+        <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-question-circle me-2"></i>Zero-result queries — candidates for tagging or new songs</h2>
         <ul class="list-unstyled mb-0 small">
             <?php foreach ($zeroResults as $z): ?>
                 <li><code><?= htmlspecialchars($z['Query']) ?></code> <span class="text-muted">× <?= (int)$z['hits'] ?></span></li>
@@ -362,14 +334,14 @@ try {
     <!-- Top songbooks -->
     <div class="card-admin p-3 mb-4">
         <div class="d-flex align-items-center justify-content-between mb-3">
-            <h2 class="h6 mb-0"><i class="bi bi-book me-2"></i>Songbook opens</h2>
+            <h2 class="h6 mb-0"><i aria-hidden="true" class="bi bi-book me-2"></i>Songbook opens</h2>
             <a class="btn btn-sm btn-outline-secondary" href="?range=<?= (int)$range ?>&export=top_books">CSV</a>
         </div>
         <?php if (!$topBooks): ?>
             <p class="text-muted small mb-0">No data yet.</p>
         <?php else: ?>
             <table class="table table-sm table-hover mb-0">
-                <thead><tr><th>Songbook</th><th class="text-end">Views</th></tr></thead>
+                <thead><tr><th scope="col">Songbook</th><th scope="col" class="text-end">Views</th></tr></thead>
                 <tbody>
                 <?php foreach ($topBooks as $b): ?>
                     <tr>

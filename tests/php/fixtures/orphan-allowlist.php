@@ -111,6 +111,15 @@ return [
         'admin_licence_type_toggle'             => 'deliberate API-first surface #1769 P4; Swagger console consumer; same D1-default-A posture as the admin_tune / admin_tier families',
         'admin_licence_type_update'             => 'deliberate API-first surface #1769 P4; Swagger console consumer; same D1-default-A posture as the admin_tune / admin_tier families',
         'admin_migrations_status'               => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
+        /* #1996 — the system-admin CREATE twin of manage/organisations.php's
+           `create` case + its new guided wizard. The WEB surfaces (manual
+           form + wizard) both go through /manage/organisations's own
+           `create`/`wizard_create_organisation` handlers, which call the
+           SAME shared core (includes/organisation_admin.php) directly —
+           they do NOT call this API action, same "one endpoint, two
+           audiences (native app / Swagger)" posture as its five
+           admin_organisation_* siblings immediately below. */
+        'admin_organisation_create'             => 'deliberate API-first surface #1996; native-app/Swagger console consumer; same D1-default-A posture as its admin_organisation_* siblings',
         'admin_organisation_delete'             => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_organisation_member_add'         => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_organisation_member_remove'      => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
@@ -158,6 +167,370 @@ return [
         'org_admin_member_add'                  => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'org_admin_member_remove'               => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'org_admin_member_role_change'          => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
+        /* #1969 (API-coverage plan §4.1 C5, batch 1) — JSON twin of
+           manage/my-ccli-report.php, delegating to the SAME shared
+           includes/ccli_report.php core (rule #22) that page already uses.
+           Same D1-default-A posture as the admin_musician / admin_tier /
+           admin_tune / admin_licence_type families immediately above:
+           deliberate API-first surface, documented in api-docs.yaml,
+           reachable from the Swagger try-it-out console — the web page
+           does its own direct DB work via the shared core, so nothing
+           first-party calls the JSON twin yet. (Its C2/C3/C4 batch-1
+           siblings — org_venues/tune/publisher_detail — are NOT listed
+           here: this guard's own doc-comment-URL chain rule already
+           credits them a caller via the `?action=…` mentions in this same
+           commit's doc-blocks, so adding them would trip the "stale
+           allowlist entry" self-cleaning check instead.) */
+        'org_ccli_report'                       => 'deliberate API-first surface #1969 (API-coverage batch 1 C5); Swagger console consumer; same D1-default-A posture as the admin_musician / admin_tier / admin_tune / admin_licence_type families; manage/my-ccli-report.php does its own direct DB work via the SAME shared includes/ccli_report.php core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.2, batch 3, O1-O3) — org-admin
+           self-service parity for manage/my-organisations.php's own
+           idle_timeout_update / setlist_edit_audience_update / logo_upload /
+           logo_remove / logo_toggle / brand_save POST handlers. Same
+           D1-default-A posture as org_ccli_report immediately above:
+           deliberate API-first surface, documented in api-docs.yaml,
+           reachable from the Swagger try-it-out console; the web page does
+           its own direct DB work / calls the SAME shared cores
+           (includes/service_mode.php, includes/setlist_collab.php,
+           includes/org_logo_admin.php, includes/organisation_validation.php
+           — never a fork), so nothing first-party calls the JSON twins yet.
+           (O4's four venue/schedule actions are NOT listed here: they are
+           chain-rule-credited via the `?action=…` mentions in
+           includes/venue_admin.php's own doc-block — the SAME mechanism
+           org_venues/tune/publisher_detail use above — so adding them here
+           would trip the "stale allowlist entry" self-cleaning check instead.) */
+        'org_admin_settings_update'             => 'deliberate API-first surface #1969 (API-coverage batch 3, O1); Swagger console consumer; same D1-default-A posture as org_ccli_report; manage/my-organisations.php\'s idle_timeout_update/setlist_edit_audience_update handlers touch tblOrganisations directly (never a fork), so nothing first-party calls the JSON twin yet',
+        'org_admin_logo_upload'                 => 'deliberate API-first surface #1969 (API-coverage batch 3, O2); Swagger console consumer; same D1-default-A posture as org_ccli_report; manage/my-organisations.php\'s logo_upload handler calls the SAME shared includes/org_logo_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'org_admin_logo_delete'                 => 'deliberate API-first surface #1969 (API-coverage batch 3, O2); Swagger console consumer; same D1-default-A posture as org_ccli_report; manage/my-organisations.php\'s logo_remove handler calls the SAME shared includes/org_logo_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'org_admin_logo_set_active'             => 'deliberate API-first surface #1969 (API-coverage batch 3, O2); Swagger console consumer; same D1-default-A posture as org_ccli_report; manage/my-organisations.php\'s logo_toggle handler calls the SAME shared includes/org_logo_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'org_admin_brand_update'                => 'deliberate API-first surface #1969 (API-coverage batch 3, O3); Swagger console consumer; same D1-default-A posture as org_ccli_report; manage/my-organisations.php\'s brand_save handler calls the SAME shared includes/organisation_validation.php normaliser (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4a, A1) — publisher-registry
+           CRUD parity for manage/publishers.php's own create/update/delete/
+           merge POST handlers. Same D1-default-A posture as the
+           admin_tune_* / admin_licence_type_* families above: deliberate
+           API-first surface, documented in api-docs.yaml, reachable from
+           the Swagger try-it-out console; the web page does its own direct
+           DB work via the SAME shared includes/publisher_admin.php cores
+           (never a fork — rule #37 named this the future admin_publisher_*
+           API), so nothing first-party calls the JSON twins yet. */
+        'admin_publisher_create'                => 'deliberate API-first surface #1969 (API-coverage batch 4a, A1); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_licence_type families; manage/publishers.php\'s create handler calls the SAME shared includes/publisher_admin.php cores (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_publisher_update'                => 'deliberate API-first surface #1969 (API-coverage batch 4a, A1); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_licence_type families; manage/publishers.php\'s update handler calls the SAME shared includes/publisher_admin.php cores (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_publisher_delete'                => 'deliberate API-first surface #1969 (API-coverage batch 4a, A1); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_licence_type families; manage/publishers.php\'s delete handler calls the SAME shared includes/publisher_admin.php cores (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_publisher_merge'                 => 'deliberate API-first surface #1969 (API-coverage batch 4a, A1); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_licence_type families; manage/publishers.php\'s merge handler calls the SAME shared includes/publisher_admin.php cores (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4a, A2) — Work-registry CRUD
+           + medley-composition API parity for manage/works.php's own
+           create/update/delete handlers and its constituent-list
+           reconcile. Same D1-default-A posture as the families above; the
+           medley action delegates entirely to the cycle-guarded
+           workMedley*() core (includes/work_admin.php, rule #45), never
+           forked. The page's own #1741 P4b extra-field / external-link /
+           song-membership handling stays page-only for now (see the
+           "Admin — Works" api-docs.yaml tag), so it is not part of what
+           these four actions cover. */
+        'admin_work_create'                     => 'deliberate API-first surface #1969 (API-coverage batch 4a, A2); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_publisher families; manage/works.php\'s create handler writes the same core tblWorks columns (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_work_update'                     => 'deliberate API-first surface #1969 (API-coverage batch 4a, A2); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_publisher families; manage/works.php\'s update handler writes the same core tblWorks columns (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_work_delete'                     => 'deliberate API-first surface #1969 (API-coverage batch 4a, A2); Swagger console consumer; same D1-default-A posture as the admin_tune / admin_publisher families; manage/works.php\'s delete handler is the same DELETE (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_work_medley_replace'             => 'deliberate API-first surface #1969 (API-coverage batch 4a, A2); Swagger console consumer; same D1-default-A posture as the families above; delegates to the SAME shared workMedleyReplace() core (includes/work_admin.php, rule #45) manage/works.php\'s update action already calls, so nothing first-party calls the JSON twin yet',
+        /* #1988 (API-coverage epic #1983) — Works "extras": admin_work_create/
+           _update grew the #1741 P1/D5 extra fields + origin_city; these two
+           are the NEW replace actions for the membership/external-links
+           parts of the page's own update action that were still page-only.
+           Same D1-default-A posture as the families above; both delegate
+           entirely to the SAME shared cores manage/works.php's update action
+           now ALSO one-line-delegates to (workSongsReplace() /
+           saveExternalLinksForRow(), rule #22) — never a forked write — so
+           nothing first-party calls either JSON twin yet. */
+        'admin_work_members_replace'            => 'deliberate API-first surface #1988 (API-coverage epic #1983); Swagger console consumer; same D1-default-A posture as the admin_work_* family above; delegates to the SAME shared workSongsReplace() core (includes/work_admin.php, rule #22) manage/works.php\'s update action now also calls, so nothing first-party calls the JSON twin yet',
+        'admin_work_external_links_replace'     => 'deliberate API-first surface #1988 (API-coverage epic #1983); Swagger console consumer; same D1-default-A posture as the admin_work_* family above; delegates to the SAME shared saveExternalLinksForRow()/loadExternalLinksForRow() cores (includes/external_link_helpers.php, rule #22) manage/works.php\'s update action already calls, so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4a, A9) — admin
+           notification-broadcast API parity for manage/notifications.php's
+           own 'compose' POST handler. Same D1-default-A posture as the
+           families above; the row write delegates to the ONE shared
+           notifyUser() (includes/notifications.php, #1638), never a second
+           copy of its Environment/ExpiresAt-aware INSERT shape. */
+        'admin_notification_send'               => 'deliberate API-first surface #1969 (API-coverage batch 4a, A9); Swagger console consumer; same D1-default-A posture as the families above; manage/notifications.php\'s compose handler + this action both delegate row-writing to the SAME shared includes/notifications.php notifyUser() (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4b-i, A3) — tag/theme CRUD +
+           merge + canonicalisation-suggestions API parity for
+           manage/tags.php's own create/update/delete/merge POST handlers
+           and its inline canonicalisation-suggestions read. Same
+           D1-default-A posture as the families above; every action
+           delegates to the newly-extracted shared includes/tag_admin.php
+           core manage/tags.php was ALSO re-pointed at in the same commit
+           (never a fork) — the fuzzy scoring itself stays the pre-existing
+           ONE includes/song_similarity.php scorer (#1216/#1222). */
+        'admin_tag_create'                      => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A3); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_work families; manage/tags.php\'s create handler calls the SAME shared includes/tag_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_tag_update'                      => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A3); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_work families; manage/tags.php\'s update handler calls the SAME shared includes/tag_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_tag_delete'                      => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A3); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_work families; manage/tags.php\'s delete handler calls the SAME shared includes/tag_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_tag_merge'                       => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A3); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_work families; manage/tags.php\'s merge handler calls the SAME shared includes/tag_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_tag_canonical_suggestions'       => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A3); Swagger console consumer; read-only; manage/tags.php\'s inline canonicalisation-suggestions block was re-pointed at the SAME shared includes/tag_admin.php core this action calls (never a fork; scoring stays the pre-existing includes/song_similarity.php, #1216/#1222), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4b-i, A4) — catalogue
+           ("Collection") CRUD + membership API parity for
+           manage/catalogues.php's own add/update/delete/add_member/
+           remove_member POST handlers. Same D1-default-A posture as the
+           families above; every action delegates to the newly-extracted
+           shared includes/catalogue_admin.php core manage/catalogues.php
+           was ALSO re-pointed at in the same commit (never a fork).
+           `tblCatalogues`/`tblCatalogueSongs`/the `catalogue` entity type
+           stay `catalogue` internally throughout (rule #24 — the
+           Catalogue→Collection relabel is UI copy only). The page's
+           `marcxml_import` wizard (file-upload) is deliberately NOT
+           covered by any of these five actions — see
+           includes/catalogue_admin.php's doc-block. */
+        'admin_catalogue_create'                => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A4); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/catalogues.php\'s add handler calls the SAME shared includes/catalogue_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_catalogue_update'                => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A4); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/catalogues.php\'s update handler calls the SAME shared includes/catalogue_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_catalogue_delete'                => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A4); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/catalogues.php\'s delete handler calls the SAME shared includes/catalogue_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_catalogue_member_add'            => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A4); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/catalogues.php\'s add_member handler calls the SAME shared includes/catalogue_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_catalogue_member_remove'         => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A4); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/catalogues.php\'s remove_member handler calls the SAME shared includes/catalogue_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4b-i, A5) — songbook-series
+           CRUD + membership-reconcile API parity for
+           manage/songbook-series.php's own create/update/delete POST
+           handlers. Same D1-default-A posture as the families above; every
+           action delegates to the newly-extracted shared
+           includes/songbook_series_admin.php core
+           manage/songbook-series.php was ALSO re-pointed at in the same
+           commit (never a fork). The page's `marcxml_import` wizard
+           (file-upload) is deliberately NOT covered by any of these three
+           actions — see includes/songbook_series_admin.php's doc-block. */
+        'admin_songbook_series_create'          => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A5); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/songbook-series.php\'s create handler calls the SAME shared includes/songbook_series_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_songbook_series_update'          => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A5); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/songbook-series.php\'s update handler calls the SAME shared includes/songbook_series_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_songbook_series_delete'          => 'deliberate API-first surface #1969 (API-coverage batch 4b-i, A5); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/songbook-series.php\'s delete handler calls the SAME shared includes/songbook_series_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4b-ii, A6) — BCP 47
+           language-registry CRUD + junk-tag remap API parity for
+           manage/languages.php's own create/update/toggle_active/delete/
+           remap_tag POST handlers. Same D1-default-A posture as the
+           families above; every action delegates to the newly-extracted
+           shared includes/language_admin.php core manage/languages.php was
+           ALSO re-pointed at in the same commit (never a fork) — the
+           remap WRITE itself stays the pre-existing ONE
+           includes/language_tag_audit.php languageTagRemap() core, whose
+           'line-path' branch goes through lyricLinesWriteComponents(),
+           never a raw UPDATE against tblLyricLines.LanguageCode (rule
+           #25). The PUBLIC language reads (languages/scripts/regions/
+           variants + their *_search actions) are untouched by this batch
+           and already have first-party callers. */
+        'admin_language_create'                 => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A6); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/languages.php\'s create handler calls the SAME shared includes/language_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_language_update'                 => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A6); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/languages.php\'s update handler calls the SAME shared includes/language_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_language_toggle'                 => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A6); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/languages.php\'s toggle_active handler calls the SAME shared includes/language_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_language_delete'                 => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A6); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/languages.php\'s delete handler calls the SAME shared includes/language_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_language_remap_tag'              => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A6); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/languages.php\'s remap_tag handler delegates to the SAME shared includes/language_admin.php preflight + the pre-existing includes/language_tag_audit.php languageTagRemap() write core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4b-ii, A7) — external-link
+           type + URL-pattern registry write API parity for
+           manage/external-link-types.php's edit write action,
+           save_type_patterns. Same D1-default-A posture as the families
+           above; delegates to the newly-extracted shared
+           includes/external_link_type_admin.php core
+           manage/external-link-types.php was ALSO re-pointed at in the
+           same commit (never a fork).
+           #1992 (owner decision A) later confirmed types ARE
+           curator-mintable after all — superseding this entry's original
+           "no separate create/delete, curated content only" note — and
+           added a SECOND action, admin_external_link_type_create, for the
+           same reason: the page's own manual "Add provider" form
+           (`create_type`) AND its guided wizard (`wizard_create_type`,
+           fetch()+X-Requested-With) both call the SAME
+           externalLinkTypeAdminValidateNewType()/…Create() core directly
+           — nothing first-party calls THIS JSON twin either, exactly the
+           same D1-default-A shape as its sibling below. */
+        'admin_external_link_type_save'         => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/external-link-types.php\'s save_type_patterns handler calls the SAME shared includes/external_link_type_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_external_link_type_create'       => 'deliberate API-first surface #1992 (curator-mintable types, owner decision A); Swagger console consumer; same D1-default-A posture as admin_external_link_type_save immediately above; manage/external-link-types.php\'s manual create_type form AND its guided wizard\'s wizard_create_type AJAX action both call the SAME shared includes/external_link_type_admin.php externalLinkTypeAdminValidateNewType()/Create() core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 4b-ii, A8) — print-template
+           CRUD + custom full-page layout API parity for
+           manage/print-templates.php's own save/clone/delete/set_default/
+           layout_save/layout_delete POST handlers. Same D1-default-A
+           posture as the families above; the scalar-row actions delegate
+           to the newly-extracted shared includes/print_template_admin.php
+           core manage/print-templates.php was ALSO re-pointed at in the
+           same commit (never a fork); the layout pair delegates to the
+           PRE-EXISTING includes/print_custom_layout.php writer (unchanged,
+           already sanitiser-gated via ihymnsSanitizeHtml($raw,'layout'),
+           rule #39). The page's `import` (paste-JSON) action is
+           deliberately NOT covered by any of these six actions — see
+           includes/print_template_admin.php's doc-block. */
+        'admin_print_template_save'             => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A8); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/print-templates.php\'s save handler calls the SAME shared includes/print_template_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_print_template_clone'            => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A8); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/print-templates.php\'s clone handler calls the SAME shared includes/print_template_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_print_template_delete'           => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A8); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/print-templates.php\'s delete handler calls the SAME shared includes/print_template_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_print_template_set_default'      => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A8); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/print-templates.php\'s set_default handler calls the SAME shared includes/print_template_admin.php core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_print_layout_save'               => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A8); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/print-templates.php\'s layout_save handler and this action both delegate to the SAME pre-existing includes/print_custom_layout.php printCustomLayoutSave() (never a fork; already sanitiser-gated, rule #39), so nothing first-party calls the JSON twin yet',
+        'admin_print_layout_delete'             => 'deliberate API-first surface #1969 (API-coverage batch 4b-ii, A8); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/print-templates.php\'s layout_delete handler and this action both delegate to the SAME pre-existing includes/print_custom_layout.php printCustomLayoutDelete() (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 5, A10) — duplicate &
+           counterpart song curator-workflow API parity for
+           manage/duplicate-songs.php's own merge/link/unlink/rebuild/
+           auto_link POST handlers (its `dismiss` action stays page-only —
+           api2.php's pre-existing song_link_suggestion_dismiss already
+           covers a native caller one pair at a time, so a new cluster
+           action was deliberately not added). Same D1-default-A posture
+           as the families above; merge/rebuild/auto_link delegate to the
+           newly-extracted shared includes/duplicate_song_admin.php core
+           manage/duplicate-songs.php was ALSO re-pointed at in the same
+           commit (never a fork, #1218's same-official-songbook force
+           guard preserved exactly); link/unlink delegate to the newly-
+           extracted shared includes/song_link_admin.php per-song core
+           manage/editor/api2.php's song_link_add/song_link_remove AND
+           manage/duplicate-songs.php's own unlink action were ALSO
+           re-pointed at in the same commit — one write implementation,
+           not three. */
+        'admin_song_merge'                      => 'deliberate API-first surface #1969 (API-coverage batch 5, A10); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/duplicate-songs.php\'s merge handler calls the SAME shared includes/duplicate_song_admin.php duplicateSongMergeExecute() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_song_link'                       => 'deliberate API-first surface #1969 (API-coverage batch 5, A10); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; calls the shared includes/song_link_admin.php songLinkAdd() core pairwise for a cluster batch — a behavioural mirror of manage/editor/api2.php\'s song_link_add (api2.php itself was explicitly out of scope for this batch and keeps its own copy, see that core\'s doc-block), so nothing first-party calls the JSON twin yet',
+        'admin_song_unlink'                     => 'deliberate API-first surface #1969 (API-coverage batch 5, A10); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/duplicate-songs.php\'s own unlink handler calls the SAME shared includes/song_link_admin.php songLinkRemove() core this action also calls (never a fork within this batch\'s scope; a behavioural mirror, not a re-point, of manage/editor/api2.php\'s song_link_remove — that file was out of scope), so nothing first-party calls the JSON twin yet',
+        'admin_song_suggestions_rebuild'        => 'deliberate API-first surface #1969 (API-coverage batch 5, A10); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/duplicate-songs.php\'s rebuild handler calls the SAME shared includes/duplicate_song_admin.php duplicateSongRebuildSuggestions() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_song_auto_link'                  => 'deliberate API-first surface #1969 (API-coverage batch 5, A10); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/duplicate-songs.php\'s auto_link handler calls the SAME shared includes/duplicate_song_admin.php duplicateSongAutoLink() core, itself a thin wrapper over the pre-existing includes/tools/auto-link-hard-id-counterparts.php (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 5, A11) — deleted-song
+           restore/purge API parity for manage/deleted-songs.php's own
+           restore/purge POST handlers. Same D1-default-A posture as the
+           families above; both delegate to the pre-existing shared
+           includes/song_soft_delete.php lifecycle core the page already
+           used (never a fork). Purge keeps the page's server-enforced
+           type-to-confirm ceremony (`confirm` must equal `song_id`) and
+           its own stricter purge_songs gate. */
+        'admin_song_restore'                    => 'deliberate API-first surface #1969 (API-coverage batch 5, A11); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/deleted-songs.php\'s restore handler calls the SAME pre-existing includes/song_soft_delete.php songRestore() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_song_purge'                      => 'deliberate API-first surface #1969 (API-coverage batch 5, A11); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/deleted-songs.php\'s purge handler calls the SAME pre-existing includes/song_soft_delete.php songPurge() core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 5, A13) — musician-duplicate
+           dismiss/undismiss API parity for manage/musician-duplicates.php's
+           own dismiss/undismiss POST handlers (admin_musician_merge already
+           existed and is NOT re-added here). Same D1-default-A posture as
+           the families above; both delegate to the newly-extracted shared
+           includes/musician_duplicates.php cores
+           manage/musician-duplicates.php was ALSO re-pointed at in the
+           same commit (never a fork). */
+        'admin_musician_duplicate_dismiss'      => 'deliberate API-first surface #1969 (API-coverage batch 5, A13); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/musician-duplicates.php\'s dismiss handler calls the SAME shared includes/musician_duplicates.php musicianDuplicatesDismissCluster() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_musician_duplicate_undismiss'    => 'deliberate API-first surface #1969 (API-coverage batch 5, A13); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/musician-duplicates.php\'s undismiss handler calls the SAME shared includes/musician_duplicates.php musicianDuplicatesUndismissPair() core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 5, A14) — admin analytics
+           "top songs / top books" API parity for manage/analytics.php's own
+           CSV-export panels. Deliberately NOT a fork of the public
+           popular_songs action (that one filters visibility/servability/
+           language and has no book-level rollup — see
+           includes/analytics_ingest.php's own doc-block on exactly why).
+           Same D1-default-A posture as the families above; delegates to
+           the newly-extracted shared includes/analytics_ingest.php reads
+           manage/analytics.php was ALSO re-pointed at in the same commit
+           (never a fork). */
+        'admin_analytics_top'                   => 'deliberate API-first surface #1969 (API-coverage batch 5, A14); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/analytics.php\'s top_songs/top_books CSV-export panels call the SAME shared includes/analytics_ingest.php analyticsTopSongs()/analyticsTopBooks() cores (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 5, A15) — data-health
+           "disconnect legacy fallbacks" write API parity for
+           manage/data-health.php's own disconnect_fallbacks POST handler.
+           Same D1-default-A posture as the families above; delegates to
+           the newly-extracted shared includes/data_health_admin.php core
+           manage/data-health.php was ALSO re-pointed at in the same commit
+           (never a fork); the op allow-list (rule #20) recognises only
+           'disconnect_fallbacks' today. */
+        'admin_data_health_fix'                 => 'deliberate API-first surface #1969 (API-coverage batch 5, A15); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/data-health.php\'s disconnect_fallbacks handler calls the SAME shared includes/data_health_admin.php dataHealthDisconnectFallbacks() core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* #1969 (API-coverage plan §4.3, batch 5, A16) — activity-log IP
+           geolocation backfill API parity for manage/activity-log.php's own
+           ?action=geo AJAX endpoint. Same D1-default-A posture as the
+           families above; delegates to the newly-extracted shared
+           includes/activity_log_geo.php core manage/activity-log.php was
+           ALSO re-pointed at in the same commit (never a fork). */
+        'admin_ip_geolocate'                    => 'deliberate API-first surface #1969 (API-coverage batch 5, A16); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/activity-log.php\'s ?action=geo handler calls the SAME shared includes/activity_log_geo.php activityLogGeoResolveIps() core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* .claude/api-coverage-2026-08-28.md §4.3 (API-coverage batch 6a,
+           A18) — API-key admin JSON parity for manage/api-keys.php's own
+           management actions. Owner decision Q5 approved exposing these
+           ONLY under a strict SHOW-ONCE secret discipline (see
+           includes/api_keys.php's Admin CRUD section + api.php's own
+           batch-6a doc-block); tests/php/test-api-coverage-batch6a.php
+           proves that discipline. Same D1-default-A posture as the
+           admin_publisher / admin_tag families above; every action
+           delegates to the SAME shared includes/api_keys.php core
+           manage/api-keys.php was ALSO re-pointed at in this same commit
+           (never a fork), so nothing first-party calls the JSON twin yet. */
+        'admin_api_key_create'                  => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s create action calls the SAME shared includes/api_keys.php apiKeyAdminCreate() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_api_key_toggle'                  => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s toggle action calls the SAME shared includes/api_keys.php apiKeyAdminToggle() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_api_key_delete'                  => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s delete action calls the SAME shared includes/api_keys.php apiKeyAdminDelete() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_api_key_set_limits'              => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s set_limits action calls the SAME shared includes/api_keys.php apiKeyAdminSetLimits() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_api_key_approve_request'         => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s approve_request action calls the SAME shared includes/api_keys.php apiKeyAdminRequestApprove() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_api_key_reject_request'          => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s reject_request action calls the SAME shared includes/api_keys.php apiKeyAdminRequestReject() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'api_key_request'                       => 'deliberate API-first surface (API-coverage batch 6a, A18, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/api-keys.php\'s self-serve request action calls the SAME shared includes/api_keys.php apiKeyAdminRequestCreate() core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* .claude/api-coverage-2026-08-28.md §4.3 (API-coverage batch 6a,
+           A19) — webhook admin JSON parity for manage/webhooks.php's own
+           action set (EXCEPT reveal_secret — deliberately NOT ported, see
+           the show-once discipline note on A18 above). manage/webhooks.php
+           already delegated to includes/webhook_admin.php before this
+           batch (no extraction needed) — this batch only added the API
+           twin, which calls the SAME pre-existing core, never a fork. */
+        'admin_webhook_create'                  => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s create action calls the SAME pre-existing includes/webhook_admin.php webhookSubscriptionCreate() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_update'                  => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s update action calls the SAME pre-existing includes/webhook_admin.php webhookSubscriptionUpdate() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_verify'                  => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s verify action calls the SAME pre-existing includes/webhook_admin.php webhookSendVerification() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_pause'                   => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s pause action calls the SAME pre-existing includes/webhook_admin.php webhookSubscriptionSetStatus() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_resume'                  => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s resume action calls the SAME pre-existing includes/webhook_admin.php webhookSubscriptionSetStatus() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_rotate_secret'           => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s rotate_secret action calls the SAME pre-existing includes/webhook_admin.php webhookSubscriptionRotateSecret() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_send_test'               => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s send_test action calls the SAME pre-existing includes/webhook_admin.php webhookEnqueueForSubscription() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_delete'                  => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s delete action calls the SAME pre-existing includes/webhook_admin.php webhookSubscriptionDelete() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_webhook_redrive'                 => 'deliberate API-first surface (API-coverage batch 6a, A19, Q5 show-once); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/webhooks.php\'s redrive action calls the SAME pre-existing includes/webhook_admin.php webhookDeliveryRedrive() core (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* .claude/api-coverage-2026-08-28.md §4.3 A17 (API-coverage batch
+           6b) — the three MARCXML-file-upload imports the earlier
+           4b-i/4b-ii batches deliberately deferred, ported once the owner
+           confirmed a native-curator-app surface (Q1=yes). Each delegates
+           to the shared MARCXML parse core (manage/includes/
+           marcxml_admin.php, itself wrapping includes/marcxml.php) and, for
+           catalogues/songbook-series, the SAME row-write core the sibling
+           `admin_*_create` action already uses (never a fork). Songbooks
+           has no extracted row-write core (admin_songbook_create itself
+           still inlines its own INSERT — a pre-existing condition, not
+           introduced by this batch), so admin_songbook_marcxml_import
+           mirrors the page's own two-step INSERT+UPDATE shape instead.
+           tests/php/test-api-coverage-batch6b.php proves the delegation +
+           the three pages' own marcxml_import handlers staying untouched. */
+        'admin_songbook_marcxml_import'         => 'deliberate API-first surface (API-coverage batch 6b, §4.3 A17); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/songbooks.php\'s marcxml_import action does the SAME uniqueness-check + INSERT + UPDATE + IL-id-mint + maintenance-hook sequence (never a fork of the MARCXML parse core), so nothing first-party calls the JSON twin yet',
+        'admin_catalogue_marcxml_import'        => 'deliberate API-first surface (API-coverage batch 6b, §4.3 A17); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; delegates to the SAME shared includes/catalogue_admin.php catalogueAdminCreate() core admin_catalogue_create already uses (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_songbook_series_marcxml_import'  => 'deliberate API-first surface (API-coverage batch 6b, §4.3 A17); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; delegates to the SAME shared includes/songbook_series_admin.php songbookSeriesAdminCreate() core admin_songbook_series_create already uses (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* .claude/api-coverage-2026-08-28.md §4.3 A17 (API-coverage batch
+           6b) — after individually assessing A17's other "genuinely
+           multi-step / interactive tools" (bulk-promote wizards,
+           `ia-reconcile` run, `family_manifest`), this one turned out to be
+           a genuinely clean single POST -> JSON-report call (unlike the
+           other two, both deferred — see this batch's implementation
+           report). Delegates end-to-end to the SAME pipeline
+           manage/ia-reconcile.php calls (includes/ia_client.php +
+           includes/ia_reconcile.php), never a forked fetch/segment/score. */
+        'admin_ia_reconcile_run'                => 'deliberate API-first surface (API-coverage batch 6b, §4.3 A17); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; delegates to the SAME shared includes/ia_client.php + includes/ia_reconcile.php pipeline manage/ia-reconcile.php\'s own POST run handler calls (never a fork), so nothing first-party calls the JSON twin yet',
+
+        /* API-coverage batch 7 (closing the last 8 `web_only:GAP-*` entries
+           tests/php/test-manage-action-api-coverage.php's own mapping was
+           carrying) — musician-registry grouping/relations API parity for
+           manage/musicians.php's add_member/remove_member/add_relation/
+           remove_relation/bulk_register_unregistered POST handlers (#1741
+           P4a family, postdates the 2026-08-28 audit) + Web Push admin API
+           parity for manage/notifications.php's delete/push_send/push_test
+           handlers. Same D1-default-A posture as the families above. All
+           five musician actions delegate to the SAME shared
+           includes/musician_helpers.php cores the page uses
+           (addMusicianRelation()/removeMusicianRelation()/
+           removeMusicianGroupMember()/musicianBulkRegisterRemaining() — the
+           last one itself extracted from the page's own inline handler in
+           THIS batch, so the page was ALSO re-pointed at it, never leaving
+           two copies of the transaction). The two push actions delegate to
+           the SAME pre-existing includes/web_push.php webPushBroadcast()/
+           webPushBuildPayload() cores manage/notifications.php's own
+           push_send/push_test branches call. tests/php/
+           test-api-coverage-batch7.php proves the dispatch/gate/delegation
+           for all eight, and that the standing coverage guard's mapping was
+           actually updated (no `GAP-*` reason left for any of them). */
+        'admin_musician_member_add'             => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/musicians.php\'s add_member handler calls the SAME shared includes/musician_helpers.php addMusicianRelation() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_musician_member_remove'          => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/musicians.php\'s remove_member handler calls the SAME shared includes/musician_helpers.php removeMusicianGroupMember() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_musician_relation_add'           => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/musicians.php\'s add_relation handler calls the SAME shared includes/musician_helpers.php addMusicianRelation() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_musician_relation_remove'        => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/musicians.php\'s remove_relation handler calls the SAME shared includes/musician_helpers.php removeMusicianRelation() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_musician_bulk_register'          => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/musicians.php\'s bulk_register_unregistered handler calls the SAME newly-extracted shared includes/musician_helpers.php musicianBulkRegisterRemaining() core (the page was re-pointed at it in this same batch — never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_notification_delete'             => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/notifications.php\'s delete handler issues the SAME "DELETE FROM tblNotifications WHERE Id = ?" statement (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_notification_push_send'          => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/notifications.php\'s push_send handler calls the SAME pre-existing includes/web_push.php webPushBroadcast() core (never a fork), so nothing first-party calls the JSON twin yet',
+        'admin_notification_push_test'          => 'deliberate API-first surface (API-coverage batch 7); Swagger console consumer; same D1-default-A posture as the admin_publisher / admin_tag families; manage/notifications.php\'s push_test handler calls the SAME pre-existing includes/web_push.php webPushBroadcast() core (never a fork), so nothing first-party calls the JSON twin yet',
 
         /* ---------------------------------------------------------------
          * 1b. Content-gating / licensing family — 12 (§2.2 + `tier_check`).
@@ -339,6 +712,22 @@ return [
            core-ahead-of-client) was HERE and has been removed — self-
            cleaning, as designed: metadata-tab.js's holder picker +
            api-client.js's setCopyrightHolder() (B3) now call it. */
+
+        /* ---------------------------------------------------------------
+         * 1i. API-coverage plan 2026-08-28, C1/X2 — Android/FireOS push
+         * registration. The SAME shape as 1c's auth_device_code_request/
+         * _poll pair: the server (registration endpoints + the dormant
+         * includes/fcm.php sender skeleton + tblPushTokens) ships ahead of
+         * its client — there is no Android/FireOS native client code in
+         * this repo yet to call it (appAndroid/ has no push-registration
+         * Kotlin source), exactly mirroring "the device side's consumer is
+         * the tvOS client, which has no device-code code yet" above.
+         * Self-cleaning, same pattern as 1c/1g/1h: once an Android/FireOS
+         * client is built and calls these, this entry goes stale and the
+         * guard demands its removal in that same commit.
+         * --------------------------------------------------------------- */
+        'fcm_register'   => 'deliberate API-first surface, API-coverage plan 2026-08-28 C1/X2; consumer = the Android/FireOS native client, which has no push-registration code in this repo yet — same posture as auth_device_code_request/_poll (§1c) ahead of the tvOS client',
+        'fcm_unregister' => 'deliberate API-first surface, API-coverage plan 2026-08-28 C1/X2; consumer = the Android/FireOS native client, which has no push-registration code in this repo yet — same posture as auth_device_code_request/_poll (§1c) ahead of the tvOS client',
     ],
 
     /* =====================================================================

@@ -85,6 +85,20 @@ const BUNDLE_PATH = path.join(
  * enough to exercise ordered multi-component parsing, the "no explicit number" chorus path (mapped
  * type number 0, plan §3.5), and the identity-arrangement collapse-to-null rule (plan §3.3 point 5)
  * without any of the metadata edge cases `tests/php/test-pp7-parse.php`'s REAL fixtures already cover.
+ *
+ * #1968 P6 (chords, commit C4) — `chords` added to two of the three components, per
+ * `.claude/propresenter-chords-plan.md` §6.2's closure-test brief:
+ *   - Verse 1: a POSITIONED STRING cell on line 0 ("G" at column 0, "D" at column 20 — mid-word,
+ *     inside "sweet", NOT over any word start — the shape an ARRAY cell structurally cannot
+ *     represent, so this is the case that specifically proves the STRING-cell code path); line 1
+ *     carries `null` (no chords on that line).
+ *   - Chorus: an ARRAY cell on line 0 (`['C', 'G']`, word-start aligned by construction); line 1
+ *     carries `null`.
+ *   - Verse 2: NO `chords` key at all — the chordless-component round-trip case (proves chord
+ *     capture on sibling components never leaks a `chords` key onto one that never had any).
+ * This is the SAME two-independent-halves proof the rest of this file's fixture already
+ * established (a browser-JS encoder and a hand-rolled PHP wire-walker, never seen each other's
+ * source, agreeing on the same bytes) — now extended to chord positions specifically.
  */
 const SAMPLE_SONG = {
     id: 'TF-0001',
@@ -96,16 +110,33 @@ const SAMPLE_SONG = {
     copyright: '© Test Publisher',
     ccli: '7654321',
     components: [
-        { type: 'verse', number: 1, lines: ['Amazing grace how sweet the sound', 'That saved a wretch like me'] },
-        { type: 'chorus', lines: ['This is the chorus first line', 'This is the chorus second line'] },
+        {
+            type: 'verse', number: 1,
+            lines: ['Amazing grace how sweet the sound', 'That saved a wretch like me'],
+            chords: ['G                   D', null]
+        },
+        {
+            type: 'chorus',
+            lines: ['This is the chorus first line', 'This is the chorus second line'],
+            chords: [['C', 'G'], null]
+        },
         { type: 'verse', number: 2, lines: ['I once was lost but now am found', 'Was blind but now I see'] }
     ]
 };
 
 async function main() {
     const outPath = process.argv[2];
+    // #1968 P6 commit C4 — an OPTIONAL 3rd arg: `linesPerSlide`, passed straight through to
+    // buildPresentation()'s export options. Lets a second invocation of this SAME generator prove
+    // chunkParallel()'s per-slide chord slicing survives the export->import round trip when a
+    // component's lines are split across MULTIPLE ProPresenter slides (plan §6.2's mutation list
+    // explicitly calls for this: "drop the chunk-parallel chords slicing (with linesPerSlide set
+    // in a second generator invocation) -> red"). Omitted/0 (the default, every pre-#1968-P6
+    // caller) reproduces the EXACT unchunked behaviour this file always had.
+    const linesPerSlideArg = process.argv[3];
+    const linesPerSlide = linesPerSlideArg ? parseInt(linesPerSlideArg, 10) : 0;
     if (!outPath) {
-        console.error('usage: node tools/pp7-gen-roundtrip-sample.js <output-path.pro>');
+        console.error('usage: node tools/pp7-gen-roundtrip-sample.js <output-path.pro> [linesPerSlide]');
         process.exit(1);
     }
 
@@ -154,7 +185,7 @@ async function main() {
     }
 
     await exporter.init({ protobuf, bundle });
-    const bytes = await exporter.buildPresentation(SAMPLE_SONG);
+    const bytes = await exporter.buildPresentation(SAMPLE_SONG, { linesPerSlide });
 
     fs.writeFileSync(outPath, Buffer.from(bytes));
     console.log(`wrote ${bytes.length} byte(s) to ${outPath}`);

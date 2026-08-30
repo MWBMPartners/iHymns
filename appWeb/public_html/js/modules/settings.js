@@ -20,6 +20,7 @@ import {
     STORAGE_NUMPAD_LIVE_SEARCH,
     STORAGE_ANALYTICS_CONSENT,
     STORAGE_CVD_MODE,
+    STORAGE_LINK_EMPHASIS,
     STORAGE_OFFLINE_INCLUDE_AUDIO,
     STORAGE_LIVE_IDLE_TIMEOUT_MINS,
     CACHE_SONGS_SAVED,
@@ -31,6 +32,10 @@ import { escapeHtml } from '../utils/html.js';
 /* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
    on every same-origin request, replacing the old global fetch monkey-patch. */
 import { apiFetch } from '../utils/api-client.js';
+/* a11y audit m6 — the consent banner is revealed silently (a class toggle at
+   the end of the DOM); this is how initConsentBanner() tells a screen-reader
+   user it just appeared. */
+import { announce } from '../utils/announce.js';
 /* Offline-download behaviour is owned by offline-ui.js (CLAUDE.md rule #7) —
    Settings drives it, it does not re-implement it (#1597). */
 import {
@@ -60,6 +65,7 @@ const SYNC_PREF_KEYS = Object.freeze([
     'ihymns_search_lyrics',
     'ihymns_display',
     STORAGE_CVD_MODE,
+    STORAGE_LINK_EMPHASIS,
     'ihymns_keyboardShortcuts',
     /* #1770 §4.7 — unprefixed on purpose; see the constant's own doc-comment
        in constants.js for why it must NOT gain the ihymns_ prefix. */
@@ -116,10 +122,22 @@ export class Settings {
         /** @type {string} localStorage key prefix */
         this.storagePrefix = 'ihymns_';
 
-        /** Default settings — reduce motion is OFF by default (animations enabled) */
+        /** Default settings — reduce motion is OFF by default (animations
+         *  enabled), UNLESS the OS/browser already asks for reduced motion. */
         this.defaults = {
             theme: 'system',
-            reduceMotion: false,      /* Animations enabled by default */
+            /* a11y audit L7 (2026-08-30): was hardcoded `false` regardless of
+               the OS-level prefers-reduced-motion setting — a user who had
+               that OS preference on but had never opened this app's Settings
+               page still got every animated transition. Seeded from
+               matchMedia() so the FIRST-EVER default respects it; get()
+               (below) still returns an explicitly stored 'true'/'false' over
+               this default, so nothing changes for anyone who has already
+               used the in-app toggle either way.
+               @link https://developer.mozilla.org/en-US/docs/Web/CSS/@media/prefers-reduced-motion */
+            reduceMotion: (typeof window !== 'undefined' && typeof window.matchMedia === 'function')
+                ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+                : false,
             reduceTransparency: false,
             fontSize: 18,
             keyboardShortcuts: true,  /* '?' opens help, '/' focuses search, etc. (#406) */
@@ -585,6 +603,12 @@ export class Settings {
             /* Force reflow before adding .show for CSS transition */
             banner.offsetHeight; // eslint-disable-line no-unused-expressions
             banner.classList.add('show');
+            /* a11y audit m6 — role="region" (index.php) has no aria-live of
+               its own, and this banner sits at the end of the DOM with no
+               focus move into it (it's a non-blocking strip, not a modal),
+               so a screen-reader user would otherwise never learn it
+               appeared at all. */
+            announce('We use analytics — choose Accept or Decline in the banner');
         });
 
         /* Accept button */
@@ -711,6 +735,14 @@ export class Settings {
             html.setAttribute('data-ihymns-cvd', cvdMode);
         } else {
             html.removeAttribute('data-ihymns-cvd');
+        }
+
+        /* Apply accessible-links opt-in colour cue (#1984, S1) — independent
+           of theme, same shape as the CVD block above. */
+        if (localStorage.getItem(STORAGE_LINK_EMPHASIS) === 'on') {
+            html.setAttribute('data-ihymns-linkcue', 'on');
+        } else {
+            html.removeAttribute('data-ihymns-linkcue');
         }
 
         /* Update theme-color meta tags */
@@ -954,6 +986,27 @@ export class Settings {
                     document.documentElement.removeAttribute('data-ihymns-cvd');
                 }
                 this._maybePushSync(STORAGE_CVD_MODE);
+            });
+        }
+
+        /* Accessible links — opt-in at-rest colour cue (#1984, S1). Mirrors
+           the CVD toggle immediately above: a direct localStorage read/write
+           + live <html> attribute application, not routed through
+           get()/set()'s `ihymns_`-prefix derivation, so the raw exported key
+           stays identical to the one admin-theme-init.php's synchronous
+           mirror reads. */
+        const linkEmphasisToggle = document.getElementById('setting-link-emphasis');
+        if (linkEmphasisToggle) {
+            linkEmphasisToggle.checked = localStorage.getItem(STORAGE_LINK_EMPHASIS) === 'on';
+            linkEmphasisToggle.addEventListener('change', () => {
+                if (linkEmphasisToggle.checked) {
+                    localStorage.setItem(STORAGE_LINK_EMPHASIS, 'on');
+                    document.documentElement.setAttribute('data-ihymns-linkcue', 'on');
+                } else {
+                    localStorage.removeItem(STORAGE_LINK_EMPHASIS);
+                    document.documentElement.removeAttribute('data-ihymns-linkcue');
+                }
+                this._maybePushSync(STORAGE_LINK_EMPHASIS);
             });
         }
 

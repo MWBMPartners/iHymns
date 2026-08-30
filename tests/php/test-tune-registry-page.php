@@ -42,6 +42,17 @@ declare(strict_types=1);
  * `test-admin-gate-parity.php`, `test-tune-admin-surface.php`) is what
  * guards it going forward.
  *
+ * #1969 UPDATE (API-coverage batch 1, C3) — the resolution ladder, song
+ * list, and credits/meter/links enrichment this file used to find INLINE
+ * in tune.php were extracted into `tuneResolveDisplayData()`
+ * (`includes/tune_helpers.php`) so the new `?action=tune` JSON endpoint
+ * (api.php) can share the exact same read path (rule #22). The checks
+ * that used to assume "the resolution logic is inline in tune.php" now
+ * scan the comment-stripped UNION of both files (`$resolutionCode`); the
+ * render-column / a11y / partial-usage checks stay scoped to tune.php
+ * alone, since rendering markup is the one thing the extraction did not
+ * move.
+ *
  * WHY TREE-DERIVED, NOT HAND-TYPED (rule #34)
  * ----------------------------------------------------------------------------
  * A hand-typed `['Slug','MeterCode', …]` list here would agree with itself
@@ -420,6 +431,27 @@ if (!is_readable($tunePageFile)) {
 }
 $tunePageSrc = (string)file_get_contents($tunePageFile);
 
+/* #1969 (API-coverage batch 1, C3) — the resolution ladder, the song list,
+   and the credits/meter/links enrichment (everything this file used to
+   find INLINE in tune.php) were extracted into
+   `tuneResolveDisplayData()` in includes/tune_helpers.php, so the new
+   `?action=tune` JSON endpoint (api.php) can share the SAME read path
+   instead of forking a second copy (rule #22). tune.php now only
+   NORMALISES its raw slug, CALLS the shared function, and RENDERS the
+   result — the resolution-ladder / song-list / FIELD(c.Role) markers this
+   guard checks for genuinely live in tune_helpers.php now, not tune.php.
+   $resolutionCode is the comment-stripped UNION of both files for exactly
+   the checks that used to assume "the resolution logic is inline in
+   tune.php"; the render-column / a11y / partial-usage checks further down
+   stay scoped to tune.php alone, since those remain genuinely page-only
+   concerns the extraction did not move. */
+$tuneHelpersFile = $repoRoot . '/appWeb/public_html/includes/tune_helpers.php';
+if (!is_readable($tuneHelpersFile)) {
+    fwrite(STDERR, "FATAL: could not read includes/tune_helpers.php at $tuneHelpersFile\n");
+    exit(1);
+}
+$tuneHelpersSrc = (string)file_get_contents($tuneHelpersFile);
+
 /* Comment-stripped variant for every "this literally appears in the CODE"
    check below — tune.php's own doc-block prose quotes real SQL/PHP syntax
    (e.g. "`tblTunes.Slug = ?`" while explaining the lookup ladder in
@@ -429,58 +461,70 @@ $tunePageSrc = (string)file_get_contents($tunePageFile);
    failure this caught. The ONLY check that intentionally runs against the
    RAW source is the `tune-registry-fallback` marker, a few lines down,
    because the build spec places that marker INSIDE a comment on purpose. */
-$tunePageCode = trpgStripComments($tunePageSrc);
+$tunePageCode    = trpgStripComments($tunePageSrc);
+$tuneHelpersCode = trpgStripComments($tuneHelpersSrc);
+$resolutionCode  = $tunePageCode . "\n" . $tuneHelpersCode;
 
 /* ---- The five rendered tblTunes columns each appear in tune.php's code. ---- */
 foreach (trpgMissing($tunePageCode, $renderedCols) as $missingCol) {
     $failures[] = "tblTunes.{$missingCol} is not referenced anywhere in includes/pages/tune.php's code";
 }
 
-/* ---- tblTuneCredits.Role's COMMENT vocabulary and tune.php's
+/* ---- tblTuneCredits.Role's COMMENT vocabulary and the resolution code's
    FIELD(c.Role, …) ordering name EXACTLY the same set, in the SAME order
-   (rule #35 — cross-file agreement). #1748 — tune.php's FIELD() clause is
-   now BUILT dynamically from IHYMNS_TUNE_CREDIT_ROLES's array_keys(), so a
+   (rule #35 — cross-file agreement). #1748 — the FIELD() clause is now
+   BUILT dynamically from IHYMNS_TUNE_CREDIT_ROLES's array_keys(), so a
    literal quoted role list no longer exists in source to parse
-   positionally (see the file doc-block's #1748 UPDATE note). Try the
-   legacy literal-list shape first (still exactly checkable when present);
-   otherwise fall back to asserting the dynamic-build marker is present.
-   Either way, the actual schema<->const vocabulary-agreement assertion is
-   D1 in test-tune-admin-surface.php (behavioural, not a source parse). ---- */
-$fieldOrder = trpgFieldRoleOrder($tunePageCode);
+   positionally (see the file doc-block's #1748 UPDATE note). #1969 moved
+   the clause itself from tune.php into tune_helpers.php's
+   tuneResolveDisplayData() (rule #22), so this now scans $resolutionCode
+   (both files) rather than tune.php alone. Try the legacy literal-list
+   shape first (still exactly checkable when present); otherwise fall back
+   to asserting the dynamic-build marker is present. Either way, the
+   actual schema<->const vocabulary-agreement assertion is D1 in
+   test-tune-admin-surface.php (behavioural, not a source parse). ---- */
+$fieldOrder = trpgFieldRoleOrder($resolutionCode);
 if ($fieldOrder) {
     if ($fieldOrder !== $roleVocab) {
-        $failures[] = 'includes/pages/tune.php\'s FIELD(c.Role, …) ordering ('
+        $failures[] = 'The tune resolution code\'s FIELD(c.Role, …) ordering ('
             . implode(', ', $fieldOrder) . ') does not exactly match tblTuneCredits.Role\'s '
             . 'COMMENT vocabulary (' . implode(', ', $roleVocab) . ')';
     }
-} elseif (strpos($tunePageCode, 'FIELD(c.Role') === false
-    || strpos($tunePageCode, 'IHYMNS_TUNE_CREDIT_ROLES') === false
+} elseif (strpos($resolutionCode, 'FIELD(c.Role') === false
+    || strpos($resolutionCode, 'IHYMNS_TUNE_CREDIT_ROLES') === false
 ) {
-    $failures[] = 'includes/pages/tune.php has neither a literal ORDER BY FIELD(c.Role, …) '
-        . 'clause nor a dynamic one built from IHYMNS_TUNE_CREDIT_ROLES (#1748)';
+    $failures[] = 'Neither includes/pages/tune.php nor includes/tune_helpers.php has a literal '
+        . 'ORDER BY FIELD(c.Role, …) clause or a dynamic one built from IHYMNS_TUNE_CREDIT_ROLES (#1748)';
 }
 
-/* ---- Registry-first lookup: FROM tblTunes + a Slug = ? prepare. ---- */
+/* ---- Registry-first lookup: FROM tblTunes + a Slug = ? prepare. #1969 —
+   now lives in tune_helpers.php's tuneResolveDisplayData(), so this scans
+   $resolutionCode rather than tune.php alone. ---- */
 foreach (['FROM tblTunes', 'Slug = ?'] as $needle) {
-    if (strpos($tunePageCode, $needle) === false) {
-        $failures[] = "includes/pages/tune.php's code is missing the registry-first marker \"{$needle}\"";
+    if (strpos($resolutionCode, $needle) === false) {
+        $failures[] = "Neither includes/pages/tune.php nor includes/tune_helpers.php's code has the registry-first marker \"{$needle}\"";
     }
 }
 
 /* ---- The heuristic fallback (rule #33) MUST survive, clearly marked.
-   `tune-registry-fallback` is checked against the RAW source (the build
-   spec deliberately places it inside a comment); `DISTINCT TuneName` is
-   real SQL and is checked against the comment-stripped code. ---- */
-if (strpos($tunePageSrc, 'tune-registry-fallback') === false) {
-    $failures[] = "includes/pages/tune.php is missing the heuristic-fallback marker \"tune-registry-fallback\" — deleting the pre-registry heuristic silently breaks every song.php-emitted tune link with no registry row (rule #33)";
+   `tune-registry-fallback` is checked against the RAW source of EITHER
+   file (the build spec deliberately places it inside a comment; #1969
+   kept it in tune_helpers.php's re-homed copy, and tune.php's own
+   unchanged top doc-block still names it too); `DISTINCT TuneName` is
+   real SQL and is checked against $resolutionCode. ---- */
+if (strpos($tunePageSrc, 'tune-registry-fallback') === false
+    && strpos($tuneHelpersSrc, 'tune-registry-fallback') === false
+) {
+    $failures[] = "Neither includes/pages/tune.php nor includes/tune_helpers.php has the heuristic-fallback marker \"tune-registry-fallback\" — deleting the pre-registry heuristic silently breaks every song.php-emitted tune link with no registry row (rule #33)";
 }
-if (strpos($tunePageCode, 'DISTINCT TuneName') === false) {
-    $failures[] = "includes/pages/tune.php's code is missing the heuristic-fallback query \"DISTINCT TuneName\" — deleting the pre-registry heuristic silently breaks every song.php-emitted tune link with no registry row (rule #33)";
+if (strpos($resolutionCode, 'DISTINCT TuneName') === false) {
+    $failures[] = "Neither includes/pages/tune.php nor includes/tune_helpers.php's code has the heuristic-fallback query \"DISTINCT TuneName\" — deleting the pre-registry heuristic silently breaks every song.php-emitted tune link with no registry row (rule #33)";
 }
 
-/* ---- Song-list widened to TuneId OR TuneName on the registry path. ---- */
-if (strpos($tunePageCode, 'TuneId = ? OR') === false) {
-    $failures[] = 'includes/pages/tune.php\'s song-list prepare does not widen to "TuneId = ? OR" — a song whose TuneId the #1090 backfill never linked would silently disappear from its own tune\'s song list';
+/* ---- Song-list widened to TuneId OR TuneName on the registry path.
+   #1969 — now lives in tune_helpers.php. ---- */
+if (strpos($resolutionCode, 'TuneId = ? OR') === false) {
+    $failures[] = 'Neither includes/pages/tune.php nor includes/tune_helpers.php\'s song-list prepare widens to "TuneId = ? OR" — a song whose TuneId the #1090 backfill never linked would silently disappear from its own tune\'s song list';
 }
 
 /* ---- Shared external-links partial: required, no local category map. ---- */

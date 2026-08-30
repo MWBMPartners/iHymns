@@ -196,7 +196,11 @@ $languageCount = count($languageList);
                             <span class="lang-filter-name"><?= htmlspecialchars($l['name'], ENT_QUOTES, 'UTF-8') ?></span>
                             <small class="text-muted lang-filter-meta">
                                 <?php if ($showNative): ?>
-                                    <span dir="<?= $l['dir'] ?>"><?= htmlspecialchars($l['native'], ENT_QUOTES, 'UTF-8') ?></span>
+                                    <?php /* a11y audit m3 (2026-08-28): the subtag was already computed
+                                             ($l['sub']) but never attached — a screen reader had no way
+                                             to know this text is a different language and read it with
+                                             the page's own (usually English) pronunciation rules. */ ?>
+                                    <span lang="<?= htmlspecialchars($l['sub'], ENT_QUOTES, 'UTF-8') ?>" dir="<?= $l['dir'] ?>"><?= htmlspecialchars($l['native'], ENT_QUOTES, 'UTF-8') ?></span>
                                     &middot; <?= htmlspecialchars($l['code'], ENT_QUOTES, 'UTF-8') ?>
                                 <?php else: ?>
                                     <?= htmlspecialchars($l['code'], ENT_QUOTES, 'UTF-8') ?>

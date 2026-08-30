@@ -42,6 +42,7 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';    /* getAppSetting() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'secret_crypto.php';  /* transparent decrypt of cuercode_api_key inside getAppSetting() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'qr_cache.php';       /* #1920 C3 — qrCacheFetch()/qrCacheStore(), side-effect-free to require */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'network_guard.php';  /* L-2 security-audit finding — ihymnsHostResolvesPrivate() */
 
 /* -------------------------------------------------------------------------
  * SETTINGS KEYS — defined ONCE here so /manage/configuration.php and any
@@ -67,6 +68,17 @@ const CUERCODE_MIN_SIZE        = 100;
 const CUERCODE_MAX_SIZE        = 1000;
 const CUERCODE_FORMATS         = ['svg', 'png'];        /* the two iHymns embeds; CueRCode supports more */
 const CUERCODE_ECC_LEVELS      = ['L', 'M', 'Q', 'H'];
+
+/**
+ * #2003 — the "Connect a service" wizard's CueRCode connectivity probe
+ * (`cuercodeProbe()` below) needs SOME text to ask CueRCode to draw, and it
+ * must never be user input (this call runs with no request context — an
+ * admin clicking "Test connection", not a song/QR render). A fixed, tiny,
+ * always-valid URL keeps the probe request byte-identical on every call, so
+ * a failure can only ever mean "the credentials/network are the problem",
+ * never "this particular payload confused CueRCode".
+ */
+const CUERCODE_PROBE_PAYLOAD = 'https://ihymns.app/';
 
 /**
  * ELI5: do we have what we need to call CueRCode at all?
@@ -115,6 +127,24 @@ function _cuercodeAllowLoopback(): bool
  * scheme/host/port + the fixed `$path`, never the raw base string re-concatenated
  * with anything, so the request is host-bound to the configured host.
  *
+ * SECURITY AUDIT L-2 FIX (2026-08-30) — "https:// always allowed" is about
+ * the WIRE PROTOCOL, not about WHERE the wire actually goes: an admin could
+ * still point this at an internal address — the cloud metadata endpoint
+ * (169.254.169.254), a loopback admin panel, an internal 10.x host — over a
+ * perfectly valid `https://` URL, and the pre-existing http-only loopback
+ * carve-out just above never caught that (it only special-cases the three
+ * literal loopback spellings, and only inside the `http://` branch). Mirrors
+ * `manage/configuration.php`'s own `$smtpHostIsPrivate()` (#1304) via the
+ * shared `ihymnsHostResolvesPrivate()` (`includes/network_guard.php`,
+ * rule #22 — one core, not a third hand-copied check): resolve the host to
+ * its IP(s) and refuse if ANY resolves into a private/reserved range
+ * (which also covers the 169.254.0.0/16 link-local block the cloud-metadata
+ * address sits in). The SAME `$allowLoopback` knob that unlocks the
+ * http+loopback carve-out above ALSO skips this new check — it exists
+ * precisely for a local/test install talking to a CueRCode stub on an
+ * internal address, and forcing that install to defeat this check some
+ * OTHER way would just relocate the escape hatch, not remove it.
+ *
  * @return array{0:string,1:string}|null [$fullUrl, $host] or null if refused.
  */
 function _cuercodeResolveUrl(string $baseUrl, string $path, bool $allowLoopback): ?array
@@ -125,12 +155,29 @@ function _cuercodeResolveUrl(string $baseUrl, string $path, bool $allowLoopback)
     }
     $scheme = strtolower((string)$parts['scheme']);
     $host   = strtolower((string)$parts['host']);
-    $isLoopback = in_array($host, ['127.0.0.1', '::1', 'localhost'], true);
+    /* F-1 (2026-08-30 correctness review): parse_url() returns an IPv6
+       literal host WITH its brackets (`[::1]`), but both checks below
+       compare/classify the BARE address — without this, a bracketed
+       loopback or private literal (`[::1]`, `[fd00:ec2::254]`) matched
+       neither the carve-out below NOR the SSRF guard and slipped through
+       as "not private". $host itself stays bracket-intact (it's what
+       builds the dialled URL for curl below); only this classification
+       copy is normalised. */
+    $hostForCheck = ihymnsNormalizeHostLiteral($host);
+    $isLoopback = in_array($hostForCheck, ['127.0.0.1', '::1', 'localhost'], true);
     if ($scheme === 'https') {
         /* always allowed */
     } elseif ($scheme === 'http' && $allowLoopback && $isLoopback) {
         /* local/test carve-out */
     } else {
+        return null;
+    }
+    /* L-2 — destination-restriction check, skipped only by the SAME knob
+       that already unlocks the http+loopback carve-out above (see this
+       function's own doc-block for why). An unresolvable host (a typo) is
+       not refused HERE — that's not this check's job; it simply never
+       matches "private" either way. */
+    if (!$allowLoopback && ihymnsHostResolvesPrivate($hostForCheck)) {
         return null;
     }
     $port = isset($parts['port']) ? ':' . (int)$parts['port'] : '';
@@ -225,61 +272,74 @@ function cuercodeCacheKey(string $payloadUrl, array $normOpts): string
 }
 
 /**
- * ELI5: ask CueRCode to draw a QR for a link, and give back the picture bytes —
- * or null if anything at all goes wrong (never throw).
- * WHY: the ONE HTTP round trip. Every failure mode (no key, refused URL, no
- * curl, transport error, oversized/malformed body, non-2xx, success:false, a
- * data URI we can't parse) is a null RETURN, so qr.php branches on null, never a
- * try/catch. No redirects + host-bound URL (SSRF); response read through an
- * aborting write-callback so an oversized body is never fully buffered.
+ * ELI5: turn "the text to encode + the drawing options" into the exact JSON
+ * body CueRCode's `POST /api/v1/generate` expects.
+ * WHY EXTRACTED (#2003, rule #22's `editorSaveSongCore()` move): this was
+ * inlined at the top of `cuercodeGenerate()`'s HTTP section until the
+ * "Connect a service" wizard's `cuercodeProbe()` needed the IDENTICAL body
+ * shape for a throwaway test payload instead of a real QR request. Pulling
+ * it out means both callers build a body CueRCode's API can never tell
+ * apart from "a real request" — no second, drifting copy of the
+ * `type`/`input`/`customization` envelope shape.
  *
- * @param string $payloadUrl The URL/text to encode (e.g. a song permalink).
- * @param array  $opts       { format:'svg'|'png', size:int, ecc:'L'|'M'|'Q'|'H',
- *                             fg_color?:'#rrggbb', bg_color?:'#rrggbb', type?:string }
- * @return array{bytes:string,mime:string,format:string}|null
+ * @param string $payloadUrl The (already trimmed) text/URL being encoded.
+ * @param array  $norm       cuercodeNormaliseOptions()'s OUTPUT — fully
+ *                            defaulted/clamped, never raw caller $opts.
+ * @return string JSON body, or `false` on the (practically unreachable,
+ *                since every value here is already validated) case that
+ *                json_encode() itself fails — matches this function's
+ *                pre-extraction behaviour exactly: the caller never checked
+ *                for that either, so this is a byte-identical move, not a
+ *                new guarantee.
  */
-function cuercodeGenerate(string $payloadUrl, array $opts = []): ?array
+function _cuercodeBuildRequestBody(string $payloadUrl, array $norm): string
 {
-    $payloadUrl = trim($payloadUrl);
-    if ($payloadUrl === '' || strlen($payloadUrl) > CUERCODE_MAX_PAYLOAD_LEN) {
-        return null;
-    }
-    $config = cuercodeConfig();
-    if ($config === null || !function_exists('curl_init')) {
-        return null;
-    }
-    $resolved = _cuercodeResolveUrl($config['base_url'], CUERCODE_GENERATE_PATH, _cuercodeAllowLoopback());
-    if ($resolved === null) {
-        return null;
-    }
-    [$url] = $resolved;
-
-    /* Normalise + clamp the customisation (defence in depth; qr.php also
-       validates) — via the ONE shared fold (#1920 C3) so cuercodeCacheKey()
-       can never disagree with what this request actually sends. */
-    $norm   = cuercodeNormaliseOptions($opts);
-    $format = $norm['format'];
-    $size   = $norm['size'];
-    $ecc    = $norm['ecc'];
-    $type   = $norm['type'];
-
-    $customization = ['format' => $format, 'size' => $size, 'ecc' => $ecc];
+    $customization = ['format' => $norm['format'], 'size' => $norm['size'], 'ecc' => $norm['ecc']];
     foreach (['fg_color', 'bg_color'] as $ck) {
         if (isset($norm[$ck])) {
             $customization[$ck] = $norm[$ck];
         }
     }
     /* CueRCode's 'url' type takes input.url; other types take input.text. */
-    $inputKey = ($type === 'url') ? 'url' : 'text';
-    $body = json_encode([
-        'type'          => $type,
+    $inputKey = ($norm['type'] === 'url') ? 'url' : 'text';
+    return (string)json_encode([
+        'type'          => $norm['type'],
         'input'         => [$inputKey => $payloadUrl],
         'customization' => $customization,
     ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+}
 
+/**
+ * ELI5: the ONE curl round trip to CueRCode — send this body to this URL
+ * with this API key, and hand back exactly what came back (or an
+ * unreachable-shaped result), never deciding what it MEANS.
+ * WHY EXTRACTED (#2003, same move as the body-builder above): `cuercodeProbe()`
+ * needs the SAME SSRF-hardened transport (host-bound URL from the caller,
+ * no redirects, SSL verify, size-capped aborting write-callback, house
+ * timeouts) but reads the raw `errno`/`httpStatus` itself instead of letting
+ * `cuercodeGenerate()`'s success/failure collapse hide them — a probe's
+ * whole job is telling "wrong key" (401/403) apart from "network
+ * unreachable" apart from "CueRCode is fine but sent something we can't
+ * parse", distinctions `cuercodeGenerate()` deliberately erases (it only
+ * ever needs to know yes/no). One curl call site, two different questions
+ * asked of its answer — never two curl call sites.
+ *
+ * @param array{base_url:string,api_key:string,user_agent:string} $config
+ * @param string $url  the ALREADY host-bound, SSRF-checked URL (from
+ *                       `_cuercodeResolveUrl()` — this function does no
+ *                       validation of its own).
+ * @param string $body the JSON request body (from `_cuercodeBuildRequestBody()`).
+ * @return array{errno:int,httpStatus:int,body:string} `errno` is a real
+ *         `curl_errno()` value, EXCEPT the sentinel `-1` (which `curl_errno()`
+ *         never returns) meaning "curl_init() itself failed" — both are
+ *         "non-zero = something went wrong", so every caller's existing
+ *         `$errno !== 0` check keeps working unchanged.
+ */
+function _cuercodeHttpExec(array $config, string $url, string $body): array
+{
     $ch = curl_init();
     if ($ch === false) {
-        return null;
+        return ['errno' => -1, 'httpStatus' => 0, 'body' => ''];
     }
     $buf = '';
     $cap = CUERCODE_MAX_RESPONSE_BYTES;
@@ -312,6 +372,59 @@ function cuercodeGenerate(string $payloadUrl, array $opts = []): ?array
     $errno      = curl_errno($ch);
     $httpStatus = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
+
+    return ['errno' => $errno, 'httpStatus' => $httpStatus, 'body' => $buf];
+}
+
+/**
+ * ELI5: ask CueRCode to draw a QR for a link, and give back the picture bytes —
+ * or null if anything at all goes wrong (never throw).
+ * WHY: the ONE HTTP round trip. Every failure mode (no key, refused URL, no
+ * curl, transport error, oversized/malformed body, non-2xx, success:false, a
+ * data URI we can't parse) is a null RETURN, so qr.php branches on null, never a
+ * try/catch. No redirects + host-bound URL (SSRF); response read through an
+ * aborting write-callback so an oversized body is never fully buffered.
+ *
+ * #2003 — the body-building and curl-transport steps now delegate to
+ * `_cuercodeBuildRequestBody()` / `_cuercodeHttpExec()` (extracted so the
+ * "Connect a service" wizard's `cuercodeProbe()` can reuse the identical
+ * SSRF-hardened transport — see those functions' own doc-blocks). This
+ * function's OWN behaviour is unchanged: same trims/guards, same
+ * normalise-then-send order, same null-on-any-failure collapse, same
+ * data-URI decode.
+ *
+ * @param string $payloadUrl The URL/text to encode (e.g. a song permalink).
+ * @param array  $opts       { format:'svg'|'png', size:int, ecc:'L'|'M'|'Q'|'H',
+ *                             fg_color?:'#rrggbb', bg_color?:'#rrggbb', type?:string }
+ * @return array{bytes:string,mime:string,format:string}|null
+ */
+function cuercodeGenerate(string $payloadUrl, array $opts = []): ?array
+{
+    $payloadUrl = trim($payloadUrl);
+    if ($payloadUrl === '' || strlen($payloadUrl) > CUERCODE_MAX_PAYLOAD_LEN) {
+        return null;
+    }
+    $config = cuercodeConfig();
+    if ($config === null || !function_exists('curl_init')) {
+        return null;
+    }
+    $resolved = _cuercodeResolveUrl($config['base_url'], CUERCODE_GENERATE_PATH, _cuercodeAllowLoopback());
+    if ($resolved === null) {
+        return null;
+    }
+    [$url] = $resolved;
+
+    /* Normalise + clamp the customisation (defence in depth; qr.php also
+       validates) — via the ONE shared fold (#1920 C3) so cuercodeCacheKey()
+       can never disagree with what this request actually sends. */
+    $norm   = cuercodeNormaliseOptions($opts);
+    $format = $norm['format'];
+
+    $body = _cuercodeBuildRequestBody($payloadUrl, $norm);
+    $exec = _cuercodeHttpExec($config, $url, $body);
+    $errno      = $exec['errno'];
+    $httpStatus = $exec['httpStatus'];
+    $buf        = $exec['body'];
 
     if ($errno !== 0 || $httpStatus < 200 || $httpStatus >= 300) {
         return null;
@@ -389,4 +502,95 @@ function cuercodeGenerateCached(string $payloadUrl, array $opts = []): ?array
         qrCacheStore($key, $payloadUrl, $norm, $qr); /* never caches a failure */
     }
     return $qr;
+}
+
+/**
+ * ELI5: "does my saved CueRCode key actually work RIGHT NOW?" — the
+ * question `manage/configuration.php`'s CueRCode card has never been able
+ * to answer for itself (#2003, the "Connect a service" wizard's honest
+ * delta — see that plan's §1: this integration never had a live test
+ * before). Sends ONE tiny, throwaway probe request and reports back which
+ * of five things happened, never the picture bytes themselves.
+ *
+ * DETAIL — SAME SSRF DISCIPLINE, DELIBERATELY NOT CACHE-MEDIATED:
+ * this function goes through the exact same `cuercodeConfig()` +
+ * `_cuercodeResolveUrl()` (host-bound, SSRF-checked) + `_cuercodeHttpExec()`
+ * (no redirects, SSL verify, size-capped write-callback, house timeouts)
+ * transport `cuercodeGenerate()` uses — never a second curl block (rule
+ * #22). It deliberately calls neither `cuercodeGenerate()` NOR
+ * `cuercodeGenerateCached()`: the cached wrapper would let a STALE cache
+ * hit "pass" the test without the live service ever being asked anything
+ * (the whole point of a connectivity probe is asking it *now*), and the
+ * raw `cuercodeGenerate()` collapses every failure mode into a single
+ * `null` — exactly the distinction (wrong key vs. unreachable vs. a
+ * response we can't parse) this probe exists to preserve. It never writes
+ * to `tblQrCache` either way.
+ *
+ * Never throws; never returns a secret — only structural status/numbers
+ * (rule #35's "no secret ever reaches a diagnostic response" applied to
+ * CueRCode).
+ *
+ * @return array{status:'ok'|'unconfigured'|'unreachable'|'rejected'|'bad_response', errno:int, httpStatus:int, durationMs:float}
+ */
+function cuercodeProbe(): array
+{
+    $start = microtime(true);
+
+    $config = cuercodeConfig();
+    if ($config === null || !function_exists('curl_init')) {
+        /* No key saved (or no curl extension at all) — there is nothing to
+           dial, so this is a CONFIGURATION state, not a network failure. */
+        return ['status' => 'unconfigured', 'errno' => 0, 'httpStatus' => 0, 'durationMs' => 0.0];
+    }
+    $resolved = _cuercodeResolveUrl($config['base_url'], CUERCODE_GENERATE_PATH, _cuercodeAllowLoopback());
+    if ($resolved === null) {
+        /* The saved base URL doesn't pass the SSRF host-binding check
+           (e.g. an http:// URL with the loopback carve-out off) — again a
+           configuration problem, not a network one. */
+        return ['status' => 'unconfigured', 'errno' => 0, 'httpStatus' => 0, 'durationMs' => 0.0];
+    }
+    [$url] = $resolved;
+
+    /* A fixed, tiny, always-valid probe request — see CUERCODE_PROBE_PAYLOAD's
+       own doc-block for why this must never be user input. */
+    $norm = cuercodeNormaliseOptions(['format' => 'svg', 'size' => CUERCODE_MIN_SIZE, 'ecc' => 'L']);
+    $body = _cuercodeBuildRequestBody(CUERCODE_PROBE_PAYLOAD, $norm);
+    $exec = _cuercodeHttpExec($config, $url, $body);
+    $durationMs = round((microtime(true) - $start) * 1000, 2);
+
+    $errno      = $exec['errno'];
+    $httpStatus = $exec['httpStatus'];
+
+    if ($errno !== 0) {
+        /* Transport never completed at all (DNS/connect/timeout/curl_init
+           failure via the -1 sentinel) — the server itself couldn't be
+           reached, distinct from it answering and refusing us. */
+        return ['status' => 'unreachable', 'errno' => $errno, 'httpStatus' => $httpStatus, 'durationMs' => $durationMs];
+    }
+    if ($httpStatus === 401 || $httpStatus === 403) {
+        /* CueRCode answered and REJECTED the key — the "your key is wrong,
+           no amount of waiting fixes it" verdict (mirrors captcha.php's
+           'misconfig' remedy-naming doctrine: name what to DO, not just
+           what happened). */
+        return ['status' => 'rejected', 'errno' => $errno, 'httpStatus' => $httpStatus, 'durationMs' => $durationMs];
+    }
+    if ($httpStatus < 200 || $httpStatus >= 300) {
+        /* Some other non-2xx (5xx, 429, an unexpected 4xx) — the service
+           answered but something else is wrong; carry the status code so
+           the wizard can say which. */
+        return ['status' => 'unreachable', 'errno' => $errno, 'httpStatus' => $httpStatus, 'durationMs' => $durationMs];
+    }
+    /* 2xx — but is the body actually a well-formed success response with a
+       data: URI, the same shape cuercodeGenerate() itself requires? A
+       CueRCode deploy that answers 200 with something unexpected (a proxy
+       error page, a future API version) must not read as "ok". */
+    $decoded = json_decode($exec['body'], true);
+    $imageOk = is_array($decoded)
+        && ($decoded['success'] ?? false) === true
+        && is_array($decoded['data'] ?? null)
+        && (bool)preg_match('#^data:[a-z0-9.+/-]+;base64,.+$#is', (string)($decoded['data']['image'] ?? ''));
+    if (!$imageOk) {
+        return ['status' => 'bad_response', 'errno' => $errno, 'httpStatus' => $httpStatus, 'durationMs' => $durationMs];
+    }
+    return ['status' => 'ok', 'errno' => $errno, 'httpStatus' => $httpStatus, 'durationMs' => $durationMs];
 }

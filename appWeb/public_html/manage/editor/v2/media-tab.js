@@ -17,14 +17,21 @@
  *  flushPending() below.
  * ========================================================================== */
 
+import { iconBtn } from './ui-helpers.js';
+
 const SAVE_DEBOUNCE_MS = 500;
 
 /* Kinds + their UI hints. ACCEPT is only a picker convenience — the SERVER
    sniffs the real MIME (SongMediaStorage::validateUpload), never the suffix.
    sizeCap mirrors SongMediaStorage::SIZE_CAPS for a fail-fast client check. */
-const KIND_ORDER = ['audio', 'sheet-music', 'midi', 'musicxml'];
+const KIND_ORDER = ['audio', 'video', 'image', 'sheet-music', 'midi', 'musicxml'];
 const KIND_META = {
     'audio':       { label: 'Audio',            icon: 'bi-music-note-beamed', accept: 'audio/*',                                   sizeCap: 50 * 1024 * 1024 },
+    /* #1968 P4 — ProPresenter background media. sizeCap mirrors
+       SongMediaStorage::SIZE_CAPS (video 100 MiB, image 10 MiB) — the PHP↔JS
+       lockstep is CI-guarded by tests/php/test-song-media-visibility.php (c). */
+    'video':       { label: 'Video',            icon: 'bi-film',              accept: 'video/*',                                   sizeCap: 100 * 1024 * 1024 },
+    'image':       { label: 'Image',            icon: 'bi-image',             accept: 'image/*',                                   sizeCap: 10 * 1024 * 1024 },
     'sheet-music': { label: 'Sheet music (PDF)', icon: 'bi-file-earmark-pdf',  accept: 'application/pdf,.pdf',                       sizeCap: 10 * 1024 * 1024 },
     'midi':        { label: 'MIDI',             icon: 'bi-file-earmark-music', accept: 'audio/midi,audio/x-midi,.mid,.midi',        sizeCap:  1 * 1024 * 1024 },
     'musicxml':    { label: 'MusicXML',         icon: 'bi-file-earmark-code',  accept: '.musicxml,.xml,application/xml,text/xml',   sizeCap:  1 * 1024 * 1024 },
@@ -187,18 +194,30 @@ export function mountMediaTab(container, opts) {
         }
     }
 
-    /* ---- render ---- */
-
-    function iconBtn(icon, title, disabled, onClick) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'btn btn-outline-secondary';
-        b.title = title;
-        b.disabled = !!disabled;
-        b.innerHTML = '<i class="bi ' + icon + '"></i>';
-        b.addEventListener('click', onClick);
-        return b;
+    /* #1968 P4 — publish/unpublish an imported (admin-only) media row. Same
+       optimistic-then-revert posture as remove()/move(): update the store first
+       so the badge flips instantly, roll back on a server error (no optimistic
+       lies). A row with no `visibility` field (pre-migration server) reads as
+       'public'. */
+    async function setVisibility(item, visibility) {
+        const before = getMedia();
+        store.set('media', before.map((m) => (m.id === item.id ? Object.assign({}, m, { visibility: visibility }) : m)));
+        try {
+            await api.setMediaVisibility(item.id, visibility);
+        } catch (e) {
+            store.set('media', before);
+            toast('Could not change visibility: ' + e.message, 'danger');
+        }
     }
+
+    /* Publish every admin-only row of one kind (the per-kind convenience —
+       D-P4-1, a client loop over the ONE endpoint, no second data model). */
+    async function publishAll(kind) {
+        const admin = mediaByKind(kind).filter((m) => (m.visibility || 'public') === 'admin');
+        for (const it of admin) { await setVisibility(it, 'public'); }
+    }
+
+    /* ---- render ---- */
 
     function buildFileRow(item, index, total) {
         const row = document.createElement('div');
@@ -219,6 +238,15 @@ export function mountMediaTab(container, opts) {
         meta.className = 'text-muted small';
         meta.textContent = fmtBytes(item.sizeBytes) + ' · ' + (item.mimeType || '');
         top.append(link, meta);
+        /* #1968 P4 — an admin-only (unpublished) row is BADGED, never hidden
+           (the curator surface). warning-subtle tokens, theme-aware (#1223). */
+        if ((item.visibility || 'public') === 'admin') {
+            const badge = document.createElement('span');
+            badge.className = 'badge text-bg-warning-subtle text-warning-emphasis border border-warning-subtle';
+            badge.textContent = 'Admin only';
+            badge.title = 'Not shown on the public site until published';
+            top.appendChild(badge);
+        }
         main.appendChild(top);
 
         const anno = document.createElement('input');
@@ -236,6 +264,15 @@ export function mountMediaTab(container, opts) {
             iconBtn('bi-arrow-up', 'Move up', index === 0, () => move(item.kind, index, -1)),
             iconBtn('bi-arrow-down', 'Move down', index === total - 1, () => move(item.kind, index, 1)),
         );
+        /* #1968 P4 — publish (eye) an admin-only row / unpublish (eye-slash) a
+           public one, per-row (owner decision D1). */
+        if ((item.visibility || 'public') === 'admin') {
+            const pub = iconBtn('bi-eye', 'Publish (show on the public site)', false, () => setVisibility(item, 'public'));
+            pub.classList.add('text-success');
+            btns.appendChild(pub);
+        } else {
+            btns.appendChild(iconBtn('bi-eye-slash', 'Unpublish (hide from the public site)', false, () => setVisibility(item, 'admin')));
+        }
         const del = iconBtn('bi-trash', 'Remove file', false, () => remove(item));
         del.classList.add('text-danger');
         btns.appendChild(del);
@@ -251,7 +288,7 @@ export function mountMediaTab(container, opts) {
 
         const h = document.createElement('h3');
         h.className = 'h6 d-flex align-items-center gap-2';
-        h.innerHTML = '<i class="bi ' + m.icon + '"></i>';
+        h.innerHTML = '<i class="bi ' + m.icon + '" aria-hidden="true"></i>';
         const hLabel = document.createElement('span');
         hLabel.textContent = m.label;
         h.appendChild(hLabel);
@@ -265,6 +302,18 @@ export function mountMediaTab(container, opts) {
             block.appendChild(empty);
         } else {
             items.forEach((it, i) => block.appendChild(buildFileRow(it, i, items.length)));
+            /* #1968 P4 — a "Publish all N" convenience when a kind holds MORE
+               than one admin-only row (a single row already has its own toggle). */
+            const adminCount = items.filter((it) => (it.visibility || 'public') === 'admin').length;
+            if (adminCount > 1) {
+                const pubAll = document.createElement('button');
+                pubAll.type = 'button';
+                pubAll.className = 'btn btn-sm btn-outline-success mb-2';
+                pubAll.innerHTML = '<i class="bi bi-eye" aria-hidden="true"></i> ';
+                pubAll.appendChild(document.createTextNode('Publish all ' + adminCount));
+                pubAll.addEventListener('click', () => publishAll(kind));
+                block.appendChild(pubAll);
+            }
         }
 
         /* upload row */
@@ -284,7 +333,7 @@ export function mountMediaTab(container, opts) {
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'btn btn-sm btn-outline-primary';
-        btn.innerHTML = '<i class="bi bi-upload me-1"></i>Upload';
+        btn.innerHTML = '<i class="bi bi-upload me-1" aria-hidden="true"></i>Upload';
         const statusEl = document.createElement('span');
         statusEl.className = 'text-muted small';
         btn.addEventListener('click', () => upload(kind, fileInput, annoInput, statusEl));

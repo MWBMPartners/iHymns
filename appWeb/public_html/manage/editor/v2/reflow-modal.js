@@ -27,7 +27,7 @@ export function mountReflowModal(triggerBtn, opts) {
         '<div class="modal-dialog modal-lg modal-dialog-scrollable">' +
           '<div class="modal-content">' +
             '<div class="modal-header">' +
-              '<h2 class="modal-title h5"><i class="bi bi-text-paragraph me-2"></i>Paste &amp; Reflow</h2>' +
+              '<h2 class="modal-title h5"><i class="bi bi-text-paragraph me-2" aria-hidden="true"></i>Paste &amp; Reflow</h2>' +
               '<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>' +
             '</div>' +
             '<div class="modal-body">' +
@@ -39,7 +39,7 @@ export function mountReflowModal(triggerBtn, opts) {
               '<textarea class="form-control mb-2" rows="8" data-reflow="input" ' +
                 'placeholder="Paste lyrics here, one blank line between sections…"></textarea>' +
               '<div class="d-flex align-items-center gap-2 mb-3">' +
-                '<button type="button" class="btn btn-sm btn-primary" data-reflow="parse"><i class="bi bi-magic me-1"></i>Parse into sections</button>' +
+                '<button type="button" class="btn btn-sm btn-primary" data-reflow="parse"><i class="bi bi-magic me-1" aria-hidden="true"></i>Parse into sections</button>' +
                 '<span class="text-muted small" data-reflow="count"></span>' +
               '</div>' +
               '<div data-reflow="blocks"></div>' +
@@ -53,7 +53,7 @@ export function mountReflowModal(triggerBtn, opts) {
               '</div>' +
               '<div class="d-flex gap-2">' +
                 '<button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>' +
-                '<button type="button" class="btn btn-sm btn-success" data-reflow="apply" disabled><i class="bi bi-check-lg me-1"></i>Apply</button>' +
+                '<button type="button" class="btn btn-sm btn-success" data-reflow="apply" disabled><i class="bi bi-check-lg me-1" aria-hidden="true"></i>Apply</button>' +
               '</div>' +
             '</div>' +
           '</div>' +
@@ -118,7 +118,8 @@ export function mountReflowModal(triggerBtn, opts) {
             del.type = 'button';
             del.className = 'btn btn-sm btn-outline-danger';
             del.title = 'Remove section';
-            del.innerHTML = '<i class="bi bi-x-lg"></i>';
+            del.setAttribute('aria-label', 'Remove section');
+            del.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
             del.addEventListener('click', () => { blocks.splice(index, 1); renderBlocks(); });
 
             header.append(typeSel, numInput, spacer, del);

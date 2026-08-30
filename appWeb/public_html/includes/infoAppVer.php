@@ -16,9 +16,14 @@ declare(strict_types=1);
  * and licensing information.
  *
  * This file is auto-updated by the CI/CD pipeline:
- * - Version.Number: the MAJOR is committed here (hand-edited, rare); the
- *   RELEASE (minor) + BUILD (patch) are injected at deploy time from the
- *   latest production `v*` tag + the commit count (deploy.yml, #1899).
+ * - Version.Number: the committed MARKETING version (MAJOR.MINOR.PATCH —
+ *   see the doc-block on the value below). deploy.yml deploys it verbatim
+ *   (or the alpha classifier's freshly-minted bump); on alpha a
+ *   Conventional-Commit feat/breaking — or an explicit `Release: patch`
+ *   footer — edits the committed value and pushes it back (never a tag).
+ * - Version.Build.Number: the per-commit BUILD number (git rev-list
+ *   --count HEAD), injected at deploy time — a SEPARATE field, never part
+ *   of Version.Number.
  * - Build metadata (commit SHA, date, URL) injected by deploy.yml
  *
  * STRUCTURE:
@@ -83,43 +88,53 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
  * VERSION INFORMATION
  * ========================================================================= */
 
-/* Semantic version number (MAJOR.MINOR.PATCH) */
-/* TAG-DERIVED SCHEME (#1899, minter model updated #1963). This committed
-   value is:
-     - the LOCAL-DEV / pre-first-tag / classifier-found-nothing display, and
-     - the Apple MAJOR-parity anchor: appApple/Scripts/sync-version.sh reads
-       THIS file (never a deployed artifact) and enforces that its MAJOR equals
-       Versioning.xcconfig's MARKETING_VERSION major, so it MUST stay three
-       plain integers "X.Y.Z" (no suffix — the regex `"[0-9]+\.[0-9]+\.[0-9]+"`
-       would otherwise fail).
-   MAJOR is hand-edited here (rare — a product-identity decision). The DEPLOYED
-   value is `MAJOR.RELEASE.BUILD`, rewritten by deploy.yml from the latest
-   REACHABLE production `v*` tag (RELEASE = the tag's minor) + the commit count
-   (BUILD); an untagged checkout, or one where the classifier found nothing
-   feat/breaking since the anchor, deploys this committed value unchanged.
+/* Semantic MARKETING version (MAJOR.MINOR.PATCH) */
+/* *** VERSIONING MODEL — marketing version split from the build number,
+   plus a deliberate patch-release mechanism (refines #1965's tag-free
+   scheme; full contract: rule #46 in .claude/CLAUDE.md) ***
+   iHymns deploys DIRECT via SFTP and cuts NO git tags and NO GitHub
+   Releases. THIS committed value IS the marketing version — authoritative
+   on every branch, deployed VERBATIM (or the alpha classifier's freshly-
+   minted bump, see below). The three digits mean:
+     MAJOR — hand-edited product-identity decision (or a breaking-change
+             commit: a `!` subject marker / line-anchored BREAKING CHANGE
+             footer).
+     MINOR — a new-feature release: minted automatically when a `feat:`
+             Conventional-Commit lands on alpha.
+     PATCH — a DELIBERATE bug-fix release: minted ONLY when a merge
+             message body carries a whole line reading `Release: patch`
+             (case-insensitive). An ordinary fix:/chore:/docs: with no
+             such line moves NOTHING here — only the separate
+             Version.Build.Number below. In plain words: the web ships
+             continuously, so routine fixes don't churn the visible
+             version; a patch number exists for moments a discrete
+             "bug-fix release" is meaningful (the native app stores).
+   The commit count is NOT part of this string — pre-split deploys wrote it
+   into the patch slot (e.g. "1.1.1017"); that shape is retired. See
+   Version.Build.Number below for where the commit count actually lives.
 
-   #1963 — WHO MINTS THE TAG, AND WHEN: the `v*` tags are minted by
-   deploy.yml's "Classify and cut release tag" step, running on ALPHA (not at
-   beta→main promotion — that was #1899's original, now-retired, model; see
-   promotion-deploy-bridge.yml's own header for the full history). Minting is
-   CONDITIONAL: a Conventional Commits classifier
+   WHO DECIDES A BUMP, AND WHEN: on alpha (never at beta→main promotion),
+   deploy.yml's "Classify and bump committed version" step reads every
+   commit since THIS line was last hand-changed — a git pickaxe search
+   (`git log -G`), not a tag — through a Conventional Commits classifier
    (.github/workflows/scripts/classify-bump.sh,
-   https://www.conventionalcommits.org/en/v1.0.0/) reads every commit since
-   the last reachable tag and only cuts a new one when it finds an explicit
-   `feat` (-> new MINOR) or a breaking change (`!` marker or a line-anchored
-   `BREAKING CHANGE:`/`BREAKING-CHANGE:` footer, -> new MAJOR) — a structural
-   SAFE DEFAULT: anything else (fix/docs/chore/refactor/perf/ci/…) is
-   classified "none" and mints nothing, so a docs-only or chore-only alpha
-   push never inflates the version. The anchor itself is resolved via
-   `git tag -l --merged HEAD` (ancestry-scoped, not a raw tag list) so a
-   promotion PR that is ever squash-merged instead of true-merged would break
-   this reachability chain on beta/main — see promotion-deploy-bridge.yml's
-   "OPERATIONAL INVARIANT" note.
+   https://www.conventionalcommits.org/en/v1.0.0/) and, on a major/minor/
+   patch verdict, edits THIS committed value and commits it straight back
+   to alpha `[skip ci]` (a normal branch push — never a tag). A structural
+   SAFE DEFAULT: anything else (fix/docs/chore/refactor/perf/ci/… with no
+   `Release: patch` footer) classifies "none" and moves nothing here, so a
+   routine alpha push never inflates the version.
 
-   The old auto-bumper (version-bump.yml) that ballooned the minor to 5250 is
-   RETIRED — do NOT rely on a "+1 on merge" happening here, and keep
-   api-docs.yaml's info.version in lockstep on any manual edit
-   (tests/php/test-openapi-actions-exist.php guards it).
+   APPLE PARITY CONSTRAINT (unchanged): appApple/Scripts/sync-version.sh
+   reads THIS committed file (never a deployed artifact) and requires three
+   plain integers "X.Y.Z" (its regex `"[0-9]+\.[0-9]+\.[0-9]+"`) — never add
+   a suffix. Keep api-docs.yaml's info.version + manifest.json's "version"
+   in lockstep on any manual edit (tests/php/test-openapi-actions-exist.php
+   guards the api-docs pair). Title PRs with a Conventional-Commit prefix or
+   the minor silently won't move.
+
+   The old auto-bumper (version-bump.yml) that ballooned the minor to 5250
+   is RETIRED — do NOT rely on a "+1 on merge" happening here.
 
    History:
    - 0.4100.0 -> 0.5050.0 for the #89/#91 consolidated batch (the 214-commit
@@ -166,32 +181,35 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
      never drag) arrangement editor (#1857).
    - 1.0.0 -> 1.1.0, retrospective minor for the #1955 dormant-features
      enhancement batch landed since the 2026-08-24 v1.0.0 baseline (#1963).
-     *** VERSIONING MODEL (#1965, SUPERSEDES #1963's git-tag anchor) ***
-     iHymns deploys DIRECT via SFTP and cuts NO git tags and NO GitHub
-     Releases. THIS committed MAJOR.MINOR ("1.1") IS the version anchor —
-     authoritative, not a fallback. deploy.yml injects
-     <MAJOR>.<MINOR>.<git rev-list --count HEAD> for display on every deploy;
-     on alpha, when a Conventional-Commit `feat` (minor) or `!` / line-anchored
-     `BREAKING CHANGE` (major) lands among the commits since the last change to
-     THIS line, deploy.yml bumps this committed value and commits it back
-     `[skip ci]` (a branch push — never a tag). fix/chore/docs/etc. move only
-     the build number. The patch digit here is a placeholder the build count
-     overwrites at deploy time. Classifier:
-     .github/workflows/scripts/classify-bump.sh (rule #46 in .claude/CLAUDE.md
-     is the full contract). Title PRs with a Conventional-Commit prefix or the
-     minor silently won't move. */
+     Originally shipped with a tag-free VERSIONING MODEL note nested right
+     here (#1965) — that explanation now lives at the TOP of this doc-block
+     instead (it grew a third, PATCH, level and applies to every entry
+     below, not just this one).
+   - 1.1.0 -> 1.3.0 for the marketing-version/build-number SPLIT plus the
+     deliberate `Release: patch` mechanism described at the top of this
+     doc-block — an owner-directed minor bump landed together with the
+     split itself, so the very first deploy under the new scheme already
+     carries a version-line edit in its own committed history. See rule #46
+     in .claude/CLAUDE.md for the full contract. */
 /* Note: the old "v1.x = local-JSON phase, v2.x = iLyrics dB phase" scheme is
    dead — reads went DB-direct with epic #1010 (there is no local-JSON phase to
    be in), so the major digit no longer encodes a data-source phase. */
-$app["Application"]["Version"]["Number"] = "1.1.0";
+$app["Application"]["Version"]["Number"] = "1.3.0";
 
 /* Build number — the git commit count (`git rev-list --count HEAD`): a
- * monotonic, per-commit build identifier that advances on every landed commit,
- * independent of the semantic MAJOR.MINOR.PATCH above. NULL in source; the
- * deploy pipeline injects the real value via sed at deploy time — the same
- * no-commit-back mechanism as the commit SHA/date below — so it is never
- * bumped by hand and never churns git history. An un-injected checkout (local
- * dev) reads NULL. See deploy.yml, step "Inject build info into infoAppVer.php". */
+ * monotonic, NEVER-RESETTING per-commit build identifier, fully separate
+ * from the marketing Version.Number above (marketing-version/build-number
+ * split — see that value's doc-block). This is the CFBundleVersion /
+ * versionCode class of number — the cross-platform "which exact build is
+ * this?" identity — and every display surface renders it with the literal
+ * word "build" (e.g. "v1.3.0 · build 1018"), never folded into the semver
+ * (and a `Release: patch` bump never touches it — the two move
+ * independently). NULL in source; the deploy pipeline injects the real
+ * value via sed at deploy time — the same no-commit-back mechanism as the
+ * commit SHA/date below — so it is never bumped by hand and never churns
+ * git history. An un-injected checkout (local dev) reads NULL and every
+ * consumer degrades gracefully. See deploy.yml, step "Inject build info
+ * into infoAppVer.php". */
 $app["Application"]["Version"]["Build"]["Number"] = NULL;
 
 /* Version name: human-readable release name (e.g., "Hymnal", NULL if unused) */
@@ -341,8 +359,9 @@ $app["Application"]["Repo"]["Issues"]["URL"] = "https://github.com/MWBMPartners/
  *
  * ELI5: instead of letting the header quietly announce "PHP/8.x" (which tells
  * a scanner exactly which runtime — and which known runtime bugs — we run), we
- * replace it with our OWN name and app version, e.g. "iHymns/1.0.0". It says
- * who we are, not what we're built on.
+ * replace it with our OWN name and MARKETING app version (never the separate
+ * build number), e.g. "iHymns/1.3.0". It says who we are, not what we're
+ * built on.
  *
  * WHY here / WHY a function: the app version is a PHP value injected at deploy
  * time into $app["Application"]["Version"]["Number"] (deploy.yml, #1899), so the
@@ -381,10 +400,12 @@ if (!function_exists('ihymns_emit_powered_by_header')) {
             return;
         }
 
-        /* Name is a constant identity; Version.Number is the deploy-injected
-           MAJOR.RELEASE.BUILD (or the committed dev value on an untagged build).
-           If the version is somehow absent, fall back to the bare app name —
-           still branded, still no runtime fingerprint. */
+        /* Name is a constant identity; Version.Number is the marketing
+           version (MAJOR.MINOR.PATCH — the build number is deliberately NOT
+           emitted here; it lives in Version.Build.Number, and this header
+           is public branding, not a build probe). If the version is somehow
+           absent, fall back to the bare app name — still branded, still no
+           runtime fingerprint. */
         $name    = (string) ($app['Application']['Name'] ?? 'iHymns');
         $version = $app['Application']['Version']['Number'] ?? null;
         $value   = ($version !== null && $version !== '')

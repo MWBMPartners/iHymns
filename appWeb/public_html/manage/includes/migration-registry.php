@@ -4645,4 +4645,89 @@ return [
             return !$present;
         },
     ],
+
+    /* #1968 P4 — the per-row media publish-state column. Additive + dormant:
+       DEFAULT 'public' stamps every existing row, so the serving gate the P4
+       read-path adds (commit 3) is a verified no-op for all current content
+       until ingest lands AND the owner flips pp7_media_ingest_enabled. Safe to
+       run early on any env — the column alone changes nothing. */
+    'song-media-visibility' => [
+        'script' => 'migrate-song-media-visibility.php',
+        'card' => [
+            'title'  => 'Song media visibility (#1968 P4)',
+            'body'   => 'Adds <code>tblSongMedia.Visibility</code>'
+                      . ' (<code>VARCHAR(20) NOT NULL DEFAULT &lsquo;public&rsquo;</code>)'
+                      . ' — the per-row publish state ProPresenter media ingest'
+                      . ' needs so imported bundle media can land curator-only'
+                      . ' (<code>admin</code>) and be served publicly only when a'
+                      . ' curator publishes it (owner decision D1). Growable,'
+                      . ' app-validated vocabulary (VARCHAR not ENUM, rule #20 —'
+                      . ' <code>org</code>/<code>pending</code> are reserved).'
+                      . ' Additive, idempotent, a verified no-op for all existing'
+                      . ' rows (every one is stamped <code>public</code>).',
+            'button' => 'Run Song Media Visibility Migration',
+        ],
+        /* Single-column probe (rule #19): pending until the column exists. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblSongMedia', 'Visibility'),
+    ],
+
+    /* #1968 — ProPresenter auto-advance timeline capture: DORMANT groundwork.
+       Owner steer: build the schema now, keep usage OFF by default with a
+       toggle, flesh out playback later. Additive-only: a new table nothing
+       yet writes to, plus a settings row defaulting '0' that nothing yet
+       reads a non-default value from — a verified no-op for every existing
+       install until BOTH the capture code and the toggle are flipped. */
+    'pp7-timeline-groundwork' => [
+        'script' => 'migrate-pp7-timeline-groundwork.php',
+        'card' => [
+            'title'  => 'ProPresenter timeline groundwork (#1968)',
+            'body'   => 'Creates <code>tblSongPresentationCues</code> — one row per'
+                      . ' captured (song, arrangement, position) auto-advance cue'
+                      . ' decoded from an imported ProPresenter'
+                      . ' <code>Presentation.timeline</code> — and seeds the dormant'
+                      . ' <code>tblAppSettings.pp7_timeline_import_enabled</code>'
+                      . ' toggle at <code>&lsquo;0&rsquo;</code> (off). No playback'
+                      . ' or auto-advance UI exists yet — this migration only adds'
+                      . ' the storage + toggle for that later work. Additive,'
+                      . ' idempotent, a verified no-op until the toggle is flipped'
+                      . ' AND the capture code path is wired in (both land in this'
+                      . ' same PR, but stay inert without the toggle).',
+            'button' => 'Run ProPresenter Timeline Groundwork Migration',
+        ],
+        /* Single-table probe (rule #19): pending until the table exists. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblSongPresentationCues'),
+    ],
+
+    /* API-coverage plan 2026-08-28, C1/X2 — Android/FireOS push registration.
+       Owner-approved Q2 default: a provider-column design (fcm | adm) so ONE
+       table serves both Google FCM and Amazon ADM (Fire OS has no Google Play
+       Services). Additive, idempotent, a verified no-op until includes/fcm.php
+       is keyed AND a live trigger calls fcmSend() — neither is true yet. */
+    'push-tokens' => [
+        'script' => 'migrate-add-push-tokens.php',
+        'card' => [
+            'title'  => 'Android/FireOS push token registry (API-coverage C1)',
+            'body'   => 'Creates <code>tblPushTokens</code> — the registration'
+                      . ' store for Android/FireOS push notifications, keyed'
+                      . ' by a <code>Provider</code> discriminator'
+                      . ' (<code>fcm</code> = Google Firebase Cloud Messaging,'
+                      . ' <code>adm</code> = Amazon Device Messaging for Fire'
+                      . ' OS tablets) so one table serves both rather than'
+                      . ' forking a near-identical second one. Distinct from'
+                      . ' <code>tblApnsTokens</code> (Apple) and'
+                      . ' <code>tblPushSubscriptions</code> (Web Push).'
+                      . ' <strong>Entirely dormant</strong> — the'
+                      . ' <code>fcm_register</code>/<code>fcm_unregister</code>'
+                      . ' API actions only store/remove tokens; nothing sends a'
+                      . ' push yet, and <code>includes/fcm.php</code>\'s sender'
+                      . ' is an inert skeleton until an owner provisions real'
+                      . ' FCM/ADM credentials. Additive, idempotent — safe to'
+                      . ' re-run.',
+            'button' => 'Run Push Token Registry Migration',
+        ],
+        /* Single-object probe (rule #19) — never `=> true`. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblPushTokens'),
+    ],
 ];

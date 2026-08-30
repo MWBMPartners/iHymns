@@ -6,26 +6,38 @@
  * PURPOSE:
  * In-app help and user guide. Provides instructions for using the
  * application, including accounts &amp; signing in (email, password,
- * Sign in with Apple, signed-in devices), searching, reading a song
- * (musical key/tempo/time signature, transpose/chords, sheet music,
- * audio, compare versions, Presentation mode), sharing &amp; exporting
- * songs to projection software, favourites, setlists (incl. templates
- * &amp; service plans), collections/series, Song of the Day, personal
+ * Sign in with Apple, naming &amp; signing out signed-in devices),
+ * searching, reading a song (musical key/tempo/time signature,
+ * transpose/chords, sheet music, audio, compare versions, Presentation
+ * mode), sharing &amp; exporting songs to projection software (incl.
+ * chords travelling both ways with a ProPresenter file), favourites,
+ * setlists (incl. templates &amp; service plans, sharing by link,
+ * printing &amp; PDF), collections/series, Song of the Day, personal
  * stats, themes, PWA install, offline songs, following a live service
  * (Service Mode, for a congregant), Go Live (Live Follow — any
  * signed-in user hosting their own live session), notifications
  * (Web Push), requesting a song (incl. tracking your own requests),
- * keyboard shortcuts, and accessibility.
+ * keyboard shortcuts, accessibility, and — for a curator/admin — an
+ * overview of the admin portal (incl. bringing songs in from other
+ * worship software and an organisation's logo &amp; licences).
  *
  * Loaded via AJAX: api.php?page=help
  *
- * Last updated: 2026-08-21 (docs-sync sweep) — noted under Searching that
- * song / writer / composer / tune / place search now ignores accents and
- * curly apostrophes (searching "cafe" finds "Café", "dont" finds "don't"),
- * online and in the offline cache (#1039); and under Setlists &amp; Sharing
- * that a shared link follows the set list's own expiry — once that passes
- * the link stops serving and shows "no longer shared", with nothing
- * deleted (#1699).
+ * Last updated: 2026-08-28 — under Account &amp; Signing In, noted that
+ * a signed-in device can now be given a name of its own (not just its
+ * platform); under Sharing &amp; Exporting Songs, that a ProPresenter
+ * export now carries a song's chords along with it; and under Admin
+ * Portal, that the Song Editor can bring songs in from other worship
+ * software (incl. whole ProPresenter bundles and service playlists,
+ * which arrive as a ready-made set list) and that an organisation can
+ * now hold more than one licence and upload its own logo.
+ * Previous update 2026-08-21 (docs-sync sweep) — noted under Searching
+ * that song / writer / composer / tune / place search now ignores
+ * accents and curly apostrophes (searching "cafe" finds "Café", "dont"
+ * finds "don't"), online and in the offline cache (#1039); and under
+ * Setlists &amp; Sharing that a shared link follows the set list's own
+ * expiry — once that passes the link stops serving and shows "no
+ * longer shared", with nothing deleted (#1699).
  * Previous update 2026-08-11 (#91 final docs sweep) — added three topics
  * that had shipped without any in-app help: "Printing &amp; Saving as
  * PDF" (print templates, signed-in Download PDF, whole-set-list single
@@ -165,11 +177,19 @@ declare(strict_types=1);
                         shared church computer you forgot to sign out of. Each row shows the
                         device's name (or platform, if it never sent one) and roughly how long
                         ago it was last used; the device you're reading this on carries a
-                        <strong>This device</strong> badge and has no button of its own.
+                        <strong>This device</strong> badge.
+                    </p>
+                    <p>
+                        Platform names like &ldquo;Chrome on Windows&rdquo; aren't always easy
+                        to tell apart, so tap <strong>Rename</strong> beside any device —
+                        including this one — to give it a name of your own, such as
+                        &ldquo;Church iPad&rdquo; or &ldquo;My phone&rdquo;. Leave the name blank
+                        to go back to the platform name.
                     </p>
                     <p class="small text-muted mb-0">
                         Tap <strong>Sign out</strong> beside any other device to end its
-                        session immediately — it will need to sign in again next time. To end
+                        session immediately — it will need to sign in again next time. The
+                        device you're reading this on has no Sign out button of its own; to end
                         your <em>own</em> current session, use the ordinary Sign Out button
                         above instead.
                     </p>
@@ -343,6 +363,11 @@ declare(strict_types=1);
                         chord-sheet file). Your browser downloads a file that you then open
                         or import in that program.
                     </p>
+                    <p>
+                        Where a song has chords recorded, a <strong>ProPresenter</strong>
+                        export carries them along too — ready for a stage display or monitor —
+                        while the words the congregation sees stay clean and chord-free.
+                    </p>
                     <p class="small text-muted mb-0">
                         If the menu opens but nothing downloads, refresh the page once — you
                         may be running an older cached version of iHymns.
@@ -376,8 +401,9 @@ declare(strict_types=1);
                     <p>
                         On a song page, tap <strong>Print</strong> and pick a
                         <strong>template</strong>. Curators design these templates — they decide
-                        which blocks appear (title, lyrics, credits, copyright, chords), the page
-                        size, and more — so the printout looks the way your church likes it.
+                        which blocks appear (title, lyrics, credits, copyright, chords, and your
+                        church's own logo where one has been uploaded), the page size, and more —
+                        so the printout looks the way your church likes it.
                     </p>
                     <h3 class="h6">Download PDF</h3>
                     <p>
@@ -840,7 +866,7 @@ declare(strict_types=1);
                         <li><strong>System:</strong> Automatically matches your device's light/dark preference</li>
                     </ul>
                     <p>Access themes via the <i class="fa-solid fa-circle-half-stroke" aria-hidden="true"></i> icon in the top bar, or in <strong>Settings</strong>.</p>
-                    <p>Additional accessibility options in Settings include adjustable font size, reduced motion, and reduced transparency.</p>
+                    <p>Additional accessibility options in Settings include adjustable font size, reduced motion, reduced transparency, and <strong>Emphasise Links</strong> (gives in-text links an accent colour and an underline, for anyone who wants links to stand out more than the site's normal muted styling).</p>
                 </div>
             </div>
         </div>
@@ -1138,8 +1164,9 @@ declare(strict_types=1);
                 <div class="accordion-body">
                     <p>If you're a <em>Curator/Editor</em>, <em>Admin</em>, or <em>Global Admin</em>, you have access to the portal at <a href="/manage/">/manage/</a> (or the alias <a href="/admin/">/admin/</a>).</p>
                     <ul class="mb-2">
-                        <li><strong>Song Editor</strong> — edit lyrics, chords, arrangement, metadata, tags; multi-select bulk verify and tag; auto-saves as you go. A <em>Curator/Editor</em> and above can delete a song; deleting is recoverable — the song moves to a review queue and can be restored, and only an <strong>Admin</strong> can then remove it permanently.</li>
+                        <li><strong>Song Editor</strong> — edit lyrics, chords, arrangement, metadata, tags; multi-select bulk verify and tag; auto-saves as you go. You can also bring songs in from other worship software, including a whole <strong>ProPresenter</strong> bundle or a service playlist (which arrives ready-made as a set list) — a song's chords come along with it, and travel back out again the same way when you export to ProPresenter. A <em>Curator/Editor</em> and above can delete a song; deleting is recoverable — the song moves to a review queue and can be restored, and only an <strong>Admin</strong> can then remove it permanently.</li>
                         <li><strong>User Management</strong> — create, edit roles, deactivate.</li>
+                        <li><strong>Organisations</strong> — for a church or group with its own admin area: upload a logo (it can then appear on printed song sheets and PDFs, the app header for signed-in members, the live projection screen, and shared set-list preview pictures) and record one or more licences — for example a words licence and a separate music licence — each with its own number and expiry date.</li>
                         <li><strong>Analytics</strong> — top songs / searches / logins over 7, 30, 90 days; CSV export.</li>
                         <li><strong>Song Requests</strong> — triage user-submitted requests.</li>
                         <li><strong>Role Permissions</strong> — grant/revoke individual capabilities by role.</li>
@@ -1173,10 +1200,17 @@ declare(strict_types=1);
          ============================================================ -->
     <div class="card mb-3 mt-4">
         <div class="card-body">
-            <h5>
+            <?php /* a11y audit L4 (WCAG 1.3.1, 2026-08-30): was a literal <h5>
+                     — a heading-level skip (the preceding context was h3,
+                     inside the last accordion item's subsections). This card
+                     is a SIBLING of the accordion (not nested inside it), so
+                     <h2> — matching the accordion items' own level — is the
+                     correct next level; the `h5` CLASS keeps the same small
+                     visual size. */ ?>
+            <h2 class="h5">
                 <i class="fa-solid fa-paper-plane me-2" aria-hidden="true"></i>
                 Suggest a Missing Song
-            </h5>
+            </h2>
             <p class="text-muted small mb-3">
                 Can't find a song? Let us know and we'll try to add it.
                 You can also reach this from the &ldquo;Report a missing

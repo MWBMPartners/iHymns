@@ -17,6 +17,7 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'data_health_admin.php'; /* #1969 API-coverage Batch 5 — shared with api.php's admin_data_health_fix */
 
 requireAuth();
 $currentUser = getCurrentUser();
@@ -64,12 +65,13 @@ try {
     $error = 'Database is currently unreachable. ' . $e->getMessage();
 }
 
-/* Legacy paths to inspect / optionally disable */
-$songsJsonPath    = defined('APP_DATA_FILE')          ? APP_DATA_FILE          : '';
-$shareDirPath     = defined('APP_SETLIST_SHARE_DIR')  ? APP_SETLIST_SHARE_DIR  : '';
-$sqliteDbPath     = dirname(APP_ROOT) . DIRECTORY_SEPARATOR . 'data_share'
-                  . DIRECTORY_SEPARATOR . 'SQLite'
-                  . DIRECTORY_SEPARATOR . 'ihymns.db';
+/* Legacy paths to inspect / optionally disable. #1969 API-coverage Batch 5 —
+   sourced from the ONE shared registry (dataHealthLegacyPaths()) so the
+   page and api.php's admin_data_health_fix agree on what "legacy" means. */
+$legacyPaths  = dataHealthLegacyPaths();
+$songsJsonPath = $legacyPaths['songs_json'];
+$shareDirPath  = $legacyPaths['setlist_dir'];
+$sqliteDbPath  = $legacyPaths['sqlite_db'];
 
 /* ---- POST: disconnect-legacy-fallbacks action ---- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -79,24 +81,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
     if (($_POST['action'] ?? '') === 'disconnect_fallbacks') {
-        $renamed = [];
-        $skipped = [];
-        $failed  = [];
-        foreach ([
-            'songs_json'   => $songsJsonPath,
-            'setlist_dir'  => $shareDirPath,
-            'sqlite_db'    => $sqliteDbPath,
-        ] as $k => $path) {
-            if ($path === '') { $skipped[] = "{$k} (no path configured)"; continue; }
-            if (!file_exists($path)) { $skipped[] = "{$k} (not present)"; continue; }
-            $target = $path . '.disabled';
-            if (file_exists($target)) { $skipped[] = "{$k} (already disabled)"; continue; }
-            if (@rename($path, $target)) {
-                $renamed[] = "{$k} → " . basename($target);
-            } else {
-                $failed[] = "{$k} (rename failed — check permissions)";
-            }
-        }
+        /* #1969 API-coverage Batch 5 — the rename loop now lives in the ONE
+           shared core (dataHealthDisconnectFallbacks()), reused verbatim by
+           api.php's admin_data_health_fix. */
+        $fix     = dataHealthDisconnectFallbacks($legacyPaths);
+        $renamed = $fix['renamed'];
+        $skipped = $fix['skipped'];
+        $failed  = $fix['failed'];
         $parts = [];
         if ($renamed) $parts[] = 'Renamed: ' . implode('; ', $renamed);
         if ($skipped) $parts[] = 'Skipped: ' . implode('; ', $skipped);
@@ -282,7 +273,7 @@ $csrf = csrfToken();
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-activity me-2"></i>Data Health Check</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-activity me-2"></i>Data Health Check</h1>
         <p class="text-secondary small mb-4">
             Checks that the live database now holds every song, user and
             shared set list, so the old backup files kept from earlier
@@ -300,13 +291,13 @@ $csrf = csrfToken();
 
         <!-- MySQL table counts -->
         <div class="card-admin p-3 mb-3">
-            <h2 class="h6 mb-3"><i class="bi bi-database me-2"></i>MySQL table counts</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-database me-2"></i>MySQL table counts</h2>
             <table class="table table-sm mb-0 align-middle cp-sortable admin-table-responsive">
                 <thead>
                     <tr class="text-muted small">
-                        <th data-sort-key="table" data-sort-type="text">Table</th>
-                        <th class="text-end" data-sort-key="rows" data-sort-type="number">Rows</th>
-                        <th data-sort-key="status" data-sort-type="text">Status</th>
+                        <th scope="col" data-sort-key="table" data-sort-type="text">Table</th>
+                        <th scope="col" class="text-end" data-sort-key="rows" data-sort-type="number">Rows</th>
+                        <th scope="col" data-sort-key="status" data-sort-type="text">Status</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -329,7 +320,7 @@ $csrf = csrfToken();
 
         <!-- SongData fallback probe -->
         <div class="card-admin p-3 mb-3">
-            <h2 class="h6 mb-3"><i class="bi bi-file-earmark-code me-2"></i><code>songs.json</code> fallback</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-file-earmark-code me-2"></i><code>songs.json</code> fallback</h2>
             <p class="mb-2 small text-secondary">
                 Retired (WS-J #1020): <code>SongData</code> is MySQL-only now — a
                 DB outage is a clean 503, never stale JSON. The probe below is a
@@ -367,7 +358,7 @@ $csrf = csrfToken();
 
         <!-- Shared setlist JSON files -->
         <div class="card-admin p-3 mb-3">
-            <h2 class="h6 mb-3"><i class="bi bi-link-45deg me-2"></i>Shared setlist JSON files</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-link-45deg me-2"></i>Shared setlist JSON files</h2>
             <p class="mb-2 small text-secondary">
                 <code>SharedSetlist.php</code> prefers <code>tblSharedSetlists</code>
                 and only falls back to disk when a share isn't present in the DB.
@@ -406,7 +397,7 @@ $csrf = csrfToken();
 
         <!-- Legacy SQLite -->
         <div class="card-admin p-3 mb-3">
-            <h2 class="h6 mb-3"><i class="bi bi-hdd-stack me-2"></i>Legacy SQLite database</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-hdd-stack me-2"></i>Legacy SQLite database</h2>
             <p class="mb-2 small text-secondary">
                 Used only by <code>migrate-users.php</code> during the one-off
                 user migration — no runtime code path reads from it.
@@ -430,7 +421,7 @@ $csrf = csrfToken();
 
         <!-- Disconnect action -->
         <div class="card-admin p-3 mb-3 <?= $allGreen ? '' : 'opacity-75' ?>">
-            <h2 class="h6 mb-3"><i class="bi bi-plug me-2"></i>Disconnect legacy fallbacks</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plug me-2"></i>Disconnect legacy fallbacks</h2>
             <p class="small mb-3">
                 Renames (does not delete) each legacy source by appending
                 <code>.disabled</code>. The runtime fallbacks now short-circuit
@@ -455,7 +446,7 @@ $csrf = csrfToken();
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action"     value="disconnect_fallbacks">
                 <button type="submit" class="btn btn-danger btn-sm" <?= $allGreen ? '' : 'disabled' ?>>
-                    <i class="bi bi-plug me-1"></i>
+                    <i aria-hidden="true" class="bi bi-plug me-1"></i>
                     <?php if ($allGreen): ?>
                         Disconnect legacy fallbacks (all clear)
                     <?php else: ?>

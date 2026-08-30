@@ -51,6 +51,11 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    orgLogoFetchServeRow()/orgLogoTableExists()/ihymnsOrgLogoResolveThemedAsset(). */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_helpers.php';
+/* Per-channel search-engine visibility (#2024/#2025) — a share-card image
+   is actively handed to external scrapers/unfurlers, so it gets the same
+   noindex signal as the page it illustrates when this channel is hidden. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+searchVisibilityEmitNoindexHeader();
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
    so a broken OG image (e.g. GD failure, SongData migration drift)
    surfaces in /manage/activity-log alongside other server errors. */

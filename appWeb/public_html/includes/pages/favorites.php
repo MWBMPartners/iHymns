@@ -80,9 +80,26 @@ declare(strict_types=1);
     </div>
 
     <!-- Favourites list container — populated by JavaScript -->
+    <?php /* A20 fix (a11y audit 2026-08-30): each row is an <a href> link,
+       and favorites.js used to stamp role="listitem" onto it. An explicit
+       ARIA role always overrides the element's native one for assistive
+       tech, so that link stopped being announced as a link at all — while
+       still being clickable/keyboard-focusable via its real href, screen
+       reader users lost it from their links list (WCAG 4.1.2). role="list"
+       here (which needs listitem-role children to be valid ARIA) would
+       have the same problem in reverse if we "fixed" it by demoting the
+       role on a wrapper instead — and a real per-row wrapper element can't
+       be added without breaking the Bootstrap list-group CSS this page
+       relies on for borders/corner-radius (its `:first-child`/`+` sibling
+       selectors need `.list-group-item` to stay a DIRECT child here) and
+       app.css's `.song-list-item:nth-child(n)` stagger-in animation. So:
+       drop BOTH roles (favorites.js drops role="listitem" too) and use
+       role="group" instead of role="list" — the same "named collection of
+       controls with no per-item semantics" pattern this page already uses
+       two elements up for #favorites-tag-pills. */ ?>
     <div id="favorites-list"
          class="list-group song-list"
-         role="list"
+         role="group"
          aria-label="Favourite songs list">
         <!-- Songs loaded dynamically by favorites.js -->
     </div>

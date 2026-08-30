@@ -829,6 +829,86 @@ function musicianDuplicatesLifespanConflict(array $a, array $b): bool
  * them in without the full scan running on every load of a DIFFERENT
  * page.
  */
+/**
+ * iHymns — dismiss every pair inside a cluster (whole group OR a scored
+ * fuzzy pair) as "reviewed, not the same person" (API-coverage Batch 5,
+ * A13, `.claude/api-coverage-2026-08-28.md` §4.3/§9). Byte-identical
+ * extraction of `manage/musician-duplicates.php`'s former `case 'dismiss'`
+ * body — same 409-when-unmigrated gate, same "need at least two" 400, same
+ * default reason text + 255-char cap, same canonical-order
+ * (MusicianIdA < MusicianIdB) INSERT ... ON DUPLICATE KEY UPDATE loop —
+ * so both the page AND `api.php`'s new `admin_musician_duplicate_dismiss`
+ * write through the ONE core (rule #22).
+ *
+ * @param list<int|string> $idsRaw Coerced to int + de-duplicated + filtered
+ *        to >0 internally (a caller may pass raw request values as-is).
+ * @return array{ok:bool,status?:int,error?:string,ids?:list<int>,reason?:string}
+ */
+function musicianDuplicatesDismissCluster(\mysqli $db, array $idsRaw, ?int $dismissedBy, string $reasonIn): array
+{
+    if (!musicianDuplicatesDismissedTableExists($db)) {
+        return ['ok' => false, 'status' => 409, 'error' =>
+            "The duplicate-review dismissals table hasn't been migrated on this install yet. Run it from Setup Database."];
+    }
+    $ids = array_values(array_unique(array_filter(
+        array_map('intval', $idsRaw),
+        static fn(int $v): bool => $v > 0
+    )));
+    if (count($ids) < 2) {
+        return ['ok' => false, 'status' => 400, 'error' => 'Need at least two people to dismiss as a group.'];
+    }
+    $reasonIn = trim($reasonIn);
+    $reason   = $reasonIn !== '' ? mb_substr($reasonIn, 0, 255) : 'reviewed: not the same person';
+
+    $ins = $db->prepare(
+        'INSERT INTO tblMusicianDuplicatesDismissed (MusicianIdA, MusicianIdB, DismissedBy, Reason)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE DismissedBy = VALUES(DismissedBy),
+                                 Reason = VALUES(Reason),
+                                 DismissedAt = CURRENT_TIMESTAMP'
+    );
+    $n = count($ids);
+    for ($i = 0; $i < $n; $i++) {
+        for ($j = $i + 1; $j < $n; $j++) {
+            [$a, $b] = $ids[$i] < $ids[$j] ? [$ids[$i], $ids[$j]] : [$ids[$j], $ids[$i]];
+            $ins->bind_param('iiis', $a, $b, $dismissedBy, $reason);
+            $ins->execute();
+        }
+    }
+    $ins->close();
+
+    return ['ok' => true, 'ids' => $ids, 'reason' => $reason];
+}
+
+/**
+ * iHymns — un-dismiss ONE specific pair (the `?show=dismissed` review view,
+ * API-coverage Batch 5 A13). Byte-identical extraction of
+ * `manage/musician-duplicates.php`'s former `case 'undismiss'` body — same
+ * 409-when-unmigrated gate, same 400 validation, same canonical-order
+ * DELETE.
+ *
+ * @return array{ok:bool,status?:int,error?:string,idA?:int,idB?:int,deleted?:int}
+ */
+function musicianDuplicatesUndismissPair(\mysqli $db, int $idA, int $idB): array
+{
+    if (!musicianDuplicatesDismissedTableExists($db)) {
+        return ['ok' => false, 'status' => 409, 'error' =>
+            "The duplicate-review dismissals table hasn't been migrated on this install yet."];
+    }
+    if ($idA <= 0 || $idB <= 0 || $idA === $idB) {
+        return ['ok' => false, 'status' => 400, 'error' => 'id_a and id_b are required and must differ.'];
+    }
+    [$lo, $hi] = $idA < $idB ? [$idA, $idB] : [$idB, $idA];
+
+    $del = $db->prepare('DELETE FROM tblMusicianDuplicatesDismissed WHERE MusicianIdA = ? AND MusicianIdB = ?');
+    $del->bind_param('ii', $lo, $hi);
+    $del->execute();
+    $deleted = $del->affected_rows;
+    $del->close();
+
+    return ['ok' => true, 'idA' => $lo, 'idB' => $hi, 'deleted' => (int)$deleted];
+}
+
 function musicianDuplicatesCountBucketA(\mysqli $db): int
 {
     $profileCols = musicianProfileColumnsExist($db);

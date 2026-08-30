@@ -34,6 +34,21 @@
  *      to still match reality (see the self-cleaning check below),
  *      mirroring the precedent in tests/php/test-fragment-inline-scripts.php.
  *
+ *   3. FULL-CORPUS PAIRING + VOCABULARY (silent-wiring sweep, epic #2008) —
+ *      assertions 1-2 above are scoped to `ihymns:*` names inside
+ *      `appWeb/public_html/js/**` only. This assertion widens to the SAME
+ *      corpus the sibling test-dom-target-integrity.js /
+ *      test-wiring-attr-integrity.js scan (every *.js under public_html
+ *      plus every inline <script> body in every .php page) and checks TWO
+ *      more things that had zero guard before: any non-native custom event
+ *      dispatched with no listener anywhere, and — the part that catches a
+ *      typo like `shown.bs.tabs` — that every LISTENED name is a
+ *      recognised native DOM event, a documented Bootstrap 5.3 event, an
+ *      already-validated EVT_* constant, or has a dispatcher somewhere in
+ *      the corpus. An unrecognised name FAILS outright rather than being
+ *      skipped, so the vocabulary tables cannot silently shrink this
+ *      assertion's coverage.
+ *
  * USAGE:
  *   node tests/test-event-names.js
  *
@@ -243,6 +258,253 @@ for (const name of evtNames) {
             `dispatchers=${dispatchCount} listeners=${listenCount}`
         );
     }
+}
+
+/* ======================================================================
+ * Assertion 3 — full-corpus custom-event pairing + native/Bootstrap vocabulary
+ * (silent-wiring sweep, epic #2008)
+ * ==================================================================== */
+console.log('');
+console.log('Assertion 3 — full-corpus custom-event pairing + native/Bootstrap vocabulary:');
+
+/* Assertions 1-2 own the `ihymns:*`/`iHymns:*` namespace, scoped to
+   `appWeb/public_html/js/**`. This assertion is everything else the #1581
+   program never looked at: (a) a NON-namespaced CustomEvent dispatched with
+   no listener anywhere — nobody would ever observe it, the same "dispatcher
+   with no listener never is legitimate" doctrine #1581 already applies to
+   EVT_* names; (b) the Bootstrap 5.3 `.bs.` event vocabulary, which today has
+   ZERO guard at all — a typo like `shown.bs.tabs` (missing the final `s`)
+   fails with no error, no warning, the listener simply never fires; and (c)
+   the wider corpus — `manage/**` and every inline `<script>` body — that
+   assertions 1-2 do not scan.
+   First-pass measurement found zero violations (the #1581 sweep already
+   drained this pond); this assertion's value is entirely PREVENTIVE —
+   stopping the next `shown.bs.tabs` before it ships silently broken. */
+
+const SCRIPT_TAG_RE = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+
+/**
+ * String/template-literal/regex-AWARE JS comment stripper — identical to the
+ * one in tests/test-dom-target-integrity.js / tests/test-wiring-attr-integrity.js
+ * (see that file's header for the full rationale, including the
+ * `.replace(/"/g, …)` regex-literal trap a naive quote-tracking walker falls
+ * into on a large inline script). Copied rather than imported — each
+ * tests/test-*.js file is self-contained per house style.
+ */
+function stripJsComments(src) {
+    let out = '';
+    let i = 0;
+    const n = src.length;
+    let mode = null; // null | 'sq' | 'dq' | 'tpl' | 'line' | 'block' | 'regex'
+    let inCharClass = false;
+    let lastSig = '';
+    const REGEX_PRECEDERS = new Set(['(', ',', '=', ':', ';', '!', '&', '|', '?', '{', '[', '+', '-', '*', '%', '<', '>', '\n', '']);
+
+    while (i < n) {
+        const c  = src[i];
+        const c2 = i + 1 < n ? src[i + 1] : '';
+
+        if (mode === 'line') {
+            if (c === '\n') { out += '\n'; mode = null; } else { out += ' '; }
+            i++; continue;
+        }
+        if (mode === 'block') {
+            if (c === '*' && c2 === '/') { out += '  '; i += 2; mode = null; continue; }
+            out += (c === '\n' ? '\n' : ' ');
+            i++; continue;
+        }
+        if (mode === 'sq' || mode === 'dq' || mode === 'tpl') {
+            if (c === '\\') { out += c + c2; i += 2; continue; }
+            const closer = mode === 'sq' ? '\'' : mode === 'dq' ? '"' : '`';
+            out += c;
+            if (c === closer) { mode = null; lastSig = closer; }
+            i++; continue;
+        }
+        if (mode === 'regex') {
+            if (c === '\\') { out += c + c2; i += 2; continue; }
+            if (c === '[') { inCharClass = true; out += c; i++; continue; }
+            if (c === ']') { inCharClass = false; out += c; i++; continue; }
+            if (c === '/' && !inCharClass) {
+                out += c; i++;
+                while (i < n && /[a-z]/i.test(src[i])) { out += src[i]; i++; }
+                mode = null; lastSig = '/';
+                continue;
+            }
+            if (c === '\n') { mode = null; out += c; i++; continue; }
+            out += c; i++; continue;
+        }
+
+        if (c === '/' && c2 === '/') { mode = 'line';  out += '  '; i += 2; continue; }
+        if (c === '/' && c2 === '*') { mode = 'block'; out += '  '; i += 2; continue; }
+        if (c === '/' && REGEX_PRECEDERS.has(lastSig)) { mode = 'regex'; inCharClass = false; out += c; i++; continue; }
+        if (c === '\'') { mode = 'sq';  out += c; i++; continue; }
+        if (c === '"')  { mode = 'dq';  out += c; i++; continue; }
+        if (c === '`')  { mode = 'tpl'; out += c; i++; continue; }
+        out += c;
+        if (!/\s/.test(c)) lastSig = c;
+        i++;
+    }
+    return out;
+}
+
+function walk3(dir, re, out = []) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === 'vendor' || entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { walk3(full, re, out); }
+        else if (re.test(entry.name)) { out.push(full); }
+    }
+    return out;
+}
+
+const PUB_ROOT = path.resolve(JS_ROOT, '..'); // appWeb/public_html
+const widenedRel = (p) => path.relative(PUB_ROOT, p).split(path.sep).join('/');
+
+/* WIDENED corpus: every *.js under public_html (not just js/**) plus every
+   inline <script> body in every *.php page (same allow-shape as the sibling
+   guards — external `src=` scripts and inert JSON islands are skipped). */
+const widenedSources = [];
+for (const f of walk3(PUB_ROOT, /\.js$/)) {
+    widenedSources.push({ file: widenedRel(f), text: fs.readFileSync(f, 'utf8'), lineOffset: 0 });
+}
+let inlineBlocksScanned = 0;
+for (const f of walk3(PUB_ROOT, /\.php$/)) {
+    const raw = fs.readFileSync(f, 'utf8');
+    const cleanedForTags = raw
+        .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
+        .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
+    SCRIPT_TAG_RE.lastIndex = 0;
+    let sm;
+    while ((sm = SCRIPT_TAG_RE.exec(cleanedForTags)) !== null) {
+        const attrs = sm[1];
+        if (/\bsrc\s*=/i.test(attrs)) continue;
+        if (/type\s*=\s*["']application\/(ld\+)?json["']/i.test(attrs)) continue;
+        inlineBlocksScanned++;
+        const bodyStart = sm.index + 7 + attrs.length + 1;
+        const rawBody = raw.slice(bodyStart, bodyStart + sm[2].length);
+        const lineOffset = cleanedForTags.slice(0, bodyStart).split('\n').length - 1;
+        widenedSources.push({ file: `${widenedRel(f)} [inline]`, text: rawBody, lineOffset });
+    }
+}
+check(`Assertion 3 scanner extracted a plausible number of inline <script> blocks (${inlineBlocksScanned})`,
+    inlineBlocksScanned >= 30, `only found ${inlineBlocksScanned}`);
+
+const dispatched3 = new Map(); /* name -> ["file:line", ...] */
+const listened3   = new Map();
+for (const s of widenedSources) {
+    const stripped = stripJsComments(s.text);
+    stripped.split('\n').forEach((line, i) => {
+        const loc = `${s.file}:${s.lineOffset + i + 1}`;
+        for (const m of line.matchAll(/dispatchEvent\(\s*new\s+(?:CustomEvent|Event)\(\s*['"`]([\w:.-]+)['"`]/g)) {
+            if (!dispatched3.has(m[1])) dispatched3.set(m[1], []);
+            dispatched3.get(m[1]).push(loc);
+        }
+        for (const m of line.matchAll(/(?:add|remove)EventListener\(\s*['"`]([\w:.-]+)['"`]/g)) {
+            if (!listened3.has(m[1])) listened3.set(m[1], []);
+            listened3.get(m[1]).push(loc);
+        }
+    });
+}
+check(`Assertion 3 scanner found dispatched event names to check (${dispatched3.size} distinct)`,
+    dispatched3.size > 0, `only found ${dispatched3.size}`);
+check(`Assertion 3 scanner found listened event names to check (${listened3.size} distinct)`,
+    listened3.size > 20, `only found ${listened3.size}`);
+
+/* NATIVE DOM event names — a NOTATION table, not a checklist: an
+   unrecognised name in the vocabulary check below FAILS rather than being
+   silently skipped (mirrors the KEY_NOTATION discipline in
+   tests/test-dom-target-integrity.js), so this table cannot silently shrink
+   this assertion's coverage. Sourced from the MDN event reference plus this
+   tree's own measured usage (`search` — HTMLInputElement's clear/Enter
+   event — was the one name missing from a first draft of this list; add
+   here, not as an exception elsewhere, if a genuinely new native event
+   shows up).
+   https://developer.mozilla.org/docs/Web/Events */
+const NATIVE_DOM_EVENTS = new Set([
+    'click', 'dblclick', 'change', 'input', 'submit', 'reset', 'invalid',
+    'keydown', 'keyup', 'keypress',
+    'focus', 'blur', 'focusin', 'focusout',
+    'load', 'DOMContentLoaded', 'beforeunload', 'unload', 'pagehide', 'pageshow',
+    'scroll', 'resize', 'popstate', 'hashchange', 'visibilitychange', 'languagechange',
+    'storage', 'online', 'offline',
+    'error', 'message', 'messageerror',
+    'open', 'close', 'abort', 'progress', 'loadend', 'loadstart', 'timeout', 'readystatechange',
+    'ended', 'play', 'playing', 'pause', 'timeupdate', 'durationchange', 'volumechange',
+    'seeking', 'seeked', 'canplay', 'canplaythrough', 'waiting', 'stalled', 'suspend',
+    'emptied', 'loadedmetadata', 'loadeddata', 'ratechange', 'cuechange',
+    'pointerdown', 'pointerup', 'pointermove', 'pointercancel', 'pointerenter', 'pointerleave', 'pointerover', 'pointerout',
+    'mousedown', 'mouseup', 'mousemove', 'mouseenter', 'mouseleave', 'mouseover', 'mouseout',
+    'contextmenu', 'wheel',
+    'touchstart', 'touchend', 'touchmove', 'touchcancel',
+    'dragstart', 'dragend', 'dragover', 'dragenter', 'dragleave', 'drop', 'drag',
+    'animationend', 'animationstart', 'animationiteration',
+    'transitionend', 'transitionstart', 'transitioncancel', 'transitionrun',
+    'selectionchange', 'select', 'search',
+    'copy', 'cut', 'paste',
+    'compositionstart', 'compositionend', 'compositionupdate',
+    'toggle', 'slotchange',
+    'fullscreenchange', 'fullscreenerror',
+    'rejectionhandled', 'unhandledrejection',
+    /* PWA / service-worker */
+    'appinstalled', 'beforeinstallprompt', 'controllerchange', 'updatefound', 'statechange',
+    'install', 'activate', 'fetch', 'push', 'notificationclick', 'sync', 'periodicsync',
+    /* device/gesture (documented in the original scan even though unused today) */
+    'gesturestart', 'devicemotion', 'deviceorientation', 'orientationchange', 'freeze', 'resume',
+    'securitypolicyviolation', 'connect',
+]);
+
+/* Bootstrap 5.3 documented custom-event vocabulary. Built as PHASE x
+   COMPONENT combinations (rather than nine hand-typed literals) so a
+   currently-unused-but-valid Bootstrap event (`hide.bs.tab`, say) is not a
+   false alarm the day someone starts using it — only a name Bootstrap never
+   actually documents fails.
+   https://getbootstrap.com/docs/5.3/components/modal/#events (and the
+   equivalent Events section of each component's own docs page). */
+const BOOTSTRAP_COMPONENTS = ['modal', 'dropdown', 'collapse', 'toast', 'tab', 'offcanvas', 'tooltip', 'popover'];
+const BOOTSTRAP_PHASES = ['show', 'shown', 'hide', 'hidden', 'hidePrevented'];
+const BOOTSTRAP_EVENTS = new Set();
+for (const comp of BOOTSTRAP_COMPONENTS) { for (const phase of BOOTSTRAP_PHASES) { BOOTSTRAP_EVENTS.add(`${phase}.bs.${comp}`); } }
+/* tooltip/popover also fire `inserted.bs.<component>`. carousel uses its own
+   slide/slid phases (not show/shown/hide/hidden); alert uses close/closed. */
+BOOTSTRAP_EVENTS.add('inserted.bs.tooltip');
+BOOTSTRAP_EVENTS.add('inserted.bs.popover');
+BOOTSTRAP_EVENTS.add('slide.bs.carousel');
+BOOTSTRAP_EVENTS.add('slid.bs.carousel');
+BOOTSTRAP_EVENTS.add('close.bs.alert');
+BOOTSTRAP_EVENTS.add('closed.bs.alert');
+BOOTSTRAP_EVENTS.add('activate.bs.scrollspy');
+
+const IHYMNS_NS_RE = /^i[hH]ymns:/;
+
+/* --- strict direction: every non-native, non-ihymns:*-namespaced dispatch
+   needs >=1 listener SOMEWHERE in this same widened corpus. The ihymns:*
+   namespace is excluded here because assertions 1-2 already own it
+   completely (every EVT_* name is checked there); re-checking it here would
+   just duplicate that work, not add coverage. */
+for (const [name, locs] of [...dispatched3].sort()) {
+    if (NATIVE_DOM_EVENTS.has(name)) continue;
+    if (IHYMNS_NS_RE.test(name)) continue;
+    check(`Assertion 3 — dispatched "${name}" has >=1 listener somewhere in the corpus`,
+        listened3.has(name),
+        `dispatched at ${locs.slice(0, 3).join(', ')}${locs.length > 3 ? ` …+${locs.length - 3}` : ''} but never listened for — nobody would ever observe this event`);
+}
+
+/* --- vocabulary direction: every listened name must be recognised —
+   native, Bootstrap, an EVT_* constant (already validated by assertion 2),
+   or matched by a dispatcher in THIS corpus (covers the wider corpus's own
+   custom events, including ihymns:*-namespaced ones dispatched from a
+   classic script that cannot import constants.js, e.g. `iHymns:song-loaded`
+   in manage/editor/editor.js — see that file's own doc-comment on why it is
+   deliberately out of the #1581 migration). An unrecognised name FAILS
+   rather than being skipped — that is what catches `shown.bs.tabs`. */
+for (const [name, locs] of [...listened3].sort()) {
+    const recognised = NATIVE_DOM_EVENTS.has(name)
+        || BOOTSTRAP_EVENTS.has(name)
+        || evtNames.includes(name)
+        || dispatched3.has(name);
+    check(`Assertion 3 — listened "${name}" is a recognised event name (native, Bootstrap, EVT_*, or has a dispatcher)`,
+        recognised,
+        recognised ? '' : `listened at ${locs.slice(0, 3).join(', ')}${locs.length > 3 ? ` …+${locs.length - 3}` : ''} — unrecognised name (typo? add to NATIVE_DOM_EVENTS/BOOTSTRAP_EVENTS if genuinely new, or fix the typo)`);
 }
 
 /* ======================================================================

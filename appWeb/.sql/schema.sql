@@ -3122,6 +3122,7 @@ CREATE TABLE IF NOT EXISTS tblSongMedia (
     Content         MEDIUMBLOB   NULL,
     StoragePath     VARCHAR(255) NULL,
     Annotation      VARCHAR(255) NULL,
+    Visibility      VARCHAR(20)  NOT NULL DEFAULT 'public' COMMENT 'Publish state (#1968 P4): public | admin. App-validated via IHYMNS_SONG_MEDIA_VISIBILITIES in includes/song_media_visibility.php; VARCHAR not ENUM (rule #20 — org / pending are reserved future values, each a one-line map addition, never an ALTER). admin = curator-only: stripped from every public list emit and denied bytes at song-media.php; imported ProPresenter media lands admin until a curator publishes it (owner decision D1).',
     SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
     UploadedBy      INT UNSIGNED NULL,
     UploadedAt      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -3135,6 +3136,31 @@ CREATE TABLE IF NOT EXISTS tblSongMedia (
     CONSTRAINT fk_media_song
         FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ProPresenter auto-advance timeline capture (#1968 dormant groundwork). Entirely inert
+-- until tblAppSettings.pp7_timeline_import_enabled='1' AND a (not-yet-built) playback UI
+-- exists — see appWeb/.sql/migrate-pp7-timeline-groundwork.php for the full rationale.
+CREATE TABLE IF NOT EXISTS tblSongPresentationCues (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SongId          VARCHAR(20)   NOT NULL COMMENT 'FK to tblSongs.SongId — the song this captured auto-advance timeline belongs to.',
+    ArrangementName VARCHAR(100)  NOT NULL DEFAULT '' COMMENT 'Multiplicity discriminator (#1968): a song may carry several imported arrangements/timelines; empty string = the default/primary timeline. Part of the (SongId, ArrangementName, SortOrder) uniqueness key so re-importing the same arrangement is idempotent.',
+    SortOrder       INT UNSIGNED  NOT NULL COMMENT 'Ordinal position of this cue within its (SongId, ArrangementName) timeline, 0-based — the order ProPresenter played the cues in.',
+    TriggerSeconds  DECIMAL(12,4) NOT NULL COMMENT 'Auto-advance trigger time in seconds from the start of the timeline (ProPresenter Timeline.Cue.trigger_time). DECIMAL, not FLOAT/DOUBLE, for exact stored precision — no float rounding drift across re-reads.',
+    SourceCueUuid   CHAR(36)      NULL COMMENT 'The source ProPresenter cue UUID (Timeline.Cue.cue_id), when the cue carried one — for later mapping to an iHymns tblSongComponents row. NULL for a media-triggering timeline entry (the cue_id/action oneof took the action branch instead).',
+    ComponentId     INT UNSIGNED  NULL COMMENT 'The mapped iHymns tblSongComponents.Id, once mapping exists. NULL until the mapping/playback work (deliberately not built by this dormant-groundwork task) is fleshed out later — no FK yet, by design.',
+    CueName         VARCHAR(100)  NULL COMMENT 'The source cue name as ProPresenter labelled it, e.g. "Cue 2" — display/debugging aid only, not authoritative for anything.',
+    Source          VARCHAR(30)   NOT NULL DEFAULT 'propresenter' COMMENT 'Provenance vocabulary (today: propresenter). VARCHAR, not ENUM, per rule #20 — a future non-ProPresenter timeline source needs one new value, never an ALTER.',
+    CreatedAt       TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_song_arr_sort (SongId, ArrangementName, SortOrder),
+    INDEX idx_SongId (SongId),
+
+    CONSTRAINT fk_pres_cues_song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+COMMENT='ProPresenter auto-advance timeline capture (#1968 dormant groundwork) — one row per captured (song, arrangement, position) cue. Entirely inert until tblAppSettings.pp7_timeline_import_enabled=1 AND the (not-yet-built) playback UI exists.';
 
 
 -- ============================================================================
@@ -5631,6 +5657,35 @@ CREATE TABLE IF NOT EXISTS tblWebhookDeliveries (
     CONSTRAINT fk_WebhookDel_Sub   FOREIGN KEY (SubscriptionId) REFERENCES tblWebhookSubscriptions(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Per-subscription webhook delivery queue, retry state and dead-letter surface (#1909). uq_Event_Subscription = fan-out idempotency; idx_Due = the drain claim predicate.';
+
+
+-- ----------------------------------------------------------------------------
+-- tblPushTokens (API-coverage plan 2026-08-28 C1) — Android/FireOS push
+-- registration tokens. `Provider` (fcm | adm) discriminates Google Firebase
+-- Cloud Messaging from Amazon Device Messaging (Fire OS has no Google Play
+-- Services) so ONE table serves both rather than forking a near-identical
+-- second table. DISTINCT from tblApnsTokens (Apple) and tblPushSubscriptions
+-- (Web Push/VAPID, keyed by browser endpoint URL). Entirely dormant until
+-- includes/fcm.php is keyed AND a live trigger calls fcmSend() — neither is
+-- true yet.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblPushTokens (
+    Id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    Provider   VARCHAR(16)    NOT NULL DEFAULT 'fcm' COMMENT 'fcm | adm — app-validated, VARCHAR not ENUM (rule #20); FCM = Google Firebase Cloud Messaging (ordinary Android), ADM = Amazon Device Messaging (Fire OS — no Google Play Services)',
+    UserId     INT UNSIGNED   NOT NULL COMMENT 'FK tblUsers — owning user (this endpoint is always authenticated; unlike tblApnsTokens there is no anonymous/presence-scoped token here)',
+    Token      VARCHAR(191)   NOT NULL COMMENT 'Opaque FCM registration token or ADM registration id. VARCHAR(191) keeps the utf8mb4 UNIQUE index under the legacy 767-byte-per-column InnoDB limit (mirrors tblSongExternalIds.IdValue)',
+    Platform   VARCHAR(20)    NULL DEFAULT NULL COMMENT 'Client-reported platform, e.g. android | fireos — optional, informational only, never gates anything',
+    AppVersion VARCHAR(20)    NULL DEFAULT NULL COMMENT 'Client app version string at register/last-seen time, e.g. 1.4.2',
+    CreatedAt  TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    LastSeenAt TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Refreshed on every re-register (ON DUPLICATE KEY UPDATE) so a future sender can prune stale tokens',
+
+    UNIQUE KEY uq_Provider_Token (Provider, Token),
+    INDEX      idx_User (UserId),
+
+    CONSTRAINT fk_PushTokens_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Android/FireOS push registration tokens (API-coverage 2026-08-28 C1). Provider discriminates FCM vs ADM. Entirely dormant until includes/fcm.php is keyed AND a live trigger calls fcmSend() — neither is true yet.';
 
 
 -- =====================================================================

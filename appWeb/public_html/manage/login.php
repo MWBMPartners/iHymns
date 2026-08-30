@@ -145,17 +145,17 @@ $csrf = csrfToken();
 <body class="auth-center-page">
     <div class="login-card">
         <div class="text-center mb-4">
-            <h1><i class="bi bi-music-note-beamed me-2"></i>iHymns</h1>
+            <h1><i aria-hidden="true" class="bi bi-music-note-beamed me-2"></i>iHymns</h1>
             <p class="text-muted mb-0">Admin Login</p>
         </div>
 
         <?php if ($error): ?>
             <div class="alert alert-danger py-2" role="alert">
-                <i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?>
+                <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?>
             </div>
         <?php elseif ($notice !== ''): ?>
             <div class="alert alert-warning py-2" role="status">
-                <i class="bi bi-clock-history me-1"></i><?= htmlspecialchars($notice) ?>
+                <i aria-hidden="true" class="bi bi-clock-history me-1"></i><?= htmlspecialchars($notice) ?>
             </div>
         <?php endif; ?>
 
@@ -199,7 +199,7 @@ $csrf = csrfToken();
             <?php endif; ?>
 
             <button type="submit" class="btn btn-amber w-100">
-                <i class="bi bi-box-arrow-in-right me-1"></i>Sign In
+                <i aria-hidden="true" class="bi bi-box-arrow-in-right me-1"></i>Sign In
             </button>
         </form>
     </div>

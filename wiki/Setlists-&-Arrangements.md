@@ -216,6 +216,17 @@ pipeline.
 
 ---
 
+## ProPresenter Service-Order Round-Trip (epic #1968, Phase 3)
+
+A set list and a ProPresenter **`.proplaylist`** (its service-order format) can move in either direction — editor-gated (curator-first), via the Song Editor's bulk-import / export tooling:
+
+- **Import** — `.proplaylist` presentation items become set-list songs (matched to the bundled inner `.pro` by filename, or to an existing live song by normalised title when only referenced, not embedded); header/placeholder items become set-list slots; nested playlists flatten in order. The write reuses the app's own `SongsJson`/`SlotsJson` sanitisers — no new authoritative write path.
+- **Export** — builds a `PlaylistDocument` (one playlist named after the set list, presentation items for song slots, header items for the rest, each referencing the same arrangement UUID its exported `.pro` carries) and wraps it as a bundle alongside each song's `.pro` — the same portable root-level layout as a `.probundle`.
+
+Both directions are validated against real, independently-decoded `.proplaylist`/`.pro` fixtures rather than only against each other. See [[Song Data Format]] and [[Architecture]] § ProPresenter interop for the wider import/export/chord/media picture; **PWA Features** § Export & Present covers the public single-song/songbook export formats.
+
+---
+
 ## Cross-Device Sync
 
 Logged-in users can sync setlists across all their devices:

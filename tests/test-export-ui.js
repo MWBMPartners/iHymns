@@ -466,11 +466,14 @@ async function test(name, fn) {
            file adds is the one line #1566 actually fixed — that export-ui.js
            awaits the call — so a future edit that drops the `await` and turns
            an encode failure back into a silent unhandled rejection (instead of
-           the catch block's toast) fails this test immediately. */
+           the catch block's toast) fails this test immediately.
+           #1979 — the single-song call became exportSongAsBundle() (embeds a
+           public background video/image into a .probundle, else degrades to a
+           bare .pro); the await requirement is unchanged. */
         assert.match(
             moduleSource,
-            /await\s+window\.iHymnsProPresenter\.exportSong\(/,
-            'exportSong(...) must be awaited so an encode failure reaches the catch block, not an unhandled rejection'
+            /await\s+window\.iHymnsProPresenter\.exportSongAsBundle\(/,
+            'exportSongAsBundle(...) must be awaited so an encode/fetch failure reaches the catch block, not an unhandled rejection'
         );
     });
 

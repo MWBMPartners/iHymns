@@ -159,6 +159,17 @@ try {
 </head>
 <body>
 
+    <!-- a11y audit L8 (WCAG 2.4.1 Bypass Blocks, 2026-08-30): this editor
+         shell never had a skip link (unlike every other admin page, which
+         gets one from manage/includes/admin-nav.php — this legacy editor
+         doesn't include that partial, hence the standalone copy here,
+         same classes/target-id convention). -->
+    <a href="#editorMain"
+       class="visually-hidden-focusable position-absolute top-0 start-0 p-3 bg-primary text-white z-3"
+       id="skip-nav">
+        Skip to main content
+    </a>
+
     <!-- =================================================================
          TOP NAVBAR
          Editor branding + primary action buttons: Save, Revisions,
@@ -173,7 +184,7 @@ try {
              important in PWA mode where there's no browser chrome. -->
         <a class="navbar-brand d-flex align-items-center gap-2" href="/manage/"
            title="Back to Admin Dashboard">
-            <i class="bi bi-music-note-beamed"></i>
+            <i aria-hidden="true" class="bi bi-music-note-beamed"></i>
             <span class="navbar-brand-text">iHymns Song Editor</span>
         </a>
 
@@ -184,12 +195,12 @@ try {
             <a href="/manage/"
                class="btn btn-sm btn-outline-secondary"
                title="Back to Admin Dashboard">
-                <i class="bi bi-speedometer2 me-1"></i>Dashboard
+                <i aria-hidden="true" class="bi bi-speedometer2 me-1"></i>Dashboard
             </a>
             <a href="/"
                class="btn btn-sm btn-outline-secondary"
                title="Back to the iHymns app home">
-                <i class="bi bi-house me-1"></i>Home
+                <i aria-hidden="true" class="bi bi-house me-1"></i>Home
             </a>
         </div>
 
@@ -214,7 +225,7 @@ try {
                 title="Select a song to enable Save"
                 disabled
             >
-                <i class="bi bi-floppy me-1"></i><span class="btn-save-label">Save</span>
+                <i aria-hidden="true" class="bi bi-floppy me-1"></i><span class="btn-save-label">Save</span>
             </button>
 
             <!-- REVISIONS — Show revision history for the currently-selected
@@ -230,7 +241,7 @@ try {
                 title="Select a song to enable Revisions"
                 disabled
             >
-                <i class="bi bi-clock-history me-1"></i>Revisions
+                <i aria-hidden="true" class="bi bi-clock-history me-1"></i>Revisions
             </button>
 
             <!-- IMPORT — Triggers the hidden import file input -->
@@ -240,7 +251,7 @@ try {
                 id="btn-import"
                 title="Bulk-import songs from a .zip archive, a VideoPsalm songbook .json, an OpenLyrics/OpenLP .xml, a ProPresenter 6 .pro6, a FreeShow .show, an EasyWorship Songs.db (BETA — unverified against live EasyWorship), a Proclaim .txt/.rtf (whole-hymnal or single song), a ChordPro .cho/.pro/.chopro/.crd/.chord single song (OnSong / OpenSong / WorshipTools interop, #1264), or a PowerPoint .pptx worship deck (slides segmented into songs by their '# number-Songbook' title slides; existing songs are matched, not duplicated). ZIPs accept the .SourceSongData layout (one .txt per song), OpenSong .xml, OpenLyrics .xml, ProPresenter .pro6, FreeShow .show, EasyWorship Songs.db + SongWords.db (these carry their own song/songbook, so they ignore the folder shape), and VideoPsalm .json songbooks at any depth. Bulk imports insert directly into MySQL and never overwrite existing rows."
             >
-                <i class="bi bi-box-arrow-in-down me-1"></i>Import
+                <i aria-hidden="true" class="bi bi-box-arrow-in-down me-1"></i>Import
             </button>
             <!-- #1051 — opt-in title dedupe for the next import; read by editor.js,
                  posted as dedupeMode=skip-title. -->
@@ -256,14 +267,14 @@ try {
             <a href="/manage/users"
                class="btn btn-sm btn-outline-secondary me-1"
                title="User management">
-                <i class="bi bi-people me-1"></i>Users
+                <i aria-hidden="true" class="bi bi-people me-1"></i>Users
             </a>
             <?php endif; ?>
             <span class="text-muted small d-none d-md-inline me-1"><?= htmlspecialchars($currentUser['display_name'] ?? $currentUser['username'] ?? '') ?></span>
             <a href="/manage/logout"
                class="btn btn-sm btn-outline-secondary"
                title="Sign out">
-                <i class="bi bi-box-arrow-right me-1"></i>Logout
+                <i aria-hidden="true" class="bi bi-box-arrow-right me-1"></i>Logout
             </a>
         </div>
     </nav>
@@ -310,9 +321,20 @@ try {
                 </div>
 
                 <!-- Search input — live text search across song titles -->
+                <!-- a11y audit L10 (2026-08-30): every var(--ih-*) reference
+                     in this file (--ih-bg-input/--ih-border/--ih-text-muted/
+                     --ih-bg-card/--ih-amber) pointed at custom properties
+                     defined NOWHERE in the tree — the declarations silently
+                     no-opped (colour fell back to inherit, background to
+                     transparent), so the intended styling never actually
+                     rendered. Re-pointed at the real theme tokens
+                     (--surface-elevated/--card-border/--text-muted/
+                     --surface-card) and Bootstrap's own --bs-warning for the
+                     one decorative amber accent, which has no iHymns
+                     equivalent token. -->
                 <div class="input-group input-group-sm mb-2">
-                    <span class="input-group-text" style="background-color: var(--ih-bg-input); border-color: var(--ih-border); color: var(--ih-text-muted);">
-                        <i class="bi bi-search"></i>
+                    <span class="input-group-text" style="background-color: var(--surface-elevated); border-color: var(--card-border); color: var(--text-muted);">
+                        <i aria-hidden="true" class="bi bi-search"></i>
                     </span>
                     <input
                         type="text"
@@ -367,7 +389,7 @@ try {
 
                 <!-- Empty state shown before the song index has loaded -->
                 <div class="empty-state py-5" id="songListEmpty">
-                    <i class="bi bi-music-note-list"></i>
+                    <i aria-hidden="true" class="bi bi-music-note-list"></i>
                     <p class="mb-1">No songs loaded</p>
                     <small>Loading songs from the database…</small>
                 </div>
@@ -378,15 +400,17 @@ try {
                 <!-- #1180 — the redundant "N / total" song-count was removed from
                      here: the total already shows in the page footer ("N songs
                      loaded"), and on the same flex row it crowded + mis-aligned
-                     the action buttons. editor.js still updates #song-count if
-                     present (guarded), so this is markup-only. -->
+                     the action buttons. The matching guarded #song-count update
+                     in editor.js was dead code ever since (nothing emits the id)
+                     and was deleted by the silent-wiring sweep — see
+                     tests/test-dom-target-integrity.js. -->
                 <span class="d-flex gap-1 flex-wrap">
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-select-mode"
                             title="Multi-select mode (#399)" aria-pressed="false">
-                        <i class="bi bi-check2-square me-1"></i>Select
+                        <i aria-hidden="true" class="bi bi-check2-square me-1"></i>Select
                     </button>
                     <button type="button" class="btn btn-sm btn-amber" id="btn-add-song" title="Add new song">
-                        <i class="bi bi-plus-lg me-1"></i>Add
+                        <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add
                     </button>
                     <!-- Consolidated export (#1166 polish): ONE "Export ▾"
                          dropdown listing every format for the open song or the
@@ -404,29 +428,29 @@ try {
                                 id="btn-export-all" data-bs-toggle="dropdown"
                                 data-bs-auto-close="outside" aria-expanded="false"
                                 title="Export the open song or the active-filter songbook to a worship-presentation format">
-                            <i class="bi bi-box-arrow-down me-1"></i>Export
+                            <i aria-hidden="true" class="bi bi-box-arrow-down me-1"></i>Export
                         </button>
                         <ul class="dropdown-menu dropdown-menu-dark" style="max-height:70vh;overflow-y:auto;min-width:15rem">
                             <li><h6 class="dropdown-header">This song</h6></li>
-                            <li><a class="dropdown-item" href="#" id="btn-export-song"><i class="bi bi-braces me-2"></i>iHymns JSON</a></li>
-                            <li><a class="dropdown-item" href="#" id="pp-export-song"><i class="bi bi-easel me-2"></i>ProPresenter 7+ <span class="text-muted small ms-1">.pro</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="p6-export-song"><i class="bi bi-display me-2"></i>ProPresenter 6 <span class="text-muted small ms-1">.pro6</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="os-export-song"><i class="bi bi-filetype-xml me-2"></i>OpenSong <span class="text-muted small ms-1">.xml</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="ol-export-song"><i class="bi bi-easel me-2"></i>OpenLP / OpenLyrics <span class="text-muted small ms-1">.xml</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="vp-export-song"><i class="bi bi-filetype-json me-2"></i>VideoPsalm <span class="text-muted small ms-1">.json</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="fs-export-song"><i class="bi bi-easel2 me-2"></i>FreeShow <span class="text-muted small ms-1">.show</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="pc-export-song"><i class="bi bi-file-text me-2"></i>Proclaim <span class="text-muted small ms-1">.txt</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="ew-export-song"><i class="bi bi-database me-2"></i>EasyWorship <span class="badge bg-warning text-dark ms-1">beta</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="btn-export-song"><i aria-hidden="true" class="bi bi-braces me-2"></i>iHymns JSON</a></li>
+                            <li><a class="dropdown-item" href="#" id="pp-export-song"><i aria-hidden="true" class="bi bi-easel me-2"></i>ProPresenter 7+ <span class="text-muted small ms-1">.pro</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="p6-export-song"><i aria-hidden="true" class="bi bi-display me-2"></i>ProPresenter 6 <span class="text-muted small ms-1">.pro6</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="os-export-song"><i aria-hidden="true" class="bi bi-filetype-xml me-2"></i>OpenSong <span class="text-muted small ms-1">.xml</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="ol-export-song"><i aria-hidden="true" class="bi bi-easel me-2"></i>OpenLP / OpenLyrics <span class="text-muted small ms-1">.xml</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="vp-export-song"><i aria-hidden="true" class="bi bi-filetype-json me-2"></i>VideoPsalm <span class="text-muted small ms-1">.json</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="fs-export-song"><i aria-hidden="true" class="bi bi-easel2 me-2"></i>FreeShow <span class="text-muted small ms-1">.show</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="pc-export-song"><i aria-hidden="true" class="bi bi-file-text me-2"></i>Proclaim <span class="text-muted small ms-1">.txt</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="ew-export-song"><i aria-hidden="true" class="bi bi-database me-2"></i>EasyWorship <span class="badge bg-warning text-dark ms-1">beta</span></a></li>
                             <li><hr class="dropdown-divider"></li>
                             <li><h6 class="dropdown-header">This songbook <span class="text-muted fw-normal">· active filter</span></h6></li>
-                            <li><a class="dropdown-item" href="#" id="pp-export-songbook"><i class="bi bi-archive me-2"></i>ProPresenter 7+ <span class="text-muted small ms-1">.probundle</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="p6-export-songbook"><i class="bi bi-archive me-2"></i>ProPresenter 6 <span class="text-muted small ms-1">.zip</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="os-export-songbook"><i class="bi bi-archive me-2"></i>OpenSong <span class="text-muted small ms-1">.zip</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="ol-export-songbook"><i class="bi bi-archive me-2"></i>OpenLP / OpenLyrics <span class="text-muted small ms-1">.osz</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="vp-export-songbook"><i class="bi bi-journal-text me-2"></i>VideoPsalm <span class="text-muted small ms-1">.json</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="fs-export-songbook"><i class="bi bi-archive me-2"></i>FreeShow <span class="text-muted small ms-1">.zip</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="pc-export-songbook"><i class="bi bi-archive me-2"></i>Proclaim <span class="text-muted small ms-1">.zip</span></a></li>
-                            <li><a class="dropdown-item" href="#" id="ew-export-songbook"><i class="bi bi-database-down me-2"></i>EasyWorship <span class="badge bg-warning text-dark ms-1">beta</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="pp-export-songbook"><i aria-hidden="true" class="bi bi-archive me-2"></i>ProPresenter 7+ <span class="text-muted small ms-1">.probundle</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="p6-export-songbook"><i aria-hidden="true" class="bi bi-archive me-2"></i>ProPresenter 6 <span class="text-muted small ms-1">.zip</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="os-export-songbook"><i aria-hidden="true" class="bi bi-archive me-2"></i>OpenSong <span class="text-muted small ms-1">.zip</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="ol-export-songbook"><i aria-hidden="true" class="bi bi-archive me-2"></i>OpenLP / OpenLyrics <span class="text-muted small ms-1">.osz</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="vp-export-songbook"><i aria-hidden="true" class="bi bi-journal-text me-2"></i>VideoPsalm <span class="text-muted small ms-1">.json</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="fs-export-songbook"><i aria-hidden="true" class="bi bi-archive me-2"></i>FreeShow <span class="text-muted small ms-1">.zip</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="pc-export-songbook"><i aria-hidden="true" class="bi bi-archive me-2"></i>Proclaim <span class="text-muted small ms-1">.zip</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="ew-export-songbook"><i aria-hidden="true" class="bi bi-database-down me-2"></i>EasyWorship <span class="badge bg-warning text-dark ms-1">beta</span></a></li>
                             <li><hr class="dropdown-divider"></li>
                             <li>
                                 <div class="px-3 py-1">
@@ -442,7 +466,7 @@ try {
                         </ul>
                     </div>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
-                        <i class="bi bi-trash me-1"></i>Delete
+                        <i aria-hidden="true" class="bi bi-trash me-1"></i>Delete
                     </button>
                 </span>
             </div>
@@ -459,22 +483,22 @@ try {
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-bulk-select-none">None</button>
                     <button type="button" class="btn btn-sm btn-outline-success" id="btn-bulk-verify" disabled
                             title="Mark selected songs as verified">
-                        <i class="bi bi-patch-check me-1"></i>Verify
+                        <i aria-hidden="true" class="bi bi-patch-check me-1"></i>Verify
                     </button>
                     <button type="button" class="btn btn-sm btn-outline-primary" id="btn-bulk-tag" disabled
                             title="Add or remove tags on selected songs">
-                        <i class="bi bi-tags me-1"></i>Tag
+                        <i aria-hidden="true" class="bi bi-tags me-1"></i>Tag
                     </button>
                     <button type="button" class="btn btn-sm btn-outline-warning" id="btn-bulk-move" disabled
                             title="Move selected songs to another songbook">
-                        <i class="bi bi-arrow-right-circle me-1"></i>Move
+                        <i aria-hidden="true" class="bi bi-arrow-right-circle me-1"></i>Move
                     </button>
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-bulk-export" disabled
                             title="Export selected songs as JSON">
-                        <i class="bi bi-download me-1"></i>Export
+                        <i aria-hidden="true" class="bi bi-download me-1"></i>Export
                     </button>
                     <button type="button" class="btn btn-sm btn-danger" id="btn-bulk-delete" disabled>
-                        <i class="bi bi-trash me-1"></i>Delete
+                        <i aria-hidden="true" class="bi bi-trash me-1"></i>Delete
                     </button>
                 </span>
             </div>
@@ -489,11 +513,17 @@ try {
                3. Credits   — Writers, Composers, Copyright notice
                4. Preview   — Read-only rendered preview of the song
              ============================================================= -->
-        <main class="editor-main" id="editorMain">
+        <main class="editor-main" id="editorMain" tabindex="-1">
+
+            <!-- a11y audit L8 (WCAG 2.4.1/2.4.6, 2026-08-30): this shell had
+                 no <h1> at all — the brand in the navbar is a link, not a
+                 heading. Visually hidden since the tabbed panel above
+                 already carries the visible "which song" context. -->
+            <h1 class="visually-hidden">iHymns Song Editor</h1>
 
             <!-- Empty state — shown when no song is selected for editing -->
             <div class="empty-state h-100" id="editorEmpty">
-                <i class="bi bi-pencil-square"></i>
+                <i aria-hidden="true" class="bi bi-pencil-square"></i>
                 <p class="mb-1">No song selected</p>
                 <small>Select a song from the list, or load a JSON file to begin editing</small>
             </div>
@@ -516,7 +546,7 @@ try {
                             aria-controls="panel-metadata"
                             aria-selected="true"
                         >
-                            <i class="bi bi-info-circle me-1"></i>Metadata
+                            <i aria-hidden="true" class="bi bi-info-circle me-1"></i>Metadata
                         </button>
                     </li>
 
@@ -532,7 +562,7 @@ try {
                             aria-controls="panel-structure"
                             aria-selected="false"
                         >
-                            <i class="bi bi-list-ol me-1"></i>Structure
+                            <i aria-hidden="true" class="bi bi-list-ol me-1"></i>Structure
                         </button>
                     </li>
 
@@ -548,7 +578,7 @@ try {
                             aria-controls="panel-credits"
                             aria-selected="false"
                         >
-                            <i class="bi bi-people me-1"></i>Credits
+                            <i aria-hidden="true" class="bi bi-people me-1"></i>Credits
                         </button>
                     </li>
 
@@ -566,7 +596,7 @@ try {
                             aria-controls="panel-links"
                             aria-selected="false"
                         >
-                            <i class="bi bi-link-45deg me-1"></i>Links
+                            <i aria-hidden="true" class="bi bi-link-45deg me-1"></i>Links
                         </button>
                     </li>
 
@@ -582,7 +612,7 @@ try {
                             aria-controls="panel-tags"
                             aria-selected="false"
                         >
-                            <i class="bi bi-tags me-1"></i>Tags
+                            <i aria-hidden="true" class="bi bi-tags me-1"></i>Tags
                         </button>
                     </li>
 
@@ -598,7 +628,7 @@ try {
                             aria-controls="panel-media"
                             aria-selected="false"
                         >
-                            <i class="bi bi-music-note-list me-1"></i>Media
+                            <i aria-hidden="true" class="bi bi-music-note-list me-1"></i>Media
                         </button>
                     </li>
 
@@ -614,7 +644,7 @@ try {
                             aria-controls="panel-preview"
                             aria-selected="false"
                         >
-                            <i class="bi bi-eye me-1"></i>Preview
+                            <i aria-hidden="true" class="bi bi-eye me-1"></i>Preview
                         </button>
                     </li>
                 </ul>
@@ -699,7 +729,7 @@ try {
                         <div class="row g-2 mb-3">
                             <div class="col-md-6">
                                 <label for="edit-tune-name" class="form-label">
-                                    <i class="bi bi-music-note-list me-1"></i>Tune Name
+                                    <i aria-hidden="true" class="bi bi-music-note-list me-1"></i>Tune Name
                                 </label>
                                 <input
                                     type="text"
@@ -707,13 +737,13 @@ try {
                                     id="edit-tune-name"
                                     placeholder="e.g. HYFRYDOL, OLD HUNDREDTH"
                                 >
-                                <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                <div class="form-text" style="color: var(--text-muted); font-size: 0.75rem;">
                                     Traditional tune name, if known. Uppercase by convention.
                                 </div>
                             </div>
                             <div class="col-md-6">
                                 <label for="edit-iswc" class="form-label">
-                                    <i class="bi bi-upc me-1"></i>ISWC
+                                    <i aria-hidden="true" class="bi bi-upc me-1"></i>ISWC
                                 </label>
                                 <input
                                     type="text"
@@ -721,7 +751,7 @@ try {
                                     id="edit-iswc"
                                     placeholder="e.g. T-034.524.680-C"
                                 >
-                                <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                <div class="form-text" style="color: var(--text-muted); font-size: 0.75rem;">
                                     International Standard Musical Work Code.
                                 </div>
                             </div>
@@ -738,7 +768,7 @@ try {
                         <div class="row g-2 mb-3">
                             <div class="col-md-12">
                                 <label for="edit-origin-city" class="form-label">
-                                    <i class="bi bi-geo-alt me-1"></i>Composition origin
+                                    <i aria-hidden="true" class="bi bi-geo-alt me-1"></i>Composition origin
                                 </label>
                                 <input
                                     type="text"
@@ -748,7 +778,7 @@ try {
                                     autocomplete="off"
                                 >
                                 <input type="hidden" id="edit-origin-city-id">
-                                <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                <div class="form-text" style="color: var(--text-muted); font-size: 0.75rem;">
                                     Where the composition originated or was first performed.
                                     Picks from the live geocoder so two curators picking
                                     &ldquo;Cardiff&rdquo; resolve to one canonical place.
@@ -777,10 +807,10 @@ try {
                         ?>
 
                         <!-- Status & Copyright Flags (#222, #225) -->
-                        <hr style="border-color: var(--ih-border);">
-                        <div class="mb-3">
-                            <label class="form-label d-block">
-                                <i class="bi bi-flag me-1"></i>Status &amp; Copyright
+                        <hr style="border-color: var(--card-border);">
+                        <div class="mb-3" role="group" aria-labelledby="edit-status-copyright-label">
+                            <label class="form-label d-block" id="edit-status-copyright-label">
+                                <i aria-hidden="true" class="bi bi-flag me-1"></i>Status &amp; Copyright
                             </label>
 
                             <!-- Verified — lyrics confirmed as complete and accurate -->
@@ -791,7 +821,7 @@ try {
                                     id="edit-verified"
                                 >
                                 <label class="form-check-label" for="edit-verified">
-                                    <i class="bi bi-patch-check me-1" style="color: var(--ih-amber);"></i>
+                                    <i aria-hidden="true" class="bi bi-patch-check me-1" style="color: var(--bs-warning, #f59e0b);"></i>
                                     Verified — lyrics confirmed complete and accurate
                                 </label>
                             </div>
@@ -804,7 +834,7 @@ try {
                                     id="edit-lyricsPublicDomain"
                                 >
                                 <label class="form-check-label" for="edit-lyricsPublicDomain">
-                                    <i class="bi bi-unlock me-1" style="color: var(--ih-amber);"></i>
+                                    <i aria-hidden="true" class="bi bi-unlock me-1" style="color: var(--bs-warning, #f59e0b);"></i>
                                     Lyrics — Public Domain
                                 </label>
                             </div>
@@ -817,12 +847,12 @@ try {
                                     id="edit-musicPublicDomain"
                                 >
                                 <label class="form-check-label" for="edit-musicPublicDomain">
-                                    <i class="bi bi-unlock me-1" style="color: var(--ih-amber);"></i>
+                                    <i aria-hidden="true" class="bi bi-unlock me-1" style="color: var(--bs-warning, #f59e0b);"></i>
                                     Music — Public Domain
                                 </label>
                             </div>
 
-                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                            <div class="form-text" style="color: var(--text-muted); font-size: 0.75rem;">
                                 Only tick Public Domain if the work is explicitly in the public domain.
                                 An unknown or missing copyright does not imply public domain.
                             </div>
@@ -886,7 +916,7 @@ try {
                                 id="btn-add-component"
                                 title="Add a new song component (verse, chorus, etc.)"
                             >
-                                <i class="bi bi-plus-circle me-1"></i>Add Component
+                                <i aria-hidden="true" class="bi bi-plus-circle me-1"></i>Add Component
                             </button>
                             <!-- Paste & Reflow (#1043) — ProPresenter-style bulk section entry.
                                  Opens a modal to paste a whole lyrics block and auto-split it
@@ -899,12 +929,12 @@ try {
                                 data-bs-target="#reflow-modal"
                                 title="Paste a whole lyrics block and split it into sections (ProPresenter-style Reflow)"
                             >
-                                <i class="bi bi-magic me-1"></i>Paste &amp; Reflow
+                                <i aria-hidden="true" class="bi bi-magic me-1"></i>Paste &amp; Reflow
                             </button>
                         </div>
 
                         <!-- Legend explaining the available component types -->
-                        <div class="mt-3 p-2 rounded" style="background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);">
+                        <div class="mt-3 p-2 rounded" style="background-color: var(--surface-card); border: 1px solid var(--card-border);">
                             <small class="text-muted">
                                 <strong>Component types:</strong>
                                 Verse, Chorus, Refrain, Bridge, Pre-Chorus, Tag, Coda, Intro, Outro, Interlude
@@ -919,7 +949,7 @@ try {
                              ------------------------------------------------- -->
                         <hr class="my-3">
                         <h6 class="fw-semibold mb-2">
-                            <i class="bi bi-arrow-down-up me-1"></i>Arrangement
+                            <i aria-hidden="true" class="bi bi-arrow-down-up me-1"></i>Arrangement
                             <small class="text-muted fw-normal ms-2">(display order)</small>
                         </h6>
 
@@ -929,23 +959,23 @@ try {
                              STRIP = the ordered sequence; drag to reorder, click
                              × on a chip to remove. -->
                         <div class="mb-2">
-                            <label class="form-label small text-muted mb-1">
+                            <span class="form-label small text-muted mb-1 d-block">
                                 Components <small class="text-muted">(click to add)</small>
-                            </label>
+                            </span>
                             <div id="arrangement-pool"
                                  class="d-flex flex-wrap gap-1 p-2 rounded"
-                                 style="min-height: 44px; background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);"
+                                 style="min-height: 44px; background-color: var(--surface-card); border: 1px solid var(--card-border);"
                                  aria-label="Component pool">
                             </div>
                         </div>
 
                         <div class="mb-2">
-                            <label class="form-label small text-muted mb-1">
+                            <span class="form-label small text-muted mb-1 d-block">
                                 Sequence <small class="text-muted">(drag to reorder, × to remove)</small>
-                            </label>
+                            </span>
                             <div id="arrangement-strip"
                                  class="d-flex flex-wrap gap-1 p-2 rounded"
-                                 style="min-height: 44px; background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);"
+                                 style="min-height: 44px; background-color: var(--surface-card); border: 1px solid var(--card-border);"
                                  aria-label="Arrangement sequence">
                             </div>
                         </div>
@@ -975,7 +1005,7 @@ try {
                                 data-requires="verse,chorus"
                                 title="Insert chorus after each verse"
                             >
-                                <i class="bi bi-magic me-1"></i>Chorus after each verse
+                                <i aria-hidden="true" class="bi bi-magic me-1"></i>Chorus after each verse
                             </button>
                             <button
                                 type="button"
@@ -984,7 +1014,7 @@ try {
                                 data-requires="verse,pre-chorus,chorus"
                                 title="Verse → Pre-Chorus → Chorus (for each verse)"
                             >
-                                <i class="bi bi-magic me-1"></i>Verse · Pre-Chorus · Chorus
+                                <i aria-hidden="true" class="bi bi-magic me-1"></i>Verse · Pre-Chorus · Chorus
                             </button>
                             <button
                                 type="button"
@@ -993,7 +1023,7 @@ try {
                                 data-requires="verse,bridge"
                                 title="Verses with a Bridge near the end"
                             >
-                                <i class="bi bi-magic me-1"></i>Verses · Bridge · Final Verse
+                                <i aria-hidden="true" class="bi bi-magic me-1"></i>Verses · Bridge · Final Verse
                             </button>
                             <button
                                 type="button"
@@ -1002,7 +1032,7 @@ try {
                                 data-requires="intro,verse,outro"
                                 title="Intro → all Verses → Outro"
                             >
-                                <i class="bi bi-magic me-1"></i>Intro · Verses · Outro
+                                <i aria-hidden="true" class="bi bi-magic me-1"></i>Intro · Verses · Outro
                             </button>
                             <button
                                 type="button"
@@ -1011,7 +1041,7 @@ try {
                                 data-requires="verse"
                                 title="All verses in sequence (no chorus)"
                             >
-                                <i class="bi bi-magic me-1"></i>Verses only
+                                <i aria-hidden="true" class="bi bi-magic me-1"></i>Verses only
                             </button>
                             <button
                                 type="button"
@@ -1019,7 +1049,7 @@ try {
                                 id="btnArrangementSequential"
                                 title="Clear the arrangement — falls back to the order defined above"
                             >
-                                <i class="bi bi-arrow-counterclockwise me-1"></i>Reset to component order
+                                <i aria-hidden="true" class="bi bi-arrow-counterclockwise me-1"></i>Reset to component order
                             </button>
                         </div>
 
@@ -1043,12 +1073,12 @@ try {
                                     id="btnApplyArrangement"
                                     title="Apply arrangement"
                                 >
-                                    <i class="bi bi-check-lg"></i> Apply
+                                    <i aria-hidden="true" class="bi bi-check-lg"></i> Apply
                                 </button>
                             </div>
                         </details>
 
-                        <div class="p-2 rounded" style="background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);">
+                        <div class="p-2 rounded" style="background-color: var(--surface-card); border: 1px solid var(--card-border);">
                             <small class="text-muted">
                                 <strong>Arrangement:</strong>
                                 Type component labels separated by commas. Use the name and number
@@ -1074,9 +1104,9 @@ try {
                         aria-labelledby="tab-credits"
                     >
                         <!-- Writers Section — list of lyricist names -->
-                        <div class="mb-4">
-                            <label class="form-label">
-                                <i class="bi bi-pen me-1"></i>Writers (Lyricists)
+                        <div class="mb-4" role="group" aria-labelledby="credit-writers-label">
+                            <label class="form-label" id="credit-writers-label">
+                                <i aria-hidden="true" class="bi bi-pen me-1"></i>Writers (Lyricists)
                             </label>
 
                             <!-- Dynamic list of writer input rows -->
@@ -1095,9 +1125,9 @@ try {
                         </div>
 
                         <!-- Composers Section — list of music composer names -->
-                        <div class="mb-4">
-                            <label class="form-label">
-                                <i class="bi bi-music-note me-1"></i>Composers
+                        <div class="mb-4" role="group" aria-labelledby="credit-composers-label">
+                            <label class="form-label" id="credit-composers-label">
+                                <i aria-hidden="true" class="bi bi-music-note me-1"></i>Composers
                             </label>
 
                             <!-- Dynamic list of composer input rows -->
@@ -1116,44 +1146,44 @@ try {
                         </div>
 
                         <!-- Arrangers Section (#497) — who re-arranged the music for this setting -->
-                        <div class="mb-4">
-                            <label class="form-label">
-                                <i class="bi bi-sliders me-1"></i>Arrangers
+                        <div class="mb-4" role="group" aria-labelledby="credit-arrangers-label">
+                            <label class="form-label" id="credit-arrangers-label">
+                                <i aria-hidden="true" class="bi bi-sliders me-1"></i>Arrangers
                             </label>
                             <div id="arrangers-container"></div>
                         </div>
 
                         <!-- Adaptors Section (#497) — who adapted the lyrics or melody -->
-                        <div class="mb-4">
-                            <label class="form-label">
-                                <i class="bi bi-vinyl me-1"></i>Adaptors
+                        <div class="mb-4" role="group" aria-labelledby="credit-adaptors-label">
+                            <label class="form-label" id="credit-adaptors-label">
+                                <i aria-hidden="true" class="bi bi-vinyl me-1"></i>Adaptors
                             </label>
                             <div id="adaptors-container"></div>
                         </div>
 
                         <!-- Translators Section (#497) — who translated the lyrics (distinct from the #352 translation-link list below) -->
-                        <div class="mb-4">
-                            <label class="form-label">
-                                <i class="bi bi-translate me-1"></i>Translators
+                        <div class="mb-4" role="group" aria-labelledby="credit-translators-label">
+                            <label class="form-label" id="credit-translators-label">
+                                <i aria-hidden="true" class="bi bi-translate me-1"></i>Translators
                             </label>
                             <div id="translators-container"></div>
                         </div>
 
                         <!-- Artists Section (#587) — recording / release artist -->
-                        <div class="mb-4">
-                            <label class="form-label">
-                                <i class="bi bi-mic me-1"></i>Artists
+                        <div class="mb-4" role="group" aria-labelledby="credit-artists-label">
+                            <label class="form-label" id="credit-artists-label">
+                                <i aria-hidden="true" class="bi bi-mic me-1"></i>Artists
                                 <small class="text-muted ms-1">(recording / release artist — useful for contemporary worship songs)</small>
                             </label>
                             <div id="artists-container"></div>
                         </div>
 
                         <!-- Translations Section — linked translations in other languages (#352) -->
-                        <div class="mb-4">
-                            <label class="form-label">
-                                <i class="bi bi-translate me-1"></i>Translations
+                        <div class="mb-4" role="group" aria-labelledby="credit-translations-label">
+                            <label class="form-label" id="credit-translations-label">
+                                <i aria-hidden="true" class="bi bi-translate me-1"></i>Translations
                             </label>
-                            <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                            <div class="form-text mb-2" style="color: var(--text-muted); font-size: 0.75rem;">
                                 Link this song to its translations in other languages. Linked songs appear on each other's page.
                             </div>
 
@@ -1168,7 +1198,7 @@ try {
                                        placeholder="Target Song ID (e.g. CP-0001)" list="translation-song-list">
                                 <datalist id="translation-song-list"></datalist>
                                 <button type="button" class="btn btn-outline-primary" id="add-translation-btn">
-                                    <i class="bi bi-plus-lg me-1"></i>Link
+                                    <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Link
                                 </button>
                             </div>
                         </div>
@@ -1177,11 +1207,11 @@ try {
                              Distinct from Translations: counterparts are typically the same
                              language, different songbook, unrelated number — e.g. Amazing Grace
                              as MP-031 and CH-376 and SDAH-108. -->
-                        <div class="mb-4">
-                            <label class="form-label">
-                                <i class="bi bi-link-45deg me-1"></i>Cross-book counterparts
+                        <div class="mb-4" role="group" aria-labelledby="credit-crossbook-label">
+                            <label class="form-label" id="credit-crossbook-label">
+                                <i aria-hidden="true" class="bi bi-link-45deg me-1"></i>Cross-book counterparts
                             </label>
-                            <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                            <div class="form-text mb-2" style="color: var(--text-muted); font-size: 0.75rem;">
                                 Link this song to its appearances in other songbooks (same hymn,
                                 different number). Use Translations for other-language versions.
                             </div>
@@ -1197,15 +1227,15 @@ try {
                                        placeholder="Target Song ID (e.g. CH-0376)" list="song-link-song-list">
                                 <datalist id="song-link-song-list"></datalist>
                                 <button type="button" class="btn btn-outline-primary" id="add-song-link-btn">
-                                    <i class="bi bi-plus-lg me-1"></i>Link
+                                    <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Link
                                 </button>
                             </div>
 
                             <!-- Suggested counterparts (#808) — top similar-titled candidates.
                                  Hidden until at least one suggestion exists for the open song. -->
                             <div id="song-link-suggestions" class="mt-3" style="display:none;">
-                                <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
-                                    <i class="bi bi-lightbulb me-1"></i>
+                                <div class="form-text mb-2" style="color: var(--text-muted); font-size: 0.75rem;">
+                                    <i aria-hidden="true" class="bi bi-lightbulb me-1"></i>
                                     Suggested counterparts — similar titles in other songbooks:
                                 </div>
                                 <div id="song-link-suggestions-list">
@@ -1217,7 +1247,7 @@ try {
                         <!-- Copyright Text — free-text copyright notice -->
                         <div class="mb-3">
                             <label for="edit-copyright" class="form-label">
-                                <i class="bi bi-c-circle me-1"></i>Copyright
+                                <i aria-hidden="true" class="bi bi-c-circle me-1"></i>Copyright
                             </label>
                             <textarea
                                 class="form-control"
@@ -1225,7 +1255,7 @@ try {
                                 rows="2"
                                 placeholder="e.g. Copyright 2024 Hillsong Music Publishing"
                             ></textarea>
-                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                            <div class="form-text" style="color: var(--text-muted); font-size: 0.75rem;">
                                 Full copyright text as it should appear in the application.
                             </div>
                         </div>
@@ -1252,7 +1282,7 @@ try {
                     >
                         <div class="form-section">
                             <h6 class="section-title">
-                                <i class="bi bi-link-45deg me-1"></i>External links
+                                <i aria-hidden="true" class="bi bi-link-45deg me-1"></i>External links
                             </h6>
                             <div class="text-muted small mb-3">
                                 Hymnary.org · Internet Archive scans · Wikipedia ·
@@ -1277,7 +1307,7 @@ try {
                                     . DIRECTORY_SEPARATOR . 'external-links-section.php';
                             ?>
 
-                            <div class="form-text small mt-3" style="color: var(--ih-text-muted);">
+                            <div class="form-text small mt-3" style="color: var(--text-muted);">
                                 Save the song to persist link changes.
                                 Existing links are loaded automatically on song open.
                             </div>
@@ -1302,7 +1332,7 @@ try {
                     >
                         <div class="form-section">
                             <h6 class="section-title">
-                                <i class="bi bi-tags me-1"></i>Tags &amp; Themes
+                                <i aria-hidden="true" class="bi bi-tags me-1"></i>Tags &amp; Themes
                             </h6>
                             <div class="text-muted small mb-3">
                                 Tags power the <strong>Browse by Theme</strong> section on the
@@ -1312,10 +1342,11 @@ try {
 
                             <!-- Current assignments — chip list, one per tag.
                                  Rendered by editor.js renderSongTags(). -->
-                            <label class="form-label">Assigned tags</label>
+                            <label class="form-label" id="song-tags-label">Assigned tags</label>
                             <div id="song-tags-container"
+                                 role="group" aria-labelledby="song-tags-label"
                                  class="d-flex flex-wrap gap-1 p-2 rounded mb-3"
-                                 style="min-height: 44px; background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);">
+                                 style="min-height: 44px; background-color: var(--surface-card); border: 1px solid var(--card-border);">
                                 <span class="text-muted small">Loading…</span>
                             </div>
 
@@ -1334,7 +1365,7 @@ try {
                                      style="z-index: 1050; max-height: 240px; overflow-y: auto;">
                                 </div>
                             </div>
-                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                            <div class="form-text" style="color: var(--text-muted); font-size: 0.75rem;">
                                 Select an existing tag from the dropdown, or type a new name
                                 and press Enter to create it.
                             </div>
@@ -1360,7 +1391,7 @@ try {
                     >
                         <div class="form-section">
                             <h6 class="section-title">
-                                <i class="bi bi-music-note-list me-1"></i>Accompanying Media
+                                <i aria-hidden="true" class="bi bi-music-note-list me-1"></i>Accompanying Media
                             </h6>
                             <div class="text-muted small mb-3">
                                 Upload audio recordings, sheet music, MIDI sequences and
@@ -1413,7 +1444,7 @@ try {
 
                             <!-- Placeholder text shown before preview is generated -->
                             <div class="text-center text-muted py-5" id="previewEmpty">
-                                <i class="bi bi-eye-slash" style="font-size: 2rem;"></i>
+                                <i aria-hidden="true" class="bi bi-eye-slash" style="font-size: 2rem;"></i>
                                 <p class="mt-2">Preview will appear here when a song is loaded</p>
                             </div>
                         </div>
@@ -1446,8 +1477,13 @@ try {
         <div class="me-auto d-flex align-items-center">
             <!-- Coloured dot indicator — class toggled by editor.js -->
             <span class="status-indicator saved" id="status-indicator"></span>
-            <!-- Status text (e.g., "All changes saved" or "Unsaved changes") -->
-            <span id="status-text">Ready</span>
+            <!-- Status text (e.g., "All changes saved" or "Unsaved changes").
+                 a11y audit M8/D2 (WCAG 4.1.3, 2026-08-30): role="status" makes
+                 this an announced live region — was previously silent to a
+                 screen reader (editor.js's updateSaveUiState() now also skips
+                 re-writing the SAME text on every keystroke, so this doesn't
+                 turn chatty while typing; see that function's own comment). -->
+            <span id="status-text" role="status">Ready</span>
             <!-- Unsaved changes warning badge -->
             <span id="status-unsaved-warning" class="badge bg-warning text-dark ms-2" style="display: none;">
                 <span id="status-modified">0</span> unsaved
@@ -1456,13 +1492,13 @@ try {
 
         <!-- Centre section — total songs loaded -->
         <div class="mx-3">
-            <i class="bi bi-collection me-1"></i>
+            <i aria-hidden="true" class="bi bi-collection me-1"></i>
             <span id="status-total">0</span> songs loaded
         </div>
 
         <!-- Right section — last saved timestamp -->
         <div>
-            <i class="bi bi-clock me-1"></i>
+            <i aria-hidden="true" class="bi bi-clock me-1"></i>
             Last saved: <span id="status-save-time">Never</span>
         </div>
     </footer>
@@ -1480,7 +1516,7 @@ try {
 
                 <!-- Drag handle — allows reordering via drag-and-drop -->
                 <span class="drag-handle" title="Drag to reorder">
-                    <i class="bi bi-grip-vertical"></i>
+                    <i aria-hidden="true" class="bi bi-grip-vertical"></i>
                 </span>
 
                 <!-- Component number badge — updated dynamically -->
@@ -1522,24 +1558,27 @@ try {
                                 type="button"
                                 class="btn btn-sm btn-outline-secondary btn-move-up"
                                 title="Move component up"
+                                aria-label="Move this component up"
                             >
-                                <i class="bi bi-arrow-up"></i>
+                                <i class="bi bi-arrow-up" aria-hidden="true"></i>
                             </button>
                             <!-- Move Down — shifts this component one position later -->
                             <button
                                 type="button"
                                 class="btn btn-sm btn-outline-secondary btn-move-down"
                                 title="Move component down"
+                                aria-label="Move this component down"
                             >
-                                <i class="bi bi-arrow-down"></i>
+                                <i class="bi bi-arrow-down" aria-hidden="true"></i>
                             </button>
                             <!-- Remove — deletes this component entirely -->
                             <button
                                 type="button"
                                 class="btn btn-sm btn-outline-danger btn-remove-component"
                                 title="Remove this component"
+                                aria-label="Remove this component"
                             >
-                                <i class="bi bi-trash"></i>
+                                <i class="bi bi-trash" aria-hidden="true"></i>
                             </button>
                         </div>
                     </div>
@@ -1570,8 +1609,8 @@ try {
                 placeholder="Writer name"
                 aria-label="Writer name"
             >
-            <button type="button" class="btn-remove-row" title="Remove this writer">
-                <i class="bi bi-x-lg"></i>
+            <button type="button" class="btn-remove-row" title="Remove this writer" aria-label="Remove this writer">
+                <i class="bi bi-x-lg" aria-hidden="true"></i>
             </button>
         </div>
     </template>
@@ -1590,8 +1629,8 @@ try {
                 placeholder="Composer name"
                 aria-label="Composer name"
             >
-            <button type="button" class="btn-remove-row" title="Remove this composer">
-                <i class="bi bi-x-lg"></i>
+            <button type="button" class="btn-remove-row" title="Remove this composer" aria-label="Remove this composer">
+                <i class="bi bi-x-lg" aria-hidden="true"></i>
             </button>
         </div>
     </template>
@@ -1620,9 +1659,9 @@ try {
             <div class="modal-content border-info">
                 <div class="modal-header border-secondary">
                     <h5 class="modal-title" id="history-modal-title">
-                        <i class="bi bi-clock-history me-2"></i>Revision history
+                        <i aria-hidden="true" class="bi bi-clock-history me-2"></i>Revision history
                     </h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <div id="history-list" class="list-group list-group-flush"></div>
@@ -1641,9 +1680,9 @@ try {
             <div class="modal-content border-info">
                 <div class="modal-header border-secondary">
                     <h5 class="modal-title" id="reflow-modal-title">
-                        <i class="bi bi-magic me-2"></i>Paste &amp; Reflow
+                        <i aria-hidden="true" class="bi bi-magic me-2"></i>Paste &amp; Reflow
                     </h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
                     <!-- #1180 — prominent, scannable explainer (the old version
@@ -1651,7 +1690,7 @@ try {
                          with the load-bearing rule: blank line = new section. -->
                     <div class="small border border-info rounded p-2 mb-3 d-flex gap-2"
                          style="background: rgba(13,202,240,0.08);" role="note">
-                        <i class="bi bi-info-circle-fill text-info mt-1 flex-shrink-0"></i>
+                        <i aria-hidden="true" class="bi bi-info-circle-fill text-info mt-1 flex-shrink-0"></i>
                         <div>
                             <strong>Put one blank line between each section.</strong>
                             Every block of lines (separated by an empty line) becomes its own
@@ -1670,7 +1709,7 @@ try {
                               placeholder="Verse 1&#10;Amazing grace, how sweet the sound&#10;That saved a wretch like me&#10;&#10;Chorus&#10;Praise God, praise God&#10;&#10;Verse 2&#10;..."></textarea>
                     <div class="d-flex gap-2 mt-2 align-items-center">
                         <button type="button" class="btn btn-sm btn-info" id="reflow-parse-btn">
-                            <i class="bi bi-arrow-down-up me-1"></i>Parse into sections
+                            <i aria-hidden="true" class="bi bi-arrow-down-up me-1"></i>Parse into sections
                         </button>
                         <span class="text-muted small" id="reflow-count"></span>
                     </div>
@@ -1682,7 +1721,7 @@ try {
                 <div class="modal-footer border-secondary">
                     <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
                     <button type="button" class="btn btn-amber btn-sm" id="reflow-apply-btn" disabled>
-                        <i class="bi bi-check2-circle me-1"></i>Apply sections
+                        <i aria-hidden="true" class="bi bi-check2-circle me-1"></i>Apply sections
                     </button>
                 </div>
             </div>
@@ -1846,15 +1885,20 @@ try {
             notify('Exported ' + result.count + ' song' + (result.count === 1 ? '' : 's') + ' → ' + result.filename, 'success');
         }
 
-        /* Load the protobuf descriptor up-front; enable the dropdown only
-           once the schema parses (so a broken bundle disables export rather
-           than failing mid-click). */
+        /* Load the protobuf descriptor up-front, so it is warm by the time the
+           user actually clicks Export rather than fetching + parsing on the
+           critical path of that first click. The unified Export dropdown
+           (#1166, `#btn-export-all` above) stays always-enabled regardless of
+           whether this succeeds — a broken bundle surfaces as an error toast
+           on click, not a disabled control (see the comment on
+           #btn-export-all). This used to also flip a per-format
+           `#btn-pp-export` button's `disabled` flag, but that button was
+           removed by the #1166 dropdown consolidation and the id has not
+           existed since; the dead lookup was deleted by the silent-wiring
+           sweep (tests/test-dom-target-integrity.js). */
         function eagerInit() {
             if (!window.iHymnsProPresenter || !window.iHymnsProPresenter.init) return;
-            window.iHymnsProPresenter.init().then(function () {
-                var btn = document.getElementById('btn-pp-export');
-                if (btn) btn.disabled = false;
-            }).catch(function (err) {
+            window.iHymnsProPresenter.init().catch(function (err) {
                 console.warn('[ProPresenter] schema init failed; export disabled:', err);
             });
         }
@@ -1947,7 +1991,15 @@ try {
             }));
             notify('Exported ' + r.count + ' song' + (r.count === 1 ? '' : 's') + ' → ' + r.filename, 'success');
         }
-        function bindFormat(formatKey, label, btnId, songItemId, bookItemId) {
+        /* `btnId` used to be a fourth argument here, looking up a per-format
+           toggle button (e.g. `btn-os-export`) to flip its `disabled` flag —
+           those buttons were replaced by the single `#btn-export-all`
+           dropdown in the #1166 consolidation and the ids have not existed
+           since. The dead lookups (one per call site below) were deleted by
+           the silent-wiring sweep (tests/test-dom-target-integrity.js); see
+           the comment on `#btn-export-all` for why the dropdown stays
+           always-enabled instead. */
+        function bindFormat(formatKey, label, songItemId, bookItemId) {
             var s = document.getElementById(songItemId);
             var b = document.getElementById(bookItemId);
             if (s) s.addEventListener('click', function (e) {
@@ -1958,8 +2010,6 @@ try {
                 e.preventDefault();
                 exportSongbook(formatKey, label).catch(function (err) { notify('Export failed: ' + ((err && err.message) || err), 'danger'); });
             });
-            var btn = document.getElementById(btnId);
-            if (btn && window.iHymnsFormatExport && window.iHymnsFormatExport[formatKey]) { btn.disabled = false; }
         }
         document.addEventListener('DOMContentLoaded', function () {
             /* #1065 — hydrate the lines-per-slide input from the saved default
@@ -1975,12 +2025,12 @@ try {
                     try { window.localStorage.setItem(LINES_PER_SLIDE_KEY, String(v)); } catch (_e) {}
                 });
             }
-            bindFormat('openSong',   'OpenSong',   'btn-os-export', 'os-export-song', 'os-export-songbook');
-            bindFormat('videoPsalm', 'VideoPsalm', 'btn-vp-export', 'vp-export-song', 'vp-export-songbook');
-            bindFormat('freeShow',   'FreeShow',   'btn-fs-export', 'fs-export-song', 'fs-export-songbook');
-            bindFormat('openLyrics',    'OpenLP',       'btn-ol-export', 'ol-export-song', 'ol-export-songbook');
-            bindFormat('proclaim',      'Proclaim',     'btn-pc-export', 'pc-export-song', 'pc-export-songbook');
-            bindFormat('proPresenter6', 'ProPresenter 6', 'btn-p6-export', 'p6-export-song', 'p6-export-songbook');
+            bindFormat('openSong',   'OpenSong',   'os-export-song', 'os-export-songbook');
+            bindFormat('videoPsalm', 'VideoPsalm', 'vp-export-song', 'vp-export-songbook');
+            bindFormat('freeShow',   'FreeShow',   'fs-export-song', 'fs-export-songbook');
+            bindFormat('openLyrics',    'OpenLP',       'ol-export-song', 'ol-export-songbook');
+            bindFormat('proclaim',      'Proclaim',     'pc-export-song', 'pc-export-songbook');
+            bindFormat('proPresenter6', 'ProPresenter 6', 'p6-export-song', 'p6-export-songbook');
 
             /* EasyWorship export (#1059) — server-side endpoint, so it can't go
                through bindFormat()/format-export.js. The dropdown items trigger
@@ -1996,10 +2046,8 @@ try {
                 a.click();
                 document.body.removeChild(a);
             }
-            var ewBtn  = document.getElementById('btn-ew-export');
             var ewSong = document.getElementById('ew-export-song');
             var ewBook = document.getElementById('ew-export-songbook');
-            if (ewBtn) { ewBtn.disabled = false; }
             if (ewSong) ewSong.addEventListener('click', function (e) {
                 e.preventDefault();
                 if (!currentSongId) { notify('Open a song first, then export it.', 'warning'); return; }

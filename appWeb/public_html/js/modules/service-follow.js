@@ -16,6 +16,7 @@
 
 import { apiFetch } from '../utils/api-client.js';
 import { announce } from '../utils/announce.js';
+import { prefersReducedMotion } from '../utils/motion.js';
 /* #1770 C5 — device id + presence-cookie set/clear extracted into the
    shared util so live-follow.js's Quick-session follower can consume the
    SAME identity (CLAUDE.md modularity rule; presence-identity.js's own
@@ -357,10 +358,13 @@ export class ServiceFollow {
            argument wins. So this path animated regardless of the preference,
            and worse, it is REMOTELY triggered: a congregant with a vestibular
            disorder got animated scrolling they had explicitly opted out of,
-           at a moment they did not initiate. router.js:264 already checks
-           body.reduce-motion for exactly this reason; this now matches it. */
+           at a moment they did not initiate. router.js already checks this
+           for exactly this reason; this now matches it — and (a11y audit
+           L7, 2026-08-30) also honours the OS-level prefers-reduced-motion
+           media query via the shared js/utils/motion.js helper, not just
+           the in-app toggle. */
         el.scrollIntoView({
-            behavior: document.body.classList.contains('reduce-motion') ? 'auto' : 'smooth',
+            behavior: prefersReducedMotion() ? 'auto' : 'smooth',
             block: 'start',
         });
 
@@ -389,7 +393,7 @@ export class ServiceFollow {
         }
         bar.innerHTML = '';
         const label = document.createElement('span');
-        label.innerHTML = '<i class="bi bi-broadcast-pin me-1"></i>Following the service live ';
+        label.innerHTML = '<i class="bi bi-broadcast-pin me-1" aria-hidden="true"></i>Following the service live ';
         const leave = document.createElement('button');
         leave.type = 'button';
         leave.className = 'btn btn-sm btn-light ms-2';

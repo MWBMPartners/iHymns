@@ -66,30 +66,55 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongMediaStorage.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'read_rate_limit.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* #1968 P4 — the media publish-state byte gate + the entitlement lookup it
+   uses to let a signed-in curator preview an `admin`-only row. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_media_visibility.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+/* Per-channel search-engine visibility (#2024/#2025) — keeps a hidden
+   channel's gated media streams out of media search too; one early call,
+   before any byte-range/streaming logic below. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+searchVisibilityEmitNoindexHeader();
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
    so a broken song-media stream (storage backend down, missing
    row, range-header parse fail) surfaces in /manage/activity-log. */
 installGlobalActivityLogHandlers('song_media');
 
 /**
- * Best-effort Bearer-token → user lookup. Returns null for anonymous.
+ * Best-effort viewer resolution → ['userId' => ?int, 'role' => ?string].
+ * Anonymous → ['userId' => null, 'role' => null].
  *
  * Slimmer than api.php's getAuthenticatedUser() — no avatar columns,
- * no sliding expiry write, no $user payload. We only need the Id for
- * the gating call.
+ * no sliding expiry write, no $user payload. We need the Id for the
+ * content/tier gates and the Role for the #1968 P4 media publish-state
+ * gate (a curator with `edit_songs` may preview an `admin`-only row).
+ *
+ * TWO token sources, same shape + hashing as read_rate_limit.php's
+ * `_readRateLimitResolveKey()` and api.php's `getAuthBearerToken()`:
+ * the `Authorization: Bearer` header first (native apps), then the
+ * host-wide `ihymns_auth` cookie (both sign-in surfaces mint it —
+ * auth_cookie.php + /manage/login — while the /manage PHP session cookie
+ * is `path=/manage/` and never reaches this route). This is WHY both
+ * editor media UIs' existing `/song-media/<id>` preview links keep working
+ * for a signed-in curator with zero client change (plan §6.3.3).
  */
-function _songMedia_resolveUserId(): ?int
+function _songMedia_resolveViewer(): array
 {
-    $hdr = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-    if (!preg_match('/^Bearer\s+(.+)$/i', $hdr, $m)) return null;
-    $token = trim($m[1]);
-    if ($token === '') return null;
+    $none = ['userId' => null, 'role' => null];
+    $hdr = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+    $token = '';
+    if (preg_match('/^Bearer\s+(.+)$/i', $hdr, $m)) {
+        $token = trim($m[1]);
+    } elseif (!empty($_COOKIE['ihymns_auth']) && preg_match('/^[a-f0-9]{64}$/i', (string)$_COOKIE['ihymns_auth'])) {
+        $token = (string)$_COOKIE['ihymns_auth'];
+    }
+    if ($token === '') return $none;
 
     try {
         $db = getDbMysqli();
         $hashed = hash('sha256', $token);
         $stmt = $db->prepare(
-            'SELECT t.UserId FROM tblApiTokens t
+            'SELECT t.UserId, u.Role FROM tblApiTokens t
                JOIN tblUsers u ON u.Id = t.UserId
               WHERE t.Token = ? AND t.ExpiresAt > UTC_TIMESTAMP()
                 AND u.IsActive = 1
@@ -99,9 +124,10 @@ function _songMedia_resolveUserId(): ?int
         $stmt->execute();
         $row = $stmt->get_result()->fetch_assoc();
         $stmt->close();
-        return $row ? (int)$row['UserId'] : null;
+        if (!$row) return $none;
+        return ['userId' => (int)$row['UserId'], 'role' => (string)$row['Role']];
     } catch (\Throwable $_e) {
-        return null;
+        return $none;
     }
 }
 
@@ -188,9 +214,13 @@ if (!$hasSchema) {
 }
 
 try {
+    /* #1968 P4 — Visibility joins the SELECT (probe-gated: ', Visibility' when
+       the column exists, '' pre-migration) to drive the publish-state byte gate
+       below. */
     $stmt = $db->prepare(
         'SELECT Id, SongId, Kind, StorageBackend, FileName, MimeType,
-                SizeBytes, Content, StoragePath, Sha256, UpdatedAt
+                SizeBytes, Content, StoragePath, Sha256, UpdatedAt'
+        . songMediaVisibilitySelectFragment($db) . '
            FROM tblSongMedia WHERE Id = ? LIMIT 1'
     );
     $stmt->bind_param('i', $id);
@@ -231,7 +261,8 @@ if (!$row) {
    song.php and contentGatingApply() deliberately grant them. Shape-validated
    here (43 url-safe base64 chars) exactly as api.php:857/974 do, so a junk
    cookie never reaches a query. */
-$userId   = _songMedia_resolveUserId();
+$viewer   = _songMedia_resolveViewer();
+$userId   = $viewer['userId'];
 $presence = null;
 if (isset($_COOKIE['ihymns_sf_presence_token'])
     && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
@@ -257,6 +288,21 @@ if (!contentGatingMediaAllowed((string)$row['Kind'], $userId, $presence)) {
     http_response_code(403);
     header('Content-Type: text/plain; charset=UTF-8');
     echo 'Access restricted: gated content.';
+    exit;
+}
+
+/* Gate 3 — #1968 P4 media publish-state. An `admin`-only row (imported but not
+   yet published, owner decision D1) is served ONLY to a curator holding
+   `edit_songs`; to everyone else it answers 404 WITH NO BODY — deliberately
+   indistinguishable from an absent row (the org-logo.php posture), never a 403
+   that would confirm the id exists. Runs AFTER the entity + tier gates and
+   BEFORE the rate-limiter and the conditional-GET/304 block, because a 304 must
+   never short-circuit past an access check (this file's own doc-block, and #853's
+   ordering). A verified no-op for `public`/NULL rows and un-migrated installs
+   (songMediaVisibilitySelectFragment returned '' → $row has no 'Visibility'
+   key → treated as public). */
+if (!songMediaVisibilityRowAllowed($row['Visibility'] ?? null, $viewer['role'])) {
+    http_response_code(404);
     exit;
 }
 

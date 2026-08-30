@@ -39,7 +39,7 @@ export function escapeHtml(str) {
  */
 export function verifiedBadge(song) {
     if (!song?.verified) return '';
-    return '<span class="verified-badge" title="Verified lyrics" aria-label="Verified lyrics">'
+    return '<span class="verified-badge" role="img" title="Verified lyrics" aria-label="Verified lyrics">'
         + '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">'
         + '<circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/>'
         + '<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/>'

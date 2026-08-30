@@ -34,16 +34,39 @@ declare(strict_types=1);
  * ========================================================================= */
 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+/* apiTokenResolveBearerUser() — the shared Authorization: Bearer verification
+   core (includes/api_tokens.php; `.claude/api-coverage-2026-08-28.md` §3 X1),
+   the SAME function manage/editor/api2.php's seam delegates to (rule #22 —
+   one verification core, not a second one forked per file). auth.php only
+   loads this file lazily inside one of its own functions, so it is required
+   unconditionally here (require_once dedupes either way). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
-/* Verify authentication and editor+ role — return 401/403 JSON for AJAX */
-if (!isAuthenticated()) {
-    header('Content-Type: application/json; charset=UTF-8');
-    http_response_code(401);
-    echo json_encode(['error' => 'Authentication required.']);
-    exit;
+/* Verify authentication and editor+ role — return 401/403 JSON for AJAX.
+ *
+ * BEARER-THEN-COOKIE (`.claude/api-coverage-2026-08-28.md` §3 X1 — native
+ * curator apps have no cookie jar): a Bearer token is tried FIRST and
+ * entirely independently of the cookie/session path below — on a miss (no
+ * header, malformed, expired, unknown, inactive user) apiTokenResolveBearerUser()
+ * returns null and control falls through to EXACTLY the pre-existing
+ * isAuthenticated()/getCurrentUser() cookie check, unchanged in every
+ * particular, so an existing web-editor request that carries no
+ * Authorization header runs through the SAME code path it always did.
+ * $edLegacyBearerAuthed is read by the CSRF gate further down. */
+$edLegacyBearerUser   = apiTokenResolveBearerUser(getDbMysqli());
+$edLegacyBearerAuthed = ($edLegacyBearerUser !== null);
+if ($edLegacyBearerAuthed) {
+    $currentUser = $edLegacyBearerUser;
+} else {
+    if (!isAuthenticated()) {
+        header('Content-Type: application/json; charset=UTF-8');
+        http_response_code(401);
+        echo json_encode(['error' => 'Authentication required.']);
+        exit;
+    }
+    $currentUser = getCurrentUser();
 }
-
-$currentUser = getCurrentUser();
 if (!$currentUser || !hasRole($currentUser['role'], 'editor')) {
     header('Content-Type: application/json; charset=UTF-8');
     http_response_code(403);
@@ -96,6 +119,7 @@ installGlobalActivityLogHandlers('editor_api');
    reuses the SAME parser code instead of forking it (#1200 Phase 4b). Required
    ABOVE the switch so the constants are defined before any handler runs. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_importers.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_media_visibility.php';   /* #1968 P4 — read-only Visibility badge on the (retiring) v1 media list */
 /* #1235 P3 / #1253 — the per-line-language column readiness probe
    (lyricLinesComponentsLangReady) + the shared LanguagesJson builder
    (lineEnrichmentBuildLanguagesJson), so save_song persists per-line language
@@ -127,8 +151,17 @@ header('Cache-Control: no-cache, no-store, must-revalidate');
 
 /* CSRF: every state-changing POST must be a same-origin request (security sweep).
    validateCsrfRequest (auth.php) accepts a valid token OR the X-Requested-With
-   same-origin signal — robust + never stale. GET reads are unaffected. */
+   same-origin signal — robust + never stale. GET reads are unaffected.
+   BEARER EXEMPTION (`.claude/api-coverage-2026-08-28.md` §3 X1): a
+   Bearer-authenticated POST carries no ambient browser credential at all —
+   the Authorization header is an explicit, out-of-band value a cross-site
+   page cannot attach to a forged request (unlike a cookie, which the
+   browser attaches automatically), so it is CSRF-immune BY CONSTRUCTION,
+   the same way a hand-typed API key on curl is. validateCsrfRequest() is
+   therefore skipped entirely for a Bearer-authed request ($edLegacyBearerAuthed
+   === true, set by the guard above) — it only ever runs for the COOKIE path. */
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
+    && !$edLegacyBearerAuthed
     && !validateCsrfRequest($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
     header('Content-Type: application/json; charset=UTF-8');
     http_response_code(403);
@@ -137,6 +170,60 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
 }
 
 $action = $_GET['action'] ?? '';
+
+/**
+ * GET-safe READ actions — mirrors api2.php's ED2_GET_SAFE_ACTIONS gate
+ * (CONFIRMED-Low finding, security review 2026-08-28). The CSRF check just
+ * above ran only inside `if (... === 'POST')`, but the action switch below
+ * executes on ANY method — so an action with no per-case method guard of
+ * its own would reach its handler on a plain cross-site GET / top-level
+ * navigation (the `ihymns_auth` cookie is SameSite=Lax, so isAuthenticated()
+ * still adopts it). In THIS file almost every write case already carries
+ * its own `if ($_SERVER['REQUEST_METHOD'] !== 'POST')` guard (add_song_link,
+ * bulk_tag, restore_revision, every bulk_import_*, the song_media_* actions,
+ * delete_song, and save_song via editorSaveSongCore()'s own check) — but
+ * that is a per-instance pattern, not a mechanism: a future case added
+ * without its own inline guard reopens this exact class silently. This
+ * blanket gate makes POST the default for every action, so a missing
+ * per-case guard degrades to "the action doesn't work over GET", never to
+ * "the action is CSRF-forgeable".
+ *
+ * Built the same two ways as api2.php's list (see that file's doc-block for
+ * the full method): (a) the case body performs NO state change (no INSERT/
+ * UPDATE/DELETE/REPLACE, no logActivity()/logActivityError() write, no file
+ * write); (b) the client reaches the action via GET — editor.js's plain
+ * `fetch()` call sites, index.php's inline `<a href>` triggers for the two
+ * server-generated downloads, and the `poll_url`/`skipped_csv_url` links
+ * api.php itself hands back from bulk_import_zip / bulk_import_status.
+ * `user_search`, `org_search` and `song_media_list` are pure reads by (a)
+ * but have NO live caller reaching THIS file any more (their callers moved
+ * to api2.php, or never existed) — left off the list and therefore
+ * POST-required, per this fix's own resolution for "the client never GETs
+ * it": nothing currently calls them, so nothing breaks, and re-adding one
+ * to the allow-list needs a live GET call site re-verified first. `save`
+ * is dead code (always 410) with no caller either way — same treatment.
+ *
+ * `songbook_export`'s catch block calls logActivityError() on a failed
+ * export, which is itself a logActivity() write (an audit-log INSERT) —
+ * technically at odds with (a)'s letter. Included anyway: it is a
+ * diagnostics-only side effect on an exceptional path (not song data), it
+ * has a live GET caller (index.php's Songbooks export), and forcing it to
+ * POST would break that feature for no CSRF-relevant gain — an attacker
+ * gains nothing by forging an audit-log row about their own failed read.
+ */
+const IHYMNS_EDITOR_API_GET_SAFE_ACTIONS = [
+    'songbook_export', 'load_index', 'load_song',
+    'get_song_links', 'suggest_song_links',
+    'song_tags', 'tag_search', 'credit_search',
+    'list_revisions',
+    'easyworship_export', 'bulk_import_status', 'bulk_import_skipped_csv',
+];
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST'
+    && !in_array($action, IHYMNS_EDITOR_API_GET_SAFE_ACTIONS, true)) {
+    http_response_code(405);
+    echo json_encode(['error' => 'POST required for this action.']);
+    exit;
+}
 
 switch ($action) {
 
@@ -2452,7 +2539,9 @@ switch ($action) {
                 echo json_encode(['error' => 'Uploaded file is empty.']);
                 break;
             }
-            $summary = _bulkImport_processPro7($body, $origName);
+            /* #1968 P4 — a bare .pro warns (true) when it references media it
+               can't bring across; a container passes false (it resolves+ingests). */
+            $summary = _bulkImport_processPro7($body, $origName, true);
             if (!($summary['ok'] ?? false)) {
                 http_response_code(400);
             } elseif (($summary['songs_created'] ?? 0) > 0) {
@@ -2525,9 +2614,9 @@ switch ($action) {
         /* A `.probundle` carries media alongside its `.pro`(s), so it needs
            real headroom over a bare .pro (10 MiB) — 100 MiB covers a modest
            set of background images/short clips without opening the door to
-           an unbounded upload; the ZIP reader's own per-entry (25 MiB) and
-           entry-count (4096) caps (includes/propresenter7_zip.php) apply on
-           top of this regardless of what this field-level check allows. */
+           an unbounded upload; the ZIP reader's own whole-input/per-entry
+           (100 MiB, #1977 aligned it to this upload cap) and entry-count (4096)
+           caps (includes/propresenter7_zip.php) apply on top regardless. */
         $sizeBytes = (int)($_FILES['probundle']['size'] ?? 0);
         if ($sizeBytes > 100 * 1024 * 1024) {
             http_response_code(413);
@@ -2544,7 +2633,10 @@ switch ($action) {
                 echo json_encode(['error' => 'Uploaded file is empty.']);
                 break;
             }
-            $summary = _bulkImport_processProbundle($body, $origName);
+            /* #1968 P4 — thread the curator's user id so ingested media rows
+               record UploadedBy (dormant until pp7_media_ingest_enabled). */
+            $importingUserId = isset($currentUser['id']) ? (int)$currentUser['id'] : 0;
+            $summary = _bulkImport_processProbundle($body, $origName, $importingUserId > 0 ? $importingUserId : null);
             if (!($summary['ok'] ?? false)) {
                 http_response_code(400);
             } elseif (($summary['songs_created'] ?? 0) > 0) {
@@ -3313,7 +3405,8 @@ switch ($action) {
             }
             $stmt = $db->prepare(
                 'SELECT Id, Kind, StorageBackend, FileName, MimeType, SizeBytes,
-                        Annotation, SortOrder, UploadedBy, UploadedAt
+                        Annotation, SortOrder, UploadedBy, UploadedAt'
+                 . songMediaVisibilitySelectFragment($db) . '
                    FROM tblSongMedia
                   WHERE SongId = ?
                   ORDER BY Kind ASC, SortOrder ASC, Id ASC'
@@ -3335,6 +3428,9 @@ switch ($action) {
                     'uploaded_by'    => isset($r['UploadedBy']) ? (int)$r['UploadedBy'] : null,
                     'uploaded_at'    => (string)$r['UploadedAt'],
                     'stream_url'     => '/song-media/' . (int)$r['Id'],
+                    /* #1968 P4 — read-only badge on the retiring v1 editor; 'public'
+                       pre-migration (the fragment was ''). The WRITE control is v2-only. */
+                    'visibility'     => (string)($r['Visibility'] ?? 'public'),
                 ],
                 $rows
             );

@@ -158,15 +158,14 @@ docs: update wiki with API reference
 
 ## Versioning
 
-Versions are **tag-derived** as `MAJOR.RELEASE.BUILD` off a `v1.0.0` baseline (#1899):
+Versioning is **tag-free and Conventional-Commit-driven** (#1963 → #1965, superseding the earlier tag-derived `v1.0.0` scheme from #1899). iHymns deploys direct via SFTP — there are no git tags and no GitHub Releases in the live pipeline:
 
 | Part | Source |
 |---|---|
-| `MAJOR` | Hand-edited, rare — a deliberate line bump |
-| `RELEASE` | Automated at each beta→main promotion (`promotion-deploy-bridge.yml`) |
-| `BUILD` | Monotonic per-commit id (git commit count) |
+| `MAJOR.MINOR` | The committed `Version.Number` in `appWeb/public_html/includes/infoAppVer.php` — the authoritative anchor. `MAJOR` is hand-edited, rare (a deliberate product-identity bump). `MINOR` is bumped **in place** by `deploy.yml` itself when the Conventional-Commit classifier (`.github/workflows/scripts/classify-bump.sh`) finds a clear `feat:` (or major on `feat!:`/`fix!:`/a line-anchored `BREAKING CHANGE:`) among the commits since the anchor last changed — everything else (`fix`/`chore`/`docs`/`refactor`/`perf`/`ci`/an unlabelled subject) is build-only and leaves `MAJOR.MINOR` untouched (a safe under-bump, never an over-bump) |
+| `BUILD` | `git rev-list --count HEAD` — a monotonic per-commit id injected at deploy time, shown as its own row in Settings → About |
 
-The old "auto-bump the minor on every merge" flow (`version-bump.yml`) is **retired**; `release.yml` + `promotion-deploy-bridge.yml` are the tag/release pipeline that replaced it. There are **14** GitHub Actions workflows under `.github/workflows/` (see [[Deployment & CI/CD]]).
+The MINOR bump is committed back to the branch as a normal push (`[skip ci]`), **never as a git tag** — the retired tag-based scheme (`version-bump.yml`, then the #1963 dynamic-tag minter) is gone; `release.yml` still exists but is **dormant / manual-only** (fires only on a hand-pushed `v*` tag or a manual `workflow_dispatch`, never from the automated pipeline). **The load-bearing convention:** PR / squash-merge titles must carry a Conventional-Commit prefix — a feature merged without `feat:` simply doesn't bump the minor (safe but silent), while a non-feature titled `feat:` would wrongly bump it. Every user-visible `feat:` push also needs a plain-language bullet in `WHATS-NEW.md` (the in-app `/whats-new` source, never `CHANGELOG.md`). There are **15** GitHub Actions workflows under `.github/workflows/` (see [[Deployment & CI/CD]]).
 
 ---
 

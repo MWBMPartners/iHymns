@@ -27,8 +27,13 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
-/* Shared fuzzy scorer for the canonicalisation suggestions (#1222). */
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_similarity.php';
+/* #1969 API-coverage batch 4b-i (A3) — the tag admin CRUD shared cores.
+   The admin_tag_* API actions in api.php call these SAME functions this
+   page's POST handlers call — one validation/write core, two thin callers
+   (rule #22/#35). Also pulls in song_similarity.php (ihymns_sim_normalise()/
+   ihymns_sim_text(), #1216/#1222) transitively for the canonicalisation
+   suggestions below — never re-forked. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tag_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -48,30 +53,13 @@ $csrf = csrfToken();
 /* #1152 — the standard-vocabulary columns (Source / ParentId / CcliThemeId)
    land via migrate-seed-theme-vocabulary.php. Probe so this page degrades
    gracefully on a long-running install that hasn't applied it yet. */
-$hasThemeCols = false;
-$probe = $db->query("SHOW COLUMNS FROM tblSongTags LIKE 'Source'");
-if ($probe) { $hasThemeCols = $probe->num_rows > 0; $probe->close(); }
+$hasThemeCols = tagAdminThemeColumnsReady($db);
 
 $logTag = static function (string $action, string $entityId, array $details, string $result = 'success'): void {
     if (function_exists('logActivity')) {
         try { logActivity('tag.' . $action, 'tag', $entityId, $details, $result); }
         catch (\Throwable $_e) { /* audit best-effort */ }
     }
-};
-
-/* ----------------------------------------------------------------------
- * Normalisation helpers — same shape as bulk_tag's $normaliseTag
- * (#762). Trim, collapse whitespace, Title Case, 50-char cap.
- * ---------------------------------------------------------------------- */
-$normaliseTagName = static function (string $name): string {
-    $clean = trim($name);
-    $clean = preg_replace('/\s+/u', ' ', (string)$clean);
-    $titled = mb_convert_case((string)$clean, MB_CASE_TITLE_SIMPLE, 'UTF-8');
-    return mb_substr((string)$titled, 0, 50);
-};
-$slugFor = static function (string $name): string {
-    $slug = strtolower((string)preg_replace('/[^a-z0-9]+/i', '-', $name));
-    return trim($slug, '-');
 };
 
 /* ----------------------------------------------------------------------
@@ -88,64 +76,48 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     try {
         switch ($action) {
             case 'create': {
-                $name = $normaliseTagName((string)($_POST['name'] ?? ''));
-                $description = trim((string)($_POST['description'] ?? ''));
-                if ($name === '') {
-                    http_response_code(400);
-                    echo json_encode(['error' => 'Name is required.']);
-                    exit;
-                }
-                $slug = $slugFor($name);
-                if ($slug === '') {
-                    http_response_code(400);
-                    echo json_encode(['error' => 'Name has no usable slug characters.']);
-                    exit;
-                }
-                $stmt = $db->prepare(
-                    'INSERT INTO tblSongTags (Name, Slug, Description) VALUES (?, ?, ?)
-                     ON DUPLICATE KEY UPDATE Id = LAST_INSERT_ID(Id), Name = VALUES(Name)'
+                [$fields, $fieldError] = tagAdminValidateFields(
+                    (string)($_POST['name'] ?? ''),
+                    (string)($_POST['description'] ?? '')
                 );
-                $stmt->bind_param('sss', $name, $slug, $description);
-                $stmt->execute();
-                $newId = (int)$db->insert_id;
-                $stmt->close();
-                $logTag('create', (string)$newId, ['name' => $name, 'slug' => $slug]);
-                echo json_encode(['success' => true, 'id' => $newId, 'name' => $name]);
+                if ($fieldError !== null) {
+                    http_response_code(400);
+                    echo json_encode(['error' => $fieldError]);
+                    exit;
+                }
+                $newId = tagAdminCreate($db, $fields['name'], $fields['slug'], $fields['description']);
+                $logTag('create', (string)$newId, ['name' => $fields['name'], 'slug' => $fields['slug']]);
+                echo json_encode(['success' => true, 'id' => $newId, 'name' => $fields['name']]);
                 exit;
             }
 
             case 'update': {
                 $id = (int)($_POST['id'] ?? 0);
-                $name = $normaliseTagName((string)($_POST['name'] ?? ''));
+                /* tagAdminNormaliseName() is called directly (rather than
+                   tagAdminValidateFields()) so the combined "id and name are
+                   required." message below stays byte-identical to before
+                   this extraction — see includes/tag_admin.php's doc-block. */
+                $name = tagAdminNormaliseName((string)($_POST['name'] ?? ''));
                 $description = trim((string)($_POST['description'] ?? ''));
                 if ($id <= 0 || $name === '') {
                     http_response_code(400);
                     echo json_encode(['error' => 'id and name are required.']);
                     exit;
                 }
-                $slug = $slugFor($name);
+                $slug = tagAdminSlugify($name);
                 if ($slug === '') {
                     http_response_code(400);
                     echo json_encode(['error' => 'Name has no usable slug characters.']);
                     exit;
                 }
                 /* Capture the before-state for the diff. */
-                $stmt = $db->prepare('SELECT Name, Slug, Description FROM tblSongTags WHERE Id = ? LIMIT 1');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
-                $before = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
+                $before = tagAdminFetch($db, $id);
                 if (!$before) {
                     http_response_code(404);
                     echo json_encode(['error' => 'Tag not found.']);
                     exit;
                 }
-                $stmt = $db->prepare(
-                    'UPDATE tblSongTags SET Name = ?, Slug = ?, Description = ? WHERE Id = ?'
-                );
-                $stmt->bind_param('sssi', $name, $slug, $description, $id);
-                $stmt->execute();
-                $stmt->close();
+                tagAdminUpdate($db, $id, $name, $slug, $description);
 
                 $diff = [];
                 if (($before['Name'] ?? '') !== $name) $diff['name'] = ['from' => $before['Name'], 'to' => $name];
@@ -168,11 +140,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 }
                 /* Cite count via the mapping table. Refuse with 409
                    when non-zero; second click sends force=1. */
-                $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongTagMap WHERE TagId = ?');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
-                $useCount = (int)$stmt->get_result()->fetch_row()[0];
-                $stmt->close();
+                $useCount = tagAdminUsageCount($db, $id);
                 if (!$force && $useCount > 0) {
                     http_response_code(409);
                     echo json_encode([
@@ -188,19 +156,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     /* Unmap first (CASCADE FK should handle this but
                        being explicit makes the audit row's count
                        accurate). */
-                    $stmt = $db->prepare('DELETE FROM tblSongTagMap WHERE TagId = ?');
-                    $stmt->bind_param('i', $id);
-                    $stmt->execute();
-                    $unmapped = $stmt->affected_rows;
-                    $stmt->close();
-                    $stmt = $db->prepare('DELETE FROM tblSongTags WHERE Id = ?');
-                    $stmt->bind_param('i', $id);
-                    $stmt->execute();
-                    $deleted = $stmt->affected_rows;
-                    $stmt->close();
+                    $result = tagAdminDelete($db, $id);
                     $db->commit();
-                    $logTag('delete', (string)$id, ['forced' => $force ? 1 : 0, 'mappings' => $unmapped]);
-                    if ($deleted === 0) {
+                    $logTag('delete', (string)$id, ['forced' => $force ? 1 : 0, 'mappings' => $result['unmapped']]);
+                    if ($result['deleted'] === 0) {
                         http_response_code(404);
                         echo json_encode(['error' => 'Tag not found.']);
                         exit;
@@ -222,18 +181,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     exit;
                 }
                 /* Fetch both for the audit row. */
-                $stmt = $db->prepare('SELECT Id, Name FROM tblSongTags WHERE Id IN (?, ?)');
-                $stmt->bind_param('ii', $sourceId, $targetId);
-                $stmt->execute();
-                $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-                $stmt->close();
-                if (count($rows) !== 2) {
+                $byId = tagAdminFetchNamesByIds($db, [$sourceId, $targetId]);
+                if (count($byId) !== 2) {
                     http_response_code(404);
                     echo json_encode(['error' => 'One or both tags not found.']);
                     exit;
                 }
-                $byId = [];
-                foreach ($rows as $r) $byId[(int)$r['Id']] = $r;
 
                 $db->begin_transaction();
                 try {
@@ -245,43 +198,20 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                        it deserves to be — the union is preserved
                        (the SongId already has targetId, that's what
                        merge means). */
-                    $stmt = $db->prepare(
-                        'DELETE m1 FROM tblSongTagMap m1
-                         JOIN tblSongTagMap m2 ON m1.SongId = m2.SongId
-                         WHERE m1.TagId = ? AND m2.TagId = ?'
-                    );
-                    $stmt->bind_param('ii', $sourceId, $targetId);
-                    $stmt->execute();
-                    $conflicts = $stmt->affected_rows;
-                    $stmt->close();
-
-                    /* Now safe to repoint the rest. */
-                    $stmt = $db->prepare(
-                        'UPDATE tblSongTagMap SET TagId = ? WHERE TagId = ?'
-                    );
-                    $stmt->bind_param('ii', $targetId, $sourceId);
-                    $stmt->execute();
-                    $repointed = $stmt->affected_rows;
-                    $stmt->close();
-
-                    /* Drop the source tag. */
-                    $stmt = $db->prepare('DELETE FROM tblSongTags WHERE Id = ?');
-                    $stmt->bind_param('i', $sourceId);
-                    $stmt->execute();
-                    $stmt->close();
+                    $result = tagAdminMerge($db, $sourceId, $targetId);
 
                     $db->commit();
                     $logTag('merge', (string)$targetId, [
                         'source_id'   => $sourceId,
-                        'source_name' => $byId[$sourceId]['Name'] ?? '',
-                        'target_name' => $byId[$targetId]['Name'] ?? '',
-                        'repointed'   => $repointed,
-                        'conflicts'   => $conflicts,
+                        'source_name' => $byId[$sourceId] ?? '',
+                        'target_name' => $byId[$targetId] ?? '',
+                        'repointed'   => $result['repointed'],
+                        'conflicts'   => $result['conflicts'],
                     ]);
                     echo json_encode([
                         'success'    => true,
-                        'repointed'  => $repointed,
-                        'conflicts'  => $conflicts,
+                        'repointed'  => $result['repointed'],
+                        'conflicts'  => $result['conflicts'],
                         'target_id'  => $targetId,
                     ]);
                 } catch (\Throwable $e) {
@@ -373,54 +303,12 @@ foreach ($allTagsForMerge as $t) { $tagNameById[(int)$t['Id']] = (string)$t['Nam
  * "Thanksgiving"-ish). Curator-confirmed via the existing Merge action —
  * never auto-applied. Skipped entirely until the migration has run.
  * ---------------------------------------------------------------------- */
-$canonSuggestions = [];
-if ($hasThemeCols) {
-    $std = [];
-    $sr = $db->query("SELECT Id, Name FROM tblSongTags WHERE Source = 'ccli-openlyrics'");
-    while ($sr && ($row = $sr->fetch_assoc())) {
-        $std[] = ['id' => (int)$row['Id'], 'name' => (string)$row['Name'], 'norm' => ihymns_sim_normalise((string)$row['Name'])];
-    }
-    if ($sr) { $sr->close(); }
-
-    if ($std) {
-        /* Curator tags, most-used first; bounded so the pairwise pass stays cheap. */
-        $cr = $db->query(
-            "SELECT t.Id, t.Name, COUNT(m.TagId) AS UseCount
-               FROM tblSongTags t
-               LEFT JOIN tblSongTagMap m ON m.TagId = t.Id
-              WHERE t.Source <> 'ccli-openlyrics'
-              GROUP BY t.Id
-              ORDER BY UseCount DESC, t.Name ASC
-              LIMIT 300"
-        );
-        while ($cr && ($row = $cr->fetch_assoc())) {
-            $cn = ihymns_sim_normalise((string)$row['Name']);
-            if ($cn === '') { continue; }
-            $best = null; $bestScore = 0.0;
-            foreach ($std as $s) {
-                if ($s['norm'] === '') { continue; }
-                $score = ($cn === $s['norm']) ? 1.0 : ihymns_sim_text($cn, $s['norm']);
-                if ($score > $bestScore) { $bestScore = $score; $best = $s; }
-            }
-            /* >= 0.84 catches close spellings/typos; the strcasecmp guard is a
-               belt-and-braces no-op (the unique Name index already prevents a
-               curator row from ci-colliding with a standard one). */
-            if ($best && $bestScore >= 0.84 && strcasecmp((string)$row['Name'], $best['name']) !== 0) {
-                $canonSuggestions[] = [
-                    'curId'   => (int)$row['Id'],
-                    'curName' => (string)$row['Name'],
-                    'uses'    => (int)$row['UseCount'],
-                    'stdId'   => $best['id'],
-                    'stdName' => $best['name'],
-                    'score'   => $bestScore,
-                ];
-            }
-        }
-        if ($cr) { $cr->close(); }
-        usort($canonSuggestions, static fn($a, $b) => $b['score'] <=> $a['score']);
-        $canonSuggestions = array_slice($canonSuggestions, 0, 50);
-    }
-}
+/* #1969 API-coverage batch 4b-i (A3) — delegates to the shared
+   tagAdminCanonicalSuggestions() core (includes/tag_admin.php), which the
+   new admin_tag_canonical_suggestions API action also calls (rule #22).
+   Returns [] on an un-migrated install (its own tagAdminThemeColumnsReady()
+   gate) so this stays a no-op wrapper, not a behaviour change. */
+$canonSuggestions = tagAdminCanonicalSuggestions($db);
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -445,7 +333,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="d-flex justify-content-between align-items-center mb-3">
         <div>
             <h1 class="h3 mb-1">
-                <i class="bi bi-tags me-2"></i>Tags &amp; Themes
+                <i aria-hidden="true" class="bi bi-tags me-2"></i>Tags &amp; Themes
                 <?= entitlementLockChipHtml('manage_tags') ?>
             </h1>
             <p class="text-secondary small mb-0">
@@ -458,10 +346,10 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         </div>
         <div class="d-flex gap-2">
             <button class="btn btn-outline-warning" data-bs-toggle="modal" data-bs-target="#mergeModal">
-                <i class="bi bi-shuffle me-1"></i>Merge tags
+                <i aria-hidden="true" class="bi bi-shuffle me-1"></i>Merge tags
             </button>
             <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#tagModal" data-mode="create">
-                <i class="bi bi-plus-lg me-1"></i>Add tag
+                <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add tag
             </button>
         </div>
     </div>
@@ -472,7 +360,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                    value="<?= htmlspecialchars($qFilter, ENT_QUOTES, 'UTF-8') ?>"
                    placeholder="Search by name or slug">
         </div>
-        <div class="col-md-2"><button class="btn btn-secondary btn-sm w-100"><i class="bi bi-funnel me-1"></i>Filter</button></div>
+        <div class="col-md-2"><button class="btn btn-secondary btn-sm w-100"><i aria-hidden="true" class="bi bi-funnel me-1"></i>Filter</button></div>
     </form>
 
     <p class="small text-secondary mb-2">
@@ -482,7 +370,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <?php if (!empty($canonSuggestions)): ?>
     <div class="card mb-3 border-info">
         <div class="card-body py-2">
-            <h2 class="h6 mb-1"><i class="bi bi-magic me-1"></i>Canonicalisation suggestions (<?= count($canonSuggestions) ?>)</h2>
+            <h2 class="h6 mb-1"><i aria-hidden="true" class="bi bi-magic me-1"></i>Canonicalisation suggestions (<?= count($canonSuggestions) ?>)</h2>
             <p class="small text-secondary mb-2">
                 Curator tags whose spelling closely matches a
                 <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle">standard</span>
@@ -493,11 +381,11 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <table class="table table-sm align-middle mb-0 cp-sortable admin-table-responsive">
                     <thead>
                         <tr>
-                            <th data-sort-key="variant" data-sort-type="text">Variant tag</th>
-                            <th class="text-end" data-sort-key="uses" data-sort-type="number">Songs</th><th></th>
-                            <th data-sort-key="standard" data-sort-type="text">Standard theme</th>
-                            <th data-sort-key="match" data-sort-type="number">Match</th>
-                            <th class="text-end">Action</th>
+                            <th scope="col" data-sort-key="variant" data-sort-type="text">Variant tag</th>
+                            <th scope="col" class="text-end" data-sort-key="uses" data-sort-type="number">Songs</th><th scope="col"></th>
+                            <th scope="col" data-sort-key="standard" data-sort-type="text">Standard theme</th>
+                            <th scope="col" data-sort-key="match" data-sort-type="number">Match</th>
+                            <th scope="col" class="text-end">Action</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -514,7 +402,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                         data-target="<?= (int)$s['stdId'] ?>"
                                         data-source-name="<?= htmlspecialchars($s['curName'], ENT_QUOTES, 'UTF-8') ?>"
                                         data-target-name="<?= htmlspecialchars($s['stdName'], ENT_QUOTES, 'UTF-8') ?>">
-                                    <i class="bi bi-arrow-down-up me-1"></i>Fold into standard
+                                    <i aria-hidden="true" class="bi bi-arrow-down-up me-1"></i>Fold into standard
                                 </button>
                             </td>
                         </tr>
@@ -530,11 +418,11 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <table class="table table-dark table-striped table-hover align-middle cp-sortable admin-table-responsive">
             <thead>
                 <tr>
-                    <th data-sort-key="name" data-sort-type="text">Name</th>
-                    <th data-sort-key="slug" data-sort-type="text">Slug</th>
-                    <th data-sort-key="description" data-sort-type="text">Description</th>
-                    <th class="text-end" data-sort-key="songs" data-sort-type="number">Songs</th>
-                    <th class="text-end">Actions</th>
+                    <th scope="col" data-sort-key="name" data-sort-type="text">Name</th>
+                    <th scope="col" data-sort-key="slug" data-sort-type="text">Slug</th>
+                    <th scope="col" data-sort-key="description" data-sort-type="text">Description</th>
+                    <th scope="col" class="text-end" data-sort-key="songs" data-sort-type="number">Songs</th>
+                    <th scope="col" class="text-end">Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -549,7 +437,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                   title="Standard CCLI / OpenLyrics theme (#1152)">standard</span>
                         <?php endif; ?>
                         <?php $pid = (int)($r['ParentId'] ?? 0); if ($pid > 0 && isset($tagNameById[$pid])): ?>
-                            <div class="small text-muted"><i class="bi bi-diagram-2 me-1"></i>under <?= htmlspecialchars($tagNameById[$pid], ENT_QUOTES, 'UTF-8') ?></div>
+                            <div class="small text-muted"><i aria-hidden="true" class="bi bi-diagram-2 me-1"></i>under <?= htmlspecialchars($tagNameById[$pid], ENT_QUOTES, 'UTF-8') ?></div>
                         <?php endif; ?>
                     </td>
                     <td><code><?= htmlspecialchars($r['Slug'], ENT_QUOTES, 'UTF-8') ?></code></td>
@@ -565,13 +453,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                 data-id="<?= (int)$r['Id'] ?>"
                                 data-name="<?= htmlspecialchars($r['Name'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-description="<?= htmlspecialchars($r['Description'], ENT_QUOTES, 'UTF-8') ?>">
-                            <i class="bi bi-pencil"></i>
+                            <i aria-hidden="true" class="bi bi-pencil"></i>
                         </button>
                         <button class="btn btn-sm btn-outline-danger tag-delete-btn"
                                 data-id="<?= (int)$r['Id'] ?>"
                                 data-name="<?= htmlspecialchars($r['Name'], ENT_QUOTES, 'UTF-8') ?>"
                                 data-uses="<?= (int)$r['UseCount'] ?>">
-                            <i class="bi bi-trash"></i>
+                            <i aria-hidden="true" class="bi bi-trash"></i>
                         </button>
                     </td>
                 </tr>
@@ -600,7 +488,8 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 </main>
 
 <!-- Add / Edit modal -->
-<div class="modal fade" id="tagModal" tabindex="-1" aria-hidden="true">
+<!-- a11y audit G2 follow-up (2026-08-30, M6 pattern): the heading already had an id — it just wasn't wired to the dialog. -->
+<div class="modal fade" id="tagModal" tabindex="-1" aria-hidden="true" aria-labelledby="tagModalTitle">
     <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
         <form id="tagForm">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
@@ -608,7 +497,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <input type="hidden" name="id" id="tm-id" value="">
             <div class="modal-header">
                 <h5 class="modal-title" id="tagModalTitle">Add tag</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
                 <div class="mb-3">
@@ -630,14 +519,15 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 </div>
 
 <!-- Merge modal -->
-<div class="modal fade" id="mergeModal" tabindex="-1" aria-hidden="true">
+<!-- a11y audit G2 follow-up (2026-08-30) — see the tagModal comment above. -->
+<div class="modal fade" id="mergeModal" tabindex="-1" aria-hidden="true" aria-labelledby="mergeModal-label">
     <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
         <form id="mergeForm">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
             <input type="hidden" name="action" value="merge">
             <div class="modal-header">
-                <h5 class="modal-title">Merge tags</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                <h5 class="modal-title" id="mergeModal-label">Merge tags</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
                 <p class="small text-secondary">
@@ -664,7 +554,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </select>
                 </div>
                 <div class="alert alert-warning small mb-0">
-                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
                     Merging is irreversible. Make sure the Source genuinely duplicates the Target.
                 </div>
             </div>

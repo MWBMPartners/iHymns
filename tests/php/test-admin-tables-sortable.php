@@ -77,6 +77,7 @@ $PAGE_EXCLUSIONS = [
     'gating-noop-verify.php' => 'gating no-op verification report',
     'analytics.php'          => 'summary / leaderboard stat tables (top songs, top queries), not editable record lists',
     'duplicate-songs.php'    => "its only table is a 2-4 row per-cluster merge-picker (radio/checkbox survivor picker) rendered once per duplicate cluster card, not an independent sortable list — musician-duplicates.php's identical picker shape at line ~572 needs no exclusion because that page ALSO has a real cp-sortable table (the fuzzy-match list) satisfying page-level coverage",
+    'gating.php'              => "the guided content-gating wizard's step-6 'test a song' result (#2006) is a fixed 5-row visitor-kind comparison, built client-side in JS for ONE song per test run — not a curated, independently sortable record list",
 ];
 
 /* ---------------------------------------------------------------------

@@ -496,7 +496,7 @@ foreach ($sections as $s) {
                      ==================================================================== -->
 
                 <section id="getting-started" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-rocket-takeoff me-2"></i>Getting started</h2>
+                    <h2><i aria-hidden="true" class="bi bi-rocket-takeoff me-2"></i>Getting started</h2>
                     <p>
                         The iHymns admin area lives at <code>/manage/</code> and is the
                         place where curators, editors, admins, and global admins do
@@ -542,7 +542,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="roles" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-person-badge me-2"></i>Roles &amp; what each one can do</h2>
+                    <h2><i aria-hidden="true" class="bi bi-person-badge me-2"></i>Roles &amp; what each one can do</h2>
                     <p>iHymns has four account roles, in order of increasing access:</p>
 
                     <dl class="actions">
@@ -590,7 +590,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="dashboard" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-speedometer2 me-2"></i>Dashboard</h2>
+                    <h2><i aria-hidden="true" class="bi bi-speedometer2 me-2"></i>Dashboard</h2>
                     <p class="role-badges">
                         <span class="badge bg-primary">editor</span>
                         <span class="badge bg-warning text-dark">admin</span>
@@ -638,7 +638,7 @@ foreach ($sections as $s) {
                      ==================================================================== -->
 
                 <section id="editor" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-pencil-square me-2"></i>Song Editor</h2>
+                    <h2><i aria-hidden="true" class="bi bi-pencil-square me-2"></i>Song Editor</h2>
                     <p class="role-badges">
                         <span class="badge bg-primary">editor</span>
                         <span class="badge bg-warning text-dark">admin</span>
@@ -654,7 +654,7 @@ foreach ($sections as $s) {
                         song or many at once and save straight back to MySQL.
                     </p>
                     <div class="alert alert-info small mb-3">
-                        <i class="bi bi-info-circle me-1"></i>
+                        <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
                         <strong>This is the redesigned Song Editor</strong> &mdash; it's
                         now what opens by default. Every save applies the moment you make
                         it, rather than waiting for one big "Save" at the end, and this
@@ -685,6 +685,10 @@ foreach ($sections as $s) {
                             puts it back. Permanent removal is a separate, deliberately harder step on
                             that page. Deleting is available to editors and above.</li>
                     </ul>
+                    <h3 class="h6">Creating a new song</h3>
+                    <p>
+                        The <strong>Guided</strong> toolbar button walks you through adding a song one small step at a time — pick the songbook, check the number is free, add a title (plus any other names it's known by), start with a simple verse/chorus shape, then open it in the editor to keep going. Prefer the plain <strong>New</strong> button? It still asks for just a songbook and a title and drops you straight into an empty song.
+                    </p>
                     <h3 class="h6">The eight tabs</h3>
                     <dl class="actions">
                         <dt>Metadata</dt>
@@ -803,7 +807,7 @@ foreach ($sections as $s) {
                         <li><strong>ChordPro</strong> (<code>.cho</code> / <code>.pro</code> / <code>.chopro</code> / <code>.crd</code> / <code>.chord</code>) — import + export. One ChordPro document is one song (OnSong / OpenSong / WorshipTools interop). On import it files under a "ChordPro Import" songbook unless the filename uses the <code>&lt;#&gt; (&lt;ABBR&gt;) - &lt;Title&gt;</code> shape; the lyrics-only exporter round-trips with it.</li>
                         <li><strong class="text-warning">EasyWorship</strong> (its own song database format) — import + export. <span class="badge bg-warning text-dark">beta</span>
                             <div class="alert alert-warning small mt-1 mb-1">
-                                <i class="bi bi-exclamation-triangle me-1"></i>
+                                <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
                                 <strong>EasyWorship import/export is a beta, unverified feature.</strong> It reads and writes EasyWorship's own song file format and round-trips correctly within iHymns, but it has <em>not</em> been verified against a live EasyWorship install — a real EasyWorship may expect extra data when reading a file iHymns exported. Treat results as provisional and check them in EasyWorship before relying on them.
                             </div>
                         </li>
@@ -848,7 +852,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="requests" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-lightbulb me-2"></i>Song Requests</h2>
+                    <h2><i aria-hidden="true" class="bi bi-lightbulb me-2"></i>Song Requests</h2>
                     <p class="role-badges">
                         <span class="badge bg-primary">editor</span>
                         <span class="badge bg-warning text-dark">admin</span>
@@ -871,7 +875,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="revisions" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-clock-history me-2"></i>Edit History</h2>
+                    <h2><i aria-hidden="true" class="bi bi-clock-history me-2"></i>Edit History</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -891,7 +895,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="deleted-songs" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-trash3 me-2"></i>Deleted Songs</h2>
+                    <h2><i aria-hidden="true" class="bi bi-trash3 me-2"></i>Deleted Songs</h2>
                     <p class="role-badges">
                         <span class="badge bg-primary">editor</span>
                         <span class="badge bg-warning text-dark">admin</span>
@@ -948,7 +952,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="missing-numbers" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-binoculars me-2"></i>Missing Numbers</h2>
+                    <h2><i aria-hidden="true" class="bi bi-binoculars me-2"></i>Missing Numbers</h2>
                     <p class="role-badges">
                         <span class="badge bg-primary">editor</span>
                         <span class="badge bg-warning text-dark">admin</span>
@@ -974,7 +978,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="songbooks" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-book me-2"></i>Songbooks</h2>
+                    <h2><i aria-hidden="true" class="bi bi-book me-2"></i>Songbooks</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -995,6 +999,10 @@ foreach ($sections as $s) {
                         <dt>Online links — Official website / Internet Archive / Wikipedia</dt><dd>Free-text URLs. Used as outbound references on the songbook detail page so users can verify the source.</dd>
                         <dt>Authority identifiers — WikiData ID, OCLC, OCN, LCP, ISBN, ARK, ISNI, VIAF, LCCN, LC Class</dt><dd>Standard cataloguing identifiers from major library and authority systems. All optional. Useful for cross-referencing and de-duplicating against external catalogues.</dd>
                     </dl>
+                    <h3 class="h6">Guided songbook creation</h3>
+                    <p>
+                        The <strong>New songbook (guided)</strong> button walks you through setting up a songbook one step at a time — name, then the short code (checked live so it can't clash with an existing one, with a friendly nudge if you pick a code that's mostly digits), then the optional extra details, ending with a review before you create it. Prefer the classic single form? It's still right there above the list.
+                    </p>
                     <h3 class="h6">Renaming an abbreviation</h3>
                     <p>
                         The abbreviation is what every song references, so renaming is opt-in: you must tick the <strong>"Also rename song references"</strong> checkbox to cascade the rename to every song that uses it. Without that checkbox, songs keep the old abbreviation and orphan from the renamed songbook.
@@ -1026,14 +1034,14 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="ia-reconcile" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-archive me-2"></i>Scan Import</h2>
+                    <h2><i aria-hidden="true" class="bi bi-archive me-2"></i>Scan Import</h2>
                     <p class="role-badges">
                         <span class="badge bg-primary">editor</span>
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
                     <div class="alert alert-info small">
-                        <i class="bi bi-info-circle me-1"></i>
+                        <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
                         <strong>Read-only.</strong> This tool <em>never</em> adds, edits, or deletes a song. It only produces a report you read. A curator-approved import path is a separate, later phase.
                     </div>
                     <p>
@@ -1052,7 +1060,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="songbook-series" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-collection-fill me-2"></i>Songbook Series</h2>
+                    <h2><i aria-hidden="true" class="bi bi-collection-fill me-2"></i>Songbook Series</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1071,7 +1079,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="print-templates" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-printer me-2"></i>Print Templates</h2>
+                    <h2><i aria-hidden="true" class="bi bi-printer me-2"></i>Print Templates</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1109,7 +1117,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="musicians" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-person-vcard me-2"></i>Musicians</h2>
+                    <h2><i aria-hidden="true" class="bi bi-person-vcard me-2"></i>Musicians</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1140,7 +1148,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="tunes" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-music-note-beamed me-2"></i>Tunes</h2>
+                    <h2><i aria-hidden="true" class="bi bi-music-note-beamed me-2"></i>Tunes</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1168,7 +1176,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="publishers" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-building me-2"></i>Publishers</h2>
+                    <h2><i aria-hidden="true" class="bi bi-building me-2"></i>Publishers</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1198,7 +1206,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="duplicate-songs" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-files me-2"></i>Find Duplicates</h2>
+                    <h2><i aria-hidden="true" class="bi bi-files me-2"></i>Find Duplicates</h2>
                     <p class="role-badges">
                         <span class="badge bg-primary">editor</span>
                         <span class="badge bg-warning text-dark">admin</span>
@@ -1223,7 +1231,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="works" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-diagram-3 me-2"></i>Works</h2>
+                    <h2><i aria-hidden="true" class="bi bi-diagram-3 me-2"></i>Works</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1252,7 +1260,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="tags" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-tags me-2"></i>Tags &amp; Themes</h2>
+                    <h2><i aria-hidden="true" class="bi bi-tags me-2"></i>Tags &amp; Themes</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1274,7 +1282,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="languages" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-translate me-2"></i>Languages</h2>
+                    <h2><i aria-hidden="true" class="bi bi-translate me-2"></i>Languages</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1304,7 +1312,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="catalogues" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-collection me-2"></i>Collections (Catalogues)</h2>
+                    <h2><i aria-hidden="true" class="bi bi-collection me-2"></i>Collections (Catalogues)</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1322,7 +1330,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="external-links" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-link-45deg me-2"></i>External Links</h2>
+                    <h2><i aria-hidden="true" class="bi bi-link-45deg me-2"></i>External Links</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1341,19 +1349,23 @@ foreach ($sections as $s) {
                     <p>
                         Provider rules are curator-editable at <a href="/manage/external-link-types">Link Types</a>. Add a new provider, sub-domain or path-prefix rule (e.g. <code>musicbrainz.org/work/</code>) at any time without a code deploy. Lower priority numbers win, so put more-specific patterns first.
                     </p>
+                    <h3 class="h6">Adding a new provider</h3>
+                    <p>
+                        The <strong>Add provider (guided)</strong> button on Link Types walks you through naming a new provider, suggesting a matching web-address pattern from a sample URL and testing it live against every existing provider before you save. Prefer typing everything yourself? The collapsed <strong>Add a link type manually</strong> panel above the list offers the same fields as a plain form.
+                    </p>
                     <h3 class="h6">Categories</h3>
                     <p>Links group on the public site under: <em>Official, Information, Read, Sheet music, Listen, Watch, Purchase, Authority, Social, Other</em>. The seeded type registry decides which category each provider belongs to; curators don't pick the category &mdash; it's derived from the type.</p>
                 </section>
 
                 <section id="mobile-admin" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-phone me-2"></i>Mobile admin (responsive list views)</h2>
+                    <h2><i aria-hidden="true" class="bi bi-phone me-2"></i>Mobile admin (responsive list views)</h2>
                     <p>
                         Several admin list pages — including Musicians, Songbooks, Songbook Series and Works — automatically simplify their tables on a narrow screen: the most important columns always stay visible, and less-important ones tuck away as the screen gets smaller, so the list stays usable on a phone or tablet instead of turning into a tiny, unreadable grid.
                     </p>
                 </section>
 
                 <section id="restrictions" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-shield-lock me-2"></i>Content Restrictions</h2>
+                    <h2><i aria-hidden="true" class="bi bi-shield-lock me-2"></i>Content Restrictions</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1382,7 +1394,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="tiers" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-stars me-2"></i>Membership Tiers</h2>
+                    <h2><i aria-hidden="true" class="bi bi-stars me-2"></i>Membership Tiers</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
@@ -1411,7 +1423,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="licence-types" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-patch-check me-2"></i>Licence Types</h2>
+                    <h2><i aria-hidden="true" class="bi bi-patch-check me-2"></i>Licence Types</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
@@ -1434,20 +1446,28 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="gating" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-shield-shaded me-2"></i>Content Access</h2>
+                    <h2><i aria-hidden="true" class="bi bi-shield-shaded me-2"></i>Content Access</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
                     <div class="alert alert-info small">
-                        <i class="bi bi-info-circle me-1"></i>
+                        <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
                         <strong>Dormant by default.</strong> The whole content-locking program ships switched <em>off</em> and does nothing until you deliberately turn it on. Until then, the app sends full song data and each app self-limits what it shows.
                     </div>
                     <p>
                         One page that answers &ldquo;what is locked, for whom, and is it safe to turn on?&rdquo; without visiting every separate content-access page. It gathers the family — <a href="#restrictions">Content Restrictions</a>, <a href="#tiers">Membership Tiers</a>, <a href="#licence-types">Licence Types</a>, Feature Access (below), <a href="#entitlements">Role Permissions</a> — behind a <strong>readiness checklist</strong> and shows whether the master switch is on or off. Available to global admins.
                     </p>
-                    <div class="gotcha small">
-                        <strong>Read-only by design:</strong> this hub does <em>not</em> own the master switch. Turning enforcement on is the one action in the program that changes anything — it changes what every reader sends at once — so it stays a deliberate human act on <a href="/manage/configuration#feature-gating">Settings &rarr; Feature Access</a>, with exactly one place to make the change. The hub reads the state, runs the checklist, and links you to the switch.
-                    </div>
+                    <?php /* ELI5: this is the write-up of the friendly "wizard" that walks
+                             an admin through turning content locking on safely.
+                             DETAILED (#2006): reshaped from an unheaded <p class="small"> into
+                             the same h3+p wizard-subsection shape every other guided wizard on
+                             this page uses (see "Guided songbook creation" etc.), rather than a
+                             new <section> — keeps tests/php/test-admin-help-coverage.php green,
+                             which only requires each existing section stay documented. */ ?>
+                    <h3 class="h6">Turning on content locking (guided)</h3>
+                    <p>
+                        The <strong>Guided setup&hellip;</strong> button on this page walks you through turning the switch on safely: it previews exactly what would change first (how many songs, how much audio and sheet music), checks that a licence is actually on file, lets you optionally add extra rules, and lets you try the result on one real song before you commit &mdash; then gives you a one-click way to undo it. This is the recommended way to switch it on. Prefer the plain switch? It still lives on <a href="/manage/configuration#feature-gating">Settings &rarr; Feature Access</a> too, for a quick manual flip or an emergency rollback &mdash; both doors save the same setting, so nothing can drift between them.
+                    </p>
 
                     <h3 class="h6 mt-3">Feature Access <span class="text-muted small fw-normal">(<code>/manage/feature-gating</code>)</span></h3>
                     <p class="small">
@@ -1468,7 +1488,7 @@ foreach ($sections as $s) {
                      ==================================================================== -->
 
                 <section id="users" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-people me-2"></i>Users</h2>
+                    <h2><i aria-hidden="true" class="bi bi-people me-2"></i>Users</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1500,7 +1520,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="groups" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-people-fill me-2"></i>User Groups</h2>
+                    <h2><i aria-hidden="true" class="bi bi-people-fill me-2"></i>User Groups</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1527,7 +1547,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="organisations" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-building me-2"></i>Organisations</h2>
+                    <h2><i aria-hidden="true" class="bi bi-building me-2"></i>Organisations</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1542,6 +1562,10 @@ foreach ($sections as $s) {
                         <dt>Licence type / number</dt><dd><code>none</code>, <code>ihymns_basic</code>, <code>ihymns_pro</code>, or <code>ccli</code>. CCLI requires a licence number for audit.</dd>
                         <dt>Active flag</dt><dd>Inactive orgs are kept in the database but their licence stops counting toward members.</dd>
                     </dl>
+                    <h3 class="h6">Guided organisation setup</h3>
+                    <p>
+                        The <strong>New organisation (guided)</strong> button takes you through setting one up in order — the organisation's own details first, then any licences it holds (you can add more than one, e.g. separate licences for lyrics and for musical notation), then its first members — with a review step before anything is created. Licences only appear as a step for curators allowed to manage them; everyone else can still add members. The classic form below does the same job in one screen if you prefer that.
+                    </p>
                     <h3 class="h6">Membership</h3>
                     <p>Two-pane picker, same shape as User Groups. Each member also gets a sub-role: <em>member</em> (no extra perms), <em>admin</em> (can manage other members), or <em>owner</em> (full control of the org).</p>
                     <h3 class="h6">Logo</h3>
@@ -1554,7 +1578,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="my-organisations" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-building-check me-2"></i>My Organisations</h2>
+                    <h2><i aria-hidden="true" class="bi bi-building-check me-2"></i>My Organisations</h2>
                     <p class="role-badges">
                         <span class="badge bg-secondary">org admin</span>
                         <span class="badge bg-secondary">org owner</span>
@@ -1598,7 +1622,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="entitlements" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-key me-2"></i>Role Permissions</h2>
+                    <h2><i aria-hidden="true" class="bi bi-key me-2"></i>Role Permissions</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
@@ -1620,7 +1644,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="venues" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-geo-alt me-2"></i>Venues &amp; Service Times</h2>
+                    <h2><i aria-hidden="true" class="bi bi-geo-alt me-2"></i>Venues &amp; Service Times</h2>
                     <p class="role-badges">
                         <span class="badge bg-secondary">org admin</span>
                         <span class="badge bg-secondary">org owner</span>
@@ -1640,13 +1664,17 @@ foreach ($sections as $s) {
                     <p>
                         Each venue can have several recurring service times (e.g. Sunday 10:00am, Wednesday 7:00pm), each with a title, day of week, start time and duration &mdash; or a one-off occurrence for a special service that doesn't repeat.
                     </p>
+                    <h3 class="h6">Guided live-session setup</h3>
+                    <p>
+                        The <strong>Live Service setup (guided)</strong> button is the friendliest way in: it first explains the difference between a one-off <strong>Quick Live Follow</strong> session (no setup, start from any song) and a full <strong>Service Mode</strong> venue-wide join code, then walks you through the venue, its regular service time, and an optional presentation-app connection, ending with a review before anything is created. Prefer setting things up field by field yourself? The forms further down this page do exactly the same job.
+                    </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Venues + service times are useful org metadata on their own, even if you never turn on Service Mode. Setting them up doesn't switch anything else on.
                     </div>
                 </section>
 
                 <section id="service-mode" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-broadcast-pin me-2"></i>Service Mode (congregation Live-Follow)</h2>
+                    <h2><i aria-hidden="true" class="bi bi-broadcast-pin me-2"></i>Service Mode (congregation Live-Follow)</h2>
                     <p class="role-badges">
                         <span class="badge bg-secondary">org admin</span>
                         <span class="badge bg-secondary">org owner</span>
@@ -1654,7 +1682,7 @@ foreach ($sections as $s) {
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
                     <div class="alert alert-info small">
-                        <i class="bi bi-info-circle me-1"></i>
+                        <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
                         <strong>Dormant by default.</strong> The whole feature is switched off by default and additionally needs a CCLI-licence content rule set up before it does anything. Turn it on deliberately when your organisation is ready.
                     </div>
                     <p>
@@ -1695,7 +1723,7 @@ foreach ($sections as $s) {
                      ==================================================================== -->
 
                 <section id="analytics" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-graph-up me-2"></i>Analytics</h2>
+                    <h2><i aria-hidden="true" class="bi bi-graph-up me-2"></i>Analytics</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1711,7 +1739,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="ccli-report" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-receipt me-2"></i>CCLI Usage Report</h2>
+                    <h2><i aria-hidden="true" class="bi bi-receipt me-2"></i>CCLI Usage Report</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1736,7 +1764,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="my-ccli-report" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-receipt-cutoff me-2"></i>My CCLI Report</h2>
+                    <h2><i aria-hidden="true" class="bi bi-receipt-cutoff me-2"></i>My CCLI Report</h2>
                     <p class="role-badges">
                         <span class="badge bg-secondary">org admin</span>
                         <span class="badge bg-secondary">org owner</span>
@@ -1754,7 +1782,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="data-health" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-activity me-2"></i>Data Health</h2>
+                    <h2><i aria-hidden="true" class="bi bi-activity me-2"></i>Data Health</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
@@ -1762,7 +1790,7 @@ foreach ($sections as $s) {
                         Confirms that MySQL is the authoritative source for every kind of data, and lets you safely <em>disconnect</em> the remaining legacy fallbacks (the SQLite user database, the file-system setlist share directory) so the app stops checking them.
                     </p>
                     <div class="alert alert-info small">
-                        <i class="bi bi-info-circle me-1"></i>
+                        <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
                         Song reads are now <strong>live database, full stop</strong>. There is no longer a whole-catalogue cache file to disconnect &mdash; every read pulls just what it needs, scoped to a lightweight index, a single record, or a single songbook. If the database is unreachable the app shows a themed maintenance page, <em>never</em> stale data.
                     </div>
                     <h3 class="h6">Workflow</h3>
@@ -1777,7 +1805,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="activity-log" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-journal-text me-2"></i>Activity Log</h2>
+                    <h2><i aria-hidden="true" class="bi bi-journal-text me-2"></i>Activity Log</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -1812,7 +1840,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="notifications" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-bell me-2"></i>Notifications</h2>
+                    <h2><i aria-hidden="true" class="bi bi-bell me-2"></i>Notifications</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
@@ -1834,7 +1862,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="schema-audit" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-clipboard2-data me-2"></i>Database Structure Check</h2>
+                    <h2><i aria-hidden="true" class="bi bi-clipboard2-data me-2"></i>Database Structure Check</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
@@ -1854,7 +1882,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="diagnostics" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-terminal me-2"></i>Database Query Tool</h2>
+                    <h2><i aria-hidden="true" class="bi bi-terminal me-2"></i>Database Query Tool</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
@@ -1873,12 +1901,22 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="setup-database" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-database-gear me-2"></i>Database Setup</h2>
+                    <h2><i aria-hidden="true" class="bi bi-database-gear me-2"></i>Database Setup</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
                     <p>
                         The most powerful page in the admin area. Configures the database connection, installs the schema, runs migrations, takes backups, restores from backup. Treat with respect.
+                    </p>
+                    <?php /* ELI5: this is the plain-language write-up of the "Guided setup"
+                             button at the top of this help page's own subject page.
+                             DETAILED (#2005): matches the established wizard-subsection shape
+                             (h3 + p) used elsewhere in this file for the other guided wizards.
+                             No mention of the modal id or the shared stepper module by name —
+                             that's for developers, not this audience. */ ?>
+                    <h3 class="h6">Guided environment setup</h3>
+                    <p>
+                        The <strong>Guided setup</strong> button at the top of this page &mdash; also offered as a &ldquo;Get started&rdquo; card when the site isn't configured yet &mdash; opens a step-by-step walkthrough of the very same workflow described below: connecting the database, bringing the schema up to date, and telling you what's left to do, one step at a time in a sensible order. It presses the same buttons you'd otherwise click by hand, so nothing about the manual steps changes if you'd rather work through them yourself.
                     </p>
                     <h3 class="h6">Setup workflow on a new install</h3>
                     <ol>
@@ -1929,7 +1967,7 @@ foreach ($sections as $s) {
                          in-progress and unpublished, so this card is
                          commonly left blank. */ ?>
                 <section id="configuration" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-phone me-2"></i>Native app stores &amp; Apple Sign-In</h2>
+                    <h2><i aria-hidden="true" class="bi bi-phone me-2"></i>Native app stores &amp; Apple Sign-In</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
@@ -1938,6 +1976,19 @@ foreach ($sections as $s) {
                         platform's native app is listed &mdash; Apple App Store, Google Play, and the Amazon
                         Appstore (Fire OS). It's just an address book entry: it doesn't publish anything, it only
                         tells the site what to link to once an app <em>is</em> published.
+                    </p>
+                    <?php /* ELI5: this bit tells you about the friendly "wizard" button that
+                             sits on several of the setup cards further down this same page.
+                             DETAILED (#2003/#2004): reshaped from a one-line pointer into a
+                             proper <h3> wizard subsection so it matches the shape every other
+                             guided-wizard callout on this page already uses (see "Guided
+                             songbook creation", "Adding a new provider", "Guided live-session
+                             setup" elsewhere in this file) — CLAUDE.md rule #48's API/guided-UX
+                             coverage program. Deliberately silent on the modal id / registry
+                             file behind it; that's implementation detail, not user help. */ ?>
+                    <h3 class="h6">Connect a service (guided)</h3>
+                    <p>
+                        Several of the integration cards further down this same <a href="/manage/configuration">Settings</a> page &mdash; IntAppsAPI Gateway, CueRCode QR codes, CAPTCHA, Email, Sign in with Apple, and Partner webhooks &mdash; offer a <strong>&ldquo;Set up with a guide&rdquo;</strong> button. It walks you through what that particular service needs, one question at a time, saves what you enter, and tests the connection live before you finish &mdash; so you know it's actually working before you move on. Prefer filling in the fields yourself? Each card's own fields are still right there, unchanged.
                     </p>
                     <h3 class="h6">What to paste in each field</h3>
                     <ul>
@@ -1989,10 +2040,32 @@ foreach ($sections as $s) {
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> this is entirely optional. Without it configured, the registry still works exactly as it always has &mdash; the manual "Refresh from IANA + CLDR" button on Database Setup still pulls the latest data on demand.
                     </div>
+                    <h3 class="h6">Search engine visibility</h3>
+                    <p>
+                        A card with three switches &mdash; <strong>Production</strong>, <strong>Beta</strong>, and
+                        <strong>Alpha (dev)</strong> &mdash; controlling whether each of the three iHymns sites is
+                        listed by search engines like Google. Out of the box the live site is listed and the beta
+                        preview and dev site are not, so an in-progress version of a song page can't turn up
+                        alongside the real one in a web search.
+                    </p>
+                    <p>
+                        Switching a site off tells search engines not to list any of its pages, removes its
+                        sitemap, and stops <code>robots.txt</code> pointing at it &mdash; but the site keeps
+                        working normally for everyone the whole time; only whether it shows up in search results
+                        changes. Because the three sites share one setting, this card manages all three at once
+                        from wherever you're signed in &mdash; unlike most other cards here, which only manage the
+                        one you're currently on.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> a switch here takes days to weeks to show up in search results,
+                        not instantly &mdash; search engines only notice the change the next time they revisit a
+                        page. That cuts both ways: turning a site off doesn't scrub it from search overnight, and
+                        turning it back on doesn't relist it overnight either.
+                    </div>
                 </section>
 
                 <section id="bot-protection" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-shield-check me-2"></i>Bot protection (CAPTCHA)</h2>
+                    <h2><i aria-hidden="true" class="bi bi-shield-check me-2"></i>Bot protection (CAPTCHA)</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
@@ -2092,7 +2165,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="native-api" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-broadcast me-2"></i>Native API surface</h2>
+                    <h2><i aria-hidden="true" class="bi bi-broadcast me-2"></i>Native API surface</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">Global Admin</span>
@@ -2132,7 +2205,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="api-keys" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-key-fill me-2"></i>API Keys</h2>
+                    <h2><i aria-hidden="true" class="bi bi-key-fill me-2"></i>API Keys</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
@@ -2167,7 +2240,7 @@ foreach ($sections as $s) {
                 </section>
 
                 <section id="webhooks" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-broadcast me-2"></i>Webhooks</h2>
+                    <h2><i aria-hidden="true" class="bi bi-broadcast me-2"></i>Webhooks</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">Global Admin</span>
                     </p>
@@ -2182,7 +2255,7 @@ foreach ($sections as $s) {
                     <ul>
                         <li><strong>Add a subscription</strong> &mdash; give it a label, the partner's <code>https://</code> URL, and tick which events it wants (a single event, a whole family like <em>every song event</em>, or everything).</li>
                         <li><strong>Verify it.</strong> A new or URL-changed subscription starts <em>pending</em> and receives nothing until it passes a one-off <strong>verification</strong>: we send a signed challenge, and the endpoint must echo it back. This proves the partner really controls that URL &mdash; so a subscription can't be pointed at some unsuspecting third party and then used to spray it with traffic.</li>
-                        <li><strong>Signing secret.</strong> Each subscription has a secret used to sign every delivery (an <code>X-iHymns-Signature</code> header the receiver checks). It is shown once on create; you can <em>Reveal</em> it (logged) or <em>Rotate</em> it &mdash; rotation keeps the old secret valid for 24&nbsp;hours so the partner can roll over without downtime.</li>
+                        <li><strong>Signing secret.</strong> Each subscription has a secret used to sign every delivery (an <code>X-iHymns-Signature</code> header the receiver checks). It is shown once &mdash; on create, and again if you <em>Rotate</em> it. There is no way to look it up again after that; lost it? <em>Rotate</em> mints a new one and keeps the old one valid for 24&nbsp;hours so the partner can roll over without downtime.</li>
                     </ul>
                     <h3 class="h6">Delivery, retries and dead-letters</h3>
                     <p>
@@ -2202,7 +2275,7 @@ foreach ($sections as $s) {
                      ==================================================================== -->
 
                 <section id="api-docs" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-file-earmark-code me-2"></i>API Docs (Swagger UI)</h2>
+                    <h2><i aria-hidden="true" class="bi bi-file-earmark-code me-2"></i>API Docs (Swagger UI)</h2>
                     <p class="role-badges">
                         <span class="badge bg-primary">editor</span>
                         <span class="badge bg-warning text-dark">admin</span>
@@ -2241,7 +2314,7 @@ foreach ($sections as $s) {
                      ==================================================================== -->
 
                 <section id="troubleshooting" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-life-preserver me-2"></i>Troubleshooting &amp; FAQs</h2>
+                    <h2><i aria-hidden="true" class="bi bi-life-preserver me-2"></i>Troubleshooting &amp; FAQs</h2>
 
                     <h3 class="h6">&ldquo;A page that should be in the menu isn't there.&rdquo;</h3>
                     <p class="small">

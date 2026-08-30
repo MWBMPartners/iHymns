@@ -271,7 +271,7 @@ export function buildEnrichmentPanel(comp, ctx) {
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
-    toggle.innerHTML = '<i class="bi bi-card-text me-1"></i>Per-line language, translations &amp; annotations';
+    toggle.innerHTML = '<i class="bi bi-card-text me-1" aria-hidden="true"></i>Per-line language, translations &amp; annotations';
     const box = document.createElement('div');
     box.className = 'mt-1';
     box.style.display = 'none';

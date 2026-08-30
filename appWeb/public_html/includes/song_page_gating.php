@@ -121,6 +121,7 @@ function songPageGatingDecide(
        presenceCcli). Sheet/midi keep the page's presence-OR quirk (see doc-block). */
     $mediaPresenceOk = $presenceCcli;
     $audioOk = $mediaPresenceOk || !empty($caps['play_audio']);
+    $videoOk = $mediaPresenceOk || !empty($caps['play_video']);   /* #1968 P4 — mirrors this surface's presence-OR quirk */
     $sheetOk = $mediaPresenceOk || !empty($caps['download_pdf']);
     $midiOk  = $mediaPresenceOk || !empty($caps['download_midi']);
 
@@ -133,6 +134,7 @@ function songPageGatingDecide(
     if (!empty($media)) {
         $capBool = [
             'play_audio'    => $audioOk,
+            'play_video'    => $videoOk,   /* #1968 P4 */
             'download_midi' => $midiOk,
             'download_pdf'  => $sheetOk,
         ];

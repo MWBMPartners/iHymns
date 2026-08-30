@@ -23,6 +23,7 @@ import { userHasEntitlement } from './entitlements.js';
    exactly the requests that need the language filter applied. */
 import { apiFetch } from '../utils/api-client.js';
 import { shouldRenderErrorBody } from '../utils/error-response.js';
+import { prefersReducedMotion } from '../utils/motion.js';
 import {
     STORAGE_FAVORITES,
     STORAGE_SETLISTS,
@@ -31,6 +32,22 @@ import {
     STORAGE_RECENT_SONGBOOKS,
     EVT_AUTH_CHANGED,
 } from '../constants.js';
+
+/**
+ * a11y audit M1 / G5 (owner decision D4, 2026-08-30) — the "one specific
+ * record" pages whose document title is re-derived from the rendered
+ * fragment's own <h1> once it lands (applyDynamicRecordTitle() below),
+ * rather than staying on updateTitle()'s generic per-page-TYPE title
+ * forever. tests/test-router-title-coverage.js (G5) asserts every page
+ * fragment under includes/pages/*.php is covered by EITHER a
+ * updateTitle() map entry OR membership here — so a future page that is
+ * neither (like publisher/tune/work were before this fix) fails the
+ * build instead of shipping with a permanently generic tab title.
+ * @type {Set<string>}
+ */
+const DYNAMIC_TITLE_PAGES = new Set([
+    'song', 'songbook', 'tag', 'musician', 'publisher', 'tune', 'work', 'setlist-shared',
+]);
 
 export class Router {
     /**
@@ -245,6 +262,13 @@ export class Router {
         const heading = document.querySelector('#page-content h1');
         announce((heading?.textContent || '').trim() || toTitleCase(String(page || 'page')));
 
+        /* a11y audit M1 (WCAG 2.4.2, owner decision D4): re-title the tab
+           with the actual record's name now that its fragment (and heading)
+           have landed — see applyDynamicRecordTitle()'s own doc-comment.
+           Reuses the SAME heading element the announcement above just read,
+           rather than querying the DOM a second time. */
+        this.applyDynamicRecordTitle(page, heading);
+
         /* Scroll handling. On popstate-back / forward to a previously-
            seen path, restore the saved scroll position with a smooth
            scroll. On forward navigation (or when no saved position
@@ -260,7 +284,10 @@ export class Router {
                     window.scrollTo({
                         top: saved,
                         left: 0,
-                        behavior: document.body.classList.contains('reduce-motion') ? 'auto' : 'smooth',
+                        /* a11y audit L7 (2026-08-30): was reduce-motion-class-only —
+                           now also honours the OS-level prefers-reduced-motion
+                           media query. @see js/utils/motion.js */
+                        behavior: prefersReducedMotion() ? 'auto' : 'smooth',
                     });
                 });
             });
@@ -642,7 +669,27 @@ export class Router {
     /**
      * Update the document title based on the current page.
      *
-     * @param {string} page Page name
+     * a11y audit M1 (WCAG 2.4.2 Page Titled, 2026-08-30): this map is the
+     * FIRST title a page gets — called before the fragment has even been
+     * fetched (handleCurrentRoute() calls it right after parseRoute(), well
+     * before loadPage()) — so every entry here is a reasonable GENERIC
+     * title for its page shape. For the "one specific record" pages
+     * (song/songbook/tag/musician/publisher/tune/work/setlist-shared),
+     * `applyDynamicRecordTitle()` below OVERWRITES this generic title with
+     * the actual record's name once its fragment has landed — matching the
+     * `"<record name> — iHymns"` shape index.php already computes
+     * server-side pre-boot ($ogTitle) for the very first page load, so a
+     * fresh visit and a client-side navigation end up with the SAME title
+     * shape either way (owner decision D4).
+     *
+     * Before this fix `publisher`/`tune`/`work` had NO entry at all here
+     * (falling through to the bare app name) and EVERY song/songbook/tag/
+     * musician page kept this generic placeholder forever — a screen-reader
+     * user tabbing through browser history heard "Song — iHymns" for every
+     * one of ~14,000 different songs.
+     * @link https://www.w3.org/WAI/WCAG21/Understanding/page-titled.html
+     *
+     * @param {string} page Current page name
      * @param {object} params Route parameters
      */
     updateTitle(page, params) {
@@ -680,8 +727,40 @@ export class Router {
             'terms': 'Terms of Use — ' + appName,
             'privacy': 'Privacy Policy — ' + appName,
             'request': 'Request a Song — ' + appName,
+            /* a11y audit M1 (2026-08-30) — the three missing entries: */
+            'publisher': 'Publisher — ' + appName,
+            'tune': 'Tune — ' + appName,
+            'work': 'Work — ' + appName,
+            'not-found': 'Page Not Found — ' + appName,
         };
         document.title = titles[page] || appName;
+    }
+
+    /**
+     * a11y audit M1 (WCAG 2.4.2, owner decision D4, 2026-08-30) — the
+     * "record name" pages, where the generic updateTitle() title above is
+     * never good enough on its own: read the fragment's own <h1> (the SAME
+     * element handleCurrentRoute() already reads for its SPA-navigation
+     * announcement, just below where this is called from — DOM-first, per
+     * the rule-#30 pattern) and re-title the tab as
+     * `"<record name> — iHymns"`, matching what index.php computes
+     * server-side pre-boot for a fresh (non-SPA) load of the same page.
+     *
+     * Deliberately does nothing when the heading is empty (e.g. the
+     * setlist-shared fragment's title span is filled in async by its own
+     * fetch, after this runs — the generic "Shared Set List — iHymns"
+     * title from updateTitle() above stays until that later re-render, if
+     * any, chooses to update it) rather than stamping a blank/dash title.
+     *
+     * @param {string} page Current page name
+     * @param {Element|null} heading the `#page-content h1` element, if any.
+     */
+    applyDynamicRecordTitle(page, heading) {
+        if (!DYNAMIC_TITLE_PAGES.has(page)) { return; }
+        const name = (heading?.textContent || '').trim();
+        if (!name) { return; }
+        const appName = this.config.appName || 'iHymns';
+        document.title = `${name} — ${appName}`;
     }
 
     /**
@@ -1429,8 +1508,12 @@ export class Router {
                     <span class="song-number-badge">${tr.number || '?'}</span>
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${escapeHtml(toTitleCase(tr.title))}${tr.verified ? ' <i class="fa-solid fa-circle-check text-success small" aria-hidden="true" title="Verified"></i>' : ''}</span>
+                        <!-- a11y audit m3 (2026-08-28): lang on the endonym so a screen
+                             reader pronounces it with the right language's rules rather
+                             than the page's own (mirrors songbook-language-filter.php's
+                             matching fix). -->
                         <small class="text-muted d-block">
-                            <i class="fa-solid fa-language me-1" aria-hidden="true"></i>${escapeHtml(tr.languageNativeName || tr.languageName || tr.language)}${tr.translator ? ` — ${escapeHtml(tr.translator)}` : ''}
+                            <i class="fa-solid fa-language me-1" aria-hidden="true"></i><span${tr.language ? ` lang="${escapeHtml(tr.language)}"` : ''}>${escapeHtml(tr.languageNativeName || tr.languageName || tr.language)}</span>${tr.translator ? ` — ${escapeHtml(tr.translator)}` : ''}
                         </small>
                     </div>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>

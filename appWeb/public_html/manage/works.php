@@ -130,32 +130,12 @@ try {
    is genuinely independent: an install can have one without the other,
    and every call site below checks `isset($worksExtraCols['Bowi'])` on
    its own merits, never assumes "P1 landed ⇒ Bowi landed". */
-$worksExtraCols = [];
-if ($hasSchema) {
-    try {
-        $extraColNames = [
-            'Subtitle', 'Disambiguation', 'Ccli', 'Bowi', 'TuneName', 'TuneId',
-            'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder', 'MusicBrainzWorkMBID',
-            'CopyrightHolderId', /* #1864 — registry FK; column-gated everywhere TuneId is */
-        ];
-        $ph    = implode(',', array_fill(0, count($extraColNames), '?'));
-        $stmt  = $db->prepare(
-            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
-              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorks'
-                AND COLUMN_NAME IN ($ph)"
-        );
-        $types = str_repeat('s', count($extraColNames));
-        $stmt->bind_param($types, ...$extraColNames);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        while ($row = $res->fetch_assoc()) {
-            $worksExtraCols[(string)$row['COLUMN_NAME']] = true;
-        }
-        $stmt->close();
-    } catch (\Throwable $e) {
-        error_log('[works] extra-cols probe failed: ' . $e->getMessage());
-    }
-}
+/* #1988 — extracted into the shared workExtraColumnsPresent() (includes/
+   work_admin.php, rule #22) so the new admin_work_create/_update API
+   actions probe the SAME 11 columns rather than re-typing this list. The
+   $hasSchema gate stays here (page-byte-identical behaviour — skip the
+   probe entirely when tblWorks itself hasn't been created yet). */
+$worksExtraCols = $hasSchema ? workExtraColumnsPresent($db) : [];
 
 /**
  * #1741 P4b — extract + validate the 9 extra tblWorks fields (+ the
@@ -174,53 +154,14 @@ if ($hasSchema) {
  * @param array<string,mixed> $post
  * @return array{0: array<string,mixed>, 1: ?string} [$fields, $error] —
  *         $error is null on success; $fields is [] (unusable) on failure.
+ *
+ * #1988 — delegates to the shared workParseExtraFields() (includes/
+ * work_admin.php) rather than owning its own copy (rule #22 — the exact
+ * $slugFor -> workSlugify() precedent above), so admin_work_create/_update
+ * (api.php) validate every field the SAME way, in the SAME place.
  */
 $parseWorkExtraFields = static function (array $post): array {
-    $subtitle        = mb_substr(trim((string)($post['subtitle'] ?? '')), 0, 255);
-    $disambiguation  = mb_substr(trim((string)($post['disambiguation'] ?? '')), 0, 255);
-    $ccliIn          = trim((string)($post['ccli'] ?? ''));
-    $bowiIn          = mb_substr(trim((string)($post['bowi'] ?? '')), 0, 30);
-    $tuneNameIn      = mb_substr(trim((string)($post['tune_name'] ?? '')), 0, 120);
-    $firstPubIn      = trim((string)($post['first_published_year'] ?? ''));
-    $copyrightYears  = mb_substr(trim((string)($post['copyright_years'] ?? '')), 0, 100);
-    $copyrightHolder = mb_substr(trim((string)($post['copyright_holder'] ?? '')), 0, 255);
-    /* #1864 — the Copyright Holder picker's hidden id, same "cast-or-null"
-       idiom as origin_city_id (:454/:541) — 0/absent means "nothing was
-       picked", not "picked publisher #0". Verified server-side by
-       publisherResolvePickedOrCreate() before being trusted (rule #37). */
-    $copyrightHolderIdIn = (int)($post['copyright_holder_id'] ?? 0) ?: null;
-    $mbWorkIn        = trim((string)($post['musicbrainz_work_mbid'] ?? ''));
-
-    if ($ccliIn !== '' && !mediaIdentifierWorkValidate('ccli', $ccliIn)) {
-        return [[], 'CCLI Work Number must be numeric.'];
-    }
-    if ($mbWorkIn !== '' && !mediaIdentifierWorkValidate('musicbrainz-work', $mbWorkIn)) {
-        return [[], 'MusicBrainz Work MBID must look like a UUID (8-4-4-4-12 hex digits).'];
-    }
-    $firstPublishedYear = null;
-    if ($firstPubIn !== '') {
-        /* SMALLINT UNSIGNED on the schema side (schema.sql:3049) —
-           500..2100 keeps the same generous historical floor the column's
-           own comment documents ("hymn works predate" MySQL YEAR's 1901
-           floor) while still rejecting obvious typos. */
-        if (!ctype_digit($firstPubIn) || (int)$firstPubIn < 500 || (int)$firstPubIn > 2100) {
-            return [[], 'First published year must be a year between 500 and 2100.'];
-        }
-        $firstPublishedYear = (int)$firstPubIn;
-    }
-
-    return [[
-        'subtitle'            => $subtitle,
-        'disambiguation'      => $disambiguation,
-        'ccli'                => $ccliIn,
-        'bowi'                => $bowiIn,
-        'tuneName'            => $tuneNameIn,
-        'firstPublishedYear'  => $firstPublishedYear,
-        'copyrightYears'      => $copyrightYears,
-        'copyrightHolder'     => $copyrightHolder,
-        'copyrightHolderId'   => $copyrightHolderIdIn,
-        'musicBrainzWorkMbid' => $mbWorkIn,
-    ], null];
+    return workParseExtraFields($post);
 };
 
 /**
@@ -234,35 +175,13 @@ $parseWorkExtraFields = static function (array $post): array {
  * @param array<string,true>  $worksExtraCols
  * @param array<string,mixed> $fields
  * @return string|null a user-facing error, or null when clear.
+ *
+ * #1988 — delegates to the shared workCheckExtraUniqueness() (includes/
+ * work_admin.php, rule #22) so admin_work_create/_update (api.php) check
+ * the SAME three unique-keyed columns this page does.
  */
 $checkWorkExtraUniqueness = static function (\mysqli $db, array $worksExtraCols, array $fields, ?int $excludeId): ?string {
-    /* Hardcoded (col,val,label) triples from fixed PHP source — the
-       ONLY interpolated identifier below (`{$col}`) is drawn from this
-       literal array, never from request input (rule #5's carve-out). */
-    $checks = [
-        ['col' => 'Ccli', 'val' => (string)$fields['ccli'], 'label' => 'CCLI Work Number'],
-        ['col' => 'Bowi', 'val' => (string)$fields['bowi'], 'label' => 'BOWI'],
-        ['col' => 'MusicBrainzWorkMBID', 'val' => (string)$fields['musicBrainzWorkMbid'], 'label' => 'MusicBrainz Work MBID'],
-    ];
-    foreach ($checks as $check) {
-        $col = $check['col'];
-        $val = $check['val'];
-        if ($val === '' || !isset($worksExtraCols[$col])) continue;
-        if ($excludeId !== null) {
-            $stmt = $db->prepare("SELECT Id FROM tblWorks WHERE {$col} = ? AND Id <> ?");
-            $stmt->bind_param('si', $val, $excludeId);
-        } else {
-            $stmt = $db->prepare("SELECT Id FROM tblWorks WHERE {$col} = ?");
-            $stmt->bind_param('s', $val);
-        }
-        $stmt->execute();
-        $used = $stmt->get_result()->fetch_row() !== null;
-        $stmt->close();
-        if ($used) {
-            return "{$check['label']} '{$val}' is already on another Work.";
-        }
-    }
-    return null;
+    return workCheckExtraUniqueness($db, $worksExtraCols, $fields, $excludeId);
 };
 
 /**
@@ -291,73 +210,14 @@ $checkWorkExtraUniqueness = static function (\mysqli $db, array $worksExtraCols,
  *
  * @param array<string,true>  $worksExtraCols
  * @param array<string,mixed> $fields
+ *
+ * #1988 — delegates to the shared workPersistExtraFields() (includes/
+ * work_admin.php, rule #22) so admin_work_create/_update (api.php) persist
+ * the SAME column-gated SET list, incl. the TuneName<->TuneId and
+ * CopyrightHolder<->CopyrightHolderId lockstep writes, that this page uses.
  */
 $persistWorkExtraFields = static function (\mysqli $db, array $worksExtraCols, int $workId, array $fields): void {
-    $sets  = [];
-    $types = '';
-    $vals  = [];
-
-    if (isset($worksExtraCols['Subtitle'])) {
-        $sets[] = 'Subtitle = ?'; $types .= 's';
-        $vals[] = $fields['subtitle'] !== '' ? $fields['subtitle'] : null;
-    }
-    if (isset($worksExtraCols['Disambiguation'])) {
-        $sets[] = 'Disambiguation = ?'; $types .= 's';
-        $vals[] = $fields['disambiguation'];
-    }
-    if (isset($worksExtraCols['Ccli'])) {
-        $sets[] = 'Ccli = ?'; $types .= 's';
-        $vals[] = $fields['ccli'] !== '' ? $fields['ccli'] : null;
-    }
-    if (isset($worksExtraCols['Bowi'])) {
-        $sets[] = 'Bowi = ?'; $types .= 's';
-        $vals[] = $fields['bowi'] !== '' ? $fields['bowi'] : null;
-    }
-    if (isset($worksExtraCols['FirstPublishedYear'])) {
-        $sets[] = 'FirstPublishedYear = ?'; $types .= 'i';
-        $vals[] = $fields['firstPublishedYear'];
-    }
-    if (isset($worksExtraCols['CopyrightYears'])) {
-        $sets[] = 'CopyrightYears = ?'; $types .= 's';
-        $vals[] = $fields['copyrightYears'];
-    }
-    if (isset($worksExtraCols['CopyrightHolder'])) {
-        $sets[] = 'CopyrightHolder = ?'; $types .= 's';
-        $vals[] = $fields['copyrightHolder'];
-        /* #1864 — CopyrightHolder + CopyrightHolderId are ALWAYS written
-           TOGETHER, the exact TuneName/TuneId lockstep shape a few lines
-           below applied to the publisher registry (rule #37/#43):
-           publisherResolvePickedOrCreate() trusts the picker's claimed id
-           only after verifying it against the typed name, else falls back
-           to publisherFindOrCreateByName() — never a raw client-supplied
-           id written unverified. Column-gated: an un-migrated install
-           keeps writing the bare string only, same as TuneName without
-           TuneId above it. */
-        if (isset($worksExtraCols['CopyrightHolderId'])) {
-            $sets[] = 'CopyrightHolderId = ?'; $types .= 'i';
-            $vals[] = publisherResolvePickedOrCreate($db, $fields['copyrightHolder'], $fields['copyrightHolderId'] ?? null);
-        }
-    }
-    if (isset($worksExtraCols['MusicBrainzWorkMBID'])) {
-        $sets[] = 'MusicBrainzWorkMBID = ?'; $types .= 's';
-        $vals[] = $fields['musicBrainzWorkMbid'] !== '' ? $fields['musicBrainzWorkMbid'] : null;
-    }
-    if (isset($worksExtraCols['TuneName'])) {
-        $sets[] = 'TuneName = ?'; $types .= 's';
-        $vals[] = $fields['tuneName'] !== '' ? $fields['tuneName'] : null;
-        if (isset($worksExtraCols['TuneId'])) {
-            $sets[] = 'TuneId = ?'; $types .= 'i';
-            $vals[] = tuneFindOrCreateByName($db, $fields['tuneName']);
-        }
-    }
-
-    if (!$sets) return;
-    $stmt = $db->prepare('UPDATE tblWorks SET ' . implode(', ', $sets) . ' WHERE Id = ?');
-    $types .= 'i';
-    $vals[] = $workId;
-    $stmt->bind_param($types, ...$vals);
-    $stmt->execute();
-    $stmt->close();
+    workPersistExtraFields($db, $worksExtraCols, $workId, $fields);
 };
 
 /* External-links registry (#833) — probe + load applicable types. */
@@ -531,26 +391,15 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     /**
      * Verify $candidateParent isn't a descendant of $workId — prevents
      * cycle creation when re-parenting (a → b → c, then re-parenting
-     * a under c would loop). Walks the parent chain until null,
-     * giving up after MAX_DEPTH iterations as a hard stop in case the
-     * table has somehow already become inconsistent.
+     * a under c would loop).
+     *
+     * #1988 — delegates to the shared workParentCycleSafe() (includes/
+     * work_admin.php, rule #22): this closure and api.php's own
+     * $workCycleSafe closure had independently grown the exact same walk;
+     * both now call the ONE consolidated core instead.
      */
     $cycleSafe = static function (int $workId, ?int $candidateParent) use ($db): bool {
-        if ($candidateParent === null) return true;
-        if ($candidateParent === $workId) return false;
-        $cur = $candidateParent;
-        $maxDepth = 64;
-        while ($cur !== null && $maxDepth-- > 0) {
-            if ($cur === $workId) return false;
-            $stmt = $db->prepare('SELECT ParentWorkId FROM tblWorks WHERE Id = ?');
-            $stmt->bind_param('i', $cur);
-            $stmt->execute();
-            $row = $stmt->get_result()->fetch_assoc();
-            $stmt->close();
-            if (!$row) return true;
-            $cur = $row['ParentWorkId'] !== null ? (int)$row['ParentWorkId'] : null;
-        }
-        return false;
+        return workParentCycleSafe($db, $workId, $candidateParent);
     };
 
     try {
@@ -617,17 +466,11 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                    own doc-block point 6. */
                 ilidStampNewRow($db, 'work', $newId);
 
-                /* Place columns — schema-tolerant separate UPDATE. */
-                if (placeColumnExists($db, 'tblWorks', 'OriginCityId')) {
-                    $stmt = $db->prepare(
-                        'UPDATE tblWorks
-                            SET OriginCity = ?, OriginCityId = ?
-                          WHERE Id = ?'
-                    );
-                    $stmt->bind_param('sii', $originCity, $originCityId, $newId);
-                    $stmt->execute();
-                    $stmt->close();
-                }
+                /* Place columns — schema-tolerant separate UPDATE. #1988 —
+                   delegates to the shared workPersistOriginCity() (includes/
+                   work_admin.php, rule #22), extracted verbatim from this
+                   exact block. */
+                workPersistOriginCity($db, $newId, $originCity, $originCityId);
 
                 /* #1741 P4b — extra fields, ONE separate column-gated
                    UPDATE (§0.3.3 pattern). */
@@ -757,17 +600,11 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $stmt->close();
 
                     /* Place columns — separate UPDATE so the main bind
-                       stays untouched. Skipped on pre-adoption installs. */
-                    if (placeColumnExists($db, 'tblWorks', 'OriginCityId')) {
-                        $stmt = $db->prepare(
-                            'UPDATE tblWorks
-                                SET OriginCity = ?, OriginCityId = ?
-                              WHERE Id = ?'
-                        );
-                        $stmt->bind_param('sii', $originCity, $originCityId, $id);
-                        $stmt->execute();
-                        $stmt->close();
-                    }
+                       stays untouched. Skipped on pre-adoption installs.
+                       #1988 — delegates to the shared workPersistOriginCity()
+                       (includes/work_admin.php, rule #22), extracted
+                       verbatim from this exact block. */
+                    workPersistOriginCity($db, $id, $originCity, $originCityId);
 
                     /* #1741 P4b — extra fields, ONE separate column-gated
                        UPDATE (§0.3.3 pattern), inside the same transaction
@@ -777,27 +614,22 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
                     /* Membership: delete-then-insert so SortOrder /
                        IsCanonical / Note all reset cleanly. Cheap on
-                       small membership lists. */
-                    $stmt = $db->prepare('DELETE FROM tblWorkSongs WHERE WorkId = ?');
-                    $stmt->bind_param('i', $id);
-                    $stmt->execute();
-                    $stmt->close();
-
-                    if ($cleanSongs) {
-                        $stmt = $db->prepare(
-                            'INSERT INTO tblWorkSongs
-                                (WorkId, SongId, IsCanonical, SortOrder, Note)
-                             VALUES (?, ?, ?, ?, NULLIF(?, ""))'
-                        );
-                        foreach ($cleanSongs as $idx => $sid) {
-                            $isCanon = in_array($sid, (array)$postedCanon, true) ? 1 : 0;
-                            $sort    = isset($postedSort[$sid]) ? max(0, min(65535, (int)$postedSort[$sid])) : ($idx * 10);
-                            $note    = mb_substr((string)($postedNote[$sid] ?? ''), 0, 255);
-                            $stmt->bind_param('isiis', $id, $sid, $isCanon, $sort, $note);
-                            $stmt->execute();
-                        }
-                        $stmt->close();
+                       small membership lists. #1988 — the DELETE+INSERT SQL
+                       shape is extracted into the shared workSongsReplace()
+                       (includes/work_admin.php, rule #22) so the new
+                       admin_work_members_replace API action reuses it; the
+                       parse/clamp above (trim/cap-20/dedupe/sort-default/
+                       note-cap) stays HERE, page-local, unchanged. */
+                    $memberRows = [];
+                    foreach ($cleanSongs as $idx => $sid) {
+                        $memberRows[] = [
+                            'songId'      => $sid,
+                            'isCanonical' => in_array($sid, (array)$postedCanon, true),
+                            'sortOrder'   => isset($postedSort[$sid]) ? max(0, min(65535, (int)$postedSort[$sid])) : ($idx * 10),
+                            'note'        => mb_substr((string)($postedNote[$sid] ?? ''), 0, 255),
+                        ];
                     }
+                    workSongsReplace($db, $id, $memberRows);
 
                     /* Constituent works (medley) — gated on workMedleyReady()
                        (rule #19: an un-migrated install has no
@@ -1036,7 +868,7 @@ if ($hasSchema) {
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
     <div class="container-admin py-4">
-        <h1 class="h4 mb-3"><i class="bi bi-diagram-3 me-2"></i>Works</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-diagram-3 me-2"></i>Works</h1>
         <p class="text-secondary small mb-4">
             A <strong>Work</strong> groups songs that are really the same underlying composition —
             the same hymn or tune appearing across different songbooks, arrangements or translations.
@@ -1062,24 +894,24 @@ if ($hasSchema) {
                     <code>tblWorkExternalLinks</code> tables haven't been created on this database yet (#840).
                 </p>
                 <a href="/manage/setup-database" class="btn btn-amber btn-sm">
-                    <i class="bi bi-database-gear me-1"></i>Run /manage/setup-database
+                    <i aria-hidden="true" class="bi bi-database-gear me-1"></i>Run /manage/setup-database
                 </a>
             </div>
         <?php else: ?>
 
         <!-- Works list -->
         <div class="card-admin p-3 mb-4">
-            <h2 class="h6 mb-3"><i class="bi bi-list-ul me-2"></i>Existing works</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-list-ul me-2"></i>Existing works</h2>
             <table class="table table-sm align-middle cp-sortable mb-0 admin-table-responsive">
                 <thead>
                     <tr class="text-muted small">
-                        <th data-col-priority="primary"   data-sort-key="title"     data-sort-type="text">Title</th>
-                        <th data-col-priority="secondary" data-sort-key="iswc"      data-sort-type="text">ISWC</th>
-                        <th data-col-priority="primary"   data-sort-key="members"   data-sort-type="number" class="text-center">Members</th>
-                        <th data-col-priority="tertiary"  data-sort-key="children"  data-sort-type="number" class="text-center">Children</th>
-                        <th data-col-priority="tertiary"  data-sort-key="medley"    data-sort-type="number" class="text-center">Medley</th>
-                        <th data-col-priority="tertiary"  data-sort-key="parent"    data-sort-type="text">Parent</th>
-                        <th data-col-priority="primary"   class="text-end">Actions</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="title"     data-sort-type="text">Title</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="iswc"      data-sort-type="text">ISWC</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="members"   data-sort-type="number" class="text-center">Members</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="children"  data-sort-type="number" class="text-center">Children</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="medley"    data-sort-type="number" class="text-center">Medley</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="parent"    data-sort-type="text">Parent</th>
+                        <th scope="col" data-col-priority="primary"   class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -1180,12 +1012,12 @@ if ($hasSchema) {
                                 <button type="button" class="btn btn-sm btn-outline-info"
                                         onclick="openWorkEditModal(<?= htmlspecialchars((string)$rowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Edit work + members + links">
-                                    <i class="bi bi-pencil"></i>
+                                    <i aria-hidden="true" class="bi bi-pencil"></i>
                                 </button>
                                 <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick="openWorkDeleteModal(<?= htmlspecialchars((string)$deleteJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Delete work (memberships + links cascade; child works orphan)">
-                                    <i class="bi bi-trash"></i>
+                                    <i aria-hidden="true" class="bi bi-trash"></i>
                                 </button>
                             </td>
                         </tr>
@@ -1201,10 +1033,10 @@ if ($hasSchema) {
         <form method="POST" class="card-admin p-3 mb-4">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
-            <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a work</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a work</h2>
             <div class="row g-2">
                 <div class="col-sm-5">
-                    <label class="form-label small">Title</label>
+                    <label class="form-label small" for="create-title">Title</label>
                     <input type="text" name="title" id="create-title"
                            class="form-control form-control-sm"
                            maxlength="255" required
@@ -1221,8 +1053,8 @@ if ($hasSchema) {
                     ]) ?>
                 </div>
                 <div class="col-sm-4">
-                    <label class="form-label small">ISWC <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="iswc"
+                    <label class="form-label small" for="create-iswc">ISWC <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="iswc" id="create-iswc"
                            class="form-control form-control-sm"
                            maxlength="15"
                            placeholder="T-345.246.800-1">
@@ -1230,8 +1062,8 @@ if ($hasSchema) {
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-6">
-                    <label class="form-label small">Parent work <small class="text-muted">(optional — for nesting)</small></label>
-                    <select name="parent_id" class="form-select form-select-sm">
+                    <label class="form-label small" for="create-parent">Parent work <small class="text-muted">(optional — for nesting)</small></label>
+                    <select name="parent_id" id="create-parent" class="form-select form-select-sm">
                         <option value="">— top-level work —</option>
                         <?php foreach ($rows as $r): ?>
                             <option value="<?= (int)$r['Id'] ?>"><?= htmlspecialchars((string)$r['Title']) ?></option>
@@ -1239,8 +1071,8 @@ if ($hasSchema) {
                     </select>
                 </div>
                 <div class="col-sm-6">
-                    <label class="form-label small">Notes <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="notes"
+                    <label class="form-label small" for="create-notes">Notes <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="notes" id="create-notes"
                            class="form-control form-control-sm"
                            maxlength="500"
                            placeholder="Brief context for curators">
@@ -1248,7 +1080,7 @@ if ($hasSchema) {
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-6">
-                    <label class="form-label small">Composition origin <small class="text-muted">(optional)</small></label>
+                    <label class="form-label small" for="create-work-origin-city">Composition origin <small class="text-muted">(optional)</small></label>
                     <input type="text" id="create-work-origin-city" name="origin_city"
                            class="form-control form-control-sm js-place-search"
                            maxlength="255"
@@ -1264,15 +1096,15 @@ if ($hasSchema) {
                  just not persisted until the migration lands. -->
             <div class="row g-2 mt-2">
                 <div class="col-sm-6">
-                    <label class="form-label small">Subtitle <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="subtitle"
+                    <label class="form-label small" for="create-subtitle">Subtitle <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="subtitle" id="create-subtitle"
                            class="form-control form-control-sm"
                            maxlength="255"
                            placeholder="e.g. A Hymn for the Nativity">
                 </div>
                 <div class="col-sm-6">
-                    <label class="form-label small">Disambiguation <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="disambiguation"
+                    <label class="form-label small" for="create-disambiguation">Disambiguation <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="disambiguation" id="create-disambiguation"
                            class="form-control form-control-sm"
                            maxlength="255"
                            placeholder="Short parenthetical distinguishing same-named works">
@@ -1280,20 +1112,20 @@ if ($hasSchema) {
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-3">
-                    <label class="form-label small">CCLI Work # <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="ccli" inputmode="numeric"
+                    <label class="form-label small" for="create-ccli">CCLI Work # <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="ccli" id="create-ccli" inputmode="numeric"
                            class="form-control form-control-sm"
                            maxlength="50"
                            placeholder="1234567">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">BOWI <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="bowi"
+                    <label class="form-label small" for="create-bowi">BOWI <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="bowi" id="create-bowi"
                            class="form-control form-control-sm"
                            maxlength="30">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Tune name <small class="text-muted">(optional)</small></label>
+                    <label class="form-label small" for="create-work-tune-name">Tune name <small class="text-muted">(optional)</small></label>
                     <input type="text" name="tune_name" id="create-work-tune-name"
                            class="form-control form-control-sm"
                            maxlength="120"
@@ -1306,8 +1138,8 @@ if ($hasSchema) {
                     <input type="hidden" id="create-work-tune-id" value="">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">First published <small class="text-muted">(year, optional)</small></label>
-                    <input type="number" name="first_published_year"
+                    <label class="form-label small" for="create-first-published-year">First published <small class="text-muted">(year, optional)</small></label>
+                    <input type="number" name="first_published_year" id="create-first-published-year"
                            class="form-control form-control-sm"
                            min="500" max="2100"
                            placeholder="1978">
@@ -1315,14 +1147,14 @@ if ($hasSchema) {
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-6">
-                    <label class="form-label small">Copyright years <small class="text-muted">(as printed, optional)</small></label>
-                    <input type="text" name="copyright_years"
+                    <label class="form-label small" for="create-copyright-years">Copyright years <small class="text-muted">(as printed, optional)</small></label>
+                    <input type="text" name="copyright_years" id="create-copyright-years"
                            class="form-control form-control-sm"
                            maxlength="100"
                            placeholder="e.g. 1978, 1987, 2011">
                 </div>
                 <div class="col-sm-6">
-                    <label class="form-label small">Copyright holder <small class="text-muted">(optional)</small></label>
+                    <label class="form-label small" for="create-work-copyright-holder">Copyright holder <small class="text-muted">(optional)</small></label>
                     <input type="text" name="copyright_holder" id="create-work-copyright-holder"
                            class="form-control form-control-sm"
                            maxlength="255">
@@ -1339,15 +1171,15 @@ if ($hasSchema) {
                     <!-- #1741 P4b §2.4.5 rider — the pre-existing #1066
                          MusicBrainzWorkMBID column has never had an editor
                          field before this. -->
-                    <label class="form-label small">MusicBrainz Work MBID <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="musicbrainz_work_mbid"
+                    <label class="form-label small" for="create-musicbrainz-work-mbid">MusicBrainz Work MBID <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="musicbrainz_work_mbid" id="create-musicbrainz-work-mbid"
                            class="form-control form-control-sm"
                            maxlength="50"
                            placeholder="e.g. 0a1b2c3d-...">
                 </div>
             </div>
             <button type="submit" class="btn btn-amber btn-sm mt-3">
-                <i class="bi bi-plus me-1"></i>Create work
+                <i aria-hidden="true" class="bi bi-plus me-1"></i>Create work
             </button>
             <p class="form-text small mt-2 mb-0">
                 Add member songs + external links via the <em>Edit</em> button after creating.
@@ -1355,7 +1187,8 @@ if ($hasSchema) {
         </form>
 
         <!-- Edit Modal -->
-        <div class="modal fade" id="workEditModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30, M6 pattern): wire the modal-title heading to the dialog. -->
+        <div class="modal fade" id="workEditModal" tabindex="-1" aria-labelledby="workEditModal-label">
             <div class="modal-dialog modal-xl">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST">
@@ -1363,15 +1196,15 @@ if ($hasSchema) {
                         <input type="hidden" name="action" value="update">
                         <input type="hidden" name="id" id="edit-work-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title">
-                                <i class="bi bi-pencil me-2"></i>Edit work — <span id="edit-work-title-label"></span>
+                            <h5 class="modal-title" id="workEditModal-label">
+                                <i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit work — <span id="edit-work-title-label"></span>
                             </h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">Title</label>
+                                    <label class="form-label" for="edit-work-title">Title</label>
                                     <input type="text" name="title" id="edit-work-title"
                                            class="form-control" maxlength="255" required>
                                 </div>
@@ -1385,7 +1218,7 @@ if ($hasSchema) {
                                     ]) ?>
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">ISWC <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-iswc">ISWC <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="iswc" id="edit-work-iswc"
                                            class="form-control" maxlength="15"
                                            placeholder="T-345.246.800-1">
@@ -1393,7 +1226,7 @@ if ($hasSchema) {
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">Parent work</label>
+                                    <label class="form-label" for="edit-work-parent">Parent work</label>
                                     <select name="parent_id" id="edit-work-parent" class="form-select">
                                         <option value="">— top-level work —</option>
                                         <?php foreach ($rows as $r): ?>
@@ -1403,14 +1236,14 @@ if ($hasSchema) {
                                     <div class="form-text small">Cycles are blocked server-side.</div>
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Notes</label>
+                                    <label class="form-label" for="edit-work-notes">Notes</label>
                                     <input type="text" name="notes" id="edit-work-notes"
                                            class="form-control" maxlength="500">
                                 </div>
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">Composition origin</label>
+                                    <label class="form-label" for="edit-work-origin-city">Composition origin</label>
                                     <input type="text" name="origin_city" id="edit-work-origin-city"
                                            class="form-control js-place-search" maxlength="255"
                                            placeholder="Start typing — e.g. Cardiff, Wales">
@@ -1423,48 +1256,48 @@ if ($hasSchema) {
                                  form above. -->
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">Subtitle <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-subtitle">Subtitle <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="subtitle" id="edit-work-subtitle"
                                            class="form-control" maxlength="255">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Disambiguation <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-disambiguation">Disambiguation <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="disambiguation" id="edit-work-disambiguation"
                                            class="form-control" maxlength="255">
                                 </div>
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-3">
-                                    <label class="form-label">CCLI Work # <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-ccli">CCLI Work # <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="ccli" id="edit-work-ccli" inputmode="numeric"
                                            class="form-control" maxlength="50">
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">BOWI <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-bowi">BOWI <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="bowi" id="edit-work-bowi"
                                            class="form-control" maxlength="30">
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">Tune name <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-tune-name">Tune name <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="tune_name" id="edit-work-tune-name"
                                            class="form-control" maxlength="120" placeholder="e.g. HYFRYDOL">
                                     <!-- #1864 — UI-state only, no name= (see the create-form twin above). -->
                                     <input type="hidden" id="edit-work-tune-id" value="">
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">First published <small class="text-muted">(year, opt.)</small></label>
+                                    <label class="form-label" for="edit-work-first-published-year">First published <small class="text-muted">(year, opt.)</small></label>
                                     <input type="number" name="first_published_year" id="edit-work-first-published-year"
                                            class="form-control" min="500" max="2100">
                                 </div>
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">Copyright years <small class="text-muted">(as printed, opt.)</small></label>
+                                    <label class="form-label" for="edit-work-copyright-years">Copyright years <small class="text-muted">(as printed, opt.)</small></label>
                                     <input type="text" name="copyright_years" id="edit-work-copyright-years"
                                            class="form-control" maxlength="100" placeholder="e.g. 1978, 1987, 2011">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Copyright holder <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-copyright-holder">Copyright holder <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="copyright_holder" id="edit-work-copyright-holder"
                                            class="form-control" maxlength="255">
                                     <!-- #1864 — see the create-form twin above for why the id is submitted. -->
@@ -1474,7 +1307,7 @@ if ($hasSchema) {
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
                                     <!-- #1741 P4b §2.4.5 rider. -->
-                                    <label class="form-label">MusicBrainz Work MBID <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-work-musicbrainz-work-mbid">MusicBrainz Work MBID <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="musicbrainz_work_mbid" id="edit-work-musicbrainz-work-mbid"
                                            class="form-control" maxlength="50" placeholder="e.g. 0a1b2c3d-...">
                                 </div>
@@ -1482,7 +1315,7 @@ if ($hasSchema) {
 
                             <hr>
 
-                            <h6 class="mb-2"><i class="bi bi-music-note-list me-2"></i>Member songs</h6>
+                            <h6 class="mb-2"><i aria-hidden="true" class="bi bi-music-note-list me-2"></i>Member songs</h6>
                             <p class="form-text small mt-0 mb-2">
                                 Each row is a song that's a version of this work. Mark one as
                                 <em>canonical</em> (typically the most-cited / earliest published).
@@ -1493,11 +1326,11 @@ if ($hasSchema) {
                             <table class="table table-sm align-middle mb-2">
                                 <thead>
                                     <tr class="text-muted small">
-                                        <th style="width:6rem">Sort</th>
-                                        <th style="width:5rem" class="text-center">Canon</th>
-                                        <th>Song</th>
-                                        <th>Note</th>
-                                        <th class="text-end" style="width:3rem"></th>
+                                        <th scope="col" style="width:6rem">Sort</th>
+                                        <th scope="col" style="width:5rem" class="text-center">Canon</th>
+                                        <th scope="col">Song</th>
+                                        <th scope="col">Note</th>
+                                        <th scope="col" class="text-end" style="width:3rem"></th>
                                     </tr>
                                 </thead>
                                 <tbody id="edit-work-members-tbody">
@@ -1507,7 +1340,7 @@ if ($hasSchema) {
 
                             <div class="d-flex gap-2 align-items-end mb-3">
                                 <div class="flex-grow-1">
-                                    <label class="form-label small mb-1">Add a song to this work</label>
+                                    <label class="form-label small mb-1" for="edit-work-add-search">Add a song to this work</label>
                                     <input type="text" id="edit-work-add-search"
                                            class="form-control form-control-sm"
                                            autocomplete="off"
@@ -1533,7 +1366,7 @@ if ($hasSchema) {
                                      OTHER WHOLE WORKS this one is stitched
                                      together FROM (a medley), each keeping its
                                      own separate identity, members and page. -->
-                            <h6 class="mb-2"><i class="bi bi-collection-play me-2"></i>Constituent works (medley)</h6>
+                            <h6 class="mb-2"><i aria-hidden="true" class="bi bi-collection-play me-2"></i>Constituent works (medley)</h6>
                             <p class="form-text small mt-0 mb-2">
                                 Use this when this Work is a <strong>medley</strong> stitched together from other,
                                 separately-identified works (e.g. a "Christmas Medley" containing "Joy to the World"
@@ -1546,10 +1379,10 @@ if ($hasSchema) {
                             <table class="table table-sm align-middle mb-2">
                                 <thead>
                                     <tr class="text-muted small">
-                                        <th style="width:6rem">Sort</th>
-                                        <th>Work</th>
-                                        <th>Note</th>
-                                        <th class="text-end" style="width:3rem"></th>
+                                        <th scope="col" style="width:6rem">Sort</th>
+                                        <th scope="col">Work</th>
+                                        <th scope="col">Note</th>
+                                        <th scope="col" class="text-end" style="width:3rem"></th>
                                     </tr>
                                 </thead>
                                 <tbody id="edit-work-constituents-tbody">
@@ -1559,7 +1392,7 @@ if ($hasSchema) {
 
                             <div class="d-flex gap-2 align-items-end mb-3">
                                 <div class="flex-grow-1">
-                                    <label class="form-label small mb-1">Add a constituent work</label>
+                                    <label class="form-label small mb-1" for="edit-work-constituent-add-search">Add a constituent work</label>
                                     <input type="text" id="edit-work-constituent-add-search"
                                            class="form-control form-control-sm"
                                            autocomplete="off"
@@ -1590,7 +1423,8 @@ if ($hasSchema) {
         </div>
 
         <!-- Delete Modal -->
-        <div class="modal fade" id="workDeleteModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30) — see the workEditModal comment above. -->
+        <div class="modal fade" id="workDeleteModal" tabindex="-1" aria-labelledby="workDeleteModal-label">
             <div class="modal-dialog">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST">
@@ -1598,10 +1432,10 @@ if ($hasSchema) {
                         <input type="hidden" name="action" value="delete">
                         <input type="hidden" name="id" id="delete-work-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title">
-                                <i class="bi bi-trash me-2"></i>Delete work — <span id="delete-work-name-label"></span>
+                            <h5 class="modal-title" id="workDeleteModal-label">
+                                <i aria-hidden="true" class="bi bi-trash me-2"></i>Delete work — <span id="delete-work-name-label"></span>
                             </h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
                             <p class="text-warning mb-2">

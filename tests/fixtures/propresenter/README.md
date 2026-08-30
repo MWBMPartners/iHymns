@@ -69,6 +69,81 @@ STORED+ZIP64 throughout) while staying entirely copyright-safe and deterministic
 (`node tools/pp7-gen-zip64-bundle.js`). See `tests/php/test-pp7-zip.php` section (g) for its
 dedicated test coverage and mutation-proof.
 
+## `timeline/` subdirectory — synthesised `Presentation.timeline` fixtures (#1968 dormant groundwork)
+
+Three more synthesised `.pro` fixtures, built the same way as `synthetic-zip64.probundle` above
+(`bussnet-test.pro`'s real, copyright-safe bytes decoded with protobufjs, ONE field replaced, then
+re-encoded) but living in their own `timeline/` subdirectory rather than alongside the rest —
+`test-pp7-decode.php` and `test-pp7-parse.php` both glob `*.pro` non-recursively at the top level
+and fail loudly on any fixture lacking a matching (hand-eyeballed) `expected/*.song.json`; these
+three test ONLY the timeline decode path and are consumed directly by
+`tests/php/test-pp7-timeline.php` with fixed expected values, so the subdirectory keeps them out of
+those two globs' contract entirely (the same reason `assets/tiny.mp4` lives outside them).
+
+Built by `tools/pp7-gen-timeline-fixture.js` (`node tools/pp7-gen-timeline-fixture.js` regenerates
+all three):
+
+| Committed name | `Timeline.cues` (field 1) | `Timeline.cues_v2` (field 11) | Covers |
+|---|---|---|---|
+| `synthetic-timeline-cues.pro` | 3 cues, increasing `trigger_time` (first = `0.787310792`, the exact value independently observed on the real, non-"Extended", "Rescuer (Good News) (Life Church Kids Video)" sample's own `cues[0]` — see the finding below), each with a `cue_id` referencing one of `bussnet-test.pro`'s own real cue UUIDs; `loop=true` (non-default, proves the bool is actually read) | empty | The primary "decodes a genuine multi-cue auto-advance schedule" case |
+| `synthetic-timeline-cues-v2-must-be-ignored.pro` | 3 cues, the CORRECT schedule | populated with sentinel `trigger_time=777.x` entries that must never surface | Proves `cues_v2` is never consulted (see the finding below) |
+| `synthetic-timeline-absent.pro` | `timeline` field deleted outright | — | Field 17 genuinely absent from the wire → `pp7DecodePresentation()` must return `timeline: null`, not fabricate one |
+
+**⚠️ Field-semantics finding (why `cues_v2` is never read):** an earlier draft of this feature's
+spec called for preferring `Timeline.cues_v2` (field 11) over `Timeline.cues` (field 1) when
+present, reasoning it was a newer/richer copy of the same auto-advance schedule. Independently
+decoding two real multi-cue ProPresenter exports during implementation (both real "Rescuer (Good
+News)" variants, Rend Collective, © 2017, CCLI #7094920 — see immediately below for why neither is
+committed) disproved that: on those files `cues_v2` is a SUPERSET carrying
+`ACTION_TYPE_CLEAR_GROUP`/`ACTION_TYPE_CLEAR` automation entries ("Clear All"/"Clear Slide",
+`trigger_time` frequently `0`, no `cue_id`) interleaved with duplicates of the real slide-advance
+cues (37–50 `cues_v2` entries vs. 37–38 real `cues` entries on the two files). Preferring `cues_v2`
+would have captured automation actions as if they were the auto-advance schedule — exactly the
+false-positive class this epic's owner rule forbids. The one real fixture already committed here
+where the two fields happen to fully agree (`owner-v21-heretostay-video-sanitised.pro`, one entry,
+byte-identical in both) is the degenerate case that let the wrong rule look correct in limited
+testing. `includes/propresenter7_decode.php`'s `pp7DecodeTimeline()` reads `cues` (field 1) only;
+see its doc-block and `tools/pp7-gen-timeline-fixture.js`'s doc-block for the full write-up.
+
+**Why no fixture is built from the real Rescuer files themselves:** both real samples
+independently decoded to derive/verify the field map above carry a LIVE, current copyright block
+in `Presentation.ccli` (author "Benjamin Hastings, Bryan Fowler, Chris Llewellyn, Gareth Gilkeson",
+publisher "Capitol CMG …", `copyright_year:2017`, `song_number:7094920`) and in `Presentation.name`
+/ arrangement / cue-group names — none of which `tools/pp7-sanitise-fixture.js` touches (it rewrites
+only RTF lyric runs). Same reasoning as the already-excluded `TestTranslated.pro` ("Oceans (Where
+Feet May Fail)", © 2012 Hillsong, CCLI 6428767) documented above. The three synthesised fixtures in
+this section carry the real trigger-time SHAPE (timing numbers are not copyrightable content)
+without any of the song's actually-protected material.
+
+## Owner-derived, lyric-sanitised fixtures (#1968 P4 — decision D3)
+
+**Different in kind again:** these are DERIVATIVES of the owner's own genuine ProPresenter v21.4
+and v18.4 exports (`_temp/` on alpha, source commit `2642f28`). Those originals carry copyrighted
+worship lyrics we may not redistribute, but they also carry v21.4 SCHEMA / VOCABULARY / MEDIA-REF
+coverage the small third-party samples above simply don't have. Owner decision **D3** (option b —
+`.claude/propresenter-interop-1968-plan.md` §6.6) resolved this: commit **sanitised derivatives**,
+produced by the committed, deterministic `tools/pp7-sanitise-fixture.js`, which replaces every
+visible lyric run with `Sanitised line N` while preserving byte-for-byte the RTF dialect header
+(`\cocoartf`/`\rtf0`, fonttbl, colortbl, Cocoa `\`+newline soft returns), the arrangements,
+cue-group names (`Verse 1 (SDAH)`, `Tag`), CCLI metadata, and the media references. Regenerate with
+`node tools/pp7-sanitise-fixture.js --all` (reads the `_temp/` originals).
+
+**Honest limitation:** a re-encoded `.pro`'s protobuf FIELD ORDER is protobufjs's, not
+ProPresenter's own writer's — so these carry schema/vocabulary/media-ref coverage, while raw-PP-writer
+byte realism (incl. the broken-EOCD quirk) stays with the untouched MIT fixtures above.
+**Privacy:** the media references + (for the bundle) the media entry NAME retain the owner's real
+absolute paths — deliberately, because the resolution logic keys on the url-decoded basename +
+longest-suffix of `local.path`, so the real path shape IS the P4 coverage; D3 sanitises LYRICS (the
+copyright concern), not directory names, and the corpus lives in the owner's own private repo.
+
+| Committed name | Source original | PP version | Covers |
+|---|---|---|---|
+| `owner-v21-002-sdah-sanitised.pro` | `002 (SDAH) - All Creatures…pro` | **v21.4** | 50 cues → 16 lyric components, `Verse N (SDAH)` + `Tag` vocabulary (sparse `label`), 3 named arrangements, CCLI 1503, a `ROOT_USER_HOME` mediaRef with no container |
+| `owner-v21-001-media-sanitised.probundle` | `001 (SDAH) - Praise…probundle` | **v21.4** | **THE media fixture**: root inner `.pro` + an absolute-path media entry (`…/Music Notes.mp4`, name preserved) whose per-cue `ACTION_TYPE_MEDIA` ref resolves by url-decoded basename (`Music%20Notes.mp4` → `Music Notes.mp4`); the multi-MB motion loop is swapped for `assets/tiny.mp4`; clean STORED zip |
+| `owner-v21-heretostay-video-sanitised.pro` | `Here To Stay …[Video].pro` | **v21.4** | **two identical** `ROOT_SHOW` mediaRefs (dedupe-on-triple coverage) with a Unicode en-dash (`–`, `%E2%80%93`) in the filename, NO container (the warn-only ingest path) |
+| `owner-v18-heretostay-sanitised.pro` | `Here To Stay …pro` | **v18.4** | v18 provenance spread; a `.mov` (`ROOT_USER_HOME`) mediaRef |
+| `assets/tiny.mp4` | (generated) | — | a ~20 KB reusable stub that PHP `finfo` sniffs as `video/mp4` (a minimal `ftyp isom`+`free` ISO-BMFF file — no ffmpeg needed); the real accept path the P4 ingest validation exercises |
+
 ## Deliberately NOT committed (per the reference-sources triage)
 
 - `bussnet .../TestTranslated.pro` — real content is "Oceans (Where Feet May Fail)",
@@ -77,9 +152,10 @@ dedicated test coverage and mutation-proof.
 - `bussnet .../all-songs/Cornerstone.pro` — title tied to a © Hillsong work.
 - `ChrisMBarr .../v4/v5/v6 - …` — copyrighted modern-worship songs, and pre-v7 formats
   outside this epic's scope anyway.
-- The owner's genuine v21.4 SDAH-vocabulary samples (`_temp/` on alpha, commit
-  `2642f28`) — copyrighted lyric content; committing them is owner decision **D3**
-  (`.claude/propresenter-interop-1968-plan.md` §12.3), still open.
+- The owner's genuine v21.4 / v18.4 samples themselves (`_temp/` on alpha, commit
+  `2642f28`) — copyrighted lyric content stays out of the repo; their **lyric-sanitised
+  derivatives** are committed instead (see the section above; owner decision **D3**, resolved
+  option b).
 
 ## Dominant-font lyric selection (#1968 PR-1 correctness-defect fix)
 

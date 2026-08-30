@@ -98,24 +98,50 @@ const WEBHOOK_CANONICAL_HOSTS = ['ihymns.app', 'www.ihymns.app', 'dev.ihymns.app
  * ========================================================================= */
 
 /**
+ * PURE fold: turn a raw CSV/whitespace-separated channel string into the
+ * validated subset of {alpha, beta, production} — no DB, no setting read.
+ * Extracted out of `webhookEnabledChannels()` (#2004, epic #2002) so the
+ * "Connect a service" guided wizard's registry projection can call the SAME
+ * parser as this file's own checkbox-group `parser` convention already
+ * anticipated (`includes/integration_registry.php`'s
+ * `integrationClientProjection()` doc-block: "a future checkbox-group field
+ * just names its own pure parser function" — this is that future field).
+ *
+ * ELI5: given the raw text stored in the database ("alpha,beta" or even
+ * "Alpha, BETA  production"), this returns the clean list of real channel
+ * names it actually means, dropping anything that isn't one of the three.
+ *
+ * WHY THIS IS NOW A ONE-LINE DELEGATE (search-visibility feature, #2024/
+ * #2025): the search-engine-visibility toggle needed the exact same "which
+ * channels does this CSV name?" fold, and rule #22 forbids a second copy —
+ * so the fold itself moved to `includes/environment.php::ihymns_parse_
+ * channels_csv()` (the natural channel-domain home, dependency-free, loaded
+ * on every request already) and THIS function became a thin re-export. Every
+ * existing caller (name, signature, and behaviour) is unchanged.
+ *
+ * @param string|null $csv Raw setting value (comma/whitespace separated).
+ * @return array<int,string> subset of {alpha, beta, production}, de-duplicated.
+ * @see includes/environment.php::ihymns_parse_channels_csv()  the extracted pure core
+ */
+function webhookParseChannelsCsv(?string $csv): array
+{
+    return ihymns_parse_channels_csv($csv);
+}
+
+/**
  * ELI5: which channels have webhooks switched on?
  * WHY: a CSV allow-list, not a boolean — tblAppSettings is shared by all three
  * docroots (the INTAPPS_SETTING_ENABLED_CHANNELS precedent), so an alpha-only
- * soak is expressible. Default empty ⇒ fully dormant.
+ * soak is expressible. Default empty ⇒ fully dormant. Delegates to the PURE
+ * `webhookParseChannelsCsv()` above (#2004) — this function's only job is
+ * supplying the LIVE setting read; the parsing/validation logic lives in
+ * exactly one place.
  *
  * @return array<int,string> subset of {alpha, beta, production}
  */
 function webhookEnabledChannels(): array
 {
-    $raw = (string)(getAppSetting(WEBHOOK_SETTING_ENABLED_CHANNELS, '') ?? '');
-    $out = [];
-    foreach (preg_split('/[\s,]+/', $raw, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $c) {
-        $c = strtolower(trim($c));
-        if (in_array($c, ['alpha', 'beta', 'production'], true)) {
-            $out[] = $c;
-        }
-    }
-    return array_values(array_unique($out));
+    return webhookParseChannelsCsv((string)(getAppSetting(WEBHOOK_SETTING_ENABLED_CHANNELS, '') ?? ''));
 }
 
 /**

@@ -8,6 +8,22 @@ declare(strict_types=1);
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
+ * ELI5
+ * ----
+ * `content_gating.php` already knows how to hide the handful of things
+ * gating was originally built for (lyrics, audio, MIDI, sheet music,
+ * offline saving) from a tier that shouldn't have them. This file lets a
+ * Global Admin invent a BRAND NEW thing to gate — from the admin UI, no
+ * code change — and have it actually enforced. It works like a small,
+ * locked-down recipe book rather than a free-for-all: an admin can only
+ * combine two safe, pre-written "recipes" (remove certain payload fields,
+ * or drop certain kinds of media) with a capability they've already
+ * defined — never write arbitrary logic. Every rule can only ever REMOVE
+ * something from what's sent back, never add or change anything — a rule
+ * that somehow tried to add data would be caught and thrown away rather
+ * than reaching a visitor (see NO-ESCALATION below). Off by default, and
+ * doubly gated — see rule (A).
+ *
  * WHAT THIS IS:
  * P1 (includes/access_tier_validation.php's tierCapsEffective()) let a
  * Global Admin DEFINE a new capability from the UI with zero code. P2 makes
@@ -145,6 +161,8 @@ const GATING_NEVER_STRIP_KEYS = [
  */
 const GATING_DROPPABLE_MEDIA_KINDS = [
     'audio'       => 'Audio',
+    'video'       => 'Video',        /* #1968 P4 */
+    'image'       => 'Image',        /* #1968 P4 */
     'midi'        => 'MIDI',
     'sheet-music' => 'Sheet music (PDF)',
     'musicxml'    => 'MusicXML notation',
@@ -360,6 +378,10 @@ function gatingRuleValidateParams(string $kind, array $params): ?string
  * treats it exactly like any other enforcement failure — skip this rule,
  * log it, keep the pre-rule payload.
  *
+ * ELI5: looks up which "recipe" (GATING_BEHAVIOR_KINDS entry) a rule asked
+ * for, and runs it against the payload — the one spot that turns "an admin
+ * picked recipe X with these settings" into "the payload actually changed".
+ *
  * @param string $kind   A GATING_BEHAVIOR_KINDS key.
  * @param array  $song   The payload so far.
  * @param array  $params Decoded rule params.
@@ -530,6 +552,14 @@ function gatingRulesEnabled(): bool
  * immediately before its final `return $song`. No-op unless
  * feature_gating_rules_enabled='1' AND at least one Enabled=1 rule exists.
  *
+ * ELI5: the entry point — "here's a song's data, about to be sent out;
+ * here's who's asking for it; now apply every admin-defined rule that
+ * should apply, one at a time, and hand back whatever's left." Any single
+ * rule that fails, misbehaves, or can't be resolved is simply skipped
+ * (with a log line for an operator to notice) — it never stops the other
+ * rules, and never blocks the payload from being returned.
+ *
+
  * For each rule (in SortOrder order):
  *   1. Skip a rule on a built-in TIER_CAPS key (v1 restriction, defensive —
  *      manage/feature-gating.php already refuses to CREATE one).

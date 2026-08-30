@@ -8,6 +8,21 @@ declare(strict_types=1);
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
+ * ELI5
+ * ----
+ * iHymns has "tiers" — public, free, ccli, premium, pro — that decide what
+ * a visitor is allowed to see: can they read the lyrics? play the audio?
+ * download the sheet music? For a long time the ANSWER to those questions
+ * lived only in the native apps, which is like a shop that trusts every
+ * customer to only take what they've paid for — nothing physically stops
+ * a curious visitor from asking the server directly. This file is the
+ * server actually checking: right before a song's data (or one of its
+ * audio/MIDI/PDF files) is handed over, it asks "does THIS tier get to
+ * have THIS?", and if the answer is no, the disallowed part is removed —
+ * never sent in the first place, rather than sent-and-hidden. It is
+ * SWITCHED OFF by default (rule A below) — installing this file changed
+ * nothing until an admin deliberately turns it on.
+ *
  * WHAT THIS IS:
  * The gating TIERS (public/free/ccli/premium/pro) have been ADVISORY until
  * now — the API emitted full song data regardless of tier and the native
@@ -90,6 +105,8 @@ function contentGatingMediaKindCap(string $kind): ?string
 {
     switch ($kind) {
         case 'audio':       return 'play_audio';
+        case 'video':       return 'play_video';   /* #1968 P4 — its own cap (CanPlayVideo) */
+        case 'image':       return null;           /* #1968 P4 — a decorative background is not premium; visibility already gates imported ones */
         case 'midi':        return 'download_midi';
         case 'sheet-music': return 'download_pdf';
         case 'musicxml':    return 'download_pdf'; /* notation download = PDF family */

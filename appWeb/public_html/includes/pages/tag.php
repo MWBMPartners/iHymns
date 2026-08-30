@@ -202,17 +202,24 @@ $tagTotalSongs = count($tagSongs);
                            data-song-id="<?= htmlspecialchars($song['id']) ?>"
                            role="listitem"
                            <?php if ((int)$song['number'] > 0): ?>data-sort-number="<?= (int)$song['number'] ?>"<?php endif; ?>
-                           data-sort-title="<?= htmlspecialchars(ihymns_title_sort_key((string)$song['title'])) ?>"
-                           aria-label="<?= (int)$song['number'] > 0 ? 'Song ' . (int)$song['number'] . ': ' : '' ?><?= htmlspecialchars(toTitleCase((string)$song['title'])) ?>">
+                           data-sort-title="<?= htmlspecialchars(ihymns_title_sort_key((string)$song['title'])) ?>">
                             <!-- Song number badge — left empty when the song
                                  has no songbook position; `.song-number-badge:
                                  empty::before` renders a book glyph fallback
-                                 (#392), same as songbook.php. -->
+                                 (#392), same as songbook.php. aria-hidden
+                                 because the number is announced via the
+                                 sr-only prefix below instead (a11y audit M2) —
+                                 an aria-label on the row <a> used to replace
+                                 all descendant content in the accessible
+                                 name. -->
                             <span class="song-number-badge" data-songbook="<?= htmlspecialchars($abbr) ?>" aria-hidden="true"><?php
                                 if ((int)$song['number'] > 0) {
                                     echo (int)$song['number'];
                                 }
                             ?></span>
+                            <?php if ((int)$song['number'] > 0): ?>
+                                <span class="visually-hidden">Song <?= (int)$song['number'] ?>: </span>
+                            <?php endif; ?>
                             <!-- Song info -->
                             <div class="song-info flex-grow-1">
                                 <span class="song-title"><?= htmlspecialchars(toTitleCase((string)$song['title'])) ?></span>

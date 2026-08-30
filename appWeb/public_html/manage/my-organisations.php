@@ -33,6 +33,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 /* Licence-type registry (#459 / #1769 P2) — the ONE licence vocabulary; replaces
    the hardcoded key list below (fallback == today's literal exactly). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licence_registry.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_licence_admin.php';  /* #1969 — shared org-licence CRUD core */
 /* #1770 §4.7 — serviceMode_orgIdleColumnsExist() gates the ORG layer of the
    Live Follow leader-idle precedence chain (LiveIdleTimeoutMins /
    EnforceIdleTimeout) so this org-admin surface degrades cleanly on an
@@ -239,49 +240,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 break;
             }
 
+            /* #1969 — the three per-row handlers delegate to the shared core
+               (includes/org_licence_admin.php). The core validates the type
+               against the registry, normalises the fields, and scopes every
+               write to $orgId (own-only in the WHERE). The org-membership
+               authorisation for $orgId happened earlier in this handler. */
             case 'licence_add': {
-                $licenceType   = (string)($_POST['licence_type']    ?? '');
-                $licenceNumber = trim((string)($_POST['licence_number'] ?? ''));
-                $expiresAt     = trim((string)($_POST['expires_at']  ?? '')) ?: null;
-                $isActive      = !empty($_POST['is_active']) ? 1 : 0;
-                $notes         = trim((string)($_POST['notes']       ?? '')) ?: null;
-                if (!in_array($licenceType, $LICENCE_TYPES, true)) { $error = 'Unknown licence type.'; break; }
-
-                $stmt = $db->prepare(
-                    'INSERT INTO tblOrganisationLicences
-                        (OrganisationId, LicenceType, LicenceNumber, IsActive, ExpiresAt, Notes)
-                     VALUES (?, ?, ?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE
-                        LicenceNumber = VALUES(LicenceNumber),
-                        IsActive      = VALUES(IsActive),
-                        ExpiresAt     = VALUES(ExpiresAt),
-                        Notes         = VALUES(Notes)'
-                );
-                $stmt->bind_param('ississ',
-                    $orgId, $licenceType, $licenceNumber, $isActive, $expiresAt, $notes);
-                $stmt->execute();
-                $stmt->close();
+                $licenceType = (string)($_POST['licence_type'] ?? '');
+                $res = orgLicenceUpsert($db, $orgId, $licenceType, $_POST);
+                if (!$res['ok']) { $error = $res['error'] ?? 'Could not save the licence.'; break; }
                 logActivity('org_admin.licence_add', 'organisation', (string)$orgId, [
                     'licence_type'   => $licenceType,
-                    'licence_number' => $licenceNumber,
-                    'is_active'      => (bool)$isActive,
+                    'licence_number' => trim((string)($_POST['licence_number'] ?? '')),
+                    'is_active'      => !empty($_POST['is_active']),
                 ]);
                 $success = "Licence '{$licenceType}' saved.";
                 break;
             }
 
             case 'licence_change': {
-                $licenceId     = (int)($_POST['licence_id'] ?? 0);
-                $licenceNumber = trim((string)($_POST['licence_number'] ?? ''));
-                $expiresAt     = trim((string)($_POST['expires_at']  ?? '')) ?: null;
-                $isActive      = !empty($_POST['is_active']) ? 1 : 0;
-                $notes         = trim((string)($_POST['notes']       ?? '')) ?: null;
+                $licenceId = (int)($_POST['licence_id'] ?? 0);
                 if ($licenceId <= 0) { $error = 'Invalid licence row.'; break; }
 
-                /* Belt-and-braces: confirm the licence row actually
-                   belongs to the org we already authorised on. Stops a
-                   crafted POST that mixes a licence_id from one org with
-                   an org_id the user CAN admin. */
+                /* Belt-and-braces existence/ownership check for the user-facing
+                   "does not belong" error (the core's UPDATE is already own-only,
+                   but affected_rows can't tell "not found" from "no change"). */
                 $stmt = $db->prepare(
                     'SELECT 1 FROM tblOrganisationLicences WHERE Id = ? AND OrganisationId = ?'
                 );
@@ -291,18 +274,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->close();
                 if (!$owns) { $error = 'Licence row does not belong to that organisation.'; break; }
 
-                $stmt = $db->prepare(
-                    'UPDATE tblOrganisationLicences
-                        SET LicenceNumber = ?, IsActive = ?, ExpiresAt = ?, Notes = ?
-                      WHERE Id = ?'
-                );
-                $stmt->bind_param('sissi', $licenceNumber, $isActive, $expiresAt, $notes, $licenceId);
-                $stmt->execute();
-                $stmt->close();
+                $res = orgLicenceUpdateById($db, $orgId, $licenceId, $_POST);
+                if (!$res['ok']) { $error = $res['error'] ?? 'Could not update the licence.'; break; }
                 logActivity('org_admin.licence_change', 'organisation', (string)$orgId, [
-                    'licence_id'   => $licenceId,
-                    'licence_number' => $licenceNumber,
-                    'is_active'    => (bool)$isActive,
+                    'licence_id'     => $licenceId,
+                    'licence_number' => trim((string)($_POST['licence_number'] ?? '')),
+                    'is_active'      => !empty($_POST['is_active']),
                 ]);
                 $success = 'Licence updated.';
                 break;
@@ -312,20 +289,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $licenceId = (int)($_POST['licence_id'] ?? 0);
                 if ($licenceId <= 0) { $error = 'Invalid licence row.'; break; }
 
-                /* Same belt-and-braces check as licence_change. */
-                $stmt = $db->prepare(
-                    'SELECT 1 FROM tblOrganisationLicences WHERE Id = ? AND OrganisationId = ?'
-                );
-                $stmt->bind_param('ii', $licenceId, $orgId);
-                $stmt->execute();
-                $owns = $stmt->get_result()->fetch_row() !== null;
-                $stmt->close();
-                if (!$owns) { $error = 'Licence row does not belong to that organisation.'; break; }
-
-                $stmt = $db->prepare('DELETE FROM tblOrganisationLicences WHERE Id = ?');
-                $stmt->bind_param('i', $licenceId);
-                $stmt->execute();
-                $stmt->close();
+                $res = orgLicenceDeleteById($db, $orgId, $licenceId);
+                if (!$res['ok']) { $error = $res['error'] ?? 'Could not remove the licence.'; break; }
+                if (empty($res['deleted'])) { $error = 'Licence row does not belong to that organisation.'; break; }
                 logActivity('org_admin.licence_remove', 'organisation', (string)$orgId, [
                     'licence_id' => $licenceId,
                 ]);
@@ -580,16 +546,8 @@ foreach ($orgs as $o) {
     }
 
     try {
-        $stmt = $db->prepare(
-            'SELECT Id, LicenceType, LicenceNumber, IsActive, ExpiresAt, Notes
-               FROM tblOrganisationLicences
-              WHERE OrganisationId = ?
-              ORDER BY LicenceType ASC'
-        );
-        $stmt->bind_param('i', $orgId);
-        $stmt->execute();
-        $orgLicences[$orgId] = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-        $stmt->close();
+        /* #1969 — read via the shared core (same SELECT, one place). */
+        $orgLicences[$orgId] = orgLicenceList($db, $orgId);
     } catch (\Throwable $_e) {
         /* tblOrganisationLicences may not exist on a pre-migration deployment.
            Fall through to no licences shown. */
@@ -669,7 +627,7 @@ $csrf = csrfToken();
 
 <div class="container-admin py-4">
     <h1 class="h4 mb-3">
-        <i class="bi bi-building me-2"></i>My Organisations
+        <i aria-hidden="true" class="bi bi-building me-2"></i>My Organisations
     </h1>
     <p class="text-muted small">
         The organisations you help run as an admin or owner. Here you can add or remove members, change each member's role, and keep their licence details up to date. System administrators see every organisation because they can manage any of them.
@@ -681,7 +639,7 @@ $csrf = csrfToken();
              live_follow_extend action the leader's own host bar uses. -->
         <div class="card-admin p-3 mb-3">
             <h2 class="h5 mb-2">
-                <i class="bi bi-broadcast-pin me-2"></i>Members&rsquo; live sessions
+                <i aria-hidden="true" class="bi bi-broadcast-pin me-2"></i>Members&rsquo; live sessions
             </h2>
             <p class="text-muted small">
                 Active &ldquo;Go Live&rdquo; sessions led by someone in one of your organisations.
@@ -692,12 +650,12 @@ $csrf = csrfToken();
                 <table class="table table-sm table-dark mb-0 small align-middle">
                     <thead>
                         <tr>
-                            <th>Leader</th>
-                            <th>Code</th>
-                            <th>Idle timeout</th>
-                            <th>Last seen</th>
-                            <th>Started</th>
-                            <th></th>
+                            <th scope="col">Leader</th>
+                            <th scope="col">Code</th>
+                            <th scope="col">Idle timeout</th>
+                            <th scope="col">Last seen</th>
+                            <th scope="col">Started</th>
+                            <th scope="col"></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -722,7 +680,7 @@ $csrf = csrfToken();
                                         </select>
                                         <button type="button" class="btn btn-sm btn-outline-secondary live-session-extend-btn"
                                                 data-code="<?= htmlspecialchars((string)$ls['SessionCode']) ?>">
-                                            <i class="bi bi-clock-history me-1"></i>Extend
+                                            <i aria-hidden="true" class="bi bi-clock-history me-1"></i>Extend
                                         </button>
                                     </div>
                                 </td>
@@ -772,7 +730,7 @@ $csrf = csrfToken();
                     <?php if ($systemAdmin): ?>
                         <a href="/manage/organisations?edit=<?= $orgId ?>"
                            class="btn btn-sm btn-outline-secondary">
-                            <i class="bi bi-pencil me-1"></i>System edit
+                            <i aria-hidden="true" class="bi bi-pencil me-1"></i>System edit
                         </a>
                     <?php endif; ?>
                 </div>
@@ -788,11 +746,11 @@ $csrf = csrfToken();
                     <div class="table-responsive">
                         <table class="table table-sm table-dark mb-2 small align-middle cp-sortable admin-table-responsive">
                             <thead><tr>
-                                <th data-sort-key="username" data-sort-type="text">Username</th>
-                                <th data-sort-key="displayname" data-sort-type="text">Display Name</th>
-                                <th data-sort-key="sysrole" data-sort-type="text">System role</th>
-                                <th data-sort-key="orgrole" data-sort-type="text">Org role</th>
-                                <th class="text-end">Actions</th>
+                                <th scope="col" data-sort-key="username" data-sort-type="text">Username</th>
+                                <th scope="col" data-sort-key="displayname" data-sort-type="text">Display Name</th>
+                                <th scope="col" data-sort-key="sysrole" data-sort-type="text">System role</th>
+                                <th scope="col" data-sort-key="orgrole" data-sort-type="text">Org role</th>
+                                <th scope="col" class="text-end">Actions</th>
                             </tr></thead>
                             <tbody>
                             <?php foreach ($orgMembers[$orgId] as $m): ?>
@@ -843,13 +801,13 @@ $csrf = csrfToken();
                     <input type="hidden" name="action" value="member_add">
                     <input type="hidden" name="org_id" value="<?= $orgId ?>">
                     <div class="col-md-5">
-                        <label class="form-label small mb-0">Add member (username or email)</label>
-                        <input type="text" name="user_identifier" class="form-control form-control-sm"
+                        <label class="form-label small mb-0" for="member-identifier-<?= $orgId ?>">Add member (username or email)</label>
+                        <input type="text" name="user_identifier" id="member-identifier-<?= $orgId ?>" class="form-control form-control-sm"
                                placeholder="username or email" required>
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label small mb-0">Role</label>
-                        <select name="member_role" class="form-select form-select-sm">
+                        <label class="form-label small mb-0" for="member-role-<?= $orgId ?>">Role</label>
+                        <select name="member_role" id="member-role-<?= $orgId ?>" class="form-select form-select-sm">
                             <?php foreach ($MEMBER_ROLES as $mr): ?>
                                 <option value="<?= $mr ?>" <?= $mr === 'member' ? 'selected' : '' ?>><?= $mr ?></option>
                             <?php endforeach; ?>
@@ -857,7 +815,7 @@ $csrf = csrfToken();
                     </div>
                     <div class="col-md-auto">
                         <button type="submit" class="btn btn-sm btn-amber-solid">
-                            <i class="bi bi-plus-circle me-1"></i>Add member
+                            <i aria-hidden="true" class="bi bi-plus-circle me-1"></i>Add member
                         </button>
                     </div>
                 </form>
@@ -874,8 +832,8 @@ $csrf = csrfToken();
                                      render time (four data cells serve six header cells), so the
                                      module's positional cell-index lookup cannot address them
                                      individually (#1786 sweep). -->
-                                <th data-sort-key="type" data-sort-type="text">Type</th><th>Number</th><th>Expires</th><th>Active</th><th>Notes</th>
-                                <th class="text-end">Actions</th>
+                                <th scope="col" data-sort-key="type" data-sort-type="text">Type</th><th scope="col">Number</th><th scope="col">Expires</th><th scope="col">Active</th><th scope="col">Notes</th>
+                                <th scope="col" class="text-end">Actions</th>
                             </tr></thead>
                             <tbody>
                             <?php foreach ($orgLicences[$orgId] as $l): ?>
@@ -908,10 +866,11 @@ $csrf = csrfToken();
                                                    style="width: 9rem;">
                                             <div class="form-check form-check-inline mb-0">
                                                 <input class="form-check-input" type="checkbox" name="is_active" value="1"
+                                                       id="licence-active-<?= (int)($l['Id'] ?? 0) ?>"
                                                        <?= !empty($l['IsActive']) ? 'checked' : '' ?>
                                                        title="Licence is currently active"
                                                        aria-label="Licence is currently active">
-                                                <label class="form-check-label small">active</label>
+                                                <label class="form-check-label small" for="licence-active-<?= (int)($l['Id'] ?? 0) ?>">active</label>
                                             </div>
                                             <input type="text" name="notes"
                                                    class="form-control form-control-sm py-0"
@@ -952,8 +911,8 @@ $csrf = csrfToken();
                     <input type="hidden" name="action" value="licence_add">
                     <input type="hidden" name="org_id" value="<?= $orgId ?>">
                     <div class="col-md-2">
-                        <label class="form-label small mb-0">Type</label>
-                        <select name="licence_type" class="form-select form-select-sm" required>
+                        <label class="form-label small mb-0" for="licence-type-<?= $orgId ?>">Type</label>
+                        <select name="licence_type" id="licence-type-<?= $orgId ?>" class="form-select form-select-sm" required>
                             <option value="">— pick —</option>
                             <?php foreach ($LICENCE_TYPES as $lt): ?>
                                 <option value="<?= $lt ?>"><?= $lt ?></option>
@@ -961,25 +920,25 @@ $csrf = csrfToken();
                         </select>
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label small mb-0">Licence number</label>
-                        <input type="text" name="licence_number" class="form-control form-control-sm"
+                        <label class="form-label small mb-0" for="licence-number-<?= $orgId ?>">Licence number</label>
+                        <input type="text" name="licence_number" id="licence-number-<?= $orgId ?>" class="form-control form-control-sm"
                                placeholder="e.g. CCLI 1234567">
                     </div>
                     <div class="col-md-2">
-                        <label class="form-label small mb-0">Expires</label>
-                        <input type="date" name="expires_at" class="form-control form-control-sm">
+                        <label class="form-label small mb-0" for="licence-expires-<?= $orgId ?>">Expires</label>
+                        <input type="date" name="expires_at" id="licence-expires-<?= $orgId ?>" class="form-control form-control-sm">
                     </div>
                     <div class="col-md-1 form-check mb-2">
-                        <input class="form-check-input" type="checkbox" name="is_active" value="1" checked>
-                        <label class="form-check-label small">active</label>
+                        <input class="form-check-input" type="checkbox" name="is_active" id="licence-active-new-<?= $orgId ?>" value="1" checked>
+                        <label class="form-check-label small" for="licence-active-new-<?= $orgId ?>">active</label>
                     </div>
                     <div class="col-md-3">
-                        <label class="form-label small mb-0">Notes</label>
-                        <input type="text" name="notes" class="form-control form-control-sm" placeholder="optional">
+                        <label class="form-label small mb-0" for="licence-notes-<?= $orgId ?>">Notes</label>
+                        <input type="text" name="notes" id="licence-notes-<?= $orgId ?>" class="form-control form-control-sm" placeholder="optional">
                     </div>
                     <div class="col-md-auto">
                         <button type="submit" class="btn btn-sm btn-amber-solid">
-                            <i class="bi bi-plus-circle me-1"></i>Add licence
+                            <i aria-hidden="true" class="bi bi-plus-circle me-1"></i>Add licence
                         </button>
                     </div>
                 </form>
@@ -992,8 +951,8 @@ $csrf = csrfToken();
                     <input type="hidden" name="action" value="idle_timeout_update">
                     <input type="hidden" name="org_id" value="<?= $orgId ?>">
                     <div class="col-md-3">
-                        <label class="form-label small mb-0">Minutes <span class="text-muted">(blank = site default)</span></label>
-                        <input type="number" name="live_idle_timeout_mins" class="form-control form-control-sm"
+                        <label class="form-label small mb-0" for="idle-minutes-<?= $orgId ?>">Minutes <span class="text-muted">(blank = site default)</span></label>
+                        <input type="number" name="live_idle_timeout_mins" id="idle-minutes-<?= $orgId ?>" class="form-control form-control-sm"
                                min="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES ?>" max="<?= LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES ?>" step="1"
                                placeholder="site default"
                                value="<?= isset($o['LiveIdleTimeoutMins']) && $o['LiveIdleTimeoutMins'] !== null ? (int)$o['LiveIdleTimeoutMins'] : '' ?>">
@@ -1007,7 +966,7 @@ $csrf = csrfToken();
                     </div>
                     <div class="col-md-auto">
                         <button type="submit" class="btn btn-sm btn-amber-solid">
-                            <i class="bi bi-save me-1"></i>Save
+                            <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                         </button>
                     </div>
                     <div class="col-12">
@@ -1046,7 +1005,7 @@ $csrf = csrfToken();
                     </div>
                     <div class="col-md-auto">
                         <button type="submit" class="btn btn-sm btn-amber-solid">
-                            <i class="bi bi-save me-1"></i>Save
+                            <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                         </button>
                     </div>
                     <div class="col-12">
@@ -1088,7 +1047,7 @@ $csrf = csrfToken();
                     </div>
                     <div class="col-md-auto">
                         <button type="submit" class="btn btn-sm btn-amber-solid">
-                            <i class="bi bi-save me-1"></i>Save
+                            <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                         </button>
                     </div>
                 </form>

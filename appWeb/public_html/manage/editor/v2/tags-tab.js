@@ -126,7 +126,7 @@ export function mountTagsTab(container, opts) {
             const create = document.createElement('button');
             create.type = 'button';
             create.className = 'list-group-item list-group-item-action py-1 fst-italic';
-            create.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Create new tag: ';
+            create.innerHTML = '<i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Create new tag: ';
             const strong = document.createElement('strong');
             strong.textContent = q;
             create.appendChild(strong);

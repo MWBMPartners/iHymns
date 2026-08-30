@@ -296,7 +296,7 @@ $tierTableCols = 3 + count(tierCapsEffective()) + 2;
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-stars me-2"></i>Membership Tiers</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-stars me-2"></i>Membership Tiers</h1>
         <p class="text-secondary small mb-4">
             Set the membership levels a user can be given, and choose what each level is allowed to do —
             see copyrighted lyrics, play audio, download MIDI or sheet music, or save songs offline.
@@ -322,19 +322,19 @@ $tierTableCols = 3 + count(tierCapsEffective()) + 2;
                 <table class="table table-sm align-middle mb-0 cp-sortable admin-table-responsive" data-default-sort-key="level" data-default-sort-dir="asc">
                     <thead>
                         <tr class="text-muted small">
-                            <th data-sort-key="name"    data-sort-type="text">Name</th>
-                            <th data-sort-key="display" data-sort-type="text">Display</th>
-                            <th class="text-center" data-sort-key="level" data-sort-type="number">Level</th>
+                            <th scope="col" data-sort-key="name"    data-sort-type="text">Name</th>
+                            <th scope="col" data-sort-key="display" data-sort-type="text">Display</th>
+                            <th scope="col" class="text-center" data-sort-key="level" data-sort-type="number">Level</th>
                             <?php /* tierCapsEffective() (#1481) = TIER_CAPS ∪ enabled
                                      tblGatingCapabilities rows — the matrix auto-grows a
                                      column for any Global-Admin-defined capability with
                                      no structural change; dormant/empty table renders
                                      identically to the pre-#1481 bare TIER_CAPS. */ ?>
                             <?php foreach (tierCapsEffective() as $col => [$lbl, $hint]): ?>
-                                <th class="text-center" title="<?= htmlspecialchars($hint) ?>"><?= htmlspecialchars($lbl) ?></th>
+                                <th scope="col" class="text-center" title="<?= htmlspecialchars($hint) ?>"><?= htmlspecialchars($lbl) ?></th>
                             <?php endforeach; ?>
-                            <th class="text-center" data-sort-key="users" data-sort-type="number">Users</th>
-                            <th class="text-end">Actions</th>
+                            <th scope="col" class="text-center" data-sort-key="users" data-sort-type="number">Users</th>
+                            <th scope="col" class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -360,8 +360,8 @@ $tierTableCols = 3 + count(tierCapsEffective()) + 2;
                                         <?php /* tierCapRead() reads the column for column-backed caps,
                                                  else decodes Capabilities — so json caps render too. */ ?>
                                         <?= tierCapRead($t, $col)
-                                            ? '<i class="bi bi-check-circle text-success"></i>'
-                                            : '<i class="bi bi-dash text-muted"></i>' ?>
+                                            ? '<i aria-hidden="true" class="bi bi-check-circle text-success"></i>'
+                                            : '<i aria-hidden="true" class="bi bi-dash text-muted"></i>' ?>
                                     </td>
                                 <?php endforeach; ?>
                                 <td class="text-center"><?= (int)$t['UserCount'] ?></td>
@@ -413,26 +413,26 @@ $tierTableCols = 3 + count(tierCapsEffective()) + 2;
         <form method="POST" class="card-admin p-3 mb-4">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
-            <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a tier</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a tier</h2>
             <div class="row g-2 mb-2">
                 <div class="col-sm-3">
-                    <label class="form-label small">Name (machine)</label>
-                    <input type="text" name="name" class="form-control form-control-sm" maxlength="30" required
+                    <label class="form-label small" for="create-tier-name">Name (machine)</label>
+                    <input type="text" name="name" id="create-tier-name" class="form-control form-control-sm" maxlength="30" required
                            placeholder="e.g. premium_plus, mwbm-insiders" pattern="[A-Za-z0-9_\-]+"
                            title="Letters, digits, hyphen or underscore">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Display name</label>
-                    <input type="text" name="display_name" class="form-control form-control-sm" maxlength="50" required
+                    <label class="form-label small" for="create-tier-display">Display name</label>
+                    <input type="text" name="display_name" id="create-tier-display" class="form-control form-control-sm" maxlength="50" required
                            placeholder="e.g. Premium Plus">
                 </div>
                 <div class="col-sm-2">
-                    <label class="form-label small">Level</label>
-                    <input type="number" name="level" class="form-control form-control-sm" min="0" max="1000" value="50">
+                    <label class="form-label small" for="create-tier-level">Level</label>
+                    <input type="number" name="level" id="create-tier-level" class="form-control form-control-sm" min="0" max="1000" value="50">
                 </div>
                 <div class="col-sm-4">
-                    <label class="form-label small">Description</label>
-                    <input type="text" name="description" class="form-control form-control-sm"
+                    <label class="form-label small" for="create-tier-description">Description</label>
+                    <input type="text" name="description" id="create-tier-description" class="form-control form-control-sm"
                            placeholder="What does this tier unlock?">
                 </div>
             </div>
@@ -450,7 +450,7 @@ $tierTableCols = 3 + count(tierCapsEffective()) + 2;
                 <?php endforeach; ?>
             </div>
             <button type="submit" class="btn btn-amber-solid btn-sm mt-3">
-                <i class="bi bi-plus me-1"></i>Create tier
+                <i aria-hidden="true" class="bi bi-plus me-1"></i>Create tier
             </button>
         </form>
 
@@ -468,21 +468,21 @@ $tierTableCols = 3 + count(tierCapsEffective()) + 2;
                         <h5 class="modal-title" id="editTierModalLabel">
                             <i class="bi bi-pencil me-2" aria-hidden="true"></i>Edit tier — <code id="edit-tier-name"></code>
                         </h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="row g-2 mb-3">
                             <div class="col-sm-6">
-                                <label class="form-label small">Display name</label>
+                                <label class="form-label small" for="edit-tier-display">Display name</label>
                                 <input type="text" name="display_name" id="edit-tier-display" class="form-control form-control-sm" required>
                             </div>
                             <div class="col-sm-3">
-                                <label class="form-label small">Level</label>
+                                <label class="form-label small" for="edit-tier-level">Level</label>
                                 <input type="number" name="level" id="edit-tier-level" class="form-control form-control-sm" min="0" max="1000">
                             </div>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label small">Description</label>
+                            <label class="form-label small" for="edit-tier-description">Description</label>
                             <input type="text" name="description" id="edit-tier-description" class="form-control form-control-sm">
                         </div>
                         <div class="d-flex flex-wrap gap-3">

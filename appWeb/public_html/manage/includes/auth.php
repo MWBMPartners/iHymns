@@ -726,7 +726,12 @@ function mintCrossSurfaceAuthToken(int $userId): void
         $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
 
         /* Bound INSERT — UserId is an int, Token/ExpiresAt are strings, mirroring
-           the 'sis' bind api.php uses for the same statement. */
+           the 'sis' bind api.php uses for the same statement.
+           #1975 no-device-meta: internal admin↔public cross-surface BRIDGE token,
+           not a user sign-in — the user's real sign-in already produced a named
+           device row, and naming this internal token would list a confusing
+           duplicate. Deliberately carries no device metadata (guarded by
+           tests/php/test-api-token-device-meta.php's mint-coverage check). */
         $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
         $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
         $stmt->execute();
@@ -2228,7 +2233,11 @@ function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId): array
         );
     }
 
-    /* Generate API bearer token (30-day expiry) */
+    /* Generate API bearer token (30-day expiry).
+       #1975 device-meta: applied by the CALLER completeEmailLogin() via
+       apiTokenDeviceMetaStore() once this txn returns the token (see the
+       apiTokenDeviceMetaStore call above), so this inner mint intentionally
+       does not write it itself. */
     $token = bin2hex(random_bytes(32));
     $expiresAt = gmdate('Y-m-d H:i:s', time() + 30 * 86400);
     $tokenHash = hash('sha256', $token);

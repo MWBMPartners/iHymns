@@ -333,11 +333,12 @@ function renderSongList(filter) {
         renderSidebarBatch();
     }
 
-    /* Update the song-count badge in the sidebar header (full match count). */
-    var countEl = document.getElementById('song-count');
-    if (countEl) {
-        countEl.textContent = _sidebarVisible.length + ' / ' + songData.songs.length;
-    }
+    /* The song-count badge (#song-count) this used to update was removed from
+       the markup by #1180 — the sidebar header now shows the count a
+       different way — so this update is dead code left behind on purpose
+       ("editor.js still updates #song-count if present (guarded)", see the
+       #1180 comment in index.php). Deleted by the silent-wiring sweep; git
+       history has the old block if #song-count is ever reintroduced. */
 }
 
 /* Sidebar incremental-render state (#1180-B1). */
@@ -372,6 +373,11 @@ function buildSongListRow(song) {
         var cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.className = 'form-check-input me-2 flex-shrink-0';
+        /* a11y audit M8 (WCAG 4.1.2, 2026-08-30): unlabelled — nested
+           inside an <a> row with no <label for>, so a screen reader
+           announced only "checkbox, not checked" with no indication of
+           which song it selects. */
+        cb.setAttribute('aria-label', 'Select ' + song.title);
         cb.dataset.songId = song.id;
         cb.checked = window._selectedIds && window._selectedIds.has(song.id);
         cb.addEventListener('click', function (e) { e.stopPropagation(); });
@@ -994,6 +1000,9 @@ function renderComponents(song) {
         var typeSelect = document.createElement('select');
         typeSelect.className = 'form-select form-select-sm';
         typeSelect.style.width = '160px';
+        /* a11y audit M8 (WCAG 4.1.2, 2026-08-30): no label, no title, no
+           aria-label at all — a screen reader announced only "combo box". */
+        typeSelect.setAttribute('aria-label', 'Section type');
         COMPONENT_TYPES.forEach(function (t) {
             var opt = document.createElement('option');
             opt.value = t;
@@ -1016,6 +1025,10 @@ function renderComponents(song) {
         numInput.className = 'form-control form-control-sm';
         numInput.style.width = '110px';
         numInput.placeholder = '(optional)';
+        /* a11y audit M8 (WCAG 4.1.2, 2026-08-30): a placeholder is not an
+           accessible name — a screen reader announced only "spin button,
+           blank" with nothing to say what number this even is. */
+        numInput.setAttribute('aria-label', 'Section number (optional)');
         numInput.min = '0';
         numInput.value = (comp.number != null && comp.number > 0) ? comp.number : '';
         /* Live-bind number changes. */
@@ -1169,6 +1182,13 @@ function renderComponents(song) {
         textarea.className = 'form-control component-lyrics';
         textarea.rows = 1;  /* Seed at minimum; autoResizeTextarea grows it to content (#490). */
         textarea.placeholder = 'Enter lyrics here...';
+        /* a11y audit M8 (WCAG 4.1.2, 2026-08-30): the placeholder is
+           IDENTICAL across every component ("Enter lyrics here..."), so a
+           screen-reader user could not tell Verse 1's box apart from the
+           Chorus's — getComponentLabel() is the SAME "Type Number" label
+           already shown in this card's header (#491), reused here rather
+           than a second, divergent copy (rule #22). */
+        textarea.setAttribute('aria-label', getComponentLabel(comp) + ' lyrics');
         /* Convert lines array to newline-separated string for editing (#244). */
         textarea.value = Array.isArray(comp.lines) ? comp.lines.join('\n') : '';
         /* Live-bind lyrics changes — split back into lines array on every edit. */
@@ -1193,7 +1213,7 @@ function renderComponents(song) {
         var chordsToggle = document.createElement('button');
         chordsToggle.type = 'button';
         chordsToggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
-        chordsToggle.innerHTML = '<i class="bi bi-music-note-beamed me-1"></i>Chords';
+        chordsToggle.innerHTML = '<i class="bi bi-music-note-beamed me-1" aria-hidden="true"></i>Chords';
         var chordsBox = document.createElement('div');
         chordsBox.className = 'mt-1';
         chordsBox.style.display = hasChords ? '' : 'none';
@@ -1203,7 +1223,16 @@ function renderComponents(song) {
         chordsArea.placeholder = 'One line of chords per lyric line, e.g.  C    G    Am';
         chordsArea.value = componentChordsToText(comp);
         chordsArea.addEventListener('input', function () {
-            comp.chords = chordsArea.value.split('\n').map(function (l) { return l.trim(); });
+            /* #1968 P6 (commit C5) — RIGHT-trim only, never l.trim(). A stored chord cell is a
+               POSITIONED STRING (#299/#1094/chord_display.php's canonical display semantic, now
+               also PP7's own import/export shape, plan §2.2) — its LEADING whitespace is the
+               chord's column, not incidental padding. `l.trim()` silently destroyed that column
+               on every keystroke: typing/editing a PP7-imported line whose first chord sits at
+               column 12 (e.g. "            G") would save back as "G" (column 0), quietly
+               corrupting the positioned cell the moment a curator so much as opened this box.
+               Trailing whitespace IS still incidental (nothing renders past the last chord) and
+               stays stripped, matching every other per-line trim in this codebase. */
+            comp.chords = chordsArea.value.split('\n').map(function (l) { return l.replace(/\s+$/, ''); });
             markModified(song.id);
         });
         chordsToggle.addEventListener('click', function () {
@@ -1441,7 +1470,7 @@ function buildEnrichmentPanel(song, comp) {
     var toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
-    toggle.innerHTML = '<i class="bi bi-card-text me-1"></i>Per-line language, translations &amp; annotations';
+    toggle.innerHTML = '<i class="bi bi-card-text me-1" aria-hidden="true"></i>Per-line language, translations &amp; annotations';
     var box = document.createElement('div');
     box.className = 'mt-1';
     box.style.display = 'none';
@@ -2073,6 +2102,20 @@ function renderArrangementPool(song, pool, strip) {
 /**
  * Render the sequence strip. Each chip has a remove × and the whole
  * strip is SortableJS-reorderable. Lazy-loads SortableJS on first use.
+ *
+ * a11y audit M7 (WCAG 2.1.1, 2026-08-30, owner decision D2): this pool
+ * (below) and this strip are both MOUSE-ONLY — pool chips are plain
+ * `<span>`s with a click listener (not focusable, no role, no keyboard
+ * activation) and reordering here is SortableJS drag-only, the exact
+ * `<span>`-chip pattern #1644 fixed in the public setlist editor and
+ * #1991 fixed in v2's arrangement editor. The function IS keyboard-
+ * achievable via the "advanced text-mode" input, which mirrors this
+ * arrangement and accepts typed labels — but only through undiscoverable
+ * expert syntax. Owner decision D2 (cheap-fixes-only for the legacy v1
+ * editor, since v2 is the a11y-complete surface) chose NOT to rebuild
+ * this into real `<button>`s + move-left/right controls now; tracked so
+ * this gap retires with v1 rather than being silently forgotten or
+ * rebuilt later — see the v1-editor-sunset tracking issue.
  */
 function renderArrangementStrip(song, strip) {
     /* Resolve the effective arrangement: explicit or sequential fallback. */
@@ -2129,6 +2172,12 @@ function renderArrangementStrip(song, strip) {
 /**
  * Build a coloured chip DOM node for a component. Optionally includes
  * a ×-remove button in the right corner.
+ *
+ * a11y audit M7 (WCAG 2.1.1, owner decision D2, 2026-08-30): this chip is
+ * a plain <span> with only a click listener — not focusable, no role, no
+ * keyboard activation. See renderArrangementStrip()'s doc-comment above
+ * for the full finding and why this stays as-is (v1-editor-sunset
+ * tracking issue) rather than being rebuilt now.
  */
 function makeArrangementChip(comp, includeRemove) {
     var chip = document.createElement('span');
@@ -2784,7 +2833,7 @@ function bindTagSearchInput() {
             var createItem = document.createElement('button');
             createItem.type = 'button';
             createItem.className = 'list-group-item list-group-item-action d-flex align-items-center gap-2';
-            createItem.innerHTML = '<i class="bi bi-plus-circle"></i> Create new tag: <strong>' +
+            createItem.innerHTML = '<i class="bi bi-plus-circle" aria-hidden="true"></i> Create new tag: <strong>' +
                 escapeHtmlSafe(q) + '</strong>';
             createItem.addEventListener('click', function () {
                 var song = findSongById(currentSongId);
@@ -2957,7 +3006,8 @@ function renderTranslations(song) {
         removeBtn.type = 'button';
         removeBtn.className = 'btn btn-sm btn-outline-danger';
         removeBtn.title = 'Remove translation link';
-        removeBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
+        removeBtn.setAttribute('aria-label', 'Remove translation link');
+        removeBtn.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
 
         row.appendChild(badge);
         row.appendChild(info);
@@ -3318,7 +3368,8 @@ function renderSongLinks(song) {
                 removeBtn.type = 'button';
                 removeBtn.className = 'btn btn-sm btn-outline-danger';
                 removeBtn.title = 'Unlink this counterpart';
-                removeBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
+                removeBtn.setAttribute('aria-label', 'Unlink this counterpart');
+                removeBtn.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
                 removeBtn.addEventListener('click', function () {
                     removeSongLink(song.id, ln.songId);
                 });
@@ -3472,7 +3523,8 @@ function renderSongLinkSuggestions(song) {
                 linkBtn.type = 'button';
                 linkBtn.className = 'btn btn-sm btn-outline-success';
                 linkBtn.title = 'Link as the same hymn';
-                linkBtn.innerHTML = '<i class="bi bi-link-45deg"></i>';
+                linkBtn.setAttribute('aria-label', 'Link as the same hymn');
+                linkBtn.innerHTML = '<i class="bi bi-link-45deg" aria-hidden="true"></i>';
                 linkBtn.addEventListener('click', function () {
                     // #1855: extensionless — see addSongLink() above; a
                     // literal .php URL here would 301 and silently strip
@@ -3505,7 +3557,8 @@ function renderSongLinkSuggestions(song) {
                 dismissBtn.type = 'button';
                 dismissBtn.className = 'btn btn-sm btn-outline-secondary';
                 dismissBtn.title = 'Dismiss — different hymns';
-                dismissBtn.innerHTML = '<i class="bi bi-x-lg"></i>';
+                dismissBtn.setAttribute('aria-label', 'Dismiss — different hymns');
+                dismissBtn.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
                 dismissBtn.addEventListener('click', function () {
                     // #1855: extensionless — see addSongLink() above; a
                     // literal .php URL here would 301 and silently strip
@@ -4090,7 +4143,6 @@ function sniffProContent(file) {
            DEL byte (0x7F) — a genuine text file (RTF/XML/ChordPro) never
            contains these; protobuf's varint/length-delimited encoding
            produces them constantly. */
-        // eslint-disable-next-line no-control-regex
         if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(text)) {
             return 'pro7';
         }
@@ -4965,8 +5017,21 @@ function updateSaveUiState() {
     }
     var statusEl = document.getElementById('status-text');
     if (statusEl) {
-        statusEl.textContent = saving ? 'Auto-saving…'
-                             : (dirty ? 'Unsaved changes' : 'All changes saved');
+        var nextStatusText = saving ? 'Auto-saving…'
+                            : (dirty ? 'Unsaved changes' : 'All changes saved');
+        /* a11y audit M8/D2 (WCAG 4.1.3, 2026-08-30): #status-text is now
+           role="status" (index.php) so a screen reader announces it — but
+           markModified() calls this on EVERY keystroke while dirty, and
+           re-assigning the SAME string to .textContent still replaces the
+           text node, which a live region treats as a fresh mutation to
+           announce. Skip the write when nothing actually changed so a
+           screen-reader user typing lyrics doesn't hear "Unsaved changes"
+           on every keypress — only on the transitions that matter (saved
+           -> dirty -> saving -> saved again).
+           @link https://www.w3.org/WAI/WCAG21/Understanding/status-messages.html */
+        if (statusEl.textContent !== nextStatusText) {
+            statusEl.textContent = nextStatusText;
+        }
     }
 }
 
@@ -6673,8 +6738,8 @@ function openHistoryModal(songId) {
     var titleEl = document.getElementById('history-modal-title');
     if (!listEl || !detailEl) return;
 
-    if (titleEl) titleEl.innerHTML = '<i class="bi bi-clock-history me-2"></i>Revision history — ' + escapeHtml(songId);
-    listEl.innerHTML = '<div class="text-center p-3"><i class="bi bi-hourglass-split me-1"></i>Loading…</div>';
+    if (titleEl) titleEl.innerHTML = '<i class="bi bi-clock-history me-2" aria-hidden="true"></i>Revision history — ' + escapeHtml(songId);
+    listEl.innerHTML = '<div class="text-center p-3"><i class="bi bi-hourglass-split me-1" aria-hidden="true"></i>Loading…</div>';
     detailEl.innerHTML = '';
 
     var modalEl = document.getElementById('history-modal');

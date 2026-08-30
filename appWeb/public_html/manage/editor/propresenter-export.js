@@ -95,6 +95,15 @@
        legible at the call site below. */
     var ACTION_TYPE_PRESENTATION_SLIDE = 11;
 
+    /* #1979 — ACTION_TYPE_MEDIA = 2 + LAYER_TYPE_BACKGROUND = 0 (action.proto /
+       media.proto). Used by buildBackgroundMediaCue() to attach an imported
+       song's background video/image to the exported bundle. Both values were
+       byte-verified against a REAL PP-authored media action: TestBild.pro
+       (bussnet-testbild.probundle) uses `type: ACTION_TYPE_MEDIA`, and the
+       owner's genuine v21.4 "Lyrics Background" video cue omits layer_type (the
+       proto default 0 = BACKGROUND) — so this exporter omits it too. */
+    var ACTION_TYPE_MEDIA = 2;
+
     /* ==================================================================
      *  SECTION 2 — Protobuf root initialisation
      * ==================================================================
@@ -521,7 +530,11 @@
             pso = DEFAULT_EXPORT_OPTIONS.preSlideOrder;
         }
 
-        return { linesPerSlide: lps, preSlideOrder: pso };
+        /* #1979 — pass a resolved background-media descriptor through
+           unchanged (normaliseOptions otherwise whitelists only the two
+           text options above, which would silently drop it). Shape:
+           { filename, kind:'video'|'image', ext } or null/absent. */
+        return { linesPerSlide: lps, preSlideOrder: pso, backgroundMedia: options.backgroundMedia || null };
     }
 
     /* Split a lines array into N-line chunks, dropping trailing empty
@@ -632,6 +645,229 @@
     }
 
     /* ==================================================================
+     *  SECTION 5d — Chord position mapping (#1968 P6, plan §2.2/§4.2)
+     * ==================================================================
+     * ⚠️ HEADLINE FINDING (`.claude/propresenter-chords-plan.md` §1) — PP7
+     * does NOT store chords as inline `[G]` brackets typed into the slide's
+     * lyric text; that is only ProPresenter's OWN editing metaphor. On the
+     * wire, chords are positioned protobuf attributes —
+     * `CustomAttribute{range:IntRange, chord:string}` rows inside
+     * `element.text.attributes.custom_attributes[]` — sitting ALONGSIDE
+     * clean plain text. `buildRTF()` (SECTION 4) is therefore UNCHANGED by
+     * this feature: a chord symbol NEVER enters `rtf_data`, in either
+     * direction. This section's ONLY job is computing WHERE (as a UTF-16
+     * offset) each of a song's stored chord symbols belongs.
+     *
+     * THE MAPPING DECISION ("export what iHymns displays", plan §2.2):
+     *   - STRING cell (the positioned form `chord_display.php`/`print.js`/
+     *     the editor's chords textarea all already render): each token's
+     *     STARTING COLUMN is read directly off the CHORD LINE's own
+     *     whitespace runs (that whitespace IS the position — #299/#1094's
+     *     canonical display semantic) — clamped to the LYRIC line's own
+     *     length (a chord positioned past the line end anchors at line
+     *     end, never dropped — #1080's clamp philosophy).
+     *   - ARRAY cell (position already lost — the SAME shape
+     *     `ihymns_chord_line_to_string()`'s space-join and
+     *     format-export.js's `buildChordProLine()` interleave by word
+     *     index): token *i* anchors at the START of word *i* of the LYRIC
+     *     line; overflow tokens (more chords than words) anchor at line
+     *     end. This reuses ChordPro-export's own alignment decision for
+     *     exactly the shape where that decision already governs.
+     * Symbols pass through VERBATIM — PP has no bracket-escaping problem
+     * (there is no inline chord syntax to collide with), so
+     * `chordProBracketSafe()` (format-export.js) stays a ChordPro-only
+     * concern, never applied here.
+     *
+     * WHY NOT LITERALLY CALL format-export.js's chordProChordTokens()
+     * (rule #22's "one core, not a fork" ideal, weighed against a REAL
+     * load-order constraint): format-export.js is loaded AFTER
+     * propresenter-export.js and explicitly DEPENDS ON it for the ZIP
+     * writer (index.php/editor2.php's own `<script>` order + comments) —
+     * a reverse dependency here would invert that, and the PUBLIC export
+     * surface (`js/modules/export-ui.js`) can load propresenter-export.js
+     * WITHOUT format-export.js at all (its `?action=pro`/`.probundle`
+     * path never touches the ChordPro exporter). `chordProChordTokens()`
+     * also only returns an ORDERED SYMBOL LIST (it deliberately discards
+     * position for its OWN string-cell branch — `String(cell).trim()`);
+     * this section needs POSITIONS too, so a literal reuse would not even
+     * supply what's needed for the string-cell case. `chordCellPositions()`
+     * below mirrors that function's documented CONTRACT (null → [];
+     * array → element-mapped, trimmed, blank-filtered; string → split on
+     * whitespace RUNS) as an independent implementation — the two are
+     * proven to agree by construction (both mechanical whitespace splits)
+     * and by this feature's own test suite exercising both shapes
+     * end-to-end through the SAME `custom_attributes[]` wire path.
+     *
+     * CODE-POINT DISCIPLINE (rule #21): every column computed here is a
+     * CODE POINT (`Array.from()`), matching iHymns' chord model
+     * everywhere else. UTF-16 conversion (`utf16LengthOf()`/
+     * `codePointColumnToUtf16Offset()`) happens ONLY at the very end, at
+     * the protobuf boundary — the PP7 wire format's own unit (plan §1.2).
+     * These are the EXPORT-side inverse of the importer's
+     * `_bulkImport_pro7Utf16Length()`/`_bulkImport_pro7Utf16OffsetToCodePointColumn()`
+     * (`includes/song_importers.php`) — two independently-written halves,
+     * never a shared copy (PHP/JS can't share code anyway); their
+     * agreement is proven by the round-trip closure test (C4), not by a
+     * comment asking them to stay in sync (rule #35).
+     */
+
+    /* Split a lyric LINE into its whitespace-delimited WORDS, returning
+       each word's STARTING code-point column (Array.from()-based — code-
+       point safe, never indexes by UTF-16 unit or byte). Used for the
+       ARRAY-cell alignment above: token i anchors at the start of word i. */
+    function lyricLineWordStartColumns(lineText) {
+        var cps = Array.from(lineText == null ? '' : String(lineText));
+        var starts = [];
+        var i = 0;
+        while (i < cps.length) {
+            if (/\s/.test(cps[i])) { i++; continue; }
+            starts.push(i);
+            while (i < cps.length && !/\s/.test(cps[i])) { i++; }
+        }
+        return starts;
+    }
+
+    /* Turn one line's stored chord cell (string | array | null — the
+       three shapes format-export.js's chordProChordTokens() documents)
+       into an ORDERED list of {cpOffset, symbol} — see the SECTION 5d
+       doc-block above for the full mapping decision. Returns [] for a
+       null/empty cell — a chordless line contributes nothing. */
+    function chordCellPositions(lineText, cell) {
+        var lineLen = Array.from(lineText == null ? '' : String(lineText)).length;
+        if (cell == null) { return []; }
+
+        if (Array.isArray(cell)) {
+            var tokens = cell
+                .map(function (c) { return (c == null) ? '' : String(c).trim(); })
+                .filter(function (c) { return c !== ''; });
+            if (!tokens.length) { return []; }
+            var wordStarts = lyricLineWordStartColumns(lineText);
+            return tokens.map(function (symbol, i) {
+                var cpOffset = (i < wordStarts.length) ? wordStarts[i] : lineLen;
+                return { cpOffset: cpOffset, symbol: symbol };
+            });
+        }
+
+        var cps = Array.from(String(cell));
+        var out = [];
+        var i = 0;
+        while (i < cps.length) {
+            if (/\s/.test(cps[i])) { i++; continue; }
+            var start = i;
+            var tok = '';
+            while (i < cps.length && !/\s/.test(cps[i])) { tok += cps[i]; i++; }
+            out.push({ cpOffset: Math.min(start, lineLen), symbol: tok });
+        }
+        return out;
+    }
+
+    /* Length of `str` in UTF-16 CODE UNITS — the unit PP7's
+       `IntRange.start`/`.end` are expressed in (plan §1.2). A code point
+       above U+FFFF (most emoji) is ONE code point but TWO UTF-16 units. */
+    function utf16LengthOf(str) {
+        var len = 0;
+        var cps = Array.from(str == null ? '' : String(str));
+        for (var i = 0; i < cps.length; i++) {
+            len += cps[i].codePointAt(0) > 0xFFFF ? 2 : 1;
+        }
+        return len;
+    }
+
+    /* A CODE-POINT column WITHIN one line -> its UTF-16 offset WITHIN
+       THAT SAME LINE (the boundary conversion, applied once positions
+       are already known). */
+    function codePointColumnToUtf16Offset(lineText, cpColumn) {
+        var cps = Array.from(lineText == null ? '' : String(lineText));
+        var offset = 0;
+        var n = Math.min(cpColumn, cps.length);
+        for (var i = 0; i < n; i++) {
+            offset += cps[i].codePointAt(0) > 0xFFFF ? 2 : 1;
+        }
+        return offset;
+    }
+
+    /* NEWLINE_UNITS (plan §1.2's flagged conflict — chordlib counts a
+       line break as 1 UTF-16 unit in the running offset; greyshirtguy's
+       tool counts 0). This export half adopts 1 (chordlib/Cocoa
+       `NSAttributedString.string` convention) as primary, isolated
+       behind ONE named constant — the export-side mirror of
+       includes/song_importers.php's `PP7_CHORD_NEWLINE_UNITS` — so
+       flipping the convention after real ProPresenter evidence (owner
+       checklist D4) is a one-line change in EACH half, never a
+       re-derivation of the offset maths below. */
+    var NEWLINE_UNITS = 1;
+
+    /* Chunk `lines` EXACTLY like chunkLines() (SECTION 5b — reused, never
+       re-forked, so its own edge cases — an empty/non-array `lines`, a
+       disabled `linesPerSlide` — stay a single source of truth), while
+       slicing `cells` (the chords array, parallel to `lines`) with the
+       SAME per-chunk sizes chunkLines() actually produced, so a slide's
+       chunk of lyric lines and its chunk of chord cells always line up
+       1:1 (#1968 P6). `cellChunks[i]` is only ever as long as
+       `lineChunks[i]` needs — a short/absent `cells` array degrades to
+       `undefined` entries, which chordCellPositions() already treats as
+       "no chords on this line" via its `cell == null` check. */
+    function chunkParallel(lines, cells, linesPerSlide) {
+        var lineChunks = chunkLines(lines, linesPerSlide);
+        var safeCells = Array.isArray(cells) ? cells : [];
+        var cellChunks = [];
+        var cursor = 0;
+        for (var i = 0; i < lineChunks.length; i++) {
+            var size = lineChunks[i].length;
+            cellChunks.push(safeCells.slice(cursor, cursor + size));
+            cursor += size;
+        }
+        return { lineChunks: lineChunks, cellChunks: cellChunks };
+    }
+
+    /* Build the FULL `custom_attributes[]` payload for one slide's lines
+       + their parallel chord cells (plan §4.2). Per line:
+       chordCellPositions() gives code-point columns -> converted to
+       UTF-16 offsets -> added to the RUNNING line offset (UTF-16 length +
+       NEWLINE_UNITS per PRECEDING line, matching the same lines
+       buildRTF() `\par`-joins into one element's text) -> collected,
+       sorted by `start`, and TILED: each row's `end` becomes the NEXT
+       row's `start` (or the slide's total UTF-16 length for the last
+       row) — matching the writer convention both reference
+       implementations independently agree on (plan §1.2). `end` is
+       never read by any known importer; this tiles it anyway for
+       shape-realism against a real ProPresenter-authored file. Returns
+       [] when the slide carries no chords at all — the caller then
+       omits `attributes.custom_attributes`/`text.attributes` entirely
+       (SECTION 6/makeLyricCue()), keeping a chordless song's payload
+       byte-identical to the pre-#1968-P6 exporter (the safety property
+       tests/test-propresenter-export.js pins). */
+    function linesChordAttributes(lines, cells) {
+        var safeLines = Array.isArray(lines) ? lines : [];
+        var totalUtf16Len = 0;
+        for (var li = 0; li < safeLines.length; li++) {
+            totalUtf16Len += utf16LengthOf(safeLines[li]) + (li > 0 ? NEWLINE_UNITS : 0);
+        }
+
+        var rows = [];
+        var lineOffset = 0;
+        for (var i = 0; i < safeLines.length; i++) {
+            var lineText = safeLines[i] == null ? '' : String(safeLines[i]);
+            var cell = (cells && i < cells.length) ? cells[i] : null;
+            var positions = chordCellPositions(lineText, cell);
+            for (var p = 0; p < positions.length; p++) {
+                var utf16InLine = codePointColumnToUtf16Offset(lineText, positions[p].cpOffset);
+                rows.push({ start: lineOffset + utf16InLine, chord: positions[p].symbol });
+            }
+            lineOffset += utf16LengthOf(lineText) + NEWLINE_UNITS;
+        }
+
+        if (!rows.length) { return []; }
+        rows.sort(function (a, b) { return a.start - b.start; });
+        return rows.map(function (row, idx) {
+            var end = (idx + 1 < rows.length)
+                ? rows[idx + 1].start
+                : Math.max(row.start + 1, totalUtf16Len);
+            return { range: { start: row.start, end: end }, chord: row.chord };
+        });
+    }
+
+    /* ==================================================================
      *  SECTION 6 — Plain-object Presentation builder
      * ==================================================================
      * Produces the JS object that protobufjs's `Presentation.create()`
@@ -701,13 +937,31 @@
        stays transparent so the operator's own theme/background shows
        through underneath in ProPresenter's Look/Slide compositing — see
        the doc-block on SECTION 5c for why the blue this issue reported
-       was never a background WE emitted. */
-    function makeLyricCue(name, rtfString) {
+       was never a background WE emitted.
+
+       #1968 P6 — optional 4th arg `chordAttrs` (SECTION 5d's
+       `linesChordAttributes()` output, `[{range,chord},...]`). When
+       non-empty, it is merged onto `text.attributes.custom_attributes`
+       — the ONLY change chords make to this payload. `rtf_data` is
+       UNTOUCHED (built from `rtfString` exactly as before — a chord
+       symbol NEVER enters the RTF, plan §1); NO `chord_pro` is written
+       (v1 export scope decision, plan §1.3 — matches the only
+       real-PP-validated reference writer, greyshirtguy's tool, which
+       also never touches `chord_pro`). Omitting the arg (every existing
+       call site: Title/Blank pre-slides) leaves `attributes` exactly as
+       `defaultTextAttributes()` alone produced it — the #1080-style
+       byte-safety property `tests/test-propresenter-export.js` pins. */
+    function makeLyricCue(name, rtfString, chordAttrs) {
         var cueUuid = uuidMsg();
         var actionUuid = uuidMsg();
         var elementUuid = uuidMsg();
         var slideUuid = uuidMsg();
         var rtfBytes = new TextEncoder().encode(rtfString);
+
+        var attributes = defaultTextAttributes();
+        if (chordAttrs && chordAttrs.length) {
+            attributes = Object.assign({}, attributes, { custom_attributes: chordAttrs });
+        }
 
         var action = {
             uuid: actionUuid,
@@ -726,7 +980,7 @@
                                 bounds: defaultTextBounds(),
                                 text: {
                                     rtf_data: rtfBytes,
-                                    attributes: defaultTextAttributes(),
+                                    attributes: attributes,
                                     vertical_alignment: TEXT_VERTICAL_ALIGNMENT_MIDDLE,
                                     scale_behavior: TEXT_SCALE_BEHAVIOR_SCALE_FONT_DOWN
                                 }
@@ -767,6 +1021,103 @@
                 isEnabled: true
             }
         };
+    }
+
+    /* ==================================================================
+     *  #1979 — background-media (P4 export follow-on, issue #1979)
+     * ==================================================================
+     * Embed an imported song's background video/image into a single-song
+     * `.probundle` and reference it from the `.pro`. The media ACTION shape
+     * below was verified field-for-field against a REAL PP-authored media
+     * action (TestBild.pro, bussnet-testbild.probundle) and round-trips
+     * through this repo's own PHP decoder (mediaRefs resolve by basename).
+     * Only PUBLIC media ever reaches here: the public `song_data` read is
+     * visibility-filtered (#1968 P4), so an admin-only row is never exportable
+     * until a curator publishes it. */
+
+    /* The ROOT_CURRENT_RESOURCE URL for a bundled media FILENAME. Matches the
+       real PP media action: `absolute_string` is the BARE filename (NOT the
+       `file://` form buildPlaylistPresentationUrl() uses for a document_path),
+       and `local` carries the portable bundle-relative path. */
+    function buildMediaCurrentResourceUrl(filename) {
+        return {
+            absolute_string: filename,
+            local: { root: URL_LOCAL_ROOT_CURRENT_RESOURCE, path: filename }
+        };
+    }
+
+    /* One "Lyrics Background" cue group + media cue for a background
+       video/image. `bg` = { filename, kind:'video'|'image', ext }. The
+       type-specific mirror (element.video.file.local_url / element.image.
+       file.local_url) carries the SAME CURRENT_RESOURCE URL as element.url —
+       PP needs URL.local on both or it reports "media not found". Returns
+       { cue, group }. */
+    function buildBackgroundMediaCue(bg) {
+        var element = {
+            uuid: uuidMsg(),
+            url: buildMediaCurrentResourceUrl(bg.filename),
+            metadata: { format: bg.ext || '' }
+        };
+        var fileProps = { local_url: buildMediaCurrentResourceUrl(bg.filename) };
+        if (bg.kind === 'video') { element.video = { file: fileProps }; }
+        else { element.image = { file: fileProps }; }
+        var cueUuid = uuidMsg();
+        var cue = {
+            uuid: cueUuid,
+            actions: [{
+                uuid: uuidMsg(),
+                name: bg.filename,
+                isEnabled: true,
+                type: ACTION_TYPE_MEDIA
+                /* media.layer_type omitted = proto default 0 = LAYER_TYPE_BACKGROUND,
+                   matching the owner's real "Lyrics Background" video cue. */
+            }]
+        };
+        cue.actions[0].media = { element: element };
+        return {
+            cue: cue,
+            group: { group: { uuid: uuidMsg(), name: 'Lyrics Background' }, cue_identifiers: [cueUuid] }
+        };
+    }
+
+    /* A ZIP-safe media filename that KEEPS its extension (unlike
+       sanitizeFilename, which the .pro name uses): strip any path separators
+       and control chars, collapse to a basename. */
+    function sanitizeMediaFilename(name) {
+        var base = String(name || 'media').replace(/^.*[\\/]/, '');       // drop any dir prefix
+        base = base.replace(/[\x00-\x1f\x7f"*:<>?|]/g, '').trim();        // ZIP/OS-unsafe chars
+        return base || 'media';
+    }
+
+    /* Derive the media format token (PP `metadata.format`) — the filename's
+       own extension, else a MIME fallback. */
+    function mediaFormatToken(filename, mimeType) {
+        var dot = filename.lastIndexOf('.');
+        if (dot > 0 && dot < filename.length - 1) { return filename.slice(dot + 1).toLowerCase(); }
+        var map = {
+            'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/webm': 'webm', 'video/x-m4v': 'm4v',
+            'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp'
+        };
+        return map[mimeType] || '';
+    }
+
+    /* Choose ONE background from a song's PUBLIC media: the first video, else
+       the first image (a PP presentation carries one background; multiple is a
+       later refinement). audio/pdf/midi/musicxml are never backgrounds.
+       Returns { source, filename, kind, ext } or null. */
+    function pickBackgroundMedia(song) {
+        var media = (song && Array.isArray(song.media)) ? song.media : [];
+        var video = null, image = null;
+        for (var i = 0; i < media.length; i++) {
+            var m = media[i];
+            if (!m || !m.streamUrl) { continue; }
+            if (m.kind === 'video' && !video) { video = m; }
+            else if (m.kind === 'image' && !image) { image = m; }
+        }
+        var chosen = video || image;
+        if (!chosen) { return null; }
+        var filename = sanitizeMediaFilename(chosen.fileName || (chosen.kind + '.' + (mediaFormatToken('', chosen.mimeType) || 'bin')));
+        return { source: chosen, filename: filename, kind: chosen.kind, ext: mediaFormatToken(filename, chosen.mimeType) };
     }
 
     function buildPresentationPayload(song, options) {
@@ -815,11 +1166,25 @@
            When linesPerSlide is set, we emit multiple cues under the
            same cue_group so the group still represents the whole
            component but ProPresenter advances slide-by-slide through
-           the chunks. */
+           the chunks.
+
+           #1968 P6 — chunkParallel() (SECTION 5d) chunks the component's
+           `chords` array (when present) with the EXACT SAME chunk
+           boundaries chunkLines() used for the lyric lines, so each
+           slide's linesChordAttributes() call only ever sees the chords
+           that actually belong to ITS OWN chunk of lines. A component
+           with no `chords` array at all (the overwhelming majority)
+           passes `[]` through chunkParallel(), which then always yields
+           empty cellChunks — linesChordAttributes() returns [] for
+           those, and makeLyricCue()'s 4th arg is falsy, so a chordless
+           component's payload is BYTE-IDENTICAL to the pre-#1968-P6
+           exporter (the safety property the export test suite pins). */
         for (var i = 0; i < components.length; i++) {
             var comp = components[i];
             var label = componentLabel(comp);
-            var lineChunks = chunkLines(getComponentLines(comp), options.linesPerSlide);
+            var compChords = Array.isArray(comp.chords) ? comp.chords : [];
+            var chunked = chunkParallel(getComponentLines(comp), compChords, options.linesPerSlide);
+            var lineChunks = chunked.lineChunks;
 
             var memberCueIds = [];
             for (var c = 0; c < lineChunks.length; c++) {
@@ -827,7 +1192,8 @@
                    when chunking, append the chunk index for clarity
                    inside ProPresenter's cue palette. */
                 var actionName = label.short + (lineChunks.length > 1 ? '.' + (c + 1) : '');
-                var lyricCue = makeLyricCue(actionName, buildRTF(lineChunks[c]));
+                var chordAttrs = linesChordAttributes(lineChunks[c], chunked.cellChunks[c]);
+                var lyricCue = makeLyricCue(actionName, buildRTF(lineChunks[c]), chordAttrs);
                 cues.push(lyricCue.cue);
                 memberCueIds.push(lyricCue.cueId);
             }
@@ -855,6 +1221,21 @@
             name: 'Default',
             group_identifiers: cue_groups.map(function (cg) { return cg.group.uuid; })
         };
+
+        /* ---- #1979 — background media -------------------------------
+           When a background video/image is provided, PREPEND a "Lyrics
+           Background" cue group + media cue, matching a real PP-authored
+           layout (the owner's genuine v21.4 file carries exactly this
+           group). Built AFTER the arrangement above and NOT added to it —
+           a background is a palette group, never a step in the running
+           order (verified against the owner's file: its arrangement lists
+           only the lyric groups). The media itself is embedded at the
+           bundle ROOT and referenced by ROOT_CURRENT_RESOURCE (§6.2). */
+        if (options.backgroundMedia && options.backgroundMedia.filename) {
+            var bg = buildBackgroundMediaCue(options.backgroundMedia);
+            cues.unshift(bg.cue);
+            cue_groups.unshift(bg.group);
+        }
 
         return {
             uuid: uuidMsg(),
@@ -1223,6 +1604,68 @@
         });
         triggerDownload(bytes, filename, 'application/octet-stream');
         return { filename: filename, size: bytes.length };
+    }
+
+    /* #1979 — fetch a media file's bytes from its same-origin streamUrl
+       (`/song-media/<id>?…`). The row is PUBLIC (the public song_data read is
+       visibility-filtered), so no auth header is needed. Returns a Uint8Array;
+       throws on a non-2xx. */
+    async function fetchMediaBytes(url) {
+        var resp = await fetch(url);
+        if (!resp || !resp.ok) {
+            throw new Error('media fetch failed (HTTP ' + (resp ? resp.status : '?') + ')');
+        }
+        var buf = await resp.arrayBuffer();
+        return new Uint8Array(buf);
+    }
+
+    /**
+     * #1979 — export ONE song as a `.probundle` that embeds its background
+     * media. When the song has a public video/image (see pickBackgroundMedia),
+     * the media bytes are fetched, embedded at the bundle ROOT under a flat
+     * filename, and referenced from the `.pro` via a "Lyrics Background" media
+     * cue (ROOT_CURRENT_RESOURCE). When the song has NO embeddable media — or
+     * the media fetch fails — it degrades to a bare `.pro` (a .probundle with no
+     * media buys nothing, and a lyric export must never fail on a media hiccup).
+     *
+     * @returns {Promise<{mediaIncluded:boolean, filename:string, mediaFilename?:string, mediaError?:string}>}
+     */
+    async function exportSongAsBundle(song, options) {
+        if (!song) { throw new Error('exportSongAsBundle: song argument is required'); }
+        if (!protoRoot) { await init(); }
+        options = options || {};
+
+        var bg = pickBackgroundMedia(song);
+        if (!bg) {
+            var proOnly = await exportSong(song, options);
+            return { mediaIncluded: false, filename: proOnly.filename };
+        }
+
+        var mediaBytes;
+        try {
+            mediaBytes = await fetchMediaBytes(bg.source.streamUrl);
+        } catch (e) {
+            /* Degrade to the bare .pro — the lyrics still export. */
+            var fallback = await exportSong(song, options);
+            return { mediaIncluded: false, filename: fallback.filename, mediaError: (e && e.message) || 'media fetch failed' };
+        }
+
+        var opts = {};
+        for (var k in options) { if (Object.prototype.hasOwnProperty.call(options, k)) { opts[k] = options[k]; } }
+        opts.backgroundMedia = { filename: bg.filename, kind: bg.kind, ext: bg.ext };
+
+        var proBytes = await buildPresentation(song, opts);
+        var proName = buildFilename(song, { extension: '.pro', padNumber: options.padNumber });
+
+        /* Both entries at the ZIP ROOT — the #1968 P2 genuine-bundle layout
+           (.pro + media at root, no Documents/ prefix, no manifest). */
+        var zipBytes = buildZip([
+            { name: bg.filename, bytes: mediaBytes },
+            { name: proName, bytes: proBytes }
+        ]);
+        var bundleName = buildFilename(song, { extension: '.probundle', padNumber: options.padNumber });
+        triggerDownload(zipBytes, bundleName, 'application/zip');
+        return { mediaIncluded: true, filename: bundleName, mediaFilename: bg.filename };
     }
 
     /* Internal: build the per-song .pro byte set + filenames for a
@@ -1788,6 +2231,9 @@
     var api = {
         init: init,
         exportSong: exportSong,
+        /* #1979 — export ONE song as a .probundle that embeds its background
+           media (falls back to a bare .pro when the song has none). */
+        exportSongAsBundle: exportSongAsBundle,
         exportAllAsZip: exportAllAsZip,
         exportAllAsBundle: exportAllAsBundle,
         /* #1968 P3 — set-list export -> .proplaylist. */
@@ -1810,8 +2256,21 @@
             componentLabel: componentLabel,
             buildPresentationPayload: buildPresentationPayload,
             buildCCLIPayload: buildCCLIPayload,
+            /* #1979 — background-media builders, exposed for the wire-shape guard. */
+            buildBackgroundMediaCue: buildBackgroundMediaCue,
+            buildMediaCurrentResourceUrl: buildMediaCurrentResourceUrl,
+            pickBackgroundMedia: pickBackgroundMedia,
+            mediaFormatToken: mediaFormatToken,
+            sanitizeMediaFilename: sanitizeMediaFilename,
             normaliseOptions: normaliseOptions,
             chunkLines: chunkLines,
+            /* #1968 P6 — chord position-mapping internals (SECTION 5d), exposed for unit tests. */
+            chordCellPositions: chordCellPositions,
+            lyricLineWordStartColumns: lyricLineWordStartColumns,
+            utf16LengthOf: utf16LengthOf,
+            codePointColumnToUtf16Offset: codePointColumnToUtf16Offset,
+            chunkParallel: chunkParallel,
+            linesChordAttributes: linesChordAttributes,
             getTuneTitle: getTuneTitle,
             paddingFor: paddingFor,
             padSongNumber: padSongNumber,

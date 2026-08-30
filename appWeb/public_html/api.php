@@ -278,6 +278,17 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    and the collaboration invite would have been the fourth. Best-effort by
    contract: a notification failure never fails the action that triggered it. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'notifications.php';
+/* API-coverage batch 7 — Web Push (#311, #1671 F6). Required explicitly
+   rather than relied on transitively (rule #22): webPushBroadcast() /
+   webPushBuildPayload() / webPushKindValid() / webPushConfigured() back the
+   admin_notification_push_send / admin_notification_push_test actions
+   below, the same functions manage/notifications.php's push_send/push_test
+   handlers call. secretDecrypt()/secretIsEncrypted() (needed to read the
+   VAPID private key getAppSetting() transparently decrypts) are already
+   loaded transitively later in this same bootstrap section, via
+   webhooks.php's own secret_crypto.php require — this file only adds the
+   Web Push functions themselves. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'web_push.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
    so curators reading /manage/activity-log see every server-side
@@ -300,10 +311,81 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
 /* #1860 go-live — ilidStampNewRow() for admin_musician_add / admin_songbook_create below. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+/* #1993 (rule #22) — the shared songbook CREATE validate+write core.
+   admin_songbook_create below now calls songbookAdminValidateCreate()/
+   …Create() — the SAME functions manage/songbooks.php's `create` case and
+   its new guided-wizard `wizard_create_songbook` case call — instead of
+   its own drifted inline copy (that copy was missing DisplayAbbr/
+   PublicationCity+Id/IsPublicDomain/OpenLibrary/the #1865 publisher-
+   registry seed the page already had, and still accepted a removed
+   `internet_archive_url` input — all fixed by this re-point). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_admin.php';
 /* #1748 — the tune admin CRUD shared cores. The admin_tune_* actions below
    call these SAME functions manage/tunes.php's POST handlers call — one
    validation/persist/merge/delete core, two thin callers (rule #22/#35). */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_admin.php';
+/* #2006 (epic #2002, plan §11 OD-2) — the content-restriction admin CRUD
+   shared core. admin_restriction_create/_delete below call the SAME
+   restrictionAdminValidate()/…Create()/…Delete() functions
+   manage/restrictions.php's POST handlers call — rule #22/#35. Before this
+   change the API twin ran its OWN inline INSERT/DELETE with NO vocabulary
+   validation at all; re-pointing it here closes that gap rather than
+   leaving it as a permanent, pre-existing fork. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'restriction_admin.php';
+/* #93/#1765, API-coverage batch 4a (A1) — the publisher admin CRUD shared
+   cores. The admin_publisher_* actions below call these SAME functions
+   manage/publishers.php's POST handlers call — rule #22/#35, exactly the
+   tune_admin.php precedent immediately above. Also pulls in
+   publisher_helpers.php (IHYMNS_PUBLISHER_KINDS, slug fold) transitively. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publisher_admin.php';
+/* #1860 Phase 5 / API-coverage batch 4a (A2) — the Work-identity +
+   medley-composition shared cores. The admin_work_* actions below call
+   workSlugify()/workSlugEnsureUnique() for the scalar CRUD and the
+   cycle-guarded workMedley*() family for the ordered constituent list —
+   rule #22/#45, never a forked medley write. Also pulls in
+   identifier_normalize.php (ihymns_canonical_iswc()) transitively. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';
+/* #1988 — admin_work_external_links_replace's shared saver/loader
+   (saveExternalLinksForRow()/loadExternalLinksForRow()). Explicit here
+   rather than relying on the transitive pull-in via
+   external_link_type_admin.php below (rule #22 — the dependency this
+   action actually needs should be named, not accidental). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
+/* #1969 API-coverage batch 4b-i (A3/A4/A5) — the tag/catalogue/songbook-series
+   admin CRUD shared cores. The admin_tag_..., admin_catalogue_... and
+   admin_songbook_series_... actions below call these SAME functions
+   manage/tags.php, manage/catalogues.php and manage/songbook-series.php's
+   own POST handlers call — one validation/write core per entity, two thin
+   callers each (rule #22/#35). tag_admin.php also pulls in
+   song_similarity.php (#1216/#1222) transitively for the canonicalisation
+   suggestions read. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tag_admin.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'catalogue_admin.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_series_admin.php';
+/* API-coverage batch 4b-ii (A6/A7/A8) — the language/external-link-type/
+   print-template admin CRUD shared cores. The admin_language_...,
+   admin_external_link_type_... and admin_print_template_... /
+   admin_print_layout_... actions below call these SAME functions
+   manage/languages.php, manage/external-link-types.php and
+   manage/print-templates.php's own POST handlers call — one validation/
+   write core per entity, two thin callers each (rule #22/#35).
+   language_admin.php pulls in language_tag_audit.php transitively
+   (languageTagRemap()/languageTagAuditScan() — the ONE remap write core,
+   never re-forked). print_template_schema.php is required here at THIS
+   file's own top level (not inside a function) so its $BLOCK_SCHEMA /
+   $SHOWIF_CONDITIONS / $PAGE_OPTION_SCHEMA globals + ptSanitiseBlocks() /
+   ptSanitisePageOptions() are available to every case block below,
+   exactly as manage/print-templates.php's own top-level require does for
+   its switch (see that file's doc-block on why top-level require is
+   required); print_custom_layout.php is required here too (it was
+   previously required only inside the print_templates read case, which
+   would leave admin_print_layout_save/_delete undefined if requested
+   before that case ever ran — require_once makes the duplicate a no-op). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_template_schema.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_custom_layout.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_admin.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_type_admin.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_template_admin.php';
 /* Shared schema-audit helpers (#719 PR 2d). Parser + migration
    scanner + comparer used by admin_schema_audit and
    admin_migrations_status read endpoints. */
@@ -329,6 +411,17 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmit() for the setlist_share / service_session_* funnels (dormant no-op) */
 enforceMaintenanceForApi();
+
+/* Per-channel search-engine visibility (#2024/#2025) — same channel-off
+   signal index.php emits, added here too so the SPA's ?page= HTML
+   fragments and JSON responses carry it uniformly. These fragments aren't
+   independently discoverable documents (nothing links to /api?page=…,
+   they're not in the sitemap, and robots.txt already carries a blanket
+   Disallow: /api), but the header is one cheap call and the value is
+   CONSTANT per channel — so the $_cacheablePages shared-cache fragments
+   (rule #6) are unaffected by adding it. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+searchVisibilityEmitNoindexHeader();
 
 /* Themed error-card renderer for the ?page= partials (song/songbook/work/…
    not-found etc.) so every in-SPA error state is one consistent card. */
@@ -1738,6 +1831,66 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Get one Tune (#940/#1741, API-coverage batch 1 C3) — the
+         * registry row (when curated) plus every song that uses it, its
+         * composer/arranger/harmoniser/source credits, tunes sharing its
+         * metre, and its external links. JSON twin of the public
+         * `?page=tune&slug=…` HTML page — both call the SAME
+         * `tuneResolveDisplayData()` (includes/tune_helpers.php), not a
+         * forked read (rule #22). Naming/shape parallels `work` above.
+         * Parameters: slug (or id) — required, one of the two. `id` is an
+         * API-only direct-lookup mode the HTML page never uses (mirrors
+         * `work`/`musician`'s slug-or-id shape).
+         * ----------------------------------------------------------------- */
+        case 'tune':
+            enforceReadRateLimitKeyed('tune', 120);
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_helpers.php';
+            $tuneReqSlug  = isset($_GET['slug']) ? trim((string)$_GET['slug']) : '';
+            $tuneReqIdRaw = isset($_GET['id']) ? trim((string)$_GET['id']) : '';
+            if ($tuneReqSlug === '' && $tuneReqIdRaw === '') {
+                sendJson(['error' => 'A tune slug or id is required.'], 400);
+                break;
+            }
+            $tuneReqId = ($tuneReqIdRaw !== '' && ctype_digit($tuneReqIdRaw)) ? (int)$tuneReqIdRaw : null;
+            $tuneResolved = tuneResolveDisplayData(getDbMysqli(), $tuneReqSlug, $tuneReqId);
+            if ($tuneResolved['tune'] === null && $tuneResolved['canonicalTune'] === '') {
+                sendJson(['error' => 'Tune not found.'], 404);
+                break;
+            }
+            $tuneOut = $tuneResolved['tune'];
+            sendJson([
+                'tune' => [
+                    'id'                 => $tuneOut !== null ? (int)$tuneOut['Id'] : null,
+                    'name'               => $tuneResolved['canonicalTune'],
+                    'slug'               => $tuneResolved['slug'],
+                    'subtitle'           => $tuneOut['Subtitle'] ?? null,
+                    'disambiguation'     => $tuneOut['Disambiguation'] ?? null,
+                    'meterCode'          => $tuneOut['MeterCode'] ?? null,
+                    'musicBrainzWorkMbid' => $tuneOut['MusicBrainzWorkMBID'] ?? null,
+                    'hymnaryTuneId'      => $tuneOut['HymnaryTuneId'] ?? null,
+                    'notes'              => $tuneOut['Notes'] ?? null,
+                    'registered'         => $tuneOut !== null,
+                ],
+                'totalSongs' => $tuneResolved['tuneTotalSongs'],
+                'songs'      => array_map(static function (array $r): array {
+                    return [
+                        'songId'      => (string)$r['SongId'],
+                        'number'      => $r['Number'] !== null ? (int)$r['Number'] : null,
+                        'title'       => (string)$r['Title'],
+                        'songbook'    => (string)$r['SongbookAbbr'],
+                        'songbookName' => (string)($r['SongbookName'] ?? ''),
+                        'language'    => $r['Language'] ?? null,
+                    ];
+                }, $tuneResolved['tuneRows']),
+                'credits'       => $tuneResolved['tuneCreditsByRole'],
+                'meterSiblings' => array_map(static function (array $r): array {
+                    return ['name' => (string)$r['Name'], 'slug' => (string)$r['Slug']];
+                }, $tuneResolved['tuneMeterSiblings']),
+                'links' => $tuneResolved['tuneLinks'],
+            ]);
+            break;
+
+        /* -----------------------------------------------------------------
          * Get one musician (#1443/#1444) — a tblMusicians row's
          * bio/lifespan/external links plus every song they're credited on,
          * grouped by role (writer/composer/arranger/adaptor/translator/
@@ -1782,6 +1935,59 @@ if ($action !== null) {
             } else {
                 sendJson([($_isLegacyPersonAction ? 'person' : 'musician') => $person]);
             }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get one Publisher (#93/#1765, API-coverage batch 1 C4) — who
+         * they are (company/person/imprint), their parent publisher, and
+         * the songbooks they published. JSON twin of the public
+         * `?page=publisher&slug=…` HTML page — both call the SAME
+         * `publisherResolveDisplayData()` (includes/publisher_helpers.php),
+         * resolving exact-slug -> name-fold -> alias-fold (rule #37), not a
+         * forked read (rule #22).
+         * Parameters: slug — required.
+         * ----------------------------------------------------------------- */
+        case 'publisher_detail':
+            enforceReadRateLimitKeyed('publisher_detail', 120);
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
+            $pubReqSlug = isset($_GET['slug']) ? trim((string)$_GET['slug']) : '';
+            if ($pubReqSlug === '') {
+                sendJson(['error' => 'A publisher slug is required.'], 400);
+                break;
+            }
+            $pubResolved = publisherResolveDisplayData(getDbMysqli(), $pubReqSlug);
+            $pubRow = $pubResolved['publisher'];
+            if ($pubRow === null) {
+                sendJson(['error' => 'Publisher not found.'], 404);
+                break;
+            }
+            sendJson([
+                'publisher' => [
+                    'id'             => (int)$pubRow['Id'],
+                    'name'           => (string)$pubRow['Name'],
+                    'slug'           => (string)$pubRow['Slug'],
+                    'kind'           => (string)$pubRow['Kind'],
+                    'subtitle'       => $pubRow['Subtitle'] ?? null,
+                    'disambiguation' => $pubRow['Disambiguation'] ?? null,
+                    'ipi'            => $pubRow['Ipi'] ?? null,
+                    'isni'           => $pubRow['Isni'] ?? null,
+                    'cityName'       => $pubRow['CityName'] ?? null,
+                    'notes'          => $pubRow['Notes'] ?? null,
+                    'parent'         => $pubResolved['parentPublisher'] !== null ? [
+                        'id'   => (int)$pubResolved['parentPublisher']['Id'],
+                        'name' => (string)$pubResolved['parentPublisher']['Name'],
+                        'slug' => (string)$pubResolved['parentPublisher']['Slug'],
+                    ] : null,
+                    'aliases' => array_values($pubResolved['aliases']),
+                ],
+                'songbooks' => array_map(static function (array $b): array {
+                    return [
+                        'abbreviation' => (string)$b['Abbreviation'],
+                        'name'         => (string)$b['Name'],
+                        'role'         => (string)$b['Role'],
+                    ];
+                }, $pubResolved['books']),
+            ]);
             break;
 
         /* -----------------------------------------------------------------
@@ -3177,6 +3383,12 @@ if ($action !== null) {
             $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
             $stmt->execute();
             $stmt->close();
+
+            /* #1975 — device metadata (+ the web auto-name UA fallback inside
+               apiTokenDeviceMetaStore) so a brand-new registration is never
+               listed as "Unnamed device". Best-effort, never blocks sign-up. */
+            $regDeviceMeta = apiTokenDeviceMetaFromBody($body);
+            apiTokenDeviceMetaStore($db, $tokenHash, $regDeviceMeta['deviceName'], $regDeviceMeta['platform'], $regDeviceMeta['appVersion']);
 
             /* Cross-subdomain cookie — keeps sign-in state on every
                *.ihymns.app subdomain and survives iOS ITP longer than
@@ -5876,6 +6088,91 @@ if ($action !== null) {
         }
 
         /* =================================================================
+         * DEVICE RENAME (#1975) — set/clear a user-chosen friendly name on ONE
+         * of the caller's OWN signed-in devices. Mirrors device_signout's
+         * hardening exactly: POST-only, validateCsrfRequest() (same-origin),
+         * per-USER rate limit, and an UPDATE whose `UserId = ?` sits INSIDE the
+         * WHERE so it can only ever touch the caller's own token row. The
+         * device "id" is the same truncated hash prefix device_signout accepts
+         * — never the raw token, never the full hash. An empty name CLEARS the
+         * custom name (the row falls back to its platform/UA label).
+         * ================================================================= */
+        case 'device_rename': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $userId = (int)$authUser['Id'];
+
+            /* Per-user rate limit (paired read+record, #1636) — same shape as
+               device_signout. Renaming is cheap but this stops a scripted flood. */
+            $renameIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('device_rename', $renameIp, 60, 3600, true, $userId);
+            recordRateLimitHit('device_rename', rateLimitKey($renameIp, $userId));
+
+            $db = getDbMysqli();
+            if (!apiTokensDeviceMetaColumnsExist($db)) {
+                /* 409, distinguishable by STATUS (rule #35) from a 404 unknown
+                   device — the client shows "naming isn't available here". */
+                sendJson(['error' => 'Device naming is not available on this server.'], 409);
+                break;
+            }
+
+            $deviceId = is_string($body['id'] ?? null) ? strtolower(trim($body['id'])) : '';
+            if (!preg_match('/^[a-f0-9]{' . API_TOKEN_DEVICE_ID_LENGTH . '}$/', $deviceId)) {
+                sendJson(['error' => 'Invalid device id.'], 400);
+                break;
+            }
+
+            /* Shared cleaner (api_tokens.php) — the SAME normalisation the
+               sign-in body parser uses, so "" (clear) and the 120-cap can never
+               diverge between the two write paths. */
+            $newName = apiTokenCleanDeviceName($body['name'] ?? null);
+
+            /* Own-only + existence check up front: the UPDATE's affected_rows is
+               0 both for "not found" AND for "value unchanged", so a prior
+               SELECT is the only way to tell a 404 from a successful no-op. The
+               LIKE prefix is safe — $deviceId is regex-pinned to hex above. */
+            $chk = $db->prepare('SELECT 1 FROM tblApiTokens WHERE UserId = ? AND Token LIKE CONCAT(?, "%") LIMIT 1');
+            $chk->bind_param('is', $userId, $deviceId);
+            $chk->execute();
+            $exists = $chk->get_result()->num_rows > 0;
+            $chk->close();
+            if (!$exists) {
+                sendJson(['error' => 'Unknown device.'], 404);
+                break;
+            }
+
+            $upd = $db->prepare('UPDATE tblApiTokens SET DeviceName = ? WHERE UserId = ? AND Token LIKE CONCAT(?, "%")');
+            $upd->bind_param('sis', $newName, $userId, $deviceId);
+            $upd->execute();
+            $upd->close();
+
+            logActivity('auth.device_rename', 'user', (string)$userId, ['cleared' => ($newName === null)], 'success', $userId);
+
+            /* Echo the STORED value back so the client renders exactly what the
+               server kept (post-trim/cap), and knows whether it cleared. */
+            sendJson(['ok' => true, 'deviceName' => $newName]);
+            break;
+        }
+
+        /* =================================================================
          * APNs BRIDGE (#1410, Apple Phase-2 PR-13) — push-token registration
          * ONLY. Entirely DORMANT: nothing in this codebase calls
          * includes/apns.php's apnsSend() yet, and even a future caller that
@@ -6070,6 +6367,154 @@ if ($action !== null) {
             $del->close();
 
             logActivity('apns.token.unregister', 'user', (string)$userId, ['removed' => $removed]);
+            sendJson(['ok' => true]);
+            break;
+        }
+
+        /* =================================================================
+         * ANDROID/FIREOS PUSH BRIDGE (API-coverage plan 2026-08-28, C1/X2)
+         * push-token registration ONLY — mirrors the APNs bridge block
+         * immediately above. Entirely DORMANT: nothing in this codebase
+         * calls includes/fcm.php's fcmSend() yet, and even a future caller
+         * that does gets a guaranteed no-op (`not_configured`, or today
+         * `not_implemented` — see fcm.php's file-header) until an owner
+         * provisions real FCM/ADM credentials. `tblPushTokens` ships
+         * live-dormant in the SAME change; every read/write below is
+         * pushTokensTableExists()-gated.
+         * ================================================================= */
+        case 'fcm_register': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'fcm.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $userId = (int)$authUser['Id'];
+
+            $db = getDbMysqli();
+            if (!pushTokensTableExists($db)) {
+                sendJson(['error' => 'Push notifications are not available yet.'], 503);
+                break;
+            }
+
+            /* Mirrors apns_register's per-user bucket (#1636 paired writer
+               convention). */
+            $fcmRegIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('fcm_register', $fcmRegIp, 30, 3600, true, $userId);
+            recordRateLimitHit('fcm_register', rateLimitKey($fcmRegIp, $userId));
+
+            $provider = is_string($body['provider'] ?? null) ? strtolower(trim($body['provider'])) : '';
+            if (!in_array($provider, PUSH_TOKEN_PROVIDERS, true)) {
+                sendJson(['error' => 'provider is required and must be one of: ' . implode(', ', PUSH_TOKEN_PROVIDERS) . '.'], 400);
+                break;
+            }
+
+            /* Opaque FCM/ADM registration token — printable-ASCII, no
+               whitespace, bounded to the column width (VARCHAR(191), rule:
+               keeps the utf8mb4 UNIQUE index under the legacy 767-byte
+               InnoDB limit). Unlike an APNs token this is NOT hex — Google/
+               Amazon issue variable-shaped opaque strings, so the check is
+               a shape sanity check, not a format decode. */
+            $token = is_string($body['token'] ?? null) ? trim($body['token']) : '';
+            if ($token === '' || strlen($token) > 191 || !preg_match('/^[\x21-\x7E]+$/', $token)) {
+                sendJson(['error' => 'Invalid push token.'], 400);
+                break;
+            }
+
+            $platform = is_string($body['platform'] ?? null) ? trim($body['platform']) : '';
+            $platform = $platform !== '' ? substr($platform, 0, 20) : null;
+
+            $appVersion = is_string($body['app_version'] ?? null) ? trim($body['app_version']) : '';
+            $appVersion = $appVersion !== '' ? substr($appVersion, 0, 20) : null;
+
+            try {
+                $ins = $db->prepare(
+                    'INSERT INTO tblPushTokens (Provider, UserId, Token, Platform, AppVersion)
+                     VALUES (?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE UserId = VALUES(UserId), Platform = VALUES(Platform), AppVersion = VALUES(AppVersion)'
+                );
+                $ins->bind_param('sisss', $provider, $userId, $token, $platform, $appVersion);
+                $ins->execute();
+                $ins->close();
+            } catch (\Throwable $e) {
+                error_log('[api/fcm_register] ' . $e->getMessage());
+                sendJson(['error' => 'Could not register for push notifications, please retry.'], 503);
+                break;
+            }
+
+            /* §3.2 breadcrumb — IDs + fixed vocabulary only, NEVER the push
+               token in any form (fcm.php's file-header "SECURITY" note). */
+            logActivity('push.token.register', 'user', (string)$userId, ['provider' => $provider, 'platform' => $platform]);
+            sendJson(['ok' => true]);
+            break;
+        }
+
+        case 'fcm_unregister': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'fcm.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            /* CSRF (rule #29) — same standing rule as apns_unregister
+               applies uniformly to this state-changing authenticated
+               DELETE. */
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $userId = (int)$authUser['Id'];
+
+            $db = getDbMysqli();
+            if (!pushTokensTableExists($db)) {
+                sendJson(['ok' => true]); /* nothing to unregister on an un-migrated docroot */
+                break;
+            }
+
+            /* Mirrors apns_unregister's per-user bucket. */
+            $fcmUnregIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('fcm_unregister', $fcmUnregIp, 30, 3600, true, $userId);
+            recordRateLimitHit('fcm_unregister', rateLimitKey($fcmUnregIp, $userId));
+
+            $token = is_string($body['token'] ?? null) ? trim($body['token']) : '';
+            if ($token === '' || strlen($token) > 191 || !preg_match('/^[\x21-\x7E]+$/', $token)) {
+                sendJson(['error' => 'Invalid push token.'], 400);
+                break;
+            }
+
+            $del = $db->prepare('DELETE FROM tblPushTokens WHERE UserId = ? AND Token = ?');
+            $del->bind_param('is', $userId, $token);
+            $del->execute();
+            $removed = $del->affected_rows > 0;
+            $del->close();
+
+            logActivity('push.token.unregister', 'user', (string)$userId, ['removed' => $removed]);
             sendJson(['ok' => true]);
             break;
         }
@@ -8180,7 +8625,12 @@ if ($action !== null) {
             }
 
             /* Mint the standard bearer token — byte-identical machinery to
-               auth_login (api.php ~2216) / auth_apple (api.php ~3286). */
+               auth_login (api.php ~2216) / auth_apple (api.php ~3286).
+               #1975 no-device-meta: this is the DEVICE-CODE pairing flow for
+               limited-input devices (a TV / set-top box), whose request UA is
+               not a browser — the web auto-name fallback would mislabel it, so
+               naming is left to that device's own client sending platform +
+               device name. Guarded by tests/php/test-api-token-device-meta.php. */
             $token       = bin2hex(random_bytes(32));
             $expiresAtTs = time() + 30 * 86400;
             $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
@@ -8884,30 +9334,30 @@ if ($action !== null) {
                 break;
             }
 
+            /* #2006 (plan §11 OD-2) — delegates to the SAME
+               restrictionAdminValidate()/…Create() core
+               manage/restrictions.php's `create` case calls, closing a
+               pre-existing gap: this action used to run its own inline
+               INSERT with NO vocabulary validation at all, so a native
+               client could store a restriction type/effect/priority the
+               evaluator (content_access.php) would silently never honour.
+               json_decode(..., true) can return null/non-array for a
+               malformed body — coerce to [] so restrictionAdminValidate()
+               (which only reads known string/int keys) sees an empty,
+               cleanly-rejected input rather than a warning. */
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
+            if (!is_array($body)) {
+                $body = [];
+            }
+            $result = restrictionAdminValidate($body);
+            if ($result['error'] !== null) {
+                sendJson(['error' => $result['error']], 422);
+                break;
+            }
 
             $db = getDbMysqli();
-            $stmt = $db->prepare(
-                'INSERT INTO tblContentRestrictions
-                 (EntityType, EntityId, RestrictionType, TargetType, TargetId, Effect, Priority, Reason)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-            );
-            /* Six string columns + Priority(int) + Reason(string). */
-            $entityType  = trim($body['entity_type']      ?? '');
-            $entityIdStr = trim($body['entity_id']        ?? '');
-            $restrType   = trim($body['restriction_type'] ?? '');
-            $targetType  = trim($body['target_type']      ?? '');
-            $targetIdStr = trim($body['target_id']        ?? '');
-            $effect      = trim($body['effect']           ?? 'deny');
-            $priority    = (int)($body['priority']        ?? 0);
-            $reason      = trim($body['reason']           ?? '');
-            $stmt->bind_param('ssssssis',
-                $entityType, $entityIdStr, $restrType, $targetType,
-                $targetIdStr, $effect, $priority, $reason);
-            $stmt->execute();
-            $newId = (int)$db->insert_id;
-            $stmt->close();
+            $newId = restrictionAdminCreate($db, $result['fields']);
 
             sendJson(['ok' => true, 'id' => $newId], 201);
             break;
@@ -8937,11 +9387,9 @@ if ($action !== null) {
                 break;
             }
 
+            /* #2006 — delegates to the shared core. */
             $db = getDbMysqli();
-            $stmt = $db->prepare('DELETE FROM tblContentRestrictions WHERE Id = ?');
-            $stmt->bind_param('i', $delId);
-            $stmt->execute();
-            $stmt->close();
+            restrictionAdminDelete($db, $delId);
 
             sendJson(['ok' => true]);
             break;
@@ -13220,6 +13668,327 @@ if ($action !== null) {
             break;
 
         /* =================================================================
+         * ADMIN — NOTIFICATION BROADCAST (#289/#813/#1238,
+         * API-coverage batch 4a A9)
+         *
+         * JSON twin of /manage/notifications.php's 'compose' POST handler
+         * — audience targeting (single user / role / every signed-in
+         * user), plus the #1238 optional environment scope + expiry.
+         * Recipient resolution mirrors the page's own SQL exactly (neither
+         * is extracted into a shared core — page-local since #813). The
+         * actual row write DOES delegate to the ONE shared writer,
+         * notifyUser() (includes/notifications.php, required at the top
+         * of this file, #1638) — called once per recipient rather than
+         * re-forking its Environment/ExpiresAt-aware-vs-plain INSERT
+         * branching. This trades the page's own prepare-once/execute-many
+         * fan-out loop (a DELIBERATE, documented #1638 exception to
+         * notifyUser() for that page's specific performance need) for
+         * reusing the one write path — acceptable at this cap (5,000).
+         * Web Push broadcast (push_generate_keys/push_send/push_test) and
+         * single-row delete are OUT OF SCOPE for this batch: not
+         * requested, and a different concern (bytes over a transport, not
+         * an in-app notification row).
+         *
+         * Gate: userHasEntitlement('manage_notifications') — identical to
+         * manage/notifications.php's own page gate (rule #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: broadcast an in-app notification
+         * POST body: { audience: 'user'|'role'|'all', target_user?,
+         *   target_role?, title (required), body (required), action_url?,
+         *   type? (default 'announcement'), environment? ('alpha'|'beta'|
+         *   'production'; omit/'' = all environments), expires_at?
+         *   (parseable date/time; omit/'' = never expires) }
+         * ----------------------------------------------------------------- */
+        case 'admin_notification_send': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_notifications', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $audience    = (string)($body['audience'] ?? '');
+            $userQuery   = trim((string)($body['target_user'] ?? ''));
+            $roleTarget  = (string)($body['target_role'] ?? '');
+            $title       = trim((string)($body['title'] ?? ''));
+            $noteBody    = trim((string)($body['body'] ?? ''));
+            $actionUrl   = trim((string)($body['action_url'] ?? ''));
+            $type        = trim((string)($body['type'] ?? 'announcement'));
+            $environment = (string)($body['environment'] ?? '');
+            $expiresAtIn = trim((string)($body['expires_at'] ?? ''));
+
+            if ($title === '' || mb_strlen($title) > 255) {
+                sendJson(['error' => 'Title is required and must be ≤ 255 characters.'], 400);
+                break;
+            }
+            if ($noteBody === '') {
+                sendJson(['error' => 'Body is required.'], 400);
+                break;
+            }
+            if (mb_strlen($noteBody) > 2000) {
+                sendJson(['error' => 'Body must be ≤ 2000 characters.'], 400);
+                break;
+            }
+            if ($actionUrl !== ''
+                && !preg_match('#^/[^/]#', $actionUrl)
+                && !preg_match('#^https://#i', $actionUrl)) {
+                sendJson(['error' => 'Action URL must be a /-rooted local path or an https:// URL.'], 400);
+                break;
+            }
+            if (!in_array($audience, ['user', 'role', 'all'], true)) {
+                sendJson(['error' => 'Pick an audience (user, role, or all).'], 400);
+                break;
+            }
+            $allowedTypes = ['announcement', 'maintenance', 'release', 'info'];
+            if (!in_array($type, $allowedTypes, true)) {
+                $type = 'announcement';
+            }
+            if (!in_array($environment, ['', 'alpha', 'beta', 'production'], true)) {
+                sendJson(['error' => 'Invalid environment scope.'], 400);
+                break;
+            }
+            $expiresAtSql = null;
+            if ($expiresAtIn !== '') {
+                $expTs = strtotime($expiresAtIn);
+                if ($expTs === false) {
+                    sendJson(['error' => 'Expiry date/time is not valid.'], 400);
+                    break;
+                }
+                if ($expTs <= time()) {
+                    sendJson(['error' => 'Expiry must be in the future.'], 400);
+                    break;
+                }
+                $expiresAtSql = date('Y-m-d H:i:s', $expTs);
+            }
+
+            /* Broadcast batch size cap — mirrors manage/notifications.php's
+               own NOTIFY_BROADCAST_MAX (#813; that constant is page-local,
+               not exported, so this is a second literal of the SAME value
+               rather than a shared reference — kept in sync by inspection). */
+            $broadcastMax = 5000;
+
+            $recipients = [];
+            if ($audience === 'user') {
+                if ($userQuery === '') { sendJson(['error' => 'Pick a target user.'], 400); break; }
+                $stmt = $db->prepare(
+                    'SELECT Id FROM tblUsers
+                      WHERE Username = ? OR Email = ? OR Id = ?
+                      LIMIT 1'
+                );
+                $idCandidate = ctype_digit($userQuery) ? (int)$userQuery : 0;
+                $stmt->bind_param('ssi', $userQuery, $userQuery, $idCandidate);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if (!$row) { sendJson(['error' => 'No user matched "' . $userQuery . '".'], 404); break; }
+                $recipients = [(int)$row['Id']];
+            } elseif ($audience === 'role') {
+                $allowedRoles = ['user', 'editor', 'admin', 'global_admin'];
+                if (!in_array($roleTarget, $allowedRoles, true)) {
+                    sendJson(['error' => 'Pick a target role.'], 400);
+                    break;
+                }
+                $stmt = $db->prepare(
+                    'SELECT Id FROM tblUsers
+                      WHERE Role = ? AND COALESCE(IsActive, 1) = 1
+                      LIMIT ' . $broadcastMax
+                );
+                $stmt->bind_param('s', $roleTarget);
+                $stmt->execute();
+                $recipients = array_map(static fn($r) => (int)$r['Id'], $stmt->get_result()->fetch_all(MYSQLI_ASSOC));
+                $stmt->close();
+            } else { // 'all'
+                $res = $db->query(
+                    'SELECT Id FROM tblUsers WHERE COALESCE(IsActive, 1) = 1 LIMIT ' . $broadcastMax
+                );
+                $recipients = $res ? array_map(static fn($r) => (int)$r['Id'], $res->fetch_all(MYSQLI_ASSOC)) : [];
+                if ($res) { $res->close(); }
+            }
+            if (empty($recipients)) {
+                sendJson(['error' => 'No active recipients matched the audience.'], 400);
+                break;
+            }
+
+            try {
+                /* The ONE shared writer (includes/notifications.php) — it
+                   already handles the Environment/ExpiresAt-aware vs plain
+                   INSERT shape (notificationsHasScopeColumns()), the
+                   action-URL allow-list, and the mb_substr column-width
+                   clipping. Never a second copy of that branching here
+                   (rule #22). */
+                $count = 0;
+                foreach ($recipients as $uid) {
+                    if (notifyUser($db, $uid, $type, $title, $noteBody, $actionUrl, $environment, $expiresAtSql)) {
+                        $count++;
+                    }
+                }
+
+                logActivity('api.admin.notification.send', 'notification', '', [
+                    'audience'    => $audience,
+                    'target_role' => $audience === 'role' ? $roleTarget : null,
+                    'target_user' => $audience === 'user' ? $userQuery : null,
+                    'title'       => mb_substr($title, 0, 100),
+                    'recipients'  => $count,
+                    'type'        => $type,
+                ]);
+
+                sendJson(['ok' => true, 'recipients' => $count]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.notification.send', 'notification', '', $e, ['title' => $title]);
+                error_log('[admin_notification_send] ' . $e->getMessage());
+                sendJson(['error' => 'Could not send notification.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete one in-app notification row
+         * POST body: { id }
+         *
+         * Mirrors /manage/notifications.php's `delete` handler exactly — a
+         * plain DELETE by Id, no ownership/ownership-of-recipient check
+         * (any holder of manage_notifications may delete any row, same as
+         * the page). API-coverage batch 7 — was flagged
+         * `web_only:GAP-notification-delete` by
+         * tests/php/test-manage-action-api-coverage.php until now.
+         * ----------------------------------------------------------------- */
+        case 'admin_notification_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_notifications', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_notifications entitlement is required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) {
+                sendJson(['error' => 'Notification id required.'], 400);
+                break;
+            }
+
+            try {
+                $db   = getDbMysqli();
+                $stmt = $db->prepare('DELETE FROM tblNotifications WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $deleted = $stmt->affected_rows > 0;
+                $stmt->close();
+
+                logActivity('api.admin.notification.delete', 'notification', (string)$id, ['deleted' => $deleted]);
+                sendJson(['ok' => true, 'id' => $id, 'deleted' => $deleted]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.notification.delete', 'notification', (string)$id, $e);
+                error_log('[admin_notification_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete notification.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: Web Push broadcast / self-test (#311, #1671 F6)
+         * POST body: { push_kind? (default announcement), push_title,
+         *              push_body?, push_url? }
+         *
+         * Two actions, one shared body — mirrors /manage/notifications.php's
+         * `push_send`/`push_test` handlers, which are themselves one `if`
+         * distinguished only by which of the two action names posted.
+         * `admin_notification_push_send` broadcasts to every subscribed +
+         * opted-in device; `admin_notification_push_test` forces
+         * push_kind='test' and targets ONLY the caller's own subscriptions
+         * (a real push through the real pipeline, aimed at nobody else).
+         * DISTINCT from `admin_notification_send` above, which only ever
+         * writes the in-app tblNotifications row and never calls
+         * webPushBroadcast() — API-coverage batch 7 found no API twin for
+         * either push action at all (`web_only:GAP-webpush-broadcast`).
+         *
+         * `push_generate_keys` (VAPID key mint) is DELIBERATELY NOT ported —
+         * it is a one-time infra/secret action (generating over an existing
+         * key silently breaks every currently-subscribed device) rather
+         * than app functionality a native client would ever need to invoke;
+         * classified `web_only:infra-secret` and left that way.
+         * ----------------------------------------------------------------- */
+        case 'admin_notification_push_send':
+        case 'admin_notification_push_test': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_notifications', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_notifications entitlement is required.'], 403);
+                break;
+            }
+            $isTest = ($action === 'admin_notification_push_test');
+
+            $body      = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $pushKind  = trim((string)($body['push_kind'] ?? 'announcement'));
+            $pushTitle = trim((string)($body['push_title'] ?? ''));
+            $pushBody  = trim((string)($body['push_body']  ?? ''));
+            $pushUrl   = trim((string)($body['push_url']   ?? ''));
+
+            if ($isTest) {
+                /* A test is a real push through the real pipeline — same
+                   kind registry, same encryption, same transport — aimed
+                   only at the caller's own devices. Mirrors the page's
+                   push_test branch exactly, including its default
+                   title/body. */
+                $pushKind  = 'test';
+                $pushTitle = $pushTitle !== '' ? $pushTitle : 'iHymns test notification';
+                $pushBody  = $pushBody  !== '' ? $pushBody  : 'If you can see this, push notifications are working.';
+            }
+
+            if (!webPushConfigured()) {
+                sendJson(['error' => 'Generate a VAPID keypair first — nothing can be sent without one.'], 409);
+                break;
+            }
+            if (!webPushKindValid($pushKind)) {
+                sendJson(['error' => 'Unknown notification kind.'], 400);
+                break;
+            }
+            if ($pushTitle === '') {
+                sendJson(['error' => 'A push notification needs a title.'], 400);
+                break;
+            }
+
+            try {
+                $db      = getDbMysqli();
+                $payload = webPushBuildPayload($pushKind, $pushTitle, $pushBody, $pushUrl);
+                $targets = $isTest ? [(int)($authUser['Id'] ?? 0)] : null;
+                $res     = webPushBroadcast($db, $pushKind, $payload, $targets);
+
+                logActivity('api.admin.notification.push_broadcast', 'notification', '', [
+                    'kind'    => $pushKind,
+                    'test'    => $isTest,
+                    'sent'    => $res['sent'],
+                    'failed'  => $res['failed'],
+                    'pruned'  => $res['pruned'],
+                    'skipped' => $res['skipped'],
+                ]);
+
+                sendJson(['ok' => true] + $res);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.notification.push_broadcast', 'notification', '', $e, [
+                    'kind' => $pushKind, 'test' => $isTest,
+                ]);
+                error_log('[admin_notification_push_send] ' . $e->getMessage());
+                sendJson(['error' => 'Push broadcast failed.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
          * SONGBOOKS — admin CRUD parity (#719 PR 2a)
          *
          * Mirrors the web-admin POST handlers in /manage/songbooks.php so
@@ -13228,8 +13997,14 @@ if ($action !== null) {
          * to match the rest of /api.php; the underlying SQL writes the
          * same column set as the web admin.
          *
-         * Auth: admin / global_admin role only — same gate that grants the
-         * `manage_songbooks` entitlement (see includes/entitlements.php).
+         * Auth: userHasEntitlement('manage_songbooks', ...) — the SAME
+         * entitlement /manage/songbooks.php itself gates the whole page on
+         * (F2 entitlement-gate cleanup, API-coverage batch 7; previously a
+         * raw `in_array($Role, ['admin','global_admin'])` here, which meant
+         * an operator revoking `manage_songbooks` at /manage/entitlements
+         * silently left this API surface open). manage_songbooks defaults
+         * to exactly ['admin','global_admin'], so the admitted set is
+         * unchanged today (see includes/entitlements.php).
          *
          * Activity-log verb prefix is `api.admin.songbook.*` so a curator
          * scanning /manage/activity-log can tell API-driven changes apart
@@ -13260,162 +14035,109 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               section doc-block above. */
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
 
             $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
 
-            $abbr     = trim((string)($body['abbreviation']  ?? ''));
-            $name     = trim((string)($body['name']          ?? ''));
-            $colour   = trim((string)($body['colour']        ?? ''));
-            $order    = (int)($body['display_order']         ?? 0);
-            $isOfficial = !empty($body['is_official']) ? 1 : 0;
-            $publisher  = trim((string)($body['publisher']        ?? '')) ?: null;
-            $pubYear    = trim((string)($body['publication_year'] ?? '')) ?: null;
-            $copyright  = trim((string)($body['copyright']        ?? '')) ?: null;
-            $affiliation= trim((string)($body['affiliation']      ?? '')) ?: null;
-
-            /* Optional language tag (#673 / #681). Cap to column width
-               (35 chars) before validating so a crafted-long tag can't
-               smuggle past the regex via mid-string truncation. */
-            $language   = trim((string)($body['language']         ?? '')) ?: null;
-            if ($language !== null) {
-                $language = mb_substr($language, 0, 35);
-                if ($e = validateSongbookBcp47($language)) {
-                    sendJson(['error' => $e], 400);
-                    break;
-                }
-            }
-
-            $websiteUrl   = trim((string)($body['website_url']         ?? '')) ?: null;
-            $iaUrl        = trim((string)($body['internet_archive_url']?? '')) ?: null;
-            $wikipediaUrl = trim((string)($body['wikipedia_url']       ?? '')) ?: null;
-            $wikidataId   = trim((string)($body['wikidata_id']         ?? '')) ?: null;
-            $oclcNumber   = trim((string)($body['oclc_number']         ?? '')) ?: null;
-            $ocnNumber    = trim((string)($body['ocn_number']          ?? '')) ?: null;
-            $lcpNumber    = trim((string)($body['lcp_number']          ?? '')) ?: null;
-            $isbn         = trim((string)($body['isbn']                ?? '')) ?: null;
-            $arkId        = trim((string)($body['ark_id']              ?? '')) ?: null;
-            $isniId       = trim((string)($body['isni_id']             ?? '')) ?: null;
-            $viafId       = trim((string)($body['viaf_id']             ?? '')) ?: null;
-            $lccn         = trim((string)($body['lccn']                ?? '')) ?: null;
-            $lcClass      = trim((string)($body['lc_class']            ?? '')) ?: null;
-
-            if ($e = validateSongbookAbbr($abbr)) {
-                sendJson(['error' => $e], 400);
-                break;
-            }
-            if ($name === '') {
-                sendJson(['error' => 'Name is required.'], 400);
-                break;
-            }
-            if ($e = validateSongbookColour($colour)) {
-                sendJson(['error' => $e], 400);
-                break;
-            }
-
             try {
                 $db = getDbMysqli();
 
-                /* Auto-colour fallback (#677) — palette helper lives in
-                   the manage tree because that's where the seed colours
-                   are documented. Lazy-loaded so the read paths above
-                   don't pay the include cost. */
-                if ($colour === '') {
-                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
-                               . 'includes'  . DIRECTORY_SEPARATOR . 'songbook-palette.php';
-                    $colour = pickAutoSongbookColour($db, $abbr);
-                }
-
-                /* @disabled-visible: admin surface + UNIQUE-key pre-check
-                   (#1765) — a disabled book's Abbreviation is still taken;
-                   filtering here would let a curator mint a colliding
-                   abbreviation and 500 on the INSERT's real UNIQUE
-                   constraint instead of getting this clean 409. */
-                $stmt = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ?');
-                $stmt->bind_param('s', $abbr);
-                $stmt->execute();
-                $exists = $stmt->get_result()->fetch_row() !== null;
-                $stmt->close();
-                if ($exists) {
-                    sendJson(['error' => 'Abbreviation already exists.'], 409);
+                /* #1993 (rule #22) — re-pointed onto the SAME
+                   songbookAdminValidateCreate()/…Create() core
+                   manage/songbooks.php's `create` and `wizard_create_songbook`
+                   cases call. This is where the API gains parity it never
+                   had before: DisplayAbbr (#1332), PublicationCity +
+                   PublicationCityId, IsPublicDomain + the OpenLibrary id
+                   pair (#1765 Features 2/3), and the #1865 publisher-
+                   registry seed. It also STOPS honouring a posted
+                   `internet_archive_url` — the page dropped that input in
+                   #1765 Feature 7 and the shared core now hardcodes it
+                   null for every caller (api-docs.yaml's SongbookWriteInput
+                   updated in lockstep to match). */
+                [$fields, $err, $status, $errField] = songbookAdminValidateCreate($db, $body);
+                if ($err !== null) {
+                    sendJson(['error' => $err, 'field' => $errField], $status);
                     break;
                 }
 
-                $stmt = $db->prepare(
-                    'INSERT INTO tblSongbooks
-                        (Abbreviation, Name, DisplayOrder, Colour,
-                         IsOfficial, Publisher, PublicationYear, Copyright, Affiliation,
-                         Language,
-                         WebsiteUrl, InternetArchiveUrl, WikipediaUrl, WikidataId,
-                         OclcNumber, OcnNumber, LcpNumber, Isbn, ArkId, IsniId,
-                         ViafId, Lccn, LcClass)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
-                             ?,
-                             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-                );
-                /* 23-char type string mirrors the web admin save (#694
-                   regression check): ssis (Abbr,Name,Order,Colour) +
-                   isssss (IsOfficial,Publisher,Year,Copyright,Affiliation)
-                   + s (Language) + 13s (bibliographic identifiers). */
-                $orderInt = (int)($order ?: 0);
-                $stmt->bind_param(
-                    'ssisissssssssssssssssss',
-                    $abbr, $name, $orderInt, $colour,
-                    $isOfficial, $publisher, $pubYear, $copyright, $affiliation,
-                    $language,
-                    $websiteUrl, $iaUrl, $wikipediaUrl, $wikidataId,
-                    $oclcNumber, $ocnNumber, $lcpNumber, $isbn, $arkId, $isniId,
-                    $viafId, $lccn, $lcClass
-                );
-                $stmt->execute();
-                $newId = (int)$db->insert_id;
-                $stmt->close();
-                /* #1860 go-live — mint this songbook's permanent IL-id (ILB…). */
-                ilidStampNewRow($db, 'songbook', $newId);
+                /* This case has no page-wide hoisted schema probes (unlike
+                   manage/songbooks.php's own $hasPublishersSchema/
+                   $hasPubDomainCol/$hasOpenLibraryCols, computed once per
+                   page-load) — compute the per-request equivalents here,
+                   reusing the SAME shared probes those hoists themselves
+                   call, never a second hand-rolled INFORMATION_SCHEMA copy. */
+                $apiHasPublishersSchema  = _publisherTableExists($db, 'tblSongbookPublishers');
+                $apiHasPubDomainCol      = placeColumnExists($db, 'tblSongbooks', 'IsPublicDomain');
+                $apiHasOpenLibraryCols   = placeColumnExists($db, 'tblSongbooks', 'OpenLibraryWorkId')
+                                        && placeColumnExists($db, 'tblSongbooks', 'OpenLibraryEditionId');
 
-                logActivity('api.admin.songbook.create', 'songbook', (string)$newId, [
-                    'abbreviation'    => $abbr,
-                    'name'            => $name,
-                    'display_order'   => $orderInt,
-                    'colour'          => $colour,
-                    'is_official'     => (bool)$isOfficial,
-                    'publisher'       => $publisher,
-                    'publication_year'=> $pubYear,
-                    'copyright'       => $copyright,
-                    'affiliation'     => $affiliation,
-                    'language'        => $language,
+                try {
+                    $created = songbookAdminCreate($db, $fields, [
+                        'hasPublishersSchema' => $apiHasPublishersSchema,
+                        'hasPubDomainCol'     => $apiHasPubDomainCol,
+                        'hasOpenLibraryCols'  => $apiHasOpenLibraryCols,
+                    ]);
+                } catch (SongbookAdminDuplicateAbbreviationException $e) {
+                    sendJson(['error' => $e->getMessage(), 'field' => 'abbreviation'], 409);
+                    break;
+                }
+
+                logActivity('api.admin.songbook.create', 'songbook', (string)$created['id'], [
+                    'abbreviation'    => $fields['abbr'],
+                    'name'            => $fields['name'],
+                    'display_order'   => $fields['order'],
+                    'colour'          => $created['colour'],
+                    'is_official'     => (bool)$fields['isOfficial'],
+                    'publisher'       => $fields['publisher'],
+                    'publisher_id'    => $apiHasPublishersSchema ? $created['publisherId'] : null,
+                    'publication_year'=> $fields['pubYear'],
+                    'copyright'       => $fields['copyright'],
+                    'affiliation'     => $fields['affiliation'],
+                    'language'        => $fields['language'],
+                    'is_public_domain'=> $apiHasPubDomainCol ? (bool)$fields['isPublicDomain'] : null,
                     'bibliographic'   => array_filter([
-                        'website_url'           => $websiteUrl,
-                        'internet_archive_url'  => $iaUrl,
-                        'wikipedia_url'         => $wikipediaUrl,
-                        'wikidata_id'           => $wikidataId,
-                        'oclc_number'           => $oclcNumber,
-                        'ocn_number'            => $ocnNumber,
-                        'lcp_number'            => $lcpNumber,
-                        'isbn'                  => $isbn,
-                        'ark_id'                => $arkId,
-                        'isni_id'               => $isniId,
-                        'viaf_id'               => $viafId,
-                        'lccn'                  => $lccn,
-                        'lc_class'              => $lcClass,
+                        'website_url'           => $fields['websiteUrl'],
+                        'wikipedia_url'         => $fields['wikipediaUrl'],
+                        'wikidata_id'           => $fields['wikidataId'],
+                        'oclc_number'           => $fields['oclcNumber'],
+                        'ocn_number'            => $fields['ocnNumber'],
+                        'lcp_number'            => $fields['lcpNumber'],
+                        'isbn'                  => $fields['isbn'],
+                        'ark_id'                => $fields['arkId'],
+                        'openlibrary_work_id'   => $fields['olWorkId'],
+                        'openlibrary_edition_id'=> $fields['olEditionId'],
+                        'isni_id'               => $fields['isniId'],
+                        'viaf_id'               => $fields['viafId'],
+                        'lccn'                  => $fields['lccn'],
+                        'lc_class'              => $fields['lcClass'],
                     ], fn($v) => $v !== null && $v !== ''),
                 ]);
 
                 /* Self-populate affiliation registry (#670). */
-                registerSongbookAffiliation($db, $affiliation);
+                registerSongbookAffiliation($db, $fields['affiliation']);
+                /* #961 — post-write songbook maintenance (orphan SongId-
+                   prefix sweep), same hook manage/songbooks.php's own
+                   create funnels already call — the API create path never
+                   had this before (#1993 parity fix). */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                songbookMaintenanceRun($db, 'api.songbooks.create');
 
                 sendJson([
                     'ok'           => true,
-                    'id'           => $newId,
-                    'abbreviation' => $abbr,
-                    'colour'       => $colour,
+                    'id'           => $created['id'],
+                    'abbreviation' => $fields['abbr'],
+                    'colour'       => $created['colour'],
+                    'displayAbbr'  => $fields['displayAbbr'],
+                    'publisherId'  => $apiHasPublishersSchema ? $created['publisherId'] : null,
                 ], 201);
             } catch (\Throwable $e) {
                 logActivityError('api.admin.songbook.create', 'songbook', '', $e, [
-                    'abbreviation' => $abbr,
+                    'abbreviation' => $body['abbreviation'] ?? null,
                 ]);
                 error_log('[admin_songbook_create] ' . $e->getMessage());
                 sendJson(['error' => 'Could not create songbook.'], 500);
@@ -13442,7 +14164,9 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               section doc-block above. */
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -13487,6 +14211,18 @@ if ($action !== null) {
             $viafId       = trim((string)($body['viaf_id']             ?? '')) ?: null;
             $lccn         = trim((string)($body['lccn']                ?? '')) ?: null;
             $lcClass      = trim((string)($body['lc_class']            ?? '')) ?: null;
+            /* #1765/A12 (API-coverage batch 4a) — reversible per-row
+               disable/enable, extending this EXISTING handler rather than
+               adding a new action (mirrors manage/songbooks.php's
+               'toggle_disable', delegated through the SAME
+               songbookDisableReady() gate that page's own $hasDisableCol
+               probe checks, includes/songbook_visibility.php). PRESENCE-
+               based, unlike every other field on this endpoint: the key
+               must be explicitly posted to touch the column at all — an
+               absent key leaves IsDisabled completely untouched (never
+               silently re-enables a book a caller wasn't managing). */
+            $hasIsDisabledKey = array_key_exists('is_disabled', $body);
+            $isDisabled       = $hasIsDisabledKey ? (!empty($body['is_disabled']) ? 1 : 0) : null;
 
             if ($name === '') {
                 sendJson(['error' => 'Name is required.'], 400);
@@ -13499,6 +14235,18 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
+
+                /* A12 — the column may not exist yet (migrations are
+                   web-run, never auto-applied). Silently ignoring an
+                   EXPLICIT caller request would be the rule #30 silent-
+                   no-op class, so this is a hard 409 rather than a quiet
+                   skip; a caller who never mentions is_disabled is
+                   completely unaffected (rule #19 degrade-gracefully). */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_visibility.php';
+                if ($hasIsDisabledKey && !songbookDisableReady($db)) {
+                    sendJson(['error' => 'Disable/enable is not available yet — the publication-metadata migration has not been run on this install.'], 409);
+                    break;
+                }
 
                 /* Capture the full before-row for diff-aware audit logs (#535).
                    Match the web admin's SELECT shape exactly so the diff key set
@@ -13525,6 +14273,23 @@ if ($action !== null) {
                 if ($oldAbbr === '') {
                     sendJson(['error' => 'Songbook not found.'], 404);
                     break;
+                }
+
+                /* A12 — separate SELECT (never folded into the fixed
+                   23-column $existing query above): that query runs
+                   UNCONDITIONALLY on every call, including on an
+                   un-migrated install with no IsDisabled column, and
+                   mysqli's STRICT reporting throws on an unknown column
+                   (rule #9) — so this only ever runs once the presence
+                   check above has already confirmed the column exists. */
+                $oldIsDisabled = null;
+                if ($hasIsDisabledKey) {
+                    $disStmt = $db->prepare('SELECT IsDisabled FROM tblSongbooks WHERE Id = ?');
+                    $disStmt->bind_param('i', $id);
+                    $disStmt->execute();
+                    $disRow = $disStmt->get_result()->fetch_assoc();
+                    $disStmt->close();
+                    $oldIsDisabled = $disRow !== null ? (int)$disRow['IsDisabled'] : 0;
                 }
 
                 $abbrChanged = $newAbbr !== '' && $newAbbr !== $oldAbbr;
@@ -13588,6 +14353,18 @@ if ($action !== null) {
                             $stmt->close();
                         }
                     }
+
+                    /* A12 — separate UPDATE, same "only when the key was
+                       posted" gate as the fetch above; mirrors the
+                       abbreviation rename immediately above (also a
+                       separate, conditional UPDATE inside this same
+                       transaction). */
+                    if ($hasIsDisabledKey) {
+                        $stmt = $db->prepare('UPDATE tblSongbooks SET IsDisabled = ? WHERE Id = ?');
+                        $stmt->bind_param('ii', $isDisabled, $id);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
                     $db->commit();
                 } catch (\Throwable $txErr) {
                     $db->rollback();
@@ -13622,6 +14399,16 @@ if ($action !== null) {
                     'Lccn'              => $lccn,
                     'LcClass'           => $lcClass,
                 ];
+                /* A12 — only enter the diff when the key was actually
+                   posted; $beforeRow has no 'IsDisabled' entry otherwise,
+                   so the loop below's array_key_exists($beforeRow) guard
+                   would skip an unconditionally-added 'IsDisabled' anyway,
+                   but injecting it conditionally keeps $beforeRow/$afterRow
+                   symmetric rather than relying on that guard silently. */
+                if ($hasIsDisabledKey) {
+                    $beforeRow['IsDisabled'] = $oldIsDisabled;
+                    $afterRow['IsDisabled']  = $isDisabled;
+                }
                 $changed = [];
                 foreach ($afterRow as $k => $v) {
                     if (!array_key_exists($k, $beforeRow ?? [])) continue;
@@ -13644,6 +14431,11 @@ if ($action !== null) {
                     'abbreviation'   => $abbrChanged ? $newAbbr : $oldAbbr,
                     'fields_changed' => $changed,
                     'songs_renamed'  => $alsoRename && $abbrChanged,
+                    /* A12 — the SERVER's truth (rule #35): the value just
+                       written when the caller posted the key, `null` when
+                       they didn't touch it (never fabricated from a value
+                       this call never read). */
+                    'is_disabled'    => $hasIsDisabledKey ? (bool)$isDisabled : null,
                 ]);
             } catch (\Throwable $e) {
                 logActivityError('api.admin.songbook.edit', 'songbook', (string)$id, $e);
@@ -13667,7 +14459,9 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               section doc-block above. */
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -13852,7 +14646,18 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — swapped from the bare
+               in_array($authUser['Role'], ['admin','global_admin']) check to
+               userHasEntitlement('manage_songbooks', ...), matching
+               manage/songbooks.php's own page-level gate (rule #1587) — the
+               page's `reorder` case has no finer per-action check of its own
+               (unlike delete_cascade / auto_colour_fill / auto_colour_reassign
+               just below, which the page ALSO bare-checks and are deliberately
+               left alone). Equivalence: manage_songbooks defaults to
+               ['admin','global_admin'] — the admitted set is unchanged today;
+               a future revocation via /manage/entitlements now reaches this
+               endpoint too. */
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -14034,6 +14839,143 @@ if ($action !== null) {
             break;
         }
 
+        /* -----------------------------------------------------------------
+         * Admin: create a songbook from an uploaded MARCXML file
+         * (#1765 Feature 5, ported to the API by API-coverage batch 6b —
+         * .claude/api-coverage-2026-08-28.md §4.3 A17, owner-confirmed
+         * native-curator-app surface, Q1=yes)
+         *
+         * POST multipart/form-data:
+         *   marcxml_file  (required file field, <= 2 MB)
+         *   abbreviation  (required — MARCXML carries no Abbreviation; it
+         *                  IS the SongId prefix, rule #27, so the curator
+         *                  supplies it)
+         * Title (245 $a) + bibliographic fields/identifiers come from the
+         * file. MIRRORS manage/songbooks.php's `marcxml_import` POST
+         * handler exactly: parses via the shared includes/marcxml.php core
+         * through manage/includes/marcxml_admin.php's thin wiring — never a
+         * forked parser (rule #22). #1993 extracted a shared CREATE core
+         * (includes/songbook_admin.php) for admin_songbook_create above,
+         * but deliberately left THIS MARCXML funnel + its page sibling out
+         * of scope — see songbook_admin.php's own "SCOPE — MARCXML stays
+         * OUT" doc-block for why — so this case still mirrors the page's
+         * own small 4-column INSERT rather than the extracted core's
+         * 23-bind shape. A slightly-off identifier is skipped, not fatal —
+         * reported back in `skipped`/`unmapped` rather than failing the
+         * whole import.
+         * Returns 201 + new id/abbreviation/name/colour + any notes.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_marcxml_import': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+
+            $parsed = marcxmlAdmin_parseUpload($_FILES['marcxml_file'] ?? [], 'songbook');
+            if (!$parsed['ok']) {
+                sendJson(['error' => $parsed['error']], 400);
+                break;
+            }
+            $abbr = strtoupper(trim((string)($_POST['abbreviation'] ?? '')));
+            $name = mb_substr(trim((string)($parsed['fields']['Name'] ?? '')), 0, 255);
+            if ($name === '') {
+                sendJson(['error' => 'The MARCXML record has no title (245 $a) to create a songbook from.'], 422);
+                break;
+            }
+            if ($e = validateSongbookAbbr($abbr)) {
+                sendJson(['error' => $e], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+
+                /* @disabled-visible: admin surface (#1765) — same uniqueness
+                   pre-check as admin_songbook_create / the page's own import
+                   handler: a disabled book's Abbreviation is still taken. */
+                $chk = $db->prepare('SELECT Id FROM tblSongbooks WHERE Abbreviation = ?');
+                $chk->bind_param('s', $abbr);
+                $chk->execute();
+                $dupe = $chk->get_result()->fetch_row() !== null;
+                $chk->close();
+                if ($dupe) {
+                    sendJson(['error' => "Abbreviation '{$abbr}' already exists."], 409);
+                    break;
+                }
+
+                [$ids, $skipped] = marcxmlAdmin_cleanPublicationIdentifiers($parsed['fields'], [
+                    'Isbn' => 'isbn', 'ArkId' => 'ark',
+                    'OpenLibraryWorkId' => 'openlibrary-work', 'OpenLibraryEditionId' => 'openlibrary-edition',
+                ]);
+                $imPublisher = mb_substr((string)($parsed['fields']['Publisher'] ?? ''), 0, 255) ?: null;
+                $imYear      = mb_substr((string)($parsed['fields']['PublicationYear'] ?? ''), 0, 50) ?: null;
+                $imLang      = mb_substr((string)($parsed['fields']['Language'] ?? ''), 0, 35) ?: null;
+                $imLccn      = mb_substr((string)($parsed['fields']['Lccn'] ?? ''), 0, 20) ?: null;
+                $imOclc      = mb_substr((string)($parsed['fields']['OclcNumber'] ?? ''), 0, 30) ?: null;
+                $imIsbn      = $ids['Isbn']; $imArk = $ids['ArkId'];
+
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                           . 'includes'  . DIRECTORY_SEPARATOR . 'songbook-palette.php';
+                $colour = pickAutoSongbookColour($db, $abbr);
+                $ins = $db->prepare('INSERT INTO tblSongbooks (Abbreviation, Name, DisplayOrder, Colour) VALUES (?, ?, 0, ?)');
+                $ins->bind_param('sss', $abbr, $name, $colour);
+                $ins->execute();
+                $newSongbookId = (int)$db->insert_id;
+                $ins->close();
+                /* #1860 go-live — mint this songbook's permanent IL-id (ILB…). */
+                ilidStampNewRow($db, 'songbook', $newSongbookId);
+
+                $upd = $db->prepare(
+                    'UPDATE tblSongbooks
+                        SET Publisher = ?, PublicationYear = ?, Language = ?, Isbn = ?, ArkId = ?, Lccn = ?, OclcNumber = ?
+                      WHERE Abbreviation = ?'
+                );
+                $upd->bind_param('ssssssss', $imPublisher, $imYear, $imLang, $imIsbn, $imArk, $imLccn, $imOclc, $abbr);
+                $upd->execute();
+                $upd->close();
+
+                $hasOpenLibraryCols = placeColumnExists($db, 'tblSongbooks', 'OpenLibraryWorkId')
+                    && placeColumnExists($db, 'tblSongbooks', 'OpenLibraryEditionId');
+                if ($hasOpenLibraryCols) {
+                    $imOlW = $ids['OpenLibraryWorkId']; $imOlE = $ids['OpenLibraryEditionId'];
+                    $upd2 = $db->prepare('UPDATE tblSongbooks SET OpenLibraryWorkId = ?, OpenLibraryEditionId = ? WHERE Abbreviation = ?');
+                    $upd2->bind_param('sss', $imOlW, $imOlE, $abbr);
+                    $upd2->execute();
+                    $upd2->close();
+                }
+
+                logActivity('api.admin.songbook.marcxml_import', 'songbook', $abbr, [
+                    'name' => $name, 'abbreviation' => $abbr,
+                ]);
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                songbookMaintenanceRun($db, 'songbooks.marcxml_import');
+
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $newSongbookId,
+                    'abbreviation' => $abbr,
+                    'name'         => $name,
+                    'colour'       => $colour,
+                    'skipped'      => $skipped,
+                    'unmapped'     => array_slice($parsed['unmapped'], 0, 12),
+                ], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook.marcxml_import', 'songbook', $abbr, $e);
+                error_log('[admin_songbook_marcxml_import] ' . $e->getMessage());
+                sendJson(['error' => 'Could not import songbook from MARCXML.'], 500);
+            }
+            break;
+        }
+
         /* =================================================================
          * USERS — admin CRUD parity (#719 PR 2b)
          *
@@ -14067,6 +15009,37 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
                 sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            /* Per-action entitlement (#1590, entitlement truth-up E1 — the
+             * odd one out of the admin_user_* family, added in the F2
+             * entitlement-gate cleanup, API-coverage batch 7). See the note
+             * on admin_user_update above for why this lives here AND on the
+             * page.
+             *
+             * WHY view_users, UNLIKE ITS SIX SIBLINGS: /manage/users.php's
+             * own `create` case deliberately has NO per-action entry in
+             * that page's $ACTION_ENTITLEMENTS map — its doc-comment there
+             * says so explicitly: there is no `create_users` entitlement,
+             * and reusing `edit_users` would make that checkbox's label
+             * ("Change profile / display name / email") untrue. So the
+             * page's ONLY gate on who may create a user is `view_users`,
+             * checked once at the top of the file before the POST switch is
+             * even reached. Matching the page exactly means matching THAT
+             * gate here, not inventing a new entitlement key.
+             *
+             * EQUIVALENCE — no live behaviour change. The raw gate
+             * immediately above admits exactly ['admin','global_admin'];
+             * `view_users`'s default map is that same pair. The raw check
+             * is deliberately KEPT rather than replaced, exactly as on
+             * admin_user_update: it also establishes $authUser, and this is
+             * now an AND of two conditions that agree today.
+             *
+             * @see appWeb/public_html/manage/users.php
+             * @see appWeb/public_html/includes/entitlements.php
+             */
+            if (!userHasEntitlement('view_users', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The view_users entitlement is required.'], 403);
                 break;
             }
 
@@ -14661,7 +15634,16 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — swapped from the bare
+               in_array($authUser['Role'], ['admin','global_admin']) check to
+               userHasEntitlement('manage_user_groups', ...), the SAME
+               (and only) gate manage/groups.php checks for the whole page —
+               that page has no finer per-action entitlement of its own
+               (rule #1587). Equivalence: manage_user_groups defaults to
+               ['admin','global_admin'] — the admitted set is unchanged
+               today; a future revocation via /manage/entitlements now
+               reaches this endpoint too. */
+            if (!$authUser || !userHasEntitlement('manage_user_groups', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -14735,7 +15717,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see admin_group_create
+               above for the full rationale. Same swap, same page, same
+               equivalence proof. */
+            if (!$authUser || !userHasEntitlement('manage_user_groups', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -14825,7 +15810,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see admin_group_create
+               above for the full rationale. Same swap, same page, same
+               equivalence proof. */
+            if (!$authUser || !userHasEntitlement('manage_user_groups', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -14893,7 +15881,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see admin_group_create
+               above for the full rationale. Same swap, same page, same
+               equivalence proof. */
+            if (!$authUser || !userHasEntitlement('manage_user_groups', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -14963,7 +15954,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see admin_group_create
+               above for the full rationale. Same swap, same page, same
+               equivalence proof. */
+            if (!$authUser || !userHasEntitlement('manage_user_groups', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -15437,10 +16431,34 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — swapped from the bare
+               in_array($authUser['Role'], ['admin','global_admin']) check to
+               userHasEntitlement('manage_organisations', ...), the SAME
+               top-of-file gate manage/organisations.php checks before its
+               whole POST switch is even reached (rule #1587). Equivalence:
+               manage_organisations defaults to ['admin','global_admin'] —
+               the admitted set is unchanged today; a future revocation via
+               /manage/entitlements now reaches this endpoint too.
+               FINER field-level gate (#1986, now CLOSED — see the
+               $canEditOrgLicences guard below): the page's `update` case
+               ALSO gates the licence_type/licence_number/additional_licences
+               fields on `manage_org_licences`, PRESERVING (not rejecting)
+               them when the caller lacks it (organisations.php ~L213/~L284).
+               This action previously wrote those fields unconditionally — a
+               caller with manage_organisations but NOT manage_org_licences
+               could change licences the page forbids them. Fixed below to
+               mirror the page exactly. */
+            if (!$authUser || !userHasEntitlement('manage_organisations', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
+            /* #1986 field-level parity — resolve the finer licence permission
+               once, up front (userHasEntitlement needs only the role). When a
+               caller may NOT edit licences the submitted licence_type is not
+               even validated (it will be discarded in favour of the stored
+               value below), matching the page, which never rejects a
+               description-only edit over a licence field the caller can't set. */
+            $canEditOrgLicences = userHasEntitlement('manage_org_licences', $authUser['Role'] ?? null);
 
             $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
             $id          = (int)($body['id'] ?? 0);
@@ -15452,21 +16470,31 @@ if ($action !== null) {
             $licenceNum  = trim((string)($body['licence_number'] ?? ''));
             $active      = !empty($body['is_active']) ? 1 : 0;
 
-            /* Same primary-licence allowlist organisations.php uses
-               (4 keys with `none` as the "no primary" sentinel). The
-               additional_licences set is validated against this same
-               keylist before INSERT. */
-            $licenceKeys = ['none', 'ihymns_basic', 'ihymns_pro', 'ccli'];
-
+            /* #1969 — the primary licence type + the additional_licences set are
+               now validated against the tblLicenceTypes REGISTRY (rule #9),
+               inside the try below where $db is available. The old hard-coded
+               4-key list here was MISSING `mrl` and `custom`, so this action
+               literally could not record an MRL licence — the headline example
+               in the issue. */
             if ($id <= 0)                                  { sendJson(['error' => 'Organisation id required.'], 400); break; }
             if ($name === '')                              { sendJson(['error' => 'Name is required.'], 400); break; }
             $slug = $slugInput !== '' ? slugifyOrganisationName($slugInput) : slugifyOrganisationName($name);
             if ($slug === '')                              { sendJson(['error' => 'Slug could not be derived — supply one explicitly.'], 400); break; }
-            if (!in_array($licenceType, $licenceKeys, true)) { sendJson(['error' => 'Unknown licence type.'], 400); break; }
             if ($parent === $id)                           { sendJson(['error' => 'An organisation cannot be its own parent.'], 400); break; }
 
             try {
                 $db = getDbMysqli();
+                require_once __DIR__ . '/includes/org_licence_admin.php';
+
+                /* #1969 — validate the primary type against the registry
+                   (allowing the `none` sentinel). #1986 — only when the caller
+                   may edit licences; otherwise the submitted type is ignored
+                   entirely (preserved from the stored row below), so validating
+                   it would spuriously 400 a legitimate description-only edit. */
+                if ($canEditOrgLicences && !orgLicenceValidateType($db, $licenceType, true)) {
+                    sendJson(['error' => 'Unknown licence type.'], 400);
+                    break;
+                }
 
                 $stmt = $db->prepare('SELECT Id FROM tblOrganisations WHERE Slug = ? AND Id <> ?');
                 $stmt->bind_param('si', $slug, $id);
@@ -15491,6 +16519,15 @@ if ($action !== null) {
                     break;
                 }
 
+                /* #1986 field-level parity — a caller without manage_org_licences
+                   keeps whatever licence the org already holds (PRESERVE, never
+                   reject and never blank), exactly as organisations.php ~L213
+                   does. The before-row read just above supplies the values. */
+                if (!$canEditOrgLicences) {
+                    $licenceType = (string)($beforeOrg['LicenceType']   ?? 'none');
+                    $licenceNum  = (string)($beforeOrg['LicenceNumber'] ?? '');
+                }
+
                 $parentOrNull = $parent ?: null;
                 $stmt = $db->prepare(
                     'UPDATE tblOrganisations
@@ -15505,43 +16542,22 @@ if ($action !== null) {
                 $stmt->execute();
                 $stmt->close();
 
-                /* Multi-licence sync (#640) — the submitted additional
-                   set REPLACES tblOrganisationLicences for the org; the
-                   primary licence_type is also folded in so the two
-                   surfaces stay coherent. Wrapped in a try/catch so a
-                   pre-migration deployment (no tblOrganisationLicences)
-                   silently no-ops the join writes. */
-                try {
-                    $picked = (array)($body['additional_licences'] ?? []);
-                    $picked = array_values(array_unique(array_filter(
-                        array_map('strval', $picked),
-                        static fn($k) => $k !== '' && $k !== 'none'
-                    )));
-                    if ($licenceType !== '' && $licenceType !== 'none' && !in_array($licenceType, $picked, true)) {
-                        $picked[] = $licenceType;
-                    }
-                    $picked = array_values(array_intersect($picked, $licenceKeys));
-
-                    $del = $db->prepare('DELETE FROM tblOrganisationLicences WHERE OrganisationId = ?');
-                    $del->bind_param('i', $id);
-                    $del->execute();
-                    $del->close();
-
-                    if (!empty($picked)) {
-                        $ins = $db->prepare(
-                            'INSERT INTO tblOrganisationLicences
-                                (OrganisationId, LicenceType, LicenceNumber)
-                             VALUES (?, ?, ?)'
-                        );
-                        foreach ($picked as $key) {
-                            $num = ($key === $licenceType && $licenceNum !== '') ? $licenceNum : null;
-                            $ins->bind_param('iss', $id, $key, $num);
-                            $ins->execute();
-                        }
-                        $ins->close();
-                    }
-                } catch (\Throwable $_e) {
-                    /* tblOrganisationLicences not yet created — silent no-op. */
+                /* #1969 — multi-licence sync via the shared core. The submitted
+                   `additional_licences` set is reconciled NON-DESTRUCTIVELY
+                   (orgLicenceSyncSet keeps every staying row's number/expiry/
+                   active/notes, inserts only new types, deletes only removed
+                   ones), with the primary folded in. This replaces the old
+                   DELETE-all + re-INSERT that wiped an org's licence metadata on
+                   every save, and it validates each type against the registry
+                   (so `mrl`/`custom` now work). No-ops on an un-migrated install.
+                   #1986 — only when the caller may edit licences; a curator with
+                   manage_organisations but not manage_org_licences must not be
+                   able to change the licence set at all (the primary fields are
+                   already preserved for them above), matching organisations.php
+                   ~L284 which likewise skips the sync for such a caller. */
+                if ($canEditOrgLicences) {
+                    $picked = array_map('strval', (array)($body['additional_licences'] ?? []));
+                    orgLicenceSyncSet($db, $id, $picked, $licenceType, $licenceNum);
                 }
 
                 $afterOrg = [
@@ -15575,6 +16591,170 @@ if ($action !== null) {
         }
 
         /* -----------------------------------------------------------------
+         * Admin: create an organisation (system-admin — #1996)
+         * POST body: {
+         *   name, slug?, parent_org_id?, description?, is_active?,
+         *   physical_city?, physical_city_id?,
+         *   licence_type?, licence_number?,
+         *   licences?: [{licence_type, licence_number?, expires_at?, is_active?, notes?}],
+         *   members?: [{user_id, member_role?}]
+         * }
+         * The native-app twin of manage/organisations.php's `create` case
+         * AND its new guided wizard's `wizard_create_organisation` JSON
+         * action — all THREE delegate to the SAME
+         * orgAdminValidateCreate()/orgAdminCreate() core
+         * (includes/organisation_admin.php, rule #22). DISTINCT from the
+         * pre-existing `organisation_create` action above: that one is the
+         * CONSUMER self-service endpoint (any authenticated user, auto-
+         * suffix-dedups the slug, drops licence/active/city entirely,
+         * inserts the caller as owner) — a deliberately different product,
+         * untouched here. No per-action validateCsrfRequest() — same as
+         * every other admin_organisation_* sibling in this family; the
+         * file's global X-Requested-With POST gate (top of file, ~L445)
+         * already covers every POST to this endpoint.
+         * ----------------------------------------------------------------- */
+        case 'admin_organisation_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            /* Gate parity (rule #1587) — the SAME entitlement key
+               manage/organisations.php gates the WHOLE page on, matching
+               admin_organisation_update immediately above. */
+            if (!$authUser || !userHasEntitlement('manage_organisations', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            /* #1986 finer gate — resolved ONCE, up front, exactly like
+               admin_organisation_update's own $canEditOrgLicences above.
+               Threaded into orgAdminValidateCreate() (forces the PRIMARY
+               licence_type/number to 'none'/'' when false) and re-checked
+               explicitly again immediately below, before ANY
+               orgAdminApplyLicenceRows() call for the repeatable licence
+               rows — a caller with manage_organisations but not
+               manage_org_licences must not be able to set licences via
+               this endpoint either. */
+            $canEditOrgLicences = userHasEntitlement('manage_org_licences', $authUser['Role'] ?? null);
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+
+            try {
+                $db = getDbMysqli();
+                require_once __DIR__ . '/includes/organisation_admin.php';
+
+                [$fields, $err, $status, $errField] = orgAdminValidateCreate($db, $body, $canEditOrgLicences);
+                if ($err !== null) {
+                    sendJson(['error' => $err, 'field' => $errField], $status);
+                    break;
+                }
+
+                try {
+                    $created = orgAdminCreate($db, $fields);
+                } catch (OrgAdminDuplicateSlugException $e) {
+                    sendJson(['error' => $e->getMessage(), 'field' => 'slug'], 409);
+                    break;
+                }
+                $newOrgId = $created['id'];
+
+                logActivity('api.admin.organisation.create', 'organisation', (string)$newOrgId, [
+                    'name'           => $fields['name'],
+                    'slug'           => $fields['slug'],
+                    'parent_org_id'  => $fields['parent'],
+                    'licence_type'   => $fields['licenceType'],
+                    'is_active'      => (bool)$fields['active'],
+                ]);
+
+                /* Additional licence rows — same #1986 finer-gate discipline
+                   as manage/organisations.php's wizard branch: never called
+                   without checking $canEditOrgLicences immediately first.
+                   Post-create failures are REPORTED per-row, never rolled
+                   back — the org itself already committed. */
+                $licenceResults = [];
+                if ($canEditOrgLicences) {
+                    $rawLicences = is_array($body['licences'] ?? null) ? $body['licences'] : [];
+                    /* Security audit F2 — row-count DoS cap (IHYMNS_ORG_WIZARD_ROW_CAP,
+                       includes/organisation_admin.php). This JSON-body twin is
+                       bounded only by post_max_size, not a form's max_input_vars. */
+                    if (count($rawLicences) > IHYMNS_ORG_WIZARD_ROW_CAP) {
+                        sendJson(['error' => 'Too many licence rows in one request.'], 422);
+                        break;
+                    }
+                    $licenceRows = [];
+                    foreach ($rawLicences as $row) {
+                        if (!is_array($row)) { continue; }
+                        $t = trim((string)($row['licence_type'] ?? ''));
+                        if ($t === '' || $t === 'none') { continue; }
+                        $licenceRows[] = [
+                            'licence_type'   => $t,
+                            'licence_number' => (string)($row['licence_number'] ?? ''),
+                            'expires_at'     => (string)($row['expires_at']     ?? ''),
+                            'is_active'      => !empty($row['is_active']) ? 1 : 0,
+                            'notes'          => (string)($row['notes']         ?? ''),
+                        ];
+                    }
+                    if ($licenceRows) {
+                        $licenceResults = orgAdminApplyLicenceRows($db, $newOrgId, $licenceRows);
+                    }
+                }
+
+                /* Members — each row validated: role must be a real
+                   ORG_MEMBER_ROLES value, and the user id must name a real,
+                   ACTIVE tblUsers row (never trust a client-claimed id). */
+                $memberResults = [];
+                $rawMembers = is_array($body['members'] ?? null) ? $body['members'] : [];
+                /* Security audit F2 — row-count DoS cap (IHYMNS_ORG_WIZARD_ROW_CAP,
+                   includes/organisation_admin.php), same reasoning as the
+                   licence-row cap above. */
+                if (count($rawMembers) > IHYMNS_ORG_WIZARD_ROW_CAP) {
+                    sendJson(['error' => 'Too many member rows in one request.'], 422);
+                    break;
+                }
+                foreach ($rawMembers as $m) {
+                    if (!is_array($m)) { continue; }
+                    $memberUserId = (int)($m['user_id'] ?? 0);
+                    $memberRole   = (string)($m['member_role'] ?? 'member');
+                    if ($memberUserId <= 0) { continue; }
+                    if (!in_array($memberRole, ORG_MEMBER_ROLES, true)) {
+                        $memberResults[] = ['userId' => $memberUserId, 'ok' => false, 'error' => 'Unknown member role.'];
+                        continue;
+                    }
+                    $uStmt = $db->prepare('SELECT DisplayName, Username FROM tblUsers WHERE Id = ? AND IsActive = 1');
+                    $uStmt->bind_param('i', $memberUserId);
+                    $uStmt->execute();
+                    $uRow = $uStmt->get_result()->fetch_assoc();
+                    $uStmt->close();
+                    if (!$uRow) {
+                        $memberResults[] = ['userId' => $memberUserId, 'ok' => false, 'error' => 'User not found or inactive.'];
+                        continue;
+                    }
+                    orgAdminMemberAdd($db, $newOrgId, $memberUserId, $memberRole);
+                    logActivity('api.admin.organisation.member_add', 'organisation', (string)$newOrgId, [
+                        'user_id' => $memberUserId, 'role' => $memberRole, 'via' => 'admin_organisation_create',
+                    ]);
+                    $memberResults[] = [
+                        'userId' => $memberUserId, 'ok' => true,
+                        'label'  => $uRow['DisplayName'] ?: $uRow['Username'],
+                    ];
+                }
+
+                sendJson([
+                    'ok'       => true,
+                    'id'       => $newOrgId,
+                    'slug'     => $fields['slug'],
+                    'name'     => $fields['name'],
+                    'licences' => $licenceResults,
+                    'members'  => $memberResults,
+                ], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.organisation.create', 'organisation', '', $e);
+                error_log('[admin_organisation_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create organisation.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
          * Admin: delete an organisation
          * POST body: { id }
          * Refuses with 422 if any member is still listed OR any sub-org
@@ -15586,7 +16766,12 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see
+               admin_organisation_update above for the full rationale. Same
+               swap, same page-level gate, same equivalence proof. The
+               page's `delete` case has no finer per-action check beyond the
+               page-level manage_organisations gate. */
+            if (!$authUser || !userHasEntitlement('manage_organisations', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -15669,7 +16854,12 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see
+               admin_organisation_update above for the full rationale. Same
+               swap, same page-level gate, same equivalence proof. The
+               page's `add_member` case has no finer per-action check beyond
+               the page-level manage_organisations gate. */
+            if (!$authUser || !userHasEntitlement('manage_organisations', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -15690,14 +16880,12 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare(
-                    'INSERT INTO tblOrganisationMembers (UserId, OrgId, Role)
-                     VALUES (?, ?, ?)
-                     ON DUPLICATE KEY UPDATE Role = VALUES(Role)'
-                );
-                $stmt->bind_param('iis', $userId, $orgId, $role);
-                $stmt->execute();
-                $stmt->close();
+                /* #1996 (rule #22) — re-pointed onto the SAME
+                   orgAdminMemberAdd() core manage/organisations.php's
+                   `add_member` case now also calls; byte-identical
+                   3-column upsert. */
+                require_once __DIR__ . '/includes/organisation_admin.php';
+                orgAdminMemberAdd($db, $orgId, $userId, $role);
 
                 logActivity('api.admin.organisation.member_add', 'organisation', (string)$orgId, [
                     'user_id' => $userId,
@@ -15725,7 +16913,12 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see
+               admin_organisation_update above for the full rationale. Same
+               swap, same page-level gate, same equivalence proof. The
+               page's `update_member_role` case has no finer per-action
+               check beyond the page-level manage_organisations gate. */
+            if (!$authUser || !userHasEntitlement('manage_organisations', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -15785,7 +16978,12 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (#1986) — see
+               admin_organisation_update above for the full rationale. Same
+               swap, same page-level gate, same equivalence proof. The
+               page's `remove_member` case has no finer per-action check
+               beyond the page-level manage_organisations gate. */
+            if (!$authUser || !userHasEntitlement('manage_organisations', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -16095,36 +17293,27 @@ if ($action !== null) {
             $isActive      = !empty($body['is_active']) ? 1 : 0;
             $notes         = trim((string)($body['notes']         ?? '')) ?: null;
 
-            /* Same per-row licence-type allowlist /manage/my-organisations
-               uses (5 keys). Distinct from the system-admin update path
-               which uses the 4-key primary set with `none` sentinel. */
-            $licenceKeys = ['ccli', 'mrl', 'ihymns_basic', 'ihymns_pro', 'custom'];
-
             if (!userCanActOnOrg($authUser, $orgId)) {
                 sendJson(['error' => 'Not authorised on this organisation.'], 403);
                 break;
             }
-            if (!in_array($licenceType, $licenceKeys, true)) {
-                sendJson(['error' => 'Unknown licence type.'], 400);
-                break;
-            }
 
+            /* #1969 — licence-type validation + persist via the shared core
+               (registry-backed, rule #9 — the old hard-coded 5-key list is
+               gone). orgLicenceUpsert is the SAME INSERT … ON DUPLICATE KEY the
+               web page uses; both surfaces now share it. */
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare(
-                    'INSERT INTO tblOrganisationLicences
-                        (OrganisationId, LicenceType, LicenceNumber, IsActive, ExpiresAt, Notes)
-                     VALUES (?, ?, ?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE
-                        LicenceNumber = VALUES(LicenceNumber),
-                        IsActive      = VALUES(IsActive),
-                        ExpiresAt     = VALUES(ExpiresAt),
-                        Notes         = VALUES(Notes)'
-                );
-                $stmt->bind_param('ississ',
-                    $orgId, $licenceType, $licenceNumber, $isActive, $expiresAt, $notes);
-                $stmt->execute();
-                $stmt->close();
+                require_once __DIR__ . '/includes/org_licence_admin.php';
+                if (!orgLicenceValidateType($db, $licenceType)) {
+                    sendJson(['error' => 'Unknown licence type.'], 400);
+                    break;
+                }
+                $res = orgLicenceUpsert($db, $orgId, $licenceType, $body);
+                if (!$res['ok']) {
+                    sendJson(['error' => $res['error'] ?? 'Could not save licence.'], 500);
+                    break;
+                }
 
                 logActivity('api.org_admin.licence_add', 'organisation', (string)$orgId, [
                     'licence_type'   => $licenceType,
@@ -16184,6 +17373,11 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
+                require_once __DIR__ . '/includes/org_licence_admin.php';
+
+                /* Keep the explicit ownership 404 (the core's UPDATE is already
+                   own-only, but affected_rows can't tell "not found" from "no
+                   change", and this action's contract 404s a foreign row). */
                 $stmt = $db->prepare(
                     'SELECT 1 FROM tblOrganisationLicences WHERE Id = ? AND OrganisationId = ?'
                 );
@@ -16196,14 +17390,12 @@ if ($action !== null) {
                     break;
                 }
 
-                $stmt = $db->prepare(
-                    'UPDATE tblOrganisationLicences
-                        SET LicenceNumber = ?, IsActive = ?, ExpiresAt = ?, Notes = ?
-                      WHERE Id = ?'
-                );
-                $stmt->bind_param('sissi', $licenceNumber, $isActive, $expiresAt, $notes, $licenceId);
-                $stmt->execute();
-                $stmt->close();
+                /* #1969 — the metadata UPDATE via the shared core (own-only). */
+                $res = orgLicenceUpdateById($db, $orgId, $licenceId, $body);
+                if (!$res['ok']) {
+                    sendJson(['error' => $res['error'] ?? 'Could not change licence.'], 500);
+                    break;
+                }
 
                 logActivity('api.org_admin.licence_change', 'organisation', (string)$orgId, [
                     'licence_id'     => $licenceId,
@@ -16253,22 +17445,20 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare(
-                    'SELECT 1 FROM tblOrganisationLicences WHERE Id = ? AND OrganisationId = ?'
-                );
-                $stmt->bind_param('ii', $licenceId, $orgId);
-                $stmt->execute();
-                $owns = $stmt->get_result()->fetch_row() !== null;
-                $stmt->close();
-                if (!$owns) {
+                require_once __DIR__ . '/includes/org_licence_admin.php';
+
+                /* #1969 — own-only delete via the shared core; `deleted` false
+                   means the row didn't exist / belongs to another org → the
+                   action's 404 contract. */
+                $res = orgLicenceDeleteById($db, $orgId, $licenceId);
+                if (!$res['ok']) {
+                    sendJson(['error' => $res['error'] ?? 'Could not remove licence.'], 500);
+                    break;
+                }
+                if (empty($res['deleted'])) {
                     sendJson(['error' => 'Licence row does not belong to that organisation.'], 404);
                     break;
                 }
-
-                $stmt = $db->prepare('DELETE FROM tblOrganisationLicences WHERE Id = ?');
-                $stmt->bind_param('i', $licenceId);
-                $stmt->execute();
-                $stmt->close();
 
                 logActivity('api.org_admin.licence_remove', 'organisation', (string)$orgId, [
                     'licence_id' => $licenceId,
@@ -16281,6 +17471,920 @@ if ($action !== null) {
                 ]);
                 error_log('[org_admin_licence_remove] ' . $e->getMessage());
                 sendJson(['error' => 'Could not remove licence.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: venue + service-schedule DISCOVERY (#1325/#1969,
+         * API-coverage batch 1 C2). Lists every organisation the caller
+         * administers (or, for global_admin/admin, every active org — the
+         * SAME "sees every org" allowance `manage/venues.php` itself has,
+         * since it is gated on the wider `manage_organisations`
+         * entitlement), each with its venues and each venue's recurring
+         * service schedules. Read-only twin of the gate
+         * `service_session_start` uses (a caller who can start a service
+         * at a venue can also discover which venues/schedules exist).
+         *
+         * The read queries are the shared includes/venue_admin.php core —
+         * the SAME functions `manage/venues.php` was re-pointed at in this
+         * same change (rule #22); this action is additive, no venue CRUD.
+         * ----------------------------------------------------------------- */
+        case 'org_venues': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'venue_admin.php';
+
+            $role       = (string)($authUser['Role'] ?? '');
+            $userId     = (int)$authUser['Id'];
+            $isSuperOrg = ($role === 'global_admin' || $role === 'admin');
+
+            $db = getDbMysqli();
+            if (!venueAdminTablesExist($db)) {
+                /* Un-migrated install — dormant-degrading, same posture as
+                   manage/venues.php's own $schemaReady guard (rule #19). */
+                sendJson(['organisations' => []]);
+                break;
+            }
+
+            if ($isSuperOrg) {
+                $orgRes = $db->query('SELECT Id, Name FROM tblOrganisations WHERE IsActive = 1 ORDER BY Name ASC');
+                $orgPairs = $orgRes ? $orgRes->fetch_all(MYSQLI_ASSOC) : [];
+            } else {
+                $adminOrgIds = userIsOrgAdminOf($userId);
+                if ($adminOrgIds === []) {
+                    sendJson(['organisations' => []]);
+                    break;
+                }
+                /* Constant-count placeholder string from the admin-org id
+                   list (rule #5 — mirrors service-lead.php's own shape). */
+                $ph    = implode(',', array_fill(0, count($adminOrgIds), '?'));
+                $types = str_repeat('i', count($adminOrgIds));
+                $stmt  = $db->prepare("SELECT Id, Name FROM tblOrganisations WHERE Id IN ($ph) AND IsActive = 1 ORDER BY Name ASC");
+                $stmt->bind_param($types, ...$adminOrgIds);
+                $stmt->execute();
+                $orgPairs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+            }
+
+            $orgsOut = [];
+            foreach ($orgPairs as $o) {
+                $oid = (int)$o['Id'];
+                $venuesOut = [];
+                foreach (venueAdminListForOrg($db, $oid) as $v) {
+                    $schedules = venueAdminSchedulesForVenue($db, (int)$v['Id'], (string)($v['TimeZone'] ?? 'UTC'));
+                    $venuesOut[] = [
+                        'id'           => (int)$v['Id'],
+                        'name'         => (string)$v['Name'],
+                        'addressLine'  => $v['AddressLine'] ?? null,
+                        'city'         => $v['City'] ?? null,
+                        'postcode'     => $v['Postcode'] ?? null,
+                        'countryCode'  => $v['CountryCode'] ?? null,
+                        'latitude'     => $v['Latitude'] !== null ? (float)$v['Latitude'] : null,
+                        'longitude'    => $v['Longitude'] !== null ? (float)$v['Longitude'] : null,
+                        'radiusMetres' => $v['RadiusMetres'] !== null ? (int)$v['RadiusMetres'] : null,
+                        'timeZone'     => (string)$v['TimeZone'],
+                        'isActive'     => (bool)$v['IsActive'],
+                        'schedules'    => array_map(static function (array $s): array {
+                            return [
+                                'id'             => (int)$s['Id'],
+                                'title'          => (string)$s['Title'],
+                                'dayOfWeek'      => (int)($s['DayOfWeek'] ?? 0),
+                                'startTime'      => (string)$s['StartTime'],
+                                'durationMins'   => (int)$s['DurationMins'],
+                                'recurrenceKind' => (string)$s['RecurrenceKind'],
+                                'timeZone'       => (string)$s['_EffTz'],
+                                'isActive'       => (bool)$s['IsActive'],
+                            ];
+                        }, $schedules),
+                    ];
+                }
+                $orgsOut[] = [
+                    'id'     => $oid,
+                    'name'   => (string)$o['Name'],
+                    'venues' => $venuesOut,
+                ];
+            }
+
+            sendJson(['organisations' => $orgsOut]);
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Org-admin: MY organisation's CCLI usage report (#1861/#1969,
+         * API-coverage batch 1 C5). Per-song printed-copy/projected-use
+         * rows for the caller's own organisation, for their annual CCLI
+         * licence return. JSON twin of `manage/my-ccli-report.php` —
+         * SAME gate, SAME shared core (`includes/ccli_report.php`,
+         * `ccliReportOrgRows()`/`ccliReportResolveOrgScope()`/
+         * `ccliReportWindow()`), never a re-implementation (rule #22).
+         *
+         * ⚠ Gate deliberately has NO admin/global_admin bypass — mirrors
+         * manage/my-ccli-report.php's own doc-block: a system admin's
+         * "see every org" need is served by the separate system-wide
+         * `admin_*` surface, never this one. The structural isolation
+         * lives in ccliReportOrgRows() itself (refuses an empty org-id
+         * list) — see includes/ccli_report.php's doc-block.
+         *
+         * Parameters: org_id (optional — defaults to the caller's first
+         * administered org when omitted, same as the page), from/to
+         * (Y-m-d, optional — default last 30 days), show_all (optional —
+         * include songs without a CCLI number).
+         * ----------------------------------------------------------------- */
+        case 'org_ccli_report': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ccli_report.php';
+
+            if (!userHasEntitlement('view_org_ccli_report', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The view_org_ccli_report entitlement is required.'], 403);
+                break;
+            }
+
+            $userId = (int)$authUser['Id'];
+            /* THE membership lookup — the ONLY source of scope, exactly as
+               manage/my-ccli-report.php. Never widened by a role check. */
+            $allowedOrgIds = userIsOrgAdminOf($userId);
+            if ($allowedOrgIds === []) {
+                sendJson(['error' => 'You don\'t hold an admin or owner role on any organisation.'], 403);
+                break;
+            }
+
+            /* A non-scalar org_id[] is a malformed/forged request — treat
+               it as an invalid explicit selection (denied), same posture
+               as the page (rule: fail-closed, never a raw array into the
+               resolver's ?string parameter under strict_types). */
+            $rawOrg = $_GET['org_id'] ?? null;
+            $scope = is_array($rawOrg)
+                ? ['orgIds' => [], 'denied' => true]
+                : ccliReportResolveOrgScope($rawOrg, $allowedOrgIds);
+            if ($scope['denied']) {
+                sendJson(['error' => 'That organisation is not one you administer.'], 403);
+                break;
+            }
+            $orgIds = $scope['orgIds'];
+            $orgId  = $orgIds[0]; // always exactly one — a per-licence report is always one org at a time
+
+            $db = getDbMysqli();
+
+            $orgName = 'Organisation #' . $orgId;
+            try {
+                $stmt = $db->prepare('SELECT Name FROM tblOrganisations WHERE Id = ? LIMIT 1');
+                $stmt->bind_param('i', $orgId);
+                $stmt->execute();
+                $orgRow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if ($orgRow && (string)($orgRow['Name'] ?? '') !== '') {
+                    $orgName = (string)$orgRow['Name'];
+                }
+            } catch (\Throwable $_e) {
+                // keep the "Organisation #N" fallback — never fatal over a display name
+            }
+
+            /* Active CCLI licence number(s), for the filing reference — the
+               SAME two-store read shape (#640 join table, legacy column
+               pair fallback) as manage/my-ccli-report.php. */
+            $ccliLicenceNumbers = [];
+            try {
+                $stmt = $db->prepare(
+                    "SELECT LicenceNumber FROM tblOrganisationLicences
+                      WHERE OrganisationId = ? AND LicenceType = 'ccli' AND IsActive = 1"
+                );
+                $stmt->bind_param('i', $orgId);
+                $stmt->execute();
+                foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $licRow) {
+                    $num = trim((string)($licRow['LicenceNumber'] ?? ''));
+                    if ($num !== '') {
+                        $ccliLicenceNumbers[] = $num;
+                    }
+                }
+                $stmt->close();
+            } catch (\Throwable $_e) {
+                // tblOrganisationLicences absent on an un-migrated install — fall through
+            }
+            if ($ccliLicenceNumbers === []) {
+                try {
+                    $stmt = $db->prepare('SELECT LicenceType, LicenceNumber FROM tblOrganisations WHERE Id = ? LIMIT 1');
+                    $stmt->bind_param('i', $orgId);
+                    $stmt->execute();
+                    $legacy = $stmt->get_result()->fetch_assoc();
+                    $stmt->close();
+                    if ($legacy && (string)($legacy['LicenceType'] ?? '') === 'ccli') {
+                        $num = trim((string)($legacy['LicenceNumber'] ?? ''));
+                        if ($num !== '') {
+                            $ccliLicenceNumbers[] = $num;
+                        }
+                    }
+                } catch (\Throwable $_e) {
+                    // ignore — response just carries an empty licence list
+                }
+            }
+
+            $window   = ccliReportWindow($_GET);
+            $fromDate = $window['from'];
+            $toDate   = $window['to'];
+            $showAll  = $window['showAll'];
+
+            try {
+                $rows = ccliReportOrgRows($db, $orgIds, $fromDate, $toDate, $showAll);
+            } catch (\Throwable $e) {
+                error_log('[api.org_ccli_report] query failed: ' . $e->getMessage());
+                logActivityError('api.org_ccli_report.load', 'organisation', (string)$orgId, $e, [
+                    'from' => $fromDate, 'to' => $toDate, 'show_all' => $showAll,
+                ]);
+                sendJson(['error' => 'The report is temporarily unavailable — the failure has been logged.'], 500);
+                break;
+            }
+
+            sendJson([
+                'orgId'              => $orgId,
+                'orgName'            => $orgName,
+                'ccliLicenceNumbers' => $ccliLicenceNumbers,
+                'from'               => $fromDate,
+                'to'                 => $toDate,
+                'showAll'            => $showAll,
+                'rows'               => $rows,
+            ]);
+            break;
+        }
+
+        /* =================================================================
+         * ORG-ADMIN SELF-SERVICE PARITY — API-coverage batch 3 (O1-O4,
+         * .claude/api-coverage-2026-08-28.md §4.2, #1969)
+         *
+         * Native/API twins of manage/my-organisations.php's own-org POST
+         * handlers (idle_timeout_update / setlist_edit_audience_update /
+         * logo_upload / logo_remove / logo_toggle / brand_save) and the
+         * WRITE half of manage/venues.php (venue_save/venue_delete/
+         * schedule_save/schedule_delete). Every action gates via the
+         * shared `userCanActOnOrg` helper (includes/organisation_validation.php,
+         * required at the top of this file) — system admin/global_admin, OR an
+         * admin/owner row on tblOrganisationMembers for the TARGET org_id —
+         * the SAME row-level check manage/my-organisations.php's own
+         * $canActOnOrg closure resolves to (owner Q4: org admins manage
+         * their own venues too, same gate). Every write DELEGATES to the
+         * SAME shared core the page uses (rule #22) — never a second
+         * validation/write path — and every response ECHOES the STORED
+         * value back (rule #35/#40), never an echo of the request.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * O1 — Org behaviour settings: Live-Follow leader-idle timeout
+         * (#1770) + set-list edit-link audience default/enforce (#1791).
+         * POST body: { org_id, live_idle_timeout_mins?, enforce_idle_timeout?,
+         *              setlist_edit_audience_choice?: 'none'|'default'|'require' }
+         * At least one settable-key GROUP must be present (idle-timeout's
+         * pair, and/or the audience choice) — a body with neither is a 400,
+         * not a silent no-op.
+         *
+         * Delegates to the SAME constants + dormancy gates
+         * manage/my-organisations.php's idle_timeout_update /
+         * setlist_edit_audience_update handlers use — never a re-typed
+         * clamp or allow-list: includes/service_mode.php's
+         * LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES/_MAX_MINUTES +
+         * serviceMode_orgIdleColumnsExist(); includes/setlist_collab.php's
+         * setlistOrgAudienceColumnsExist(). (The plan doc names
+         * includes/SharedSetlist.php for the audience half; the actual
+         * shared core is includes/setlist_collab.php — SharedSetlist.php
+         * is the set-list SHARE-TOKEN core, a different concern. This
+         * comment corrects the citation for the next reader.)
+         * ----------------------------------------------------------------- */
+        case 'org_admin_settings_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'setlist_collab.php';
+
+            $body  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId = (int)($body['org_id'] ?? 0);
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+
+            $wantsIdle     = array_key_exists('live_idle_timeout_mins', $body) || array_key_exists('enforce_idle_timeout', $body);
+            $wantsAudience = array_key_exists('setlist_edit_audience_choice', $body);
+            if (!$wantsIdle && !$wantsAudience) {
+                sendJson(['error' => 'Nothing to save — supply live_idle_timeout_mins/enforce_idle_timeout and/or setlist_edit_audience_choice.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $changed = [];
+
+                if ($wantsIdle) {
+                    if (!serviceMode_orgIdleColumnsExist($db)) {
+                        sendJson(['error' => 'Not available on this environment yet.'], 503);
+                        break;
+                    }
+                    /* Byte-identical clamp to manage/my-organisations.php's
+                       idle_timeout_update handler — empty minutes means "no
+                       override" (NULL), never a coerced 0. */
+                    $idleMinsRaw = trim((string)($body['live_idle_timeout_mins'] ?? ''));
+                    $idleMinsIn  = ($idleMinsRaw === '') ? null : filter_var($idleMinsRaw, FILTER_VALIDATE_INT);
+                    $idleMinsVal = ($idleMinsIn === null || $idleMinsIn === false)
+                        ? null
+                        : max(LIVE_FOLLOW_IDLE_TIMEOUT_MIN_MINUTES, min(LIVE_FOLLOW_IDLE_TIMEOUT_MAX_MINUTES, (int)$idleMinsIn));
+                    $idleEnforceVal = !empty($body['enforce_idle_timeout']) ? 1 : 0;
+
+                    $stmt = $db->prepare(
+                        'UPDATE tblOrganisations
+                            SET LiveIdleTimeoutMins = ?, EnforceIdleTimeout = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('iii', $idleMinsVal, $idleEnforceVal, $orgId);
+                    $stmt->execute();
+                    $stmt->close();
+                    $changed[] = 'idle_timeout';
+                }
+
+                if ($wantsAudience) {
+                    if (!setlistOrgAudienceColumnsExist($db)) {
+                        sendJson(['error' => 'Not available on this environment yet.'], 503);
+                        break;
+                    }
+                    /* Byte-identical 3-way mapping to
+                       manage/my-organisations.php's
+                       setlist_edit_audience_update handler — the <select>
+                       there only ever offers these three choices, read as
+                       ONE combined field ('anyone' is never a meaningful
+                       org opinion — it's already the app-wide default). */
+                    $audienceChoice = (string)($body['setlist_edit_audience_choice'] ?? 'none');
+                    switch ($audienceChoice) {
+                        case 'require':
+                            $audienceVal = 'authenticated';
+                            $enforceVal  = 1;
+                            break;
+                        case 'default':
+                            $audienceVal = 'authenticated';
+                            $enforceVal  = 0;
+                            break;
+                        case 'none':
+                        default:
+                            $audienceVal = null;
+                            $enforceVal  = 0;
+                            break;
+                    }
+                    $stmt = $db->prepare(
+                        'UPDATE tblOrganisations
+                            SET SetlistEditAudience = ?, EnforceSetlistEditAudience = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sii', $audienceVal, $enforceVal, $orgId);
+                    $stmt->execute();
+                    $stmt->close();
+                    $changed[] = 'setlist_edit_audience';
+                }
+
+                logActivity('api.org_admin.settings_update', 'organisation', (string)$orgId, [
+                    'changed' => $changed,
+                ]);
+
+                /* Echo the STORED row back (rule #35/#40) — column-existence-
+                   tolerant per settings GROUP, so a partially-migrated
+                   install (e.g. #1770's columns applied, #1791's not) still
+                   returns whatever half is real instead of throwing under
+                   mysqli STRICT (rule #19). */
+                $selectCols = ['Id'];
+                if (serviceMode_orgIdleColumnsExist($db)) { $selectCols[] = 'LiveIdleTimeoutMins'; $selectCols[] = 'EnforceIdleTimeout'; }
+                if (setlistOrgAudienceColumnsExist($db))  { $selectCols[] = 'SetlistEditAudience'; $selectCols[] = 'EnforceSetlistEditAudience'; }
+                $stmt = $db->prepare('SELECT ' . implode(', ', $selectCols) . ' FROM tblOrganisations WHERE Id = ?');
+                $stmt->bind_param('i', $orgId);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc() ?: [];
+                $stmt->close();
+
+                sendJson([
+                    'ok'                        => true,
+                    'org_id'                    => $orgId,
+                    'liveIdleTimeoutMins'        => array_key_exists('LiveIdleTimeoutMins', $row) && $row['LiveIdleTimeoutMins'] !== null ? (int)$row['LiveIdleTimeoutMins'] : null,
+                    'enforceIdleTimeout'         => array_key_exists('EnforceIdleTimeout', $row) ? (bool)$row['EnforceIdleTimeout'] : false,
+                    'setlistEditAudience'        => array_key_exists('SetlistEditAudience', $row) ? $row['SetlistEditAudience'] : null,
+                    'enforceSetlistEditAudience' => array_key_exists('EnforceSetlistEditAudience', $row) ? (bool)$row['EnforceSetlistEditAudience'] : false,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.settings_update', 'organisation', (string)$orgId, $e);
+                error_log('[org_admin_settings_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save organisation settings.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O2a — Org logo upload (MULTIPART — mirrors manage/editor/api2.php's
+         * media_upload shape exactly: reads $_POST + $_FILES, NOT the JSON
+         * body; the top-of-file X-Requested-With CSRF gate still applies to
+         * a multipart POST the same as any other).
+         * POST fields: org_id, kind, variant? ('default'|'light'|'dark',
+         *              default 'default'), alt_text?, logo_file (the file).
+         * Delegates to includes/org_logo_admin.php's orgLogoValidateAndStage()
+         * (the SVG upload's ONLY path into ihymnsSanitizeSvg() — rule #42)
+         * + orgLogoUpsert(). $kind/$variant are validated against the ONE
+         * registry (includes/org_logo_helpers.php, already required at the
+         * top of this file) before any SQL runs.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_logo_upload': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_admin.php';
+
+            $orgId   = (int)($_POST['org_id'] ?? 0);
+            $kind    = (string)($_POST['kind'] ?? '');
+            $variant = (string)($_POST['variant'] ?? 'default');
+            $altText = trim((string)($_POST['alt_text'] ?? '')) ?: null;
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if (!in_array($kind, ihymnsOrgLogoKindKeys(), true)) {
+                sendJson(['error' => 'Unknown logo kind.'], 400);
+                break;
+            }
+            if (!in_array($variant, IHYMNS_ORG_LOGO_VARIANTS, true)) {
+                sendJson(['error' => 'Unknown logo variant.'], 400);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!orgLogoTableExists($db)) {
+                sendJson(['error' => 'Not available on this environment yet.'], 503);
+                break;
+            }
+
+            $file    = $_FILES['logo_file'] ?? null;
+            $fileErr = is_array($file) ? (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) : UPLOAD_ERR_NO_FILE;
+            if ($fileErr !== UPLOAD_ERR_OK) {
+                $msg = in_array($fileErr, [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)
+                    ? 'That file is too large for a logo.'
+                    : 'Please choose a logo file to upload.';
+                sendJson(['error' => $msg, 'phpError' => $fileErr], 400);
+                break;
+            }
+
+            try {
+                $staged = orgLogoValidateAndStage((string)$file['tmp_name'], (int)$file['size']);
+                $userId = (int)$authUser['Id'];
+                orgLogoUpsert($db, $orgId, $kind, $variant, $staged, $altText, $userId);
+
+                logActivity('api.org_admin.logo_upload', 'organisation', (string)$orgId, [
+                    'kind' => $kind, 'variant' => $variant, 'mime' => $staged['mime'], 'bytes' => $staged['byteSize'],
+                ]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'logos' => _apiOrgLogoWireList($db, $orgId)]);
+            } catch (\RuntimeException $e) {
+                /* Plain-English validation reject (org_logo_admin.php's own
+                   §4.4 doc-block) — safe to show verbatim, never a stack trace. */
+                sendJson(['error' => $e->getMessage()], 400);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.logo_upload', 'organisation', (string)$orgId, $e, ['kind' => $kind]);
+                error_log('[org_admin_logo_upload] ' . $e->getMessage());
+                sendJson(['error' => 'Could not upload logo.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O2b — Org logo remove.
+         * POST body: { org_id, kind, variant? (default 'default') }
+         * Removing the DEFAULT row cascades to its light/dark theme
+         * versions too (#1840 — mirrors manage/my-organisations.php's
+         * logo_remove handler exactly; an orphaned theme variant is the
+         * half-hidden-kind state this codebase refuses to mint).
+         * ----------------------------------------------------------------- */
+        case 'org_admin_logo_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_admin.php';
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId   = (int)($body['org_id'] ?? 0);
+            $kind    = (string)($body['kind'] ?? '');
+            $variant = (string)($body['variant'] ?? 'default');
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if (!in_array($kind, ihymnsOrgLogoKindKeys(), true)) {
+                sendJson(['error' => 'Unknown logo kind.'], 400);
+                break;
+            }
+            if (!in_array($variant, IHYMNS_ORG_LOGO_VARIANTS, true)) {
+                sendJson(['error' => 'Unknown logo variant.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                if (!orgLogoTableExists($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                if ($variant === 'default') {
+                    orgLogoDeleteKindAll($db, $orgId, $kind);
+                } else {
+                    orgLogoDelete($db, $orgId, $kind, $variant);
+                }
+
+                logActivity('api.org_admin.logo_remove', 'organisation', (string)$orgId, ['kind' => $kind, 'variant' => $variant]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'logos' => _apiOrgLogoWireList($db, $orgId)]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.logo_remove', 'organisation', (string)$orgId, $e, ['kind' => $kind]);
+                error_log('[org_admin_logo_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove logo.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O2c — Org logo show/hide (KIND-level — every variant of the kind
+         * together, #1840; mirrors manage/my-organisations.php's
+         * logo_toggle handler exactly).
+         * POST body: { org_id, kind, active }
+         * ----------------------------------------------------------------- */
+        case 'org_admin_logo_set_active': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'org_logo_admin.php';
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId  = (int)($body['org_id'] ?? 0);
+            $kind   = (string)($body['kind'] ?? '');
+            $active = !empty($body['active']);
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+            if (!in_array($kind, ihymnsOrgLogoKindKeys(), true)) {
+                sendJson(['error' => 'Unknown logo kind.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                if (!orgLogoTableExists($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                orgLogoSetActiveKind($db, $orgId, $kind, $active);
+
+                logActivity('api.org_admin.logo_toggle', 'organisation', (string)$orgId, ['kind' => $kind, 'active' => $active]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'logos' => _apiOrgLogoWireList($db, $orgId)]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.logo_toggle', 'organisation', (string)$orgId, $e, ['kind' => $kind]);
+                error_log('[org_admin_logo_set_active] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update logo visibility.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O3 — Org brand colour.
+         * POST body: { org_id, brand_colour }  ('' / null clears it)
+         * Delegates to ihymnsOrgBrandColourNormalise() — the ONE allowlist
+         * (includes/organisation_validation.php, rule #42) — never an
+         * inline hex parse. Echoes the NORMALISED value back.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_brand_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body      = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId     = (int)($body['org_id'] ?? 0);
+            $rawColour = array_key_exists('brand_colour', $body) && $body['brand_colour'] !== null
+                ? (string)$body['brand_colour']
+                : null;
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+
+            $normalised = ihymnsOrgBrandColourNormalise($rawColour);
+            if ($normalised === false) {
+                sendJson(['error' => "That doesn't look like a colour code — use a value like #6a1b9a."], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                if (!orgBrandColumnsExist($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                orgSetBrandColour($db, $orgId, $normalised);
+
+                logActivity('api.org_admin.brand_save', 'organisation', (string)$orgId, ['colour' => $normalised]);
+
+                sendJson(['ok' => true, 'org_id' => $orgId, 'brandColour' => $normalised]);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.brand_save', 'organisation', (string)$orgId, $e);
+                error_log('[org_admin_brand_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save brand colour.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O4a — Venue create/update (the WRITE half of manage/venues.php;
+         * org_venues, API-coverage batch 1 C2, already covers the READ
+         * half). Delegates to includes/venue_admin.php's venueAdminSaveVenue()
+         * — the SAME core manage/venues.php's own venue_save POST handler
+         * was re-pointed at in this same commit (rule #22).
+         * POST body: venue_id? (0/absent creates), org_id, name,
+         *   address_line?, city?, postcode?, country_code?, timezone?,
+         *   place_id?, is_active?, latitude?, longitude?, radius_metres?.
+         * Gate (owner Q4 — org admins manage their own venues: yes):
+         * userCanActOnOrg() against BOTH the org_id in the request AND, for
+         * an update, the row's CURRENT owning org — an org admin may not
+         * reassign a venue they don't administer, nor move their own venue
+         * into an org they don't administer.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_venue_save': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'venue_admin.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $orgId   = (int)($body['org_id'] ?? 0);
+            $venueId = (int)($body['venue_id'] ?? 0);
+
+            if (!userCanActOnOrg($authUser, $orgId)) {
+                sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                if (!venueAdminTablesExist($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                if ($venueId > 0) {
+                    $existing = venueAdminGetVenue($db, $venueId);
+                    if ($existing === null) {
+                        sendJson(['error' => 'Venue not found.'], 404);
+                        break;
+                    }
+                    if (!userCanActOnOrg($authUser, (int)$existing['OrgId'])) {
+                        sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                        break;
+                    }
+                }
+
+                $result = venueAdminSaveVenue($db, $body);
+                $venue  = venueAdminGetVenue($db, $result['id']);
+
+                logActivity(
+                    $result['created'] ? 'api.org_admin.venue_create' : 'api.org_admin.venue_edit',
+                    'organisation', (string)$result['orgId'], ['venue_id' => $result['id'], 'name' => $result['name']]
+                );
+
+                sendJson(['ok' => true, 'created' => $result['created'], 'venue' => _apiVenueWire($venue)]);
+            } catch (\RuntimeException $e) {
+                sendJson(['error' => $e->getMessage()], 400);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.venue_save', 'organisation', (string)$orgId, $e);
+                error_log('[org_admin_venue_save] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save venue.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O4b — Venue delete (CASCADE removes its schedules).
+         * POST body: { venue_id }
+         * ----------------------------------------------------------------- */
+        case 'org_admin_venue_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'venue_admin.php';
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $venueId = (int)($body['venue_id'] ?? 0);
+
+            try {
+                $db = getDbMysqli();
+                if (!venueAdminTablesExist($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                $existing = venueAdminGetVenue($db, $venueId);
+                if ($existing === null) {
+                    sendJson(['error' => 'Venue not found.'], 404);
+                    break;
+                }
+                if (!userCanActOnOrg($authUser, (int)$existing['OrgId'])) {
+                    sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                    break;
+                }
+
+                $deleted = venueAdminDeleteVenue($db, $venueId);
+
+                logActivity('api.org_admin.venue_delete', 'organisation', (string)($deleted['orgId'] ?? 0), [
+                    'venue_id' => $venueId, 'name' => $deleted['name'] ?? '',
+                ]);
+
+                sendJson(['ok' => true, 'venue_id' => $venueId]);
+            } catch (\RuntimeException $e) {
+                sendJson(['error' => $e->getMessage()], 400);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.venue_delete', 'organisation', (string)$venueId, $e);
+                error_log('[org_admin_venue_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete venue.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O4c — Service-schedule create/update. OrgId is ALWAYS DERIVED
+         * from the venue (venueAdminSaveSchedule() never trusts a posted
+         * org_id) — the gate below resolves the venue's org FIRST.
+         * POST body: venue_id, schedule_id? (0/absent creates), title?,
+         *   recurrence_kind?, start_time, duration_mins?, timezone?,
+         *   is_active?, day_of_week? (required unless one_off), nth?
+         *   (monthly_nth), one_off_date? (one_off), anchor_date?
+         *   (fortnightly), until_date?, exceptions?.
+         * ----------------------------------------------------------------- */
+        case 'org_admin_schedule_save': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'venue_admin.php';
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $venueId = (int)($body['venue_id'] ?? 0);
+
+            try {
+                $db = getDbMysqli();
+                if (!venueAdminTablesExist($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                $venue = venueAdminGetVenue($db, $venueId);
+                if ($venue === null) {
+                    sendJson(['error' => 'Unknown venue.'], 404);
+                    break;
+                }
+                if (!userCanActOnOrg($authUser, (int)$venue['OrgId'])) {
+                    sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                    break;
+                }
+
+                /* Cross-tenant IDOR guard (security audit 2026-08-29, F1):
+                   on an UPDATE, the existing schedule may belong to a DIFFERENT
+                   org than the posted venue. Re-check the caller against the
+                   EXISTING row's current owning org too — otherwise an admin of
+                   org A could re-parent org B's schedule onto their own venue.
+                   Mirrors org_admin_venue_save's existing-venue double-check. */
+                $existingScheduleId = (int)($body['schedule_id'] ?? 0);
+                if ($existingScheduleId > 0) {
+                    $existingSchedule = venueAdminGetSchedule($db, $existingScheduleId);
+                    if ($existingSchedule === null) {
+                        sendJson(['error' => 'Schedule not found.'], 404);
+                        break;
+                    }
+                    if (!userCanActOnOrg($authUser, (int)$existingSchedule['OrgId'])) {
+                        sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                        break;
+                    }
+                }
+
+                $result   = venueAdminSaveSchedule($db, $body);
+                $schedule = venueAdminGetSchedule($db, $result['id']);
+
+                logActivity(
+                    $result['created'] ? 'api.org_admin.schedule_create' : 'api.org_admin.schedule_edit',
+                    'organisation', (string)$result['orgId'], ['schedule_id' => $result['id'], 'venue_id' => $result['venueId']]
+                );
+
+                sendJson(['ok' => true, 'created' => $result['created'], 'schedule' => _apiScheduleWire($schedule)]);
+            } catch (\RuntimeException $e) {
+                sendJson(['error' => $e->getMessage()], 400);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.schedule_save', 'organisation', (string)$venueId, $e);
+                error_log('[org_admin_schedule_save] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save service time.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * O4d — Service-schedule delete.
+         * POST body: { schedule_id }
+         * ----------------------------------------------------------------- */
+        case 'org_admin_schedule_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'venue_admin.php';
+
+            $body       = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $scheduleId = (int)($body['schedule_id'] ?? 0);
+
+            try {
+                $db = getDbMysqli();
+                if (!venueAdminTablesExist($db)) {
+                    sendJson(['error' => 'Not available on this environment yet.'], 503);
+                    break;
+                }
+                $existing = venueAdminGetSchedule($db, $scheduleId);
+                if ($existing === null) {
+                    sendJson(['error' => 'Service time not found.'], 404);
+                    break;
+                }
+                if (!userCanActOnOrg($authUser, (int)$existing['OrgId'])) {
+                    sendJson(['error' => 'Not authorised on this organisation.'], 403);
+                    break;
+                }
+
+                $deleted = venueAdminDeleteSchedule($db, $scheduleId);
+
+                logActivity('api.org_admin.schedule_delete', 'organisation', (string)($deleted['orgId'] ?? 0), [
+                    'schedule_id' => $scheduleId,
+                ]);
+
+                sendJson(['ok' => true, 'schedule_id' => $scheduleId]);
+            } catch (\RuntimeException $e) {
+                sendJson(['error' => $e->getMessage()], 400);
+            } catch (\Throwable $e) {
+                logActivityError('api.org_admin.schedule_delete', 'organisation', (string)$scheduleId, $e);
+                error_log('[org_admin_schedule_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete service time.'], 500);
             }
             break;
         }
@@ -16325,7 +18429,17 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — swapped
+               from the raw `in_array($Role, ['admin','global_admin'])` to
+               the SAME entitlement /manage/musicians.php itself gates on
+               (top-of-file `userHasEntitlement('manage_musicians', ...)`,
+               covering every action on that page including `add`) — rule
+               #1587: an API twin must honour the same entitlements-page
+               override its sibling page does. manage_musicians defaults to
+               exactly ['admin','global_admin'], so the admitted set is
+               unchanged today; only a future override now actually reaches
+               this endpoint too. */
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -16524,7 +18638,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               note on admin_musician_add above. Same swap, same
+               equivalence. */
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -16718,7 +18835,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               note on admin_musician_add above. Same swap, same
+               equivalence. */
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -16824,7 +18944,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               note on admin_musician_add above. Same swap, same
+               equivalence. */
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -16948,7 +19071,10 @@ if ($action !== null) {
                 break;
             }
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            /* F2 entitlement-gate cleanup (API-coverage batch 7) — see the
+               note on admin_musician_add above. Same swap, same
+               equivalence. */
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -17020,23 +19146,256 @@ if ($action !== null) {
         }
 
         /* =================================================================
+         * MUSICIANS — registry grouping + relations (#1741 P4a), API-coverage
+         * batch 7
+         *
+         * Mirrors /manage/musicians.php's `add_member`/`remove_member`/
+         * `add_relation`/`remove_relation`/`bulk_register_unregistered`
+         * POST handlers — the five actions that postdated the 2026-08-28
+         * audit and were flagged `web_only:GAP-*` by
+         * tests/php/test-manage-action-api-coverage.php until now. Every
+         * write delegates to the SAME includes/musician_helpers.php cores
+         * the page calls (addMusicianRelation()/removeMusicianRelation()/
+         * removeMusicianGroupMember()/musicianBulkRegisterRemaining()) —
+         * never a forked SQL statement re-embedded here (rule #22).
+         *
+         * Activity-log verb prefix is `api.admin.musician.*`, matching the
+         * CRUD family immediately above.
+         * ================================================================= */
+
+        /* POST body: { group_id, member_id, date_from?, date_to?, note? } */
+        case 'admin_musician_member_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $groupId  = (int)($body['group_id']  ?? 0);
+            $memberId = (int)($body['member_id'] ?? 0);
+            /* Mirrors the page: an unparseable partial date is silently
+               dropped (null) rather than rejected — add_member has never
+               400'd on a bad date, only add() (the full registry form)
+               does. */
+            $pb = partialDateParse((string)($body['date_from'] ?? ''));
+            $pd = partialDateParse((string)($body['date_to']   ?? ''));
+            $dateFrom     = $pb['ok'] ? $pb['date']      : null;
+            $dateFromPrec = $pb['ok'] ? $pb['precision'] : null;
+            $dateTo       = $pd['ok'] ? $pd['date']      : null;
+            $dateToPrec   = $pd['ok'] ? $pd['precision'] : null;
+            $note = trim((string)($body['note'] ?? '')) ?: null;
+
+            try {
+                $db     = getDbMysqli();
+                $result = addMusicianRelation(
+                    $db, $groupId, $memberId, 'member',
+                    $dateFrom, $dateFromPrec, $dateTo, $dateToPrec, $note
+                );
+                if (!$result['ok']) {
+                    sendJson($result, 400);
+                    break;
+                }
+                logActivity('api.admin.musician.member_add', 'musician', (string)$groupId, [
+                    'group_id' => $groupId, 'member_id' => $memberId,
+                    'date_from' => $dateFrom, 'date_to' => $dateTo,
+                ]);
+                sendJson($result);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musician.member_add', 'musician', (string)$groupId, $e);
+                error_log('[admin_musician_member_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add member.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { group_id, member_id } */
+        case 'admin_musician_member_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $groupId  = (int)($body['group_id']  ?? 0);
+            $memberId = (int)($body['member_id'] ?? 0);
+
+            try {
+                $db     = getDbMysqli();
+                $result = removeMusicianGroupMember($db, $groupId, $memberId);
+                if (!$result['ok']) {
+                    sendJson($result, 400);
+                    break;
+                }
+                logActivity('api.admin.musician.member_remove', 'musician', (string)$groupId, [
+                    'group_id' => $groupId, 'member_id' => $memberId,
+                ]);
+                sendJson($result);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musician.member_remove', 'musician', (string)$groupId, $e);
+                error_log('[admin_musician_member_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove member.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { subject_id, object_id, relation_type? (default 'portrays'), date_from?, date_to?, note? } */
+        case 'admin_musician_relation_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body         = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $subjectId    = (int)($body['subject_id'] ?? 0);
+            $objectId     = (int)($body['object_id']  ?? 0);
+            $relationType = trim((string)($body['relation_type'] ?? 'portrays'));
+            $pb = partialDateParse((string)($body['date_from'] ?? ''));
+            $pd = partialDateParse((string)($body['date_to']   ?? ''));
+            $dateFrom     = $pb['ok'] ? $pb['date']      : null;
+            $dateFromPrec = $pb['ok'] ? $pb['precision'] : null;
+            $dateTo       = $pd['ok'] ? $pd['date']      : null;
+            $dateToPrec   = $pd['ok'] ? $pd['precision'] : null;
+            $note = trim((string)($body['note'] ?? '')) ?: null;
+
+            try {
+                $db     = getDbMysqli();
+                $result = addMusicianRelation(
+                    $db, $subjectId, $objectId, $relationType,
+                    $dateFrom, $dateFromPrec, $dateTo, $dateToPrec, $note
+                );
+                if (!$result['ok']) {
+                    sendJson($result, 400);
+                    break;
+                }
+                logActivity('api.admin.musician.relation_add', 'musician', (string)$subjectId, [
+                    'subject_id' => $subjectId, 'object_id' => $objectId, 'relation_type' => $relationType,
+                    'date_from' => $dateFrom, 'date_to' => $dateTo,
+                ]);
+                sendJson($result);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musician.relation_add', 'musician', (string)$subjectId, $e);
+                error_log('[admin_musician_relation_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add relation.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { id } — the tblMusicianRelations row's own Id */
+        case 'admin_musician_relation_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body       = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $relationId = (int)($body['id'] ?? 0);
+
+            try {
+                $db     = getDbMysqli();
+                $result = removeMusicianRelation($db, $relationId);
+                if (!$result['ok']) {
+                    sendJson($result, 400);
+                    break;
+                }
+                logActivity('api.admin.musician.relation_remove', 'musician', (string)$relationId, ['id' => $relationId]);
+                sendJson($result);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musician.relation_remove', 'musician', (string)$relationId, $e);
+                error_log('[admin_musician_relation_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove relation.'], 500);
+            }
+            break;
+        }
+
+        /* No request body — registers every cited-but-unregistered name and
+           reconciles byte-variant spellings against the registry (#1503 +
+           #1784). Mirrors the page's "Add all remaining (N)" banner button. */
+        case 'admin_musician_bulk_register': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            try {
+                $db  = getDbMysqli();
+                $run = musicianBulkRegisterRemaining($db);
+
+                logActivity('api.admin.musician.bulk_register', 'musician', '', [
+                    'bulk_run_id' => $run['bulk_run_id'],
+                    'registered'  => $run['registered'],
+                    'skipped'     => $run['skipped'],
+                    'candidates'  => $run['candidates'],
+                    'reconciled_rewritten' => $run['reconcile']['rewritten'],
+                    'reconciled_adopted'   => $run['reconcile']['adopted'],
+                    'reconciled_new'       => $run['reconcile']['registered'],
+                    'reconciled_ambiguous' => $run['reconcile']['ambiguous'],
+                ]);
+
+                sendJson([
+                    'ok'          => true,
+                    'bulk_run_id' => $run['bulk_run_id'],
+                    'registered'  => $run['registered'],
+                    'skipped'     => $run['skipped'],
+                    'candidates'  => $run['candidates'],
+                    'reconcile'   => $run['reconcile'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musician.bulk_register', 'musician', '', $e);
+                error_log('[admin_musician_bulk_register] ' . $e->getMessage());
+                sendJson(['error' => 'Bulk register failed.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
          * TUNES — admin CRUD (#1748)
          *
          * Mirrors /manage/tunes.php's POST handlers. Every mutating
          * endpoint calls the SAME shared cores in includes/tune_admin.php
          * that page uses (rule #22/#35 — nothing to drift, unlike the
-         * musician family immediately above, which duplicates its logic
-         * between this file and manage/musicians.php — an acknowledged
-         * wart the build spec explicitly says not to copy).
+         * musician CRUD family immediately above (`admin_musician_add`/
+         * `_update`/`_rename`/`_merge`/`_delete`), which still duplicates
+         * its validation/persist logic between this file and
+         * manage/musicians.php — an acknowledged wart the build spec
+         * explicitly says not to copy; the registry-grouping/relations
+         * actions directly above THIS comment, added in API-coverage batch
+         * 7, do NOT share that wart — they delegate to
+         * includes/musician_helpers.php like the tune family does).
          *
-         * Gate: userHasEntitlement('manage_tunes') rather than the raw
-         * `in_array($Role, ['admin','global_admin'])` the musician family
-         * above uses — a DELIBERATE deviation (#1748 §4): the codebase is
-         * migrating role gates to userHasEntitlement() (api.php:8215's own
-         * migration note, every #1590-era action), which keeps this API
-         * gate identical to manage/tunes.php's page gate + admin-links.php's
-         * nav entry (#1587's spirit). manage_tunes defaults to exactly
-         * ['admin','global_admin'], so the admitted set is identical at
+         * Gate: userHasEntitlement('manage_tunes'), matching the musician
+         * CRUD family's own gate (F2 entitlement-gate cleanup, API-coverage
+         * batch 7 — that family used to gate on the raw
+         * `in_array($Role, ['admin','global_admin'])` this comment
+         * originally contrasted itself against; both families now use
+         * userHasEntitlement() so an operator's entitlements-page override
+         * is honoured on every admin write, not just the ones added after
+         * #1748). manage_tunes / manage_musicians both default to exactly
+         * ['admin','global_admin'], so the admitted set is unchanged at
          * ship time either way.
          *
          * Activity-log verb prefix is `api.admin.tune.*`. HTTP status IS
@@ -17318,6 +19677,2790 @@ if ($action !== null) {
                 logActivityError('api.admin.tune.delete', 'tune', (string)$id, $e);
                 error_log('[admin_tune_delete] ' . $e->getMessage());
                 sendJson(['error' => 'Could not delete tune.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — PUBLISHERS REGISTRY (#93/#1765, API-coverage batch 4a A1)
+         *
+         * Mirrors /manage/publishers.php's POST handlers. Every mutating
+         * endpoint calls the SAME shared cores in includes/publisher_admin.php
+         * that page uses (rule #22/#35 — nothing to drift), the exact
+         * admin_tune_* precedent immediately above — rule #37 literally
+         * anticipated "the future admin_publisher_* API".
+         *
+         * Gate: userHasEntitlement('manage_publishers') — identical to
+         * manage/publishers.php's own page gate (rule #1587).
+         *
+         * Activity-log verb prefix is `api.admin.publisher.*`. HTTP status
+         * IS the contract (rule #35): 400 validation, 403 gate, 404 unknown
+         * id, 409 uniqueness conflict, 503 registry not migrated yet,
+         * 200/201 ok.
+         *
+         * `aliases`: an array REPLACES the full list (empty array clears
+         * it); OMITTING the key leaves the existing list unchanged on
+         * update — the same contract admin_tune_update's aliases/credits
+         * already use. The page does not expose alias add/remove as
+         * separate actions (they are folded into create/update's
+         * `alias_names[]` field), so there is no separate
+         * admin_publisher_alias_add/remove here either. External-link
+         * editing stays PAGE-ONLY for now, the same scoping admin_tune_*
+         * already applies to tune external links.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: add a new publisher registry row
+         * POST body: { name (required), slug?, kind?, subtitle?,
+         *   disambiguation?, ipi?, isni?, city_name?, city_id?, musician_id?,
+         *   parent_id?, notes?, is_active?, aliases?: [string] }
+         * ----------------------------------------------------------------- */
+        case 'admin_publisher_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_publishers', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!publisherTableExists($db)) {
+                sendJson(['error' => 'Publishers registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldError] = publisherAdminValidateFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            $uniqError = publisherAdminCheckUniqueness($db, $fields, null);
+            if ($uniqError !== null) { sendJson(['error' => $uniqError], 409); break; }
+
+            $rawAliases = $body['aliases'] ?? [];
+            $aliasNames = is_array($rawAliases) ? array_map('strval', $rawAliases) : [];
+
+            try {
+                $gates = publisherAdminProbeGates($db);
+                $db->begin_transaction();
+                try {
+                    /* publisherAdminCreate() pairs the bare INSERT with the
+                       scalar-fields UPDATE and mints the ILP… id — see
+                       manage/publishers.php's `create` action for the
+                       identical call. */
+                    $newId = publisherAdminCreate($db, $fields, $gates);
+                    if ($gates['hasAliases'] && $aliasNames) {
+                        publisherAdminReplaceAliases($db, $newId, $aliasNames, $fields['name']);
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.publisher.create', 'publisher', (string)$newId, [
+                    'name'        => $fields['name'],
+                    'kind'        => $fields['kind'],
+                    'alias_count' => count($aliasNames),
+                ]);
+
+                sendJson(['ok' => true, 'id' => $newId, 'name' => $fields['name']], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.publisher.create', 'publisher', '', $e, ['name' => $fields['name'] ?? '']);
+                error_log('[admin_publisher_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add publisher.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update an existing publisher registry row (scalar fields +
+         * optionally replace aliases). Renaming cascades the free-text
+         * tblSongbooks.Publisher denorm mirror on this publisher's linked
+         * books (publisherAdminRenameCascade()) — the tune TuneName-cascade
+         * equivalent, no separate rename action needed.
+         * POST body: { id (required), name, slug?, kind?, subtitle?,
+         *   disambiguation?, ipi?, isni?, city_name?, city_id?, musician_id?,
+         *   parent_id?, notes?, is_active?, aliases?: [string] }
+         * ----------------------------------------------------------------- */
+        case 'admin_publisher_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_publishers', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!publisherTableExists($db)) {
+                sendJson(['error' => 'Publishers registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Publisher id required.'], 400); break; }
+
+            [$fields, $fieldError] = publisherAdminValidateFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            $uniqError = publisherAdminCheckUniqueness($db, $fields, $id);
+            if ($uniqError !== null) { sendJson(['error' => $uniqError], 409); break; }
+
+            $stmt = $db->prepare('SELECT Name FROM tblPublishers WHERE Id = ?');
+            $stmt->bind_param('i', $id);
+            $stmt->execute();
+            $before = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$before) { sendJson(['error' => 'Publisher not found.'], 404); break; }
+            $oldName = (string)$before['Name'];
+
+            /* null (key absent) means "leave the alias list unchanged" —
+               the admin_tune_update contract; an explicit array (incl. []
+               to clear) replaces it. */
+            $rawAliases = $body['aliases'] ?? null;
+            $aliasNames = is_array($rawAliases) ? array_map('strval', $rawAliases) : null;
+
+            try {
+                $gates = publisherAdminProbeGates($db);
+                $db->begin_transaction();
+                try {
+                    publisherAdminPersistFields($db, $id, $fields, $gates);
+                    publisherAdminRenameCascade($db, $id, $oldName, $fields['name'], $gates);
+                    if ($gates['hasAliases'] && $aliasNames !== null) {
+                        publisherAdminReplaceAliases($db, $id, $aliasNames, $fields['name']);
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.publisher.update', 'publisher', (string)$id, [
+                    'name'    => $fields['name'],
+                    'renamed' => $oldName !== $fields['name'],
+                ]);
+
+                sendJson(['ok' => true, 'id' => $id, 'name' => $fields['name']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.publisher.update', 'publisher', (string)$id, $e);
+                error_log('[admin_publisher_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update publisher.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a publisher registry row. tblSongbookPublishers /
+         * tblPublisherAliases / tblPublisherExternalLinks FKs are ON DELETE
+         * CASCADE; tblPublishers.ParentId is ON DELETE SET NULL (children
+         * become top-level) — so this needs no force gate, the same
+         * posture as admin_tune_delete.
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_publisher_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_publishers', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!publisherTableExists($db)) {
+                sendJson(['error' => 'Publishers registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Publisher id required.'], 400); break; }
+
+            try {
+                $gates = publisherAdminProbeGates($db);
+                $usage = publisherAdminUsageCounts($db, $id, $gates);
+                $name  = publisherAdminDelete($db, $id);
+                if ($name === null) { sendJson(['error' => 'Publisher not found.'], 404); break; }
+
+                logActivity('api.admin.publisher.delete', 'publisher', (string)$id, [
+                    'name'  => $name,
+                    'usage' => $usage,
+                ]);
+
+                sendJson([
+                    'ok'          => true,
+                    'id'          => $id,
+                    'name'        => $name,
+                    'usage_count' => $usage['songbookCount'] + $usage['childCount'] + $usage['aliasCount'] + $usage['linkCount'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.publisher.delete', 'publisher', (string)$id, $e);
+                error_log('[admin_publisher_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete publisher.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: merge two publisher registry rows (source -> target)
+         * POST body: { source_id (required), target_id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_publisher_merge': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_publishers', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!publisherTableExists($db)) {
+                sendJson(['error' => 'Publishers registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $sourceId = (int)($body['source_id'] ?? 0);
+            $targetId = (int)($body['target_id'] ?? 0);
+            if ($sourceId <= 0 || $targetId <= 0) {
+                sendJson(['error' => 'source_id and target_id required.'], 400);
+                break;
+            }
+            if ($sourceId === $targetId) {
+                sendJson(['error' => 'Source and target must be different publishers.'], 400);
+                break;
+            }
+
+            try {
+                $stmt = $db->prepare('SELECT Id FROM tblPublishers WHERE Id IN (?, ?)');
+                $stmt->bind_param('ii', $sourceId, $targetId);
+                $stmt->execute();
+                $foundIds = array_map('intval', array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id'));
+                $stmt->close();
+                if (!in_array($sourceId, $foundIds, true)) { sendJson(['error' => 'Source publisher not found.'], 404); break; }
+                if (!in_array($targetId, $foundIds, true)) { sendJson(['error' => 'Target publisher not found.'], 404); break; }
+
+                $gates = publisherAdminProbeGates($db);
+                $db->begin_transaction();
+                try {
+                    $result = publisherAdminMerge($db, $sourceId, $targetId, $gates);
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.publisher.merge', 'publisher', (string)$targetId, [
+                    'source'             => $result['source'],
+                    'target'             => $result['target'],
+                    'books_repointed'    => $result['booksRepointed'],
+                    'children_repointed' => $result['childrenRepointed'],
+                    'aliases_moved'      => $result['aliasesMoved'],
+                    'links_moved'        => $result['linksMoved'],
+                ]);
+
+                sendJson([
+                    'ok'                 => true,
+                    'source_id'          => $sourceId,
+                    'target_id'          => $targetId,
+                    'books_repointed'    => $result['booksRepointed'],
+                    'children_repointed' => $result['childrenRepointed'],
+                    'aliases_moved'      => $result['aliasesMoved'],
+                    'links_moved'        => $result['linksMoved'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.publisher.merge', 'publisher', (string)$targetId, $e);
+                error_log('[admin_publisher_merge] ' . $e->getMessage());
+                sendJson(['error' => 'Could not merge publishers.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — WORKS + MEDLEY COMPOSITION (#840/#1860 Phase 5,
+         * API-coverage batch 4a A2)
+         *
+         * Mirrors /manage/works.php's POST handlers for the CORE registry
+         * row (title/slug/ISWC/notes/parent) plus the medley constituent
+         * list. Gate: userHasEntitlement('manage_works') — identical to
+         * manage/works.php's own page gate (rule #1587).
+         *
+         * SCOPE (deliberate — mirrors admin_tune_*'s "external links stay
+         * page-only for now"): the #1741 P4b "extra" scalar fields
+         * (subtitle/CCLI/BOWI/tune name/first-published-year/copyright
+         * years+holder/MusicBrainz Work MBID), OriginCity, external links,
+         * and song-membership (tblWorkSongs) reconciliation are PAGE-ONLY
+         * for now — none of those are extracted into a shared core today
+         * (they live as page-local closures/probes in manage/works.php,
+         * never exported), and song<->work linking already has its own API
+         * path from the SONG side (api2's song_work_set /
+         * song_work_autolink, #1860 Phase 3). Porting the full page-local
+         * closure set is left for a follow-up once a genuine native
+         * consumer needs it, rather than re-typing ~150 lines of that
+         * page's own validation as a second copy (rule #22).
+         *
+         * Medley composition (`tblWorkComponents`) is a SEPARATE action,
+         * admin_work_medley_replace, delegating entirely to the
+         * cycle-guarded workMedley*() core (rule #45 — NEVER forked here).
+         *
+         * Activity-log verb prefix is `api.admin.work.*`. HTTP status IS
+         * the contract (rule #35): 400 validation, 403 gate, 404 unknown
+         * id, 409 uniqueness/cycle conflict, 503 table(s) not migrated
+         * yet, 200/201 ok.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a new Work registry row
+         * POST body: { title (required), slug?, iswc?, notes?, parent_id? }
+         * ----------------------------------------------------------------- */
+        case 'admin_work_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_works', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!workAdminReady($db)) {
+                sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
+                break;
+            }
+            /* #1988 — the 11-column extras probe (includes/work_admin.php),
+               the SAME one manage/works.php's create action uses. */
+            $worksExtraCols = workExtraColumnsPresent($db);
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $title  = trim((string)($body['title'] ?? ''));
+            $slugIn = trim((string)($body['slug']  ?? ''));
+            $iswcIn = trim((string)($body['iswc']  ?? ''));
+            $notes  = trim((string)($body['notes'] ?? ''));
+            $parent = (int)($body['parent_id'] ?? 0);
+            /* #1988 — places adoption: composition origin (page parity —
+               manage/works.php's own create action). */
+            $originCity   = trim((string)($body['origin_city']    ?? '')) ?: null;
+            $originCityId = (int)($body['origin_city_id'] ?? 0) ?: null;
+
+            if ($title === '') { sendJson(['error' => 'Title is required.'], 400); break; }
+            $slug = $slugIn !== '' ? $slugIn : workSlugify($title);
+            if ($slug === '') { sendJson(['error' => 'Title has no usable slug characters — provide one explicitly.'], 400); break; }
+            $iswc = ihymns_canonical_iswc($iswcIn);
+            if ($iswc === null) { sendJson(['error' => 'ISWC must look like T-345.246.800-1 (10 digits).'], 400); break; }
+            $title = mb_substr($title, 0, 255);
+            $slug  = mb_substr($slug,  0, 80);
+            $notes = mb_substr($notes, 0, 65000);
+
+            /* #1988 — the #1741 P4b "extra" scalar fields + the
+               MusicBrainzWorkMBID rider, parsed + shape-validated BEFORE any
+               write (workParseExtraFields() — the SAME core
+               manage/works.php's create action delegates to, rule #22). No
+               carry-forward needed on CREATE — an absent key simply defaults
+               (page parity: a brand-new row has nothing to preserve). */
+            [$extraFields, $extraError] = workParseExtraFields($body);
+            if ($extraError !== null) { sendJson(['error' => $extraError], 400); break; }
+
+            $parentBind = $parent > 0 ? $parent : null;
+            if ($parentBind !== null && !workExists($db, $parentBind)) {
+                sendJson(['error' => 'Parent work not found.'], 400);
+                break;
+            }
+
+            try {
+                $stmt = $db->prepare('SELECT Id FROM tblWorks WHERE Slug = ?');
+                $stmt->bind_param('s', $slug);
+                $stmt->execute();
+                $slugTaken = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($slugTaken) { sendJson(['error' => "Slug '{$slug}' already taken."], 409); break; }
+
+                if ($iswc !== '') {
+                    $stmt = $db->prepare('SELECT Id FROM tblWorks WHERE Iswc = ?');
+                    $stmt->bind_param('s', $iswc);
+                    $stmt->execute();
+                    $iswcTaken = $stmt->get_result()->fetch_row() !== null;
+                    $stmt->close();
+                    if ($iswcTaken) { sendJson(['error' => "ISWC '{$iswc}' is already on another Work."], 409); break; }
+                }
+
+                /* #1988 — Ccli/Bowi/MusicBrainzWorkMBID uniqueness (page
+                   parity: manage/works.php's own create action). */
+                $extraUniqError = workCheckExtraUniqueness($db, $worksExtraCols, $extraFields, null);
+                if ($extraUniqError !== null) { sendJson(['error' => $extraUniqError], 409); break; }
+
+                $stmt = $db->prepare(
+                    'INSERT INTO tblWorks (ParentWorkId, Iswc, Title, Slug, Notes)
+                     VALUES (?, NULLIF(?, ""), ?, ?, NULLIF(?, ""))'
+                );
+                $stmt->bind_param('issss', $parentBind, $iswc, $title, $slug, $notes);
+                $stmt->execute();
+                $newId = (int)$db->insert_id;
+                $stmt->close();
+
+                /* #1860 go-live — mint this Work's permanent IL-id (ILW…),
+                   the same funnel manage/works.php's create action uses. */
+                ilidStampNewRow($db, 'work', $newId);
+
+                /* #1988 — place columns + the #1741 P4b extra fields, ONE
+                   separate column-gated UPDATE each (page parity — create
+                   has no explicit transaction on the page either, so this
+                   stays un-transacted here too). An un-migrated column
+                   degrades silently, never a 503 for extras —
+                   workAdminReady() above already gated the CORE
+                   tblWorks/tblWorkSongs schema. */
+                workPersistOriginCity($db, $newId, $originCity, $originCityId);
+                workPersistExtraFields($db, $worksExtraCols, $newId, $extraFields);
+
+                logActivity('api.admin.work.create', 'work', (string)$newId, [
+                    'title'       => $title,
+                    'slug'        => $slug,
+                    'iswc'        => $iswc,
+                    'parent_id'   => $parentBind,
+                    'origin_city' => $originCity,
+                    'subtitle'    => $extraFields['subtitle'],
+                    'ccli'        => $extraFields['ccli'],
+                    'bowi'        => $extraFields['bowi'],
+                    'tune_name'   => $extraFields['tuneName'],
+                ]);
+
+                sendJson(['ok' => true, 'id' => $newId, 'title' => $title, 'slug' => $slug, 'iswc' => $iswc], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.work.create', 'work', '', $e, ['title' => $title]);
+                error_log('[admin_work_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create work.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a Work's core scalar fields (title/slug/ISWC/notes/
+         * parent). Cycle-checked against the ParentWorkId self-FK chain —
+         * mirrors manage/works.php's own $cycleSafe closure byte-for-byte
+         * (no shared core exists for this walk; contrast the
+         * tblWorkComponents medley guard below, which DOES have one:
+         * workMedleyWouldCycle()).
+         * POST body: { id (required), title (required), slug?, iswc?,
+         *   notes?, parent_id? }
+         * ----------------------------------------------------------------- */
+        case 'admin_work_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_works', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!workAdminReady($db)) {
+                sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
+                break;
+            }
+            /* #1988 — the 11-column extras probe (includes/work_admin.php),
+               the SAME one manage/works.php's update action uses. */
+            $worksExtraCols = workExtraColumnsPresent($db);
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id     = (int)($body['id'] ?? 0);
+            $title  = trim((string)($body['title'] ?? ''));
+            $slugIn = trim((string)($body['slug']  ?? ''));
+            $iswcIn = trim((string)($body['iswc']  ?? ''));
+            $notes  = trim((string)($body['notes'] ?? ''));
+            $parent = (int)($body['parent_id'] ?? 0);
+            /* #1988 — places adoption: composition origin (page parity —
+               manage/works.php's own update action). */
+            $originCity   = trim((string)($body['origin_city']    ?? '')) ?: null;
+            $originCityId = (int)($body['origin_city_id'] ?? 0) ?: null;
+
+            if ($id <= 0)       { sendJson(['error' => 'Work id required.'], 400); break; }
+            if ($title === '')  { sendJson(['error' => 'Title is required.'], 400); break; }
+            $slug = $slugIn !== '' ? $slugIn : workSlugify($title);
+            if ($slug === '') { sendJson(['error' => 'Title has no usable slug characters.'], 400); break; }
+            $iswc = ihymns_canonical_iswc($iswcIn);
+            if ($iswc === null) { sendJson(['error' => 'ISWC must look like T-345.246.800-1.'], 400); break; }
+            $title = mb_substr($title, 0, 255);
+            $slug  = mb_substr($slug,  0, 80);
+            $notes = mb_substr($notes, 0, 65000);
+
+            /* #1988 — the #1741 P4b "extra" scalar fields + the
+               MusicBrainzWorkMBID rider, parsed + shape-validated BEFORE any
+               write (workParseExtraFields() — the SAME core
+               manage/works.php's update action delegates to, rule #22). */
+            [$extraFields, $extraError] = workParseExtraFields($body);
+            if ($extraError !== null) { sendJson(['error' => $extraError], 400); break; }
+
+            if (!workExists($db, $id)) { sendJson(['error' => 'Work not found.'], 404); break; }
+
+            /* #1988 decision — key-present-preserve carry for the NEW
+               extra/origin_city keys (never on create — an absent key
+               there simply defaults, page parity). A native client sending
+               only {id, ccli} must not silently wipe every other extra
+               field the way a full HTML form re-submitting every field
+               never has to worry about: read what is CURRENTLY stored
+               (column-gated — never a raw SELECT of an absent column, rule
+               #19), then overlay ONLY the keys the caller's body actually
+               NAMED via array_key_exists — an explicit null/"" clears a
+               field; an OMITTED key leaves the stored value untouched. */
+            $storedExtra = [
+                'subtitle' => '', 'disambiguation' => '', 'ccli' => '', 'bowi' => '',
+                'tuneName' => '', 'firstPublishedYear' => null, 'copyrightYears' => '',
+                'copyrightHolder' => '', 'copyrightHolderId' => null, 'musicBrainzWorkMbid' => '',
+            ];
+            $extraColMap = [
+                'Subtitle' => 'subtitle', 'Disambiguation' => 'disambiguation',
+                'Ccli' => 'ccli', 'Bowi' => 'bowi', 'TuneName' => 'tuneName',
+                'FirstPublishedYear' => 'firstPublishedYear', 'CopyrightYears' => 'copyrightYears',
+                'CopyrightHolder' => 'copyrightHolder', 'CopyrightHolderId' => 'copyrightHolderId',
+                'MusicBrainzWorkMBID' => 'musicBrainzWorkMbid',
+            ];
+            $selCols = [];
+            foreach ($extraColMap as $col => $key) {
+                if (isset($worksExtraCols[$col])) { $selCols[] = $col; }
+            }
+            if ($selCols) {
+                $selList = implode(', ', $selCols);
+                $stmt = $db->prepare("SELECT {$selList} FROM tblWorks WHERE Id = ? LIMIT 1");
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $rrow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if ($rrow) {
+                    foreach ($extraColMap as $col => $key) {
+                        if (isset($worksExtraCols[$col])) {
+                            $storedExtra[$key] = $rrow[$col];
+                        }
+                    }
+                }
+            }
+            $storedOriginCity   = null;
+            $storedOriginCityId = null;
+            if (placeColumnExists($db, 'tblWorks', 'OriginCityId')) {
+                $stmt = $db->prepare('SELECT OriginCity, OriginCityId FROM tblWorks WHERE Id = ? LIMIT 1');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $rrow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if ($rrow) {
+                    $storedOriginCity   = $rrow['OriginCity'];
+                    $storedOriginCityId = $rrow['OriginCityId'] !== null ? (int)$rrow['OriginCityId'] : null;
+                }
+            }
+            $carryMap = [
+                'subtitle' => 'subtitle', 'disambiguation' => 'disambiguation', 'ccli' => 'ccli',
+                'bowi' => 'bowi', 'tune_name' => 'tuneName', 'first_published_year' => 'firstPublishedYear',
+                'copyright_years' => 'copyrightYears', 'copyright_holder' => 'copyrightHolder',
+                'copyright_holder_id' => 'copyrightHolderId', 'musicbrainz_work_mbid' => 'musicBrainzWorkMbid',
+            ];
+            foreach ($carryMap as $bodyKey => $fieldKey) {
+                if (!array_key_exists($bodyKey, $body)) {
+                    $extraFields[$fieldKey] = $storedExtra[$fieldKey];
+                }
+            }
+            if (!array_key_exists('origin_city', $body))    { $originCity   = $storedOriginCity; }
+            if (!array_key_exists('origin_city_id', $body)) { $originCityId = $storedOriginCityId; }
+
+            $parentBind = $parent > 0 ? $parent : null;
+            if ($parentBind !== null && !workExists($db, $parentBind)) {
+                sendJson(['error' => 'Parent work not found.'], 400);
+                break;
+            }
+
+            /* #1988 — consolidated into the shared workParentCycleSafe()
+               (includes/work_admin.php, rule #22): this closure and
+               manage/works.php's own $cycleSafe closure had independently
+               grown the exact same walk; both now delegate to the ONE core. */
+            if (!workParentCycleSafe($db, $id, $parentBind)) {
+                sendJson(['error' => 'Cannot set that parent — it would create a cycle.'], 409);
+                break;
+            }
+
+            try {
+                $stmt = $db->prepare('SELECT Id FROM tblWorks WHERE Slug = ? AND Id <> ?');
+                $stmt->bind_param('si', $slug, $id);
+                $stmt->execute();
+                $slugTaken = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($slugTaken) { sendJson(['error' => "Slug '{$slug}' already taken by another Work."], 409); break; }
+
+                if ($iswc !== '') {
+                    $stmt = $db->prepare('SELECT Id FROM tblWorks WHERE Iswc = ? AND Id <> ?');
+                    $stmt->bind_param('si', $iswc, $id);
+                    $stmt->execute();
+                    $iswcTaken = $stmt->get_result()->fetch_row() !== null;
+                    $stmt->close();
+                    if ($iswcTaken) { sendJson(['error' => "ISWC '{$iswc}' already on another Work."], 409); break; }
+                }
+
+                /* #1988 — Ccli/Bowi/MusicBrainzWorkMBID uniqueness, excluding
+                   self (page parity: manage/works.php's own update action). */
+                $extraUniqError = workCheckExtraUniqueness($db, $worksExtraCols, $extraFields, $id);
+                if ($extraUniqError !== null) { sendJson(['error' => $extraUniqError], 409); break; }
+
+                /* #1988 — wrap the multi-statement write in ONE transaction
+                   (page parity, manage/works.php's update action) so a
+                   mid-way failure rolls everything back together. */
+                $db->begin_transaction();
+                try {
+                    $stmt = $db->prepare(
+                        'UPDATE tblWorks
+                            SET ParentWorkId = ?, Iswc = NULLIF(?, ""),
+                                Title = ?, Slug = ?, Notes = NULLIF(?, "")
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('issssi', $parentBind, $iswc, $title, $slug, $notes, $id);
+                    $stmt->execute();
+                    $stmt->close();
+
+                    workPersistOriginCity($db, $id, $originCity, $originCityId);
+                    workPersistExtraFields($db, $worksExtraCols, $id, $extraFields);
+
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.work.update', 'work', (string)$id, [
+                    'title'       => $title,
+                    'slug'        => $slug,
+                    'iswc'        => $iswc,
+                    'parent_id'   => $parentBind,
+                    'origin_city' => $originCity,
+                    'subtitle'    => $extraFields['subtitle'],
+                    'ccli'        => $extraFields['ccli'],
+                    'bowi'        => $extraFields['bowi'],
+                    'tune_name'   => $extraFields['tuneName'],
+                ]);
+
+                sendJson(['ok' => true, 'id' => $id, 'title' => $title, 'slug' => $slug, 'iswc' => $iswc]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.work.update', 'work', (string)$id, $e);
+                error_log('[admin_work_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update work.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a Work registry row.
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_work_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_works', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!workAdminReady($db)) {
+                sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Work id required.'], 400); break; }
+
+            try {
+                $stmt = $db->prepare('SELECT Title FROM tblWorks WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $before = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if (!$before) { sendJson(['error' => 'Work not found.'], 404); break; }
+
+                /* Cascade rules (mirrors manage/works.php's delete action):
+                   - tblWorkSongs FK ON DELETE CASCADE -> memberships dropped.
+                   - tblWorkExternalLinks FK ON DELETE CASCADE -> links dropped.
+                   - tblWorkComponents.MedleyWorkId/ComponentWorkId FKs are
+                     BOTH ON DELETE CASCADE (schema.sql) -> this Work's
+                     medley membership in EITHER direction drops too.
+                   - tblWorks.ParentWorkId self-FK ON DELETE SET NULL ->
+                     child Works orphan rather than cascade-delete. */
+                $stmt = $db->prepare('DELETE FROM tblWorks WHERE Id = ?');
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $stmt->close();
+
+                logActivity('api.admin.work.delete', 'work', (string)$id, [
+                    'title' => (string)$before['Title'],
+                ]);
+
+                sendJson(['ok' => true, 'id' => $id, 'title' => (string)$before['Title']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.work.delete', 'work', (string)$id, $e);
+                error_log('[admin_work_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete work.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: replace a medley Work's ENTIRE constituent list. Ordered,
+         * curator-authoritative — DELETE-then-reinsert via the ONE
+         * cycle-guarded write core, workMedleyReplace() (includes/
+         * work_admin.php), itself built out of workMedleyAttach() (rule
+         * #45 — self-link / exists / cycle guards live there, NEVER
+         * re-forked here). Posting an empty `constituents` array is a
+         * valid, deliberate "clear the medley" edit — mirrors
+         * manage/works.php's own reconcile.
+         * POST body: { id (required — the medley Work's id),
+         *   constituents: [{ work_id (required), sort_order?, note? }] }
+         * ----------------------------------------------------------------- */
+        case 'admin_work_medley_replace': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_works', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!workAdminReady($db)) {
+                sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $medleyId = (int)($body['id'] ?? 0);
+            if ($medleyId <= 0) { sendJson(['error' => 'Work id required.'], 400); break; }
+            if (!workExists($db, $medleyId)) { sendJson(['error' => 'Work not found.'], 404); break; }
+
+            if (!workMedleyReady($db)) {
+                sendJson(['error' => 'Medley composition is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $rawRows = $body['constituents'] ?? [];
+            if (!is_array($rawRows)) { sendJson(['error' => 'constituents must be an array.'], 400); break; }
+
+            $rows = [];
+            foreach ($rawRows as $r) {
+                if (!is_array($r)) { continue; }
+                $rows[] = [
+                    'workId'    => (int)($r['work_id'] ?? 0),
+                    'sortOrder' => (int)($r['sort_order'] ?? 0),
+                    'note'      => isset($r['note']) ? (string)$r['note'] : null,
+                ];
+            }
+
+            try {
+                /* workMedleyReplace() itself skips + error_logs any invalid
+                   row (missing/self-link/unknown/would-cycle) rather than
+                   throwing — a single bad row must not cost the caller the
+                   whole save. Read the STORED list back afterwards (rule
+                   #35 — the response reflects what was actually written,
+                   not what was posted). */
+                $inserted     = workMedleyReplace($db, $medleyId, $rows);
+                $constituents = workMedleyConstituents($db, $medleyId);
+
+                logActivity('api.admin.work.medley_replace', 'work', (string)$medleyId, [
+                    'requested' => count($rows),
+                    'inserted'  => $inserted,
+                    'stored'    => count($constituents),
+                ]);
+
+                sendJson([
+                    'ok'           => true,
+                    'id'           => $medleyId,
+                    'inserted'     => $inserted,
+                    'constituents' => $constituents,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.work.medley_replace', 'work', (string)$medleyId, $e);
+                error_log('[admin_work_medley_replace] ' . $e->getMessage());
+                sendJson(['error' => 'Could not replace medley constituents.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: replace a Work's ENTIRE tblWorkSongs membership list
+         * (#1988, API-coverage epic #1983). Ordered, curator-authoritative
+         * — DELETE-then-reinsert via the shared workSongsReplace() core
+         * (includes/work_admin.php), the exact SQL shape
+         * manage/works.php's own update action delegates to (rule #22).
+         * Posting an empty `members` array is a valid, deliberate
+         * "clear membership" edit — mirrors admin_work_medley_replace's own
+         * posture for `constituents`.
+         * POST body: { id (required — the Work's id),
+         *   members: [{ song_id (required, <=20 chars), is_canonical?,
+         *              sort_order?, note? }] }
+         * ----------------------------------------------------------------- */
+        case 'admin_work_members_replace': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_works', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!workAdminReady($db)) {
+                sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $workId = (int)($body['id'] ?? 0);
+            if ($workId <= 0) { sendJson(['error' => 'Work id required.'], 400); break; }
+            if (!workExists($db, $workId)) { sendJson(['error' => 'Work not found.'], 404); break; }
+
+            $rawRows = $body['members'] ?? [];
+            if (!is_array($rawRows)) { sendJson(['error' => 'members must be an array.'], 400); break; }
+
+            /* Parse + clamp — byte-parity with manage/works.php's own
+               member reconciliation (trim/cap-20 song id, sort default
+               idx*10 clamped 0..65535, note cap 255). The parse/clamp
+               stays HERE per caller, same as the page — workSongsReplace()
+               owns only the DELETE+INSERT shape (rule #22). Deduped by
+               song id: the LAST row for a given id wins its
+               canonical/sort/note, but the POSITION (and so the default
+               sort order) is that of its FIRST occurrence — an assoc-array
+               key's iteration position doesn't move on re-assignment. */
+            $memberMap = [];
+            foreach ($rawRows as $idx => $r) {
+                if (!is_array($r)) { continue; }
+                $sid = mb_substr(trim((string)($r['song_id'] ?? '')), 0, 20);
+                if ($sid === '') { continue; }
+                $memberMap[$sid] = [
+                    'songId'      => $sid,
+                    'isCanonical' => !empty($r['is_canonical']),
+                    'sortOrder'   => isset($r['sort_order']) ? max(0, min(65535, (int)$r['sort_order'])) : ($idx * 10),
+                    'note'        => isset($r['note']) ? mb_substr((string)$r['note'], 0, 255) : '',
+                ];
+            }
+            $memberRows = array_values($memberMap);
+
+            /* Pre-validate every song id exists — a clean 400 naming the
+               offender, mirroring admin_work_create's parent-existence
+               check above, rather than letting the tblWorkSongs FK throw
+               a raw mysqli_sql_exception under STRICT (rule #19).
+               @disabled-visible: admin surface (#1765) — mirrors
+               manage/works.php's own song_search handler; a curator can
+               still link a song from a disabled/hidden songbook into a
+               Work through this API action. */
+            if ($memberRows) {
+                $songIds = array_column($memberRows, 'songId');
+                $ph      = implode(',', array_fill(0, count($songIds), '?'));
+                $stmt    = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ph)");
+                $types   = str_repeat('s', count($songIds));
+                $stmt->bind_param($types, ...$songIds);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $present = [];
+                while ($row = $res->fetch_assoc()) { $present[(string)$row['SongId']] = true; }
+                $stmt->close();
+                $missing = array_values(array_diff($songIds, array_keys($present)));
+                if ($missing) {
+                    sendJson(['error' => 'Unknown song id(s): ' . implode(', ', $missing) . '.'], 400);
+                    break;
+                }
+            }
+
+            try {
+                $db->begin_transaction();
+                try {
+                    $inserted = workSongsReplace($db, $workId, $memberRows);
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                /* Read the STORED list back (rule #35) — the page member-
+                   read shape (manage/works.php), scoped to this one Work. */
+                $stmt = $db->prepare(
+                    'SELECT ws.SongId, ws.IsCanonical, ws.SortOrder, ws.Note,
+                            s.Title AS SongTitle, s.SongbookAbbr, s.Number
+                       FROM tblWorkSongs ws
+                       JOIN tblSongs s ON s.SongId = ws.SongId
+                      WHERE ws.WorkId = ? AND ' . songVisibleSql($db, 's') . '
+                      ORDER BY ws.SortOrder ASC, s.SongbookAbbr ASC, s.Number ASC'
+                );
+                $stmt->bind_param('i', $workId);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $members = [];
+                while ($row = $res->fetch_assoc()) {
+                    $members[] = [
+                        'songId'      => (string)$row['SongId'],
+                        'title'       => (string)$row['SongTitle'],
+                        'songbook'    => (string)$row['SongbookAbbr'],
+                        'number'      => $row['Number'] !== null ? (int)$row['Number'] : null,
+                        'isCanonical' => (bool)$row['IsCanonical'],
+                        'sortOrder'   => (int)$row['SortOrder'],
+                        'note'        => (string)($row['Note'] ?? ''),
+                    ];
+                }
+                $stmt->close();
+
+                logActivity('api.admin.work.members_replace', 'work', (string)$workId, [
+                    'requested' => count($memberRows),
+                    'inserted'  => $inserted,
+                    'stored'    => count($members),
+                ]);
+
+                sendJson([
+                    'ok'       => true,
+                    'id'       => $workId,
+                    'inserted' => $inserted,
+                    'members'  => $members,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.work.members_replace', 'work', (string)$workId, $e);
+                error_log('[admin_work_members_replace] ' . $e->getMessage());
+                sendJson(['error' => 'Could not replace work members.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: replace a Work's ENTIRE tblWorkExternalLinks list
+         * (#1988, API-coverage epic #1983). DELETE-then-reinsert via the
+         * ONE shared external-links saver (includes/external_link_helpers.php
+         * — saveExternalLinksForRow()/loadExternalLinksForRow(), rule #22),
+         * the same core manage/works.php's update action and api2.php's
+         * link_save_all already delegate to — NO new saver here. The
+         * shared saver does NOT self-probe table existence (unlike
+         * loadExternalLinksForRow(), which does) and would throw under
+         * STRICT on an un-migrated install, so this action probes
+         * tblWorkExternalLinks itself first (page parity —
+         * manage/works.php's own $hasExtLinksSchema probe) and 503s rather
+         * than letting that throw surface as a raw 500. KEEPS the shared
+         * saver's existing quirks (silently skips an invalid row — bad
+         * type_id/url/length; never validates LinkTypeId.AppliesTo='work')
+         * — page parity, not "fixed" here (rule #35 applies to CROSS-FILE
+         * agreement, not to re-litigating an existing shared core's
+         * behaviour from a new caller).
+         * POST body: { id (required — the Work's id),
+         *   links: [{ type_id (required), url (required, http(s), <=2048),
+         *            note?, verified? }] }
+         * ----------------------------------------------------------------- */
+        case 'admin_work_external_links_replace': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_works', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!workAdminReady($db)) {
+                sendJson(['error' => 'Works registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $workId = (int)($body['id'] ?? 0);
+            if ($workId <= 0) { sendJson(['error' => 'Work id required.'], 400); break; }
+            if (!workExists($db, $workId)) { sendJson(['error' => 'Work not found.'], 404); break; }
+
+            $hasExtLinksSchema = false;
+            try {
+                $r = $db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblWorkExternalLinks' LIMIT 1"
+                );
+                $hasExtLinksSchema = $r && $r->fetch_row() !== null;
+                if ($r) $r->close();
+            } catch (\Throwable $_e) { /* treated as absent below */ }
+            if (!$hasExtLinksSchema) {
+                sendJson(['error' => 'External links are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $rawLinks = $body['links'] ?? [];
+            if (!is_array($rawLinks)) { sendJson(['error' => 'links must be an array.'], 400); break; }
+
+            /* Unzip rows into the parallel arrays the shared helper
+               expects (api2.php's link_save_all shape) — the helper
+               itself validates each row and skips invalid ones. */
+            $typeIds = []; $urls = []; $notes = []; $verified = [];
+            foreach ($rawLinks as $ln) {
+                if (!is_array($ln)) { continue; }
+                $typeIds[]  = (int)($ln['type_id'] ?? 0);
+                $urls[]     = (string)($ln['url'] ?? '');
+                $notes[]    = (string)($ln['note'] ?? '');
+                $verified[] = !empty($ln['verified']) ? 1 : 0;
+            }
+
+            try {
+                $db->begin_transaction();
+                try {
+                    $count = saveExternalLinksForRow(
+                        $db, 'tblWorkExternalLinks', 'WorkId', $workId,
+                        $typeIds, $urls, $notes, $verified
+                    );
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                $links = loadExternalLinksForRow($db, 'tblWorkExternalLinks', 'WorkId', $workId);
+
+                logActivity('api.admin.work.external_links_replace', 'work', (string)$workId, [
+                    'requested' => count($rawLinks),
+                    'count'     => $count,
+                ]);
+
+                sendJson([
+                    'ok'    => true,
+                    'id'    => $workId,
+                    'count' => $count,
+                    'links' => $links,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.work.external_links_replace', 'work', (string)$workId, $e);
+                error_log('[admin_work_external_links_replace] ' . $e->getMessage());
+                sendJson(['error' => 'Could not replace work external links.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — TAGS/THEMES CRUD + MERGE (#770/#1152/#1222,
+         * API-coverage batch 4b-i A3)
+         *
+         * Mirrors /manage/tags.php's POST handlers exactly, via the shared
+         * core includes/tag_admin.php (rule #22). The similarity SCORING
+         * maths for the canonicalisation suggestions stays the one shared
+         * includes/song_similarity.php scorer (#1216/#1222) — this file
+         * never re-forks it (rule #22's own red-flag list). Gate:
+         * userHasEntitlement('manage_tags') — identical to manage/tags.php's
+         * own page gate (rule #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a tag/theme row
+         * POST body: { name (required), description? }
+         * ----------------------------------------------------------------- */
+        case 'admin_tag_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tags', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldError] = tagAdminValidateFields(
+                (string)($body['name'] ?? ''),
+                (string)($body['description'] ?? '')
+            );
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            try {
+                $newId = tagAdminCreate($db, $fields['name'], $fields['slug'], $fields['description']);
+
+                logActivity('api.admin.tag.create', 'tag', (string)$newId, [
+                    'name' => $fields['name'], 'slug' => $fields['slug'],
+                ]);
+                sendJson(['ok' => true, 'id' => $newId, 'name' => $fields['name']], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tag.create', 'tag', '', $e, ['name' => $fields['name'] ?? '']);
+                error_log('[admin_tag_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create tag.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a tag/theme row's Name/Slug/Description
+         * POST body: { id (required), name (required), description? }
+         * ----------------------------------------------------------------- */
+        case 'admin_tag_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tags', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Tag id required.'], 400); break; }
+
+            [$fields, $fieldError] = tagAdminValidateFields(
+                (string)($body['name'] ?? ''),
+                (string)($body['description'] ?? '')
+            );
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            try {
+                $before = tagAdminFetch($db, $id);
+                if (!$before) { sendJson(['error' => 'Tag not found.'], 404); break; }
+
+                tagAdminUpdate($db, $id, $fields['name'], $fields['slug'], $fields['description']);
+
+                $changed = ((string)$before['Name'] !== $fields['name'])
+                    || ((string)$before['Slug'] !== $fields['slug'])
+                    || ((string)$before['Description'] !== $fields['description']);
+
+                logActivity('api.admin.tag.update', 'tag', (string)$id, [
+                    'name' => $fields['name'], 'changed' => $changed,
+                ]);
+                sendJson(['ok' => true, 'id' => $id, 'name' => $fields['name']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tag.update', 'tag', (string)$id, $e);
+                error_log('[admin_tag_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update tag.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a tag/theme row. In-use (tblSongTagMap > 0) refuses
+         * with 409 unless `force` is sent — mirrors the page's two-step
+         * confirm.
+         * POST body: { id (required), force? }
+         * ----------------------------------------------------------------- */
+        case 'admin_tag_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tags', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db    = getDbMysqli();
+            $body  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id    = (int)($body['id'] ?? 0);
+            $force = !empty($body['force']);
+            if ($id <= 0) { sendJson(['error' => 'Tag id required.'], 400); break; }
+
+            $useCount = tagAdminUsageCount($db, $id);
+            if (!$force && $useCount > 0) {
+                sendJson([
+                    'error'          => 'Tag is in use.',
+                    'songs'          => $useCount,
+                    'requires_force' => true,
+                ], 409);
+                break;
+            }
+
+            try {
+                $db->begin_transaction();
+                try {
+                    $result = tagAdminDelete($db, $id);
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                if ($result['deleted'] === 0) { sendJson(['error' => 'Tag not found.'], 404); break; }
+
+                logActivity('api.admin.tag.delete', 'tag', (string)$id, [
+                    'forced' => $force ? 1 : 0, 'mappings' => $result['unmapped'],
+                ]);
+                sendJson(['ok' => true, 'id' => $id]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tag.delete', 'tag', (string)$id, $e);
+                error_log('[admin_tag_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete tag.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: merge two tags (source -> target). Irreversible — source
+         * is deleted; every song mapped to source is repointed to target
+         * (a song already carrying both collapses to one mapping).
+         * POST body: { source_id (required), target_id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_tag_merge': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tags', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db       = getDbMysqli();
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $sourceId = (int)($body['source_id'] ?? 0);
+            $targetId = (int)($body['target_id'] ?? 0);
+            if ($sourceId <= 0 || $targetId <= 0 || $sourceId === $targetId) {
+                sendJson(['error' => 'source_id and target_id must be different tag ids.'], 400);
+                break;
+            }
+
+            $byId = tagAdminFetchNamesByIds($db, [$sourceId, $targetId]);
+            if (count($byId) !== 2) {
+                sendJson(['error' => 'One or both tags not found.'], 404);
+                break;
+            }
+
+            try {
+                $db->begin_transaction();
+                try {
+                    $result = tagAdminMerge($db, $sourceId, $targetId);
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.tag.merge', 'tag', (string)$targetId, [
+                    'source_id'   => $sourceId,
+                    'source_name' => $byId[$sourceId] ?? '',
+                    'target_name' => $byId[$targetId] ?? '',
+                    'repointed'   => $result['repointed'],
+                    'conflicts'   => $result['conflicts'],
+                ]);
+                sendJson([
+                    'ok'         => true,
+                    'source_id'  => $sourceId,
+                    'target_id'  => $targetId,
+                    'repointed'  => $result['repointed'],
+                    'conflicts'  => $result['conflicts'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tag.merge', 'tag', (string)$targetId, $e);
+                error_log('[admin_tag_merge] ' . $e->getMessage());
+                sendJson(['error' => 'Could not merge tags.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin (READ): tag canonicalisation suggestions (#1222) — curator
+         * tags whose spelling closely matches a seeded standard CCLI/
+         * OpenLyrics theme, via the ONE shared song_similarity.php scorer.
+         * Never writes; curator confirms via admin_tag_merge. Returns an
+         * empty list (not an error) on an un-migrated install.
+         * GET (no body)
+         * ----------------------------------------------------------------- */
+        case 'admin_tag_canonical_suggestions': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tags', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            try {
+                $suggestions = tagAdminCanonicalSuggestions($db);
+                sendJson(['suggestions' => $suggestions]);
+            } catch (\Throwable $e) {
+                error_log('[admin_tag_canonical_suggestions] ' . $e->getMessage());
+                sendJson(['error' => 'Could not compute canonicalisation suggestions.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — CATALOGUES / "COLLECTIONS" CRUD (#941/#1765,
+         * API-coverage batch 4b-i A4)
+         *
+         * Mirrors /manage/catalogues.php's `add`/`update`/`delete`/
+         * `add_member`/`remove_member` POST handlers, via the shared core
+         * includes/catalogue_admin.php (rule #22). `tblCatalogues`/
+         * `tblCatalogueSongs`/the `catalogue` entity-type string stay
+         * `catalogue` INTERNALLY — the Catalogue→Collection relabel is UI
+         * copy only (rule #24). The page's `marcxml_import` action is now
+         * ALSO covered here (API-coverage batch 6b, .claude/
+         * api-coverage-2026-08-28.md §4.3 A17 — owner-confirmed
+         * native-curator surface, Q1=yes) as `admin_catalogue_marcxml_import`
+         * below, written through this SAME catalogueAdminCreate()/
+         * catalogueAdminPersistPublicationIds() core; the page's own
+         * marcxml_import POST handler is unchanged (still self-contained,
+         * not re-pointed at this file — out of scope for this batch). Gate:
+         * userHasEntitlement('manage_songbooks') — identical to
+         * manage/catalogues.php's own page gate (rule #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a catalogue ("Collection") row
+         * POST body: { title (required), slug?, description?, visibility?
+         *   (public|curated|admin_only, default public), sort_order?,
+         *   colour?, ark_id?, openlibrary_work_id?, openlibrary_edition_id? }
+         * ----------------------------------------------------------------- */
+        case 'admin_catalogue_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!catalogueAdminTableExists($db)) {
+                sendJson(['error' => 'Collections registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldError] = catalogueAdminValidateCreateFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            [$pubIds, $pubError] = catalogueAdminValidatePublicationIds($body);
+            if ($pubError !== null) { sendJson(['error' => $pubError], 400); break; }
+
+            if (catalogueAdminSlugTaken($db, $fields['slug'])) {
+                sendJson(['error' => "A catalogue with slug '{$fields['slug']}' already exists."], 409);
+                break;
+            }
+
+            try {
+                /* catalogueAdminCreate() pairs the INSERT with minting this
+                   Collection's permanent IL-id (ILC…, #1860 go-live). */
+                $newId = catalogueAdminCreate($db, $fields);
+                if (catalogueAdminPubIdColumnsReady($db)) {
+                    catalogueAdminPersistPublicationIds($db, $newId, $pubIds);
+                }
+
+                logActivity('api.admin.catalogue.create', 'catalogue', (string)$newId, [
+                    'slug' => $fields['slug'], 'title' => $fields['title'], 'visibility' => $fields['visibility'],
+                ]);
+                sendJson(['ok' => true, 'id' => $newId, 'slug' => $fields['slug'], 'title' => $fields['title']], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.catalogue.create', 'catalogue', '', $e, ['title' => $fields['title'] ?? '']);
+                error_log('[admin_catalogue_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create catalogue.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a catalogue's scalar fields. NEVER touches Slug
+         * (the page's own `update` action never let a curator change it
+         * either — see includes/catalogue_admin.php's doc-block).
+         * POST body: { id (required), title (required), description?,
+         *   visibility?, sort_order?, colour?, ark_id?,
+         *   openlibrary_work_id?, openlibrary_edition_id? }
+         * ----------------------------------------------------------------- */
+        case 'admin_catalogue_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!catalogueAdminTableExists($db)) {
+                sendJson(['error' => 'Collections registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Catalogue id required.'], 400); break; }
+
+            [$fields, $fieldError] = catalogueAdminValidateUpdateFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            [$pubIds, $pubError] = catalogueAdminValidatePublicationIds($body);
+            if ($pubError !== null) { sendJson(['error' => $pubError], 400); break; }
+
+            try {
+                $title = catalogueAdminFetchTitle($db, $id);
+                if ($title === null) { sendJson(['error' => 'Catalogue not found.'], 404); break; }
+
+                catalogueAdminUpdate($db, $id, $fields);
+                if (catalogueAdminPubIdColumnsReady($db)) {
+                    catalogueAdminPersistPublicationIds($db, $id, $pubIds);
+                }
+
+                logActivity('api.admin.catalogue.update', 'catalogue', (string)$id, [
+                    'title' => $fields['title'], 'visibility' => $fields['visibility'],
+                ]);
+                sendJson(['ok' => true, 'id' => $id, 'title' => $fields['title']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.catalogue.update', 'catalogue', (string)$id, $e);
+                error_log('[admin_catalogue_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update catalogue.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a catalogue row. tblCatalogueSongs cascades via its
+         * FK (ON DELETE CASCADE) — member songs themselves are untouched.
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_catalogue_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!catalogueAdminTableExists($db)) {
+                sendJson(['error' => 'Collections registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Catalogue id required.'], 400); break; }
+
+            try {
+                $title = catalogueAdminFetchTitle($db, $id);
+                if ($title === null) { sendJson(['error' => 'Catalogue not found.'], 404); break; }
+
+                catalogueAdminDelete($db, $id);
+
+                logActivity('api.admin.catalogue.delete', 'catalogue', (string)$id, ['title' => $title]);
+                sendJson(['ok' => true, 'id' => $id, 'title' => $title]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.catalogue.delete', 'catalogue', (string)$id, $e);
+                error_log('[admin_catalogue_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete catalogue.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: add a song to a catalogue. SEARCH-SELECT ONLY (rule #43) —
+         * verifies song_id names a REAL, currently-visible tblSongs row
+         * (#1694/#1765) before writing; there is deliberately NO
+         * find-or-create fallback (songs are authored in the editor, never
+         * minted from here). Idempotent (INSERT IGNORE).
+         * POST body: { catalogue_id (required), song_id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_catalogue_member_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!catalogueAdminTableExists($db)) {
+                sendJson(['error' => 'Collections registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $catalogueId = (int)($body['catalogue_id'] ?? 0);
+            $songId      = trim((string)($body['song_id'] ?? ''));
+            if ($catalogueId <= 0 || $songId === '') {
+                sendJson(['error' => 'catalogue_id and song_id required.'], 400);
+                break;
+            }
+
+            try {
+                $songTitle = catalogueAdminFindVisibleSongTitle($db, $songId);
+                if ($songTitle === null) { sendJson(['error' => 'That song could not be found.'], 404); break; }
+
+                $added = catalogueAdminAddMember($db, $catalogueId, $songId, (int)$authUser['Id']);
+
+                logActivity('api.admin.catalogue.member_add', 'catalogue', (string)$catalogueId, [
+                    'song_id' => $songId, 'added' => $added,
+                ]);
+                sendJson([
+                    'ok' => true, 'catalogue_id' => $catalogueId, 'song_id' => $songId,
+                    'added' => $added, 'title' => $songTitle,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.catalogue.member_add', 'catalogue', (string)$catalogueId, $e);
+                error_log('[admin_catalogue_member_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add song to catalogue.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: remove a song from a catalogue.
+         * POST body: { catalogue_id (required), song_id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_catalogue_member_remove': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!catalogueAdminTableExists($db)) {
+                sendJson(['error' => 'Collections registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body        = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $catalogueId = (int)($body['catalogue_id'] ?? 0);
+            $songId      = trim((string)($body['song_id'] ?? ''));
+            if ($catalogueId <= 0 || $songId === '') {
+                sendJson(['error' => 'catalogue_id and song_id required.'], 400);
+                break;
+            }
+
+            try {
+                $removed = catalogueAdminRemoveMember($db, $catalogueId, $songId);
+
+                logActivity('api.admin.catalogue.member_remove', 'catalogue', (string)$catalogueId, [
+                    'song_id' => $songId, 'removed' => $removed,
+                ]);
+                sendJson(['ok' => true, 'catalogue_id' => $catalogueId, 'song_id' => $songId, 'removed' => $removed]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.catalogue.member_remove', 'catalogue', (string)$catalogueId, $e);
+                error_log('[admin_catalogue_member_remove] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove song from catalogue.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: create a catalogue ("Collection") from an uploaded MARCXML
+         * file (#1765 Feature 5, ported to the API by API-coverage batch
+         * 6b — .claude/api-coverage-2026-08-28.md §4.3 A17, owner-confirmed
+         * native-curator surface, Q1=yes)
+         *
+         * POST multipart/form-data: marcxml_file (required file field).
+         * Imported HIDDEN (Visibility=admin_only) so a curator reviews it
+         * before it goes public — mirrors manage/catalogues.php's
+         * `marcxml_import` POST handler exactly. Parses via the shared
+         * includes/marcxml.php core through manage/includes/
+         * marcxml_admin.php's thin wiring (rule #22); writes via the SAME
+         * catalogueAdminCreate()/catalogueAdminPersistPublicationIds() cores
+         * admin_catalogue_create/update already use above — never a forked
+         * INSERT. A slightly-off identifier is skipped, not fatal.
+         * Returns 201 + new id/slug/title + any skip/unmapped notes.
+         * ----------------------------------------------------------------- */
+        case 'admin_catalogue_marcxml_import': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!catalogueAdminTableExists($db)) {
+                sendJson(['error' => 'Collections registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+
+            $parsed = marcxmlAdmin_parseUpload($_FILES['marcxml_file'] ?? [], 'catalogue');
+            if (!$parsed['ok']) {
+                sendJson(['error' => $parsed['error']], 400);
+                break;
+            }
+            $title = trim((string)($parsed['fields']['Title'] ?? ''));
+            if ($title === '') {
+                sendJson(['error' => 'The MARCXML record has no title (245 $a) to create a Collection from.'], 422);
+                break;
+            }
+            $title = mb_substr($title, 0, 255);
+            [$ids, $skipped] = marcxmlAdmin_cleanPublicationIdentifiers($parsed['fields'], [
+                'ArkId' => 'ark', 'OpenLibraryWorkId' => 'openlibrary-work', 'OpenLibraryEditionId' => 'openlibrary-edition',
+            ]);
+
+            try {
+                $base = catalogueAdminSlugify($title); if ($base === '') { $base = 'collection'; }
+                $base = mb_substr($base, 0, 250);
+                $slug = $base; $suffix = 1;
+                while (catalogueAdminSlugTaken($db, $slug)) {
+                    $suffix++; $slug = $base . '-' . $suffix;
+                }
+
+                /* catalogueAdminCreate() pairs the INSERT with minting this
+                   Collection's permanent IL-id (ILC…, #1860 go-live). */
+                $newId = catalogueAdminCreate($db, [
+                    'title' => $title, 'slug' => $slug, 'description' => null,
+                    'visibility' => 'admin_only', 'sortOrder' => 0, 'colour' => '',
+                ]);
+                if (catalogueAdminPubIdColumnsReady($db)) {
+                    catalogueAdminPersistPublicationIds($db, $newId, [
+                        'ark' => $ids['ArkId'], 'olWork' => $ids['OpenLibraryWorkId'], 'olEdition' => $ids['OpenLibraryEditionId'],
+                    ]);
+                }
+
+                logActivity('api.admin.catalogue.marcxml_import', 'catalogue', (string)$newId, [
+                    'title' => $title, 'slug' => $slug,
+                ]);
+                sendJson([
+                    'ok'         => true,
+                    'id'         => $newId,
+                    'slug'       => $slug,
+                    'title'      => $title,
+                    'visibility' => 'admin_only',
+                    'skipped'    => $skipped,
+                    'unmapped'   => array_slice($parsed['unmapped'], 0, 12),
+                ], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.catalogue.marcxml_import', 'catalogue', '', $e, ['title' => $title]);
+                error_log('[admin_catalogue_marcxml_import] ' . $e->getMessage());
+                sendJson(['error' => 'Could not import Collection from MARCXML.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — SONGBOOK SERIES CRUD (#782/#1765, API-coverage batch
+         * 4b-i A5)
+         *
+         * Mirrors /manage/songbook-series.php's `create`/`update`/`delete`
+         * POST handlers, via the shared core
+         * includes/songbook_series_admin.php (rule #22). The page's
+         * `marcxml_import` action is now ALSO covered here (API-coverage
+         * batch 6b, .claude/api-coverage-2026-08-28.md §4.3 A17 —
+         * owner-confirmed native-curator surface, Q1=yes) as
+         * `admin_songbook_series_marcxml_import` below, written through
+         * this SAME songbookSeriesAdminCreate()/
+         * songbookSeriesAdminPersistPublicationIds() core; the page's own
+         * marcxml_import POST handler is unchanged (still self-contained,
+         * not re-pointed at this file — out of scope for this batch).
+         * Gate: userHasEntitlement('manage_songbooks') —
+         * identical to manage/songbook-series.php's own page gate (rule
+         * #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a songbook series row
+         * POST body: { name (required), slug?, description?, colour?,
+         *   isbn?, issn?, ark_id?, openlibrary_work_id?,
+         *   openlibrary_edition_id? }
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_series_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!songbookSeriesAdminTableExists($db)) {
+                sendJson(['error' => 'Songbook Series registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldError] = songbookSeriesAdminValidateCoreFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            [$pubIds, $pubError] = songbookSeriesAdminValidatePublicationIds($body);
+            if ($pubError !== null) { sendJson(['error' => $pubError], 400); break; }
+
+            if (songbookSeriesAdminSlugTaken($db, $fields['slug'])) {
+                sendJson(['error' => "Slug '{$fields['slug']}' already taken — pick another."], 409);
+                break;
+            }
+
+            try {
+                $newId = songbookSeriesAdminCreate($db, $fields);
+                if (songbookSeriesAdminPubIdColumnsReady($db)) {
+                    songbookSeriesAdminPersistPublicationIds($db, $newId, $pubIds);
+                }
+
+                logActivity('api.admin.songbook_series.create', 'songbook_series', (string)$newId, [
+                    'name' => $fields['name'], 'slug' => $fields['slug'],
+                ]);
+                sendJson(['ok' => true, 'id' => $newId, 'name' => $fields['name'], 'slug' => $fields['slug']], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook_series.create', 'songbook_series', '', $e, ['name' => $fields['name'] ?? '']);
+                error_log('[admin_songbook_series_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create songbook series.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a songbook series' scalar fields, optionally
+         * reconciling its membership list. `member_ids` OMITTED means
+         * "leave membership unchanged" (the same contract
+         * admin_publisher_update's `aliases` field already uses); an
+         * explicit array (incl. []) reconciles membership to EXACTLY that
+         * list — mirrors the page's edit-modal reconcile, which always
+         * resubmits the full current list.
+         * POST body: { id (required), name (required), slug?, description?,
+         *   colour?, isbn?, issn?, ark_id?, openlibrary_work_id?,
+         *   openlibrary_edition_id?, member_ids?: [songbook_id],
+         *   member_sort?: {songbook_id: sort_order} }
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_series_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!songbookSeriesAdminTableExists($db)) {
+                sendJson(['error' => 'Songbook Series registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Series id required.'], 400); break; }
+
+            [$fields, $fieldError] = songbookSeriesAdminValidateCoreFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            [$pubIds, $pubError] = songbookSeriesAdminValidatePublicationIds($body);
+            if ($pubError !== null) { sendJson(['error' => $pubError], 400); break; }
+
+            $hasMembershipUpdate = array_key_exists('member_ids', $body);
+            $postedIds = []; $postedSrt = [];
+            if ($hasMembershipUpdate) {
+                [$postedIds, $postedSrt] = songbookSeriesAdminParseMemberPost(
+                    $body['member_ids'],
+                    $body['member_sort'] ?? []
+                );
+            }
+
+            try {
+                $before = songbookSeriesAdminFetch($db, $id);
+                if (!$before) { sendJson(['error' => 'Series not found.'], 404); break; }
+
+                if (songbookSeriesAdminSlugTaken($db, $fields['slug'], $id)) {
+                    sendJson(['error' => "Slug '{$fields['slug']}' already taken by another series."], 409);
+                    break;
+                }
+
+                $hasPubIdCols = songbookSeriesAdminPubIdColumnsReady($db);
+                $db->begin_transaction();
+                try {
+                    songbookSeriesAdminUpdate($db, $id, $fields);
+                    if ($hasPubIdCols) {
+                        songbookSeriesAdminPersistPublicationIds($db, $id, $pubIds);
+                    }
+                    if ($hasMembershipUpdate) {
+                        songbookSeriesAdminReplaceMembership($db, $id, $postedIds, $postedSrt);
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                /* Read the CURRENT member list back (rule #35 — reflects
+                   what was actually stored, not what was posted; also the
+                   correct list when membership was left unchanged). */
+                $members = songbookSeriesAdminMembers($db, $id);
+
+                logActivity('api.admin.songbook_series.update', 'songbook_series', (string)$id, [
+                    'name' => $fields['name'], 'membership_updated' => $hasMembershipUpdate,
+                    'member_count' => count($members),
+                ]);
+                sendJson([
+                    'ok'      => true,
+                    'id'      => $id,
+                    'name'    => $fields['name'],
+                    'slug'    => $fields['slug'],
+                    'members' => $members,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook_series.update', 'songbook_series', (string)$id, $e);
+                error_log('[admin_songbook_series_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update songbook series.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a songbook series row. tblSongbookSeriesMembership
+         * cascades via its FK (ON DELETE CASCADE) — member songbooks
+         * themselves are untouched.
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_series_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!songbookSeriesAdminTableExists($db)) {
+                sendJson(['error' => 'Songbook Series registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Series id required.'], 400); break; }
+
+            try {
+                $row = songbookSeriesAdminFetch($db, $id);
+                if (!$row) { sendJson(['error' => 'Series not found.'], 404); break; }
+
+                songbookSeriesAdminDelete($db, $id);
+
+                logActivity('api.admin.songbook_series.delete', 'songbook_series', (string)$id, [
+                    'name' => (string)$row['Name'],
+                ]);
+                sendJson(['ok' => true, 'id' => $id, 'name' => (string)$row['Name']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook_series.delete', 'songbook_series', (string)$id, $e);
+                error_log('[admin_songbook_series_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete songbook series.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: create a songbook series from an uploaded MARCXML file
+         * (#1765 Feature 5, ported to the API by API-coverage batch 6b —
+         * .claude/api-coverage-2026-08-28.md §4.3 A17, owner-confirmed
+         * native-curator surface, Q1=yes)
+         *
+         * POST multipart/form-data: marcxml_file (required file field).
+         * Mirrors manage/songbook-series.php's `marcxml_import` POST
+         * handler exactly. Parses via the shared includes/marcxml.php core
+         * through manage/includes/marcxml_admin.php's thin wiring
+         * (rule #22); writes via the SAME songbookSeriesAdminCreate()/
+         * songbookSeriesAdminPersistPublicationIds() cores
+         * admin_songbook_series_create/update already use above — never a
+         * forked INSERT. A slightly-off identifier is skipped, not fatal.
+         * Returns 201 + new id/name/slug + any skip/unmapped notes.
+         * ----------------------------------------------------------------- */
+        case 'admin_songbook_series_marcxml_import': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!songbookSeriesAdminTableExists($db)) {
+                sendJson(['error' => 'Songbook Series registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                       . 'includes'  . DIRECTORY_SEPARATOR . 'marcxml_admin.php';
+
+            $parsed = marcxmlAdmin_parseUpload($_FILES['marcxml_file'] ?? [], 'series');
+            if (!$parsed['ok']) {
+                sendJson(['error' => $parsed['error']], 400);
+                break;
+            }
+            $name = trim((string)($parsed['fields']['Name'] ?? ''));
+            if ($name === '') {
+                sendJson(['error' => 'The MARCXML record has no title (245 $a) to create a series from.'], 422);
+                break;
+            }
+            $name = mb_substr($name, 0, 120);
+            [$ids, $skipped] = marcxmlAdmin_cleanPublicationIdentifiers($parsed['fields'], [
+                'Isbn' => 'isbn', 'Issn' => 'issn', 'ArkId' => 'ark',
+                'OpenLibraryWorkId' => 'openlibrary-work', 'OpenLibraryEditionId' => 'openlibrary-edition',
+            ]);
+
+            try {
+                $base = songbookSeriesAdminSlugify($name); if ($base === '') { $base = 'series'; }
+                $base = mb_substr($base, 0, 112);
+                $slug = $base; $suffix = 1;
+                while (songbookSeriesAdminSlugTaken($db, $slug)) {
+                    $suffix++; $slug = $base . '-' . $suffix;
+                }
+
+                $newId = songbookSeriesAdminCreate($db, [
+                    'name' => $name, 'slug' => $slug, 'description' => '', 'colour' => '',
+                ]);
+                if (songbookSeriesAdminPubIdColumnsReady($db)) {
+                    songbookSeriesAdminPersistPublicationIds($db, $newId, [
+                        'isbn' => $ids['Isbn'], 'issn' => $ids['Issn'], 'ark' => $ids['ArkId'],
+                        'olWork' => $ids['OpenLibraryWorkId'], 'olEdition' => $ids['OpenLibraryEditionId'],
+                    ]);
+                }
+
+                logActivity('api.admin.songbook_series.marcxml_import', 'songbook_series', (string)$newId, [
+                    'name' => $name, 'slug' => $slug,
+                ]);
+                sendJson([
+                    'ok'       => true,
+                    'id'       => $newId,
+                    'name'     => $name,
+                    'slug'     => $slug,
+                    'skipped'  => $skipped,
+                    'unmapped' => array_slice($parsed['unmapped'], 0, 12),
+                ], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.songbook_series.marcxml_import', 'songbook_series', '', $e, ['name' => $name]);
+                error_log('[admin_songbook_series_marcxml_import] ' . $e->getMessage());
+                sendJson(['error' => 'Could not import songbook series from MARCXML.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — LANGUAGE REGISTRY CRUD + REMAP (#681/#736/#738,
+         * API-coverage batch 4b-ii A6)
+         *
+         * Mirrors /manage/languages.php's `create`/`update`/`toggle_active`/
+         * `delete`/`remap_tag` POST handlers, via the shared core
+         * includes/language_admin.php (rule #22). The remap action's WRITE
+         * core stays includes/language_tag_audit.php's languageTagRemap()
+         * (already the ONE remap writer, unchanged by this batch) — its
+         * 'line-path' branch goes through lyricLinesEditableComponents() /
+         * lyricLinesWriteComponents(), NEVER a raw UPDATE against
+         * tblLyricLines.LanguageCode (rule #25). The PUBLIC language reads
+         * (`languages`/`scripts`/`regions`/`variants` + their `*_search`
+         * actions) are untouched by this batch. Gate:
+         * userHasEntitlement('manage_languages') — identical to
+         * manage/languages.php's own page gate (rule #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create a tblLanguages row
+         * POST body: { code (required), name (required), native_name?,
+         *   text_direction? (ltr|rtl, default ltr), scope? (default
+         *   individual), is_active? }
+         * ----------------------------------------------------------------- */
+        case 'admin_language_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_languages', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldErrors] = languageAdminValidateFields(
+                (string)($body['code']           ?? ''),
+                (string)($body['name']           ?? ''),
+                (string)($body['native_name']    ?? ''),
+                (string)($body['text_direction'] ?? 'ltr'),
+                (string)($body['scope']          ?? 'individual')
+            );
+            if ($fieldErrors) { sendJson(['error' => 'Validation failed.', 'fields' => $fieldErrors], 400); break; }
+            $isActive = !empty($body['is_active']) ? 1 : 0;
+
+            try {
+                /* Check the Code isn't already taken — friendlier than
+                   waiting for the unique-key violation (matches the page). */
+                if (languageAdminCodeExists($db, $fields['code'])) {
+                    sendJson(['error' => 'A language with this code already exists.', 'fields' => ['code' => 'Already in use.']], 400);
+                    break;
+                }
+
+                languageAdminCreate($db, $fields['code'], $fields['name'], $fields['native'], $fields['textDir'], $fields['scope'], $isActive);
+
+                logActivity('api.admin.language.create', 'language', $fields['code'], [
+                    'name' => $fields['name'], 'native_name' => $fields['native'],
+                    'scope' => $fields['scope'], 'text_dir' => $fields['textDir'], 'is_active' => $isActive,
+                ]);
+                sendJson(['ok' => true, 'code' => $fields['code']], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.language.create', 'language', $fields['code'] ?? '', $e);
+                error_log('[admin_language_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create language.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update a tblLanguages row's Name/NativeName/TextDirection/
+         * Scope/IsActive. Code is the PK — never rewritten (a "rename" is
+         * delete+create, matching the page's read-only Code field in edit
+         * mode).
+         * POST body: { code (required), name (required), native_name?,
+         *   text_direction?, scope?, is_active? }
+         * ----------------------------------------------------------------- */
+        case 'admin_language_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_languages', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldErrors] = languageAdminValidateFields(
+                (string)($body['code']           ?? ''),
+                (string)($body['name']           ?? ''),
+                (string)($body['native_name']    ?? ''),
+                (string)($body['text_direction'] ?? 'ltr'),
+                (string)($body['scope']          ?? 'individual')
+            );
+            if ($fieldErrors) { sendJson(['error' => 'Validation failed.', 'fields' => $fieldErrors], 400); break; }
+            $isActive = !empty($body['is_active']) ? 1 : 0;
+
+            try {
+                /* Capture the before-state for the audit diff. */
+                $before = languageAdminFetch($db, $fields['code']);
+                if (!$before) { sendJson(['error' => 'Language not found.'], 404); break; }
+
+                languageAdminUpdate($db, $fields['code'], $fields['name'], $fields['native'], $fields['textDir'], $fields['scope'], $isActive);
+
+                $after = [
+                    'Name' => $fields['name'], 'NativeName' => $fields['native'],
+                    'TextDirection' => $fields['textDir'], 'Scope' => $fields['scope'],
+                    'IsActive' => $isActive,
+                ];
+                $diff = [];
+                foreach ($after as $k => $v) {
+                    if ((string)($before[$k] ?? '') !== (string)$v) {
+                        $diff[$k] = ['from' => $before[$k] ?? null, 'to' => $v];
+                    }
+                }
+
+                logActivity('api.admin.language.update', 'language', $fields['code'], ['diff' => $diff]);
+                sendJson(['ok' => true, 'code' => $fields['code'], 'changed' => count($diff)]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.language.update', 'language', $fields['code'] ?? '', $e);
+                error_log('[admin_language_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update language.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: cheap one-shot IsActive toggle — the table's per-row
+         * on/off switch.
+         * POST body: { code (required), is_active? }
+         * ----------------------------------------------------------------- */
+        case 'admin_language_toggle': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_languages', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db       = getDbMysqli();
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $code     = trim((string)($body['code'] ?? ''));
+            $isActive = !empty($body['is_active']) ? 1 : 0;
+            if ($code === '') { sendJson(['error' => 'Missing code.'], 400); break; }
+
+            try {
+                $touched = languageAdminToggleActive($db, $code, $isActive);
+                if ($touched === 0) {
+                    sendJson(['error' => 'Language not found, or value already matched.'], 404);
+                    break;
+                }
+
+                logActivity('api.admin.language.toggle', 'language', $code, ['is_active' => $isActive]);
+                sendJson(['ok' => true, 'code' => $code, 'is_active' => $isActive]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.language.toggle', 'language', $code, $e);
+                error_log('[admin_language_toggle] ' . $e->getMessage());
+                sendJson(['error' => 'Could not toggle language.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a tblLanguages row. In-use (songs/songbooks citing
+         * the code, incl. every `<code>-*` sub-tag) refuses with 409 unless
+         * `force` is sent — mirrors the page's two-step confirm.
+         * POST body: { code (required), force? }
+         * ----------------------------------------------------------------- */
+        case 'admin_language_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_languages', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db    = getDbMysqli();
+            $body  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $code  = trim((string)($body['code'] ?? ''));
+            $force = !empty($body['force']);
+            if ($code === '') { sendJson(['error' => 'Missing code.'], 400); break; }
+
+            try {
+                $usage = languageAdminUsageCounts($db, $code);
+                if (!$force && ($usage['songs'] + $usage['songbooks']) > 0) {
+                    sendJson([
+                        'error'          => 'Language is in use.',
+                        'songs'          => $usage['songs'],
+                        'songbooks'      => $usage['songbooks'],
+                        'requires_force' => true,
+                    ], 409);
+                    break;
+                }
+
+                $deleted = languageAdminDelete($db, $code);
+                if ($deleted === 0) { sendJson(['error' => 'Language not found.'], 404); break; }
+
+                logActivity('api.admin.language.delete', 'language', $code, [
+                    'forced' => $force ? 1 : 0, 'songs_at_time' => $usage['songs'], 'sbooks_at_time' => $usage['songbooks'],
+                ]);
+                sendJson(['ok' => true, 'code' => $code]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.language.delete', 'language', $code, $e);
+                error_log('[admin_language_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete language.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: remap every occurrence of `from_tag` to `to_tag` across
+         * every derived source (BCP 47 registry plan §5.3). Type-the-count
+         * confirm (#1218 guard shape) via the shared
+         * languageAdminRemapPreflight() glue (rule #22/#35) — the same
+         * 400/404/409 decisions manage/languages.php's remap_tag action
+         * makes. The actual write is languageTagRemap() (unchanged, ONE
+         * core, includes/language_tag_audit.php).
+         * POST body: { from_tag (required), to_tag (required),
+         *   confirm_total (required — must equal the LIVE usage total) }
+         * ----------------------------------------------------------------- */
+        case 'admin_language_remap_tag': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_languages', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db           = getDbMysqli();
+            $body         = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $fromTag      = trim((string)($body['from_tag'] ?? ''));
+            $toTag        = trim((string)($body['to_tag']   ?? ''));
+            $confirmTotal = $body['confirm_total'] ?? null;
+
+            try {
+                $pre = languageAdminRemapPreflight($db, $fromTag, $toTag, $confirmTotal);
+                if (!$pre['ok']) {
+                    $errBody = ['error' => $pre['error']];
+                    if ($pre['code'] === 409) {
+                        $errBody['live_total']       = $pre['liveTotal'];
+                        $errBody['requires_confirm'] = true;
+                    }
+                    sendJson($errBody, $pre['code']);
+                    break;
+                }
+
+                $result = languageTagRemap($db, $fromTag, $toTag);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], 400); break; }
+
+                logActivity('api.admin.language.remap_tag', 'language', $fromTag, [
+                    'to' => $toTag, 'per_source' => $result['perSource'],
+                    'songs_touched' => $result['songsTouched'], 'songs_remaining' => $result['songsRemaining'],
+                ]);
+                sendJson([
+                    'ok'              => true,
+                    'from_tag'        => $fromTag,
+                    'to_tag'          => $toTag,
+                    'per_source'      => $result['perSource'],
+                    'songs_touched'   => $result['songsTouched'],
+                    'songs_remaining' => $result['songsRemaining'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.language.remap_tag', 'language', $fromTag, $e);
+                error_log('[admin_language_remap_tag] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remap language tag.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — EXTERNAL-LINK TYPES + URL PATTERNS (#845/#1748 §5.2,
+         * API-coverage batch 4b-ii A7, #1992 curator-mintable types)
+         *
+         * Mirrors /manage/external-link-types.php's write actions via the
+         * shared core includes/external_link_type_admin.php (rule #22):
+         *   - `admin_external_link_type_save`   flip an EXISTING type's
+         *     IsActive/AppliesTo AND wholesale-replace its URL patterns in
+         *     ONE write (mirrors the page's `save_type_patterns`).
+         *   - `admin_external_link_type_create` mint a BRAND-NEW type plus
+         *     its initial pattern batch (#1992 — mirrors the page's
+         *     `create_type` manual form AND its guided-wizard
+         *     `wizard_create_type` AJAX action; all three funnels call the
+         *     SAME externalLinkTypeAdminValidateNewType()/…Create()).
+         * Owner decision A (#1992) confirmed types ARE curator-mintable —
+         * this supersedes the earlier "no create/delete, curated content
+         * only" stance that used to sit here. Drives tblExternalLinkTypes +
+         * tblExternalLinkPatterns (rule #11/#12). Gate:
+         * userHasEntitlement('manage_external_link_types') — identical to
+         * the page's own gate on both actions (rule #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: save a link type's IsActive/AppliesTo + replace its whole
+         * pattern list.
+         * POST body: { type_id (required), is_active?, applies_to?
+         *   (list<string>), patterns? (list<{host,path?,
+         *   match_subdomains?,priority?,note?,is_active?}>) }
+         * ----------------------------------------------------------------- */
+        case 'admin_external_link_type_save': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_external_link_types', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $schemaReady = externalLinkTypeAdminSchemaReady($db);
+            if (!$schemaReady['patterns']) {
+                sendJson(['error' => 'External-link pattern registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $typeId = (int)($body['type_id'] ?? 0);
+            if ($typeId <= 0) { sendJson(['error' => 'Type id is required.'], 400); break; }
+            $isActive = !empty($body['is_active']) ? 1 : 0;
+
+            $postedApplies = $body['applies_to'] ?? [];
+            if (!is_array($postedApplies)) { $postedApplies = []; }
+
+            /* Transpose the JSON array-of-objects shape a native client
+               naturally sends into the SAME parallel-array shape
+               externalLinkTypeAdminNormalisePatterns() already accepts
+               (the page's own form-POST shape) — one normaliser, two
+               callers with different wire shapes (rule #22/#35). */
+            $rawPatterns = $body['patterns'] ?? [];
+            if (!is_array($rawPatterns)) { $rawPatterns = []; }
+            /* Security audit F2 — row-count DoS cap
+               (IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP,
+               includes/external_link_type_admin.php), checked before the
+               transpose loop even runs — this JSON body is bounded only by
+               post_max_size, not a form's max_input_vars. */
+            if (count($rawPatterns) > IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP) {
+                sendJson(['error' => 'Too many pattern rows in one request.'], 422);
+                break;
+            }
+            $pHosts = []; $pPaths = []; $pSubs = []; $pPrios = []; $pNotes = []; $pActive = [];
+            foreach ($rawPatterns as $p) {
+                if (!is_array($p)) { continue; }
+                $pHosts[]  = $p['host'] ?? '';
+                $pPaths[]  = $p['path'] ?? '';
+                $pSubs[]   = !empty($p['match_subdomains']) ? 1 : 0;
+                $pPrios[]  = $p['priority'] ?? 100;
+                $pNotes[]  = $p['note'] ?? '';
+                $pActive[] = !empty($p['is_active']) ? 1 : 0;
+            }
+
+            try {
+                $existingAppliesTo = externalLinkTypeAdminFetchAppliesTo($db, $typeId);
+                if ($existingAppliesTo === null) { sendJson(['error' => 'Link type not found.'], 404); break; }
+
+                $applies     = externalLinkTypeAdminResolveAppliesTo($postedApplies, $existingAppliesTo);
+                $patternRows = externalLinkTypeAdminNormalisePatterns($pHosts, $pPaths, $pSubs, $pPrios, $pNotes, $pActive);
+                $insertCount = externalLinkTypeAdminSave($db, $typeId, $isActive, $applies['value'], $patternRows);
+
+                logActivity('api.admin.external_link_type.save', 'external_link_type', (string)$typeId, [
+                    'is_active' => (bool)$isActive, 'pattern_count' => $insertCount, 'applies_to' => $applies['value'],
+                ]);
+                sendJson([
+                    'ok'                  => true,
+                    'id'                  => $typeId,
+                    'pattern_count'       => $insertCount,
+                    'applies_to'          => $applies['value'],
+                    'applies_to_warning'  => trim($applies['warning']),
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.external_link_type.save', 'external_link_type', (string)$typeId, $e);
+                error_log('[admin_external_link_type_save] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save external-link type.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: mint a BRAND-NEW link type + its initial pattern batch
+         * (#1992). Mirrors /manage/external-link-types.php's manual
+         * `create_type` form POST and its guided-wizard `wizard_create_type`
+         * AJAX action — all three funnels call the SAME
+         * externalLinkTypeAdminValidateNewType()/…Create() core (rule #22).
+         * POST body: { name (required), slug?, category (required),
+         *   icon_class?, applies_to (required, list<string>),
+         *   allow_multiple?, is_active?, patterns? (list<{host,path?,
+         *   match_subdomains?,priority?,note?,is_active?}>) }
+         * ----------------------------------------------------------------- */
+        case 'admin_external_link_type_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_external_link_types', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $schemaReady = externalLinkTypeAdminSchemaReady($db);
+            if (!$schemaReady['types'] || !$schemaReady['patterns']) {
+                sendJson(['error' => 'External-link type registry is not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body          = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $rawName       = (string)($body['name'] ?? '');
+            $rawSlug       = (string)($body['slug'] ?? '');
+            $rawCategory   = (string)($body['category'] ?? '');
+            $rawIconClass  = (string)($body['icon_class'] ?? '');
+            $postedApplies = $body['applies_to'] ?? [];
+            if (!is_array($postedApplies)) { $postedApplies = []; }
+            $allowMultiple = !empty($body['allow_multiple']) ? 1 : 0;
+            /* Default Active=ON when the caller omits the key entirely
+               (mirrors the manual form / wizard's own default-checked
+               switch) — only an EXPLICIT falsy value turns it off. */
+            $isActiveNew = array_key_exists('is_active', $body) ? (!empty($body['is_active']) ? 1 : 0) : 1;
+
+            [$fields, $validationError, $status] = externalLinkTypeAdminValidateNewType(
+                $db, $rawName, $rawSlug, $rawCategory, $rawIconClass, $postedApplies, $allowMultiple, $isActiveNew
+            );
+            if ($validationError !== null) {
+                sendJson(['error' => $validationError], $status);
+                break;
+            }
+
+            /* Transpose the JSON array-of-objects pattern shape into the
+               SAME parallel-array shape externalLinkTypeAdminNormalisePatterns()
+               already accepts — mirrors admin_external_link_type_save above
+               (rule #22/#35), never a second normaliser. */
+            $rawPatterns = $body['patterns'] ?? [];
+            if (!is_array($rawPatterns)) { $rawPatterns = []; }
+            /* Security audit F2 — row-count DoS cap
+               (IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP,
+               includes/external_link_type_admin.php), checked before the
+               transpose loop even runs. */
+            if (count($rawPatterns) > IHYMNS_EXTERNAL_LINK_PATTERN_ROW_CAP) {
+                sendJson(['error' => 'Too many pattern rows in one request.'], 422);
+                break;
+            }
+            $pHosts = []; $pPaths = []; $pSubs = []; $pPrios = []; $pNotes = []; $pActive = [];
+            foreach ($rawPatterns as $p) {
+                if (!is_array($p)) { continue; }
+                $pHosts[]  = $p['host'] ?? '';
+                $pPaths[]  = $p['path'] ?? '';
+                $pSubs[]   = !empty($p['match_subdomains']) ? 1 : 0;
+                $pPrios[]  = $p['priority'] ?? 100;
+                $pNotes[]  = $p['note'] ?? '';
+                $pActive[] = !empty($p['is_active']) ? 1 : 0;
+            }
+            $patternRows = externalLinkTypeAdminNormalisePatterns($pHosts, $pPaths, $pSubs, $pPrios, $pNotes, $pActive);
+
+            try {
+                $newId = externalLinkTypeAdminCreate($db, $fields, $patternRows);
+
+                logActivity('api.admin.external_link_type.create', 'external_link_type', (string)$newId, [
+                    'slug' => $fields['slug'], 'name' => $fields['name'], 'pattern_count' => count($patternRows),
+                ]);
+                sendJson([
+                    'ok'            => true,
+                    'id'            => $newId,
+                    'slug'          => $fields['slug'],
+                    'name'          => $fields['name'],
+                    'pattern_count' => count($patternRows),
+                ]);
+            } catch (ExternalLinkTypeDuplicateSlugException $e) {
+                sendJson(['error' => $e->getMessage()], 409);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.external_link_type.create', 'external_link_type', $fields['slug'] ?? '', $e);
+                error_log('[admin_external_link_type_create] ' . $e->getMessage());
+                sendJson(['error' => 'Could not create external-link type.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — PRINT TEMPLATES CRUD + CUSTOM LAYOUT (#1350/#1767,
+         * API-coverage batch 4b-ii A8)
+         *
+         * Mirrors /manage/print-templates.php's `save`/`clone`/`delete`/
+         * `set_default`/`layout_save`/`layout_delete` POST handlers.
+         * The tblPrintTemplates scalar-row writes go through the shared
+         * core includes/print_template_admin.php (rule #22); block/page-
+         * option VALIDATION stays the ONE rulebook
+         * includes/print_template_schema.php ($BLOCK_SCHEMA/
+         * $SHOWIF_CONDITIONS/$PAGE_OPTION_SCHEMA/ptSanitiseBlocks()/
+         * ptSanitisePageOptions(), also shared with manage/print-pdf.php —
+         * rule #35). The custom full-page layout (`layout_save`/
+         * `layout_delete`) is ALREADY a single shared core —
+         * printCustomLayoutSave()/printCustomLayoutDelete()
+         * (includes/print_custom_layout.php) — called DIRECTLY here, never
+         * re-wrapped: printCustomLayoutSave() runs every upload through
+         * ihymnsSanitizeHtml($raw, 'layout') (rule #39) before it ever
+         * reaches storage. The page's `import` (paste-JSON) action is OUT
+         * OF SCOPE for this batch (.claude/api-coverage-2026-08-28.md §4.3
+         * A8 / §9 Batch 4 propose only these six). Gate:
+         * userHasEntitlement('manage_songbooks') — identical to the page's
+         * own gate (rule #1587).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: create or update a Scope='song' print template.
+         * POST body: { id? (0/absent = create), name (required),
+         *   blocks (required, array — or blocks_json, a JSON string, for
+         *   a form-POST-shaped caller), page_options? (or page_options_json),
+         *   is_active? }
+         * ----------------------------------------------------------------- */
+        case 'admin_print_template_save': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!printTemplateAdminTableExists($db)) {
+                sendJson(['error' => 'Print templates are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id       = (int)($body['id'] ?? 0);
+            $isActive = !empty($body['is_active']) ? 1 : 0;
+
+            [$fields, $fieldError] = printTemplateAdminValidateContent(
+                (string)($body['name'] ?? ''),
+                $body['blocks']       ?? ($body['blocks_json']       ?? ''),
+                $body['page_options'] ?? ($body['page_options_json'] ?? ''),
+                $BLOCK_SCHEMA, $SHOWIF_CONDITIONS, $PAGE_OPTION_SCHEMA
+            );
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            try {
+                if ($id > 0) {
+                    /* UPDATE — scoped to 'song' so this can never touch
+                       another scope's rows. */
+                    $before = printTemplateAdminFetch($db, $id);
+                    if (!$before) { sendJson(['error' => 'Template not found.'], 404); break; }
+
+                    printTemplateAdminUpdate($db, $id, $fields['name'], $fields['blocksJson'], $fields['pageOptsJson'], $isActive);
+
+                    logActivity('api.admin.print_template.update', 'print_template', (string)$id, [
+                        'name' => $fields['name'], 'blocks' => $fields['blocksCount'], 'is_active' => (bool)$isActive,
+                    ]);
+                    sendJson(['ok' => true, 'id' => $id, 'name' => $fields['name'], 'blocks' => $fields['blocksCount']]);
+                } else {
+                    /* INSERT — Scope='song', OwnerId NULL (curated),
+                       SortOrder appended to the end of the list. */
+                    $newId = printTemplateAdminCreate($db, $fields['name'], $fields['blocksJson'], $fields['pageOptsJson'], $isActive, (int)$authUser['Id']);
+
+                    logActivity('api.admin.print_template.create', 'print_template', (string)$newId, [
+                        'name' => $fields['name'], 'blocks' => $fields['blocksCount'],
+                    ]);
+                    sendJson(['ok' => true, 'id' => $newId, 'name' => $fields['name'], 'blocks' => $fields['blocksCount']], 201);
+                }
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.print_template.save', 'print_template', (string)$id, $e);
+                error_log('[admin_print_template_save] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save print template.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: clone a template into a fresh independent row (blocks +
+         * page options copied verbatim; the copy starts active, never
+         * default).
+         * POST body: { id (required — the source template) }
+         * ----------------------------------------------------------------- */
+        case 'admin_print_template_clone': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!printTemplateAdminTableExists($db)) {
+                sendJson(['error' => 'Print templates are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Template id required.'], 400); break; }
+
+            try {
+                $cloned = printTemplateAdminClone($db, $id, (int)$authUser['Id']);
+                if (!$cloned) { sendJson(['error' => 'Template not found.'], 404); break; }
+
+                logActivity('api.admin.print_template.clone', 'print_template', (string)$cloned['id'], [
+                    'source' => $id, 'name' => $cloned['name'],
+                ]);
+                sendJson(['ok' => true, 'id' => $cloned['id'], 'name' => $cloned['name'], 'source_id' => $id], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.print_template.clone', 'print_template', (string)$id, $e);
+                error_log('[admin_print_template_clone] ' . $e->getMessage());
+                sendJson(['error' => 'Could not clone print template.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a Scope='song' print template row.
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_print_template_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!printTemplateAdminTableExists($db)) {
+                sendJson(['error' => 'Print templates are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Template id required.'], 400); break; }
+
+            try {
+                $deleted = printTemplateAdminDelete($db, $id);
+                if ($deleted === 0) { sendJson(['error' => 'Template not found.'], 404); break; }
+
+                logActivity('api.admin.print_template.delete', 'print_template', (string)$id, []);
+                sendJson(['ok' => true, 'id' => $id]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.print_template.delete', 'print_template', (string)$id, $e);
+                error_log('[admin_print_template_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete print template.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: make ONE template the system default (#1767 J). Clears
+         * IsDefault on every other song template first (a single default
+         * is the invariant) and forces the chosen one active.
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_print_template_set_default': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!printTemplateAdminTableExists($db)) {
+                sendJson(['error' => 'Print templates are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Template id required.'], 400); break; }
+
+            try {
+                /* Existence check BEFORE the write — printTemplateAdminSetDefault()'s
+                   own affected_rows isn't a reliable existence signal (a
+                   template that's ALREADY the default touches 0 rows on a
+                   re-run — see that function's doc-comment). */
+                if (!printTemplateAdminFetch($db, $id)) { sendJson(['error' => 'Template not found.'], 404); break; }
+
+                printTemplateAdminSetDefault($db, $id);
+
+                logActivity('api.admin.print_template.set_default', 'print_template', (string)$id, []);
+                sendJson(['ok' => true, 'id' => $id]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.print_template.set_default', 'print_template', (string)$id, $e);
+                error_log('[admin_print_template_set_default] ' . $e->getMessage());
+                sendJson(['error' => 'Could not set default print template.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: save (create/replace) a template's custom full-page layout
+         * skin. THE ONE writer is printCustomLayoutSave()
+         * (includes/print_custom_layout.php) — this handler does no
+         * sanitisation/validation of its own; it only forwards the raw
+         * HTML and reports back whatever that ONE function decides
+         * (rule #39 — sanitised through ihymnsSanitizeHtml($raw,'layout')
+         * inside that function before it ever reaches storage).
+         * POST body: { id (required — an existing template), layout_html
+         *   (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_print_layout_save': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!printTemplateAdminTableExists($db)) {
+                sendJson(['error' => 'Print templates are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id      = (int)($body['id'] ?? 0);
+            $rawHtml = (string)($body['layout_html'] ?? '');
+
+            try {
+                $result = printCustomLayoutSave($id, $rawHtml, (int)$authUser['Id']);
+                if (!$result['ok']) {
+                    sendJson(['error' => $result['error'] ?? 'Could not save the custom layout.'], 400);
+                    break;
+                }
+
+                logActivity('api.admin.print_template.layout_save', 'print_template', (string)$id, [
+                    'sizeBytes' => $result['sizeBytes'] ?? null,
+                ]);
+                sendJson(['ok' => true, 'id' => $id, 'size_bytes' => $result['sizeBytes'] ?? null]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.print_template.layout_save', 'print_template', (string)$id, $e);
+                error_log('[admin_print_layout_save] ' . $e->getMessage());
+                sendJson(['error' => 'Could not save the custom layout.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: remove a template's custom layout (falls back to the
+         * standard document shell). THE ONE writer is
+         * printCustomLayoutDelete() (includes/print_custom_layout.php).
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_print_layout_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_songbooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!printTemplateAdminTableExists($db)) {
+                sendJson(['error' => 'Print templates are not available on this environment yet.'], 503);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Template id required.'], 400); break; }
+
+            try {
+                $ok = printCustomLayoutDelete($id);
+                if (!$ok) { sendJson(['error' => 'Could not remove the custom layout.'], 500); break; }
+
+                logActivity('api.admin.print_template.layout_delete', 'print_template', (string)$id, []);
+                sendJson(['ok' => true, 'id' => $id]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.print_template.layout_delete', 'print_template', (string)$id, $e);
+                error_log('[admin_print_layout_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not remove the custom layout.'], 500);
             }
             break;
         }
@@ -17708,6 +22851,1338 @@ if ($action !== null) {
                 'fetched'      => $result['fetched'],
                 'migrationLog' => $result['migrationLog'],
             ]);
+            break;
+        }
+
+        /* =================================================================
+         * API-COVERAGE BATCH 5 — curator workflows (#1969, plan
+         * `.claude/api-coverage-2026-08-28.md` §4.3/§9 A10/A11/A13/A14/A15/A16)
+         *
+         * Every gate below is the SAME entitlement the sibling manage/*.php
+         * page gates on (read from the page first, per the task's own
+         * instruction) — never a looser/tighter substitute. Every write
+         * delegates to a shared includes/*.php core the sibling page was
+         * re-pointed onto in this same batch (rule #22) — no forked SQL.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * A10 — Duplicate & counterpart songs (mirrors manage/duplicate-songs.php)
+         * Gates: merge/rebuild/auto_link = manage_duplicate_songs (the
+         * page's destructive/bulk-write gate); link/unlink =
+         * edit_songs (the page's curator gate). #1218's same-official-
+         * songbook force-guard is preserved EXACTLY inside
+         * duplicateSongMergeExecute() — never re-implemented or weakened
+         * here.
+         * ----------------------------------------------------------------- */
+
+        /* POST body: { survivor_id, duplicate_id, force?: bool }
+           force=1 is the #1218 §2 type-to-confirm escape hatch for a
+           same-official-songbook pair — the confirm ceremony itself lives
+           client-side; the server only re-checks the boolean + re-derives
+           the guard from the LIVE songbook rows, exactly as the page does. */
+        case 'admin_song_merge': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_duplicate_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_duplicate_songs entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'duplicate_song_admin.php';
+
+            $survivor  = (string)($body['survivor_id']  ?? '');
+            $duplicate = (string)($body['duplicate_id'] ?? '');
+            $force     = !empty($body['force']);
+            $userId    = (int)($authUser['Id'] ?? 0) ?: null;
+
+            try {
+                $verdict = duplicateSongMergeExecute($db, $survivor, $duplicate, $force, $userId);
+                if (!$verdict['ok']) {
+                    sendJson(['error' => $verdict['error']], $verdict['status']);
+                    break;
+                }
+                logActivity('api.admin.song.merge', 'song', $verdict['survivorId'], [
+                    'merged_from' => $verdict['mergedFrom'],
+                    'tables'      => $verdict['tables'],
+                ]);
+                sendJson(['ok' => true, 'survivorId' => $verdict['survivorId'], 'mergedFrom' => $verdict['mergedFrom']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.merge', 'song', $duplicate, $e);
+                error_log('[admin_song_merge] ' . $e->getMessage());
+                sendJson(['error' => 'Merge failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { song_ids: [SongId, ...] (>= 2), note?: string }
+           Cluster-batch: links every id to the FIRST id in the list,
+           pairwise, via the shared per-song core includes/song_link_
+           admin.php's songLinkAdd() — a behavioural MIRROR of api2.php's
+           song_link_add (api2.php itself was out of scope for this batch
+           and keeps its own copy; see song_link_admin.php's doc-block) —
+           never a forked bulk algorithm within THIS batch's own scope
+           (rule #22). A pair that is already in two DIFFERENT counterpart
+           groups stops the batch with that pair's own 409 (status is the
+           contract, rule #35); every id linked before the failure stays
+           linked — a partial batch is reported, not silently rolled back,
+           since each pairwise link is its own already-committed
+           transaction. */
+        case 'admin_song_link': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_songs entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_link_admin.php';
+
+            $ids = $body['song_ids'] ?? [];
+            if (is_string($ids)) { $ids = explode(',', $ids); }
+            $ids = array_values(array_unique(array_filter(
+                array_map(static fn($v): string => trim((string)$v), (array)$ids),
+                static fn(string $v): bool => $v !== ''
+            )));
+            $note = trim((string)($body['note'] ?? ''));
+            if (count($ids) < 2) {
+                sendJson(['error' => 'Provide at least two song_ids to link.'], 400);
+                break;
+            }
+
+            try {
+                $userId  = (int)($authUser['Id'] ?? 0) ?: null;
+                $groupId = null;
+                $results = [];
+                $failure = null;
+                $n = count($ids);
+                for ($i = 1; $i < $n; $i++) {
+                    $r = songLinkAdd($db, $ids[0], $ids[$i], $note, $userId);
+                    if (!$r['ok']) {
+                        $failure = $r + ['songId' => $ids[$i]];
+                        break;
+                    }
+                    $groupId = $r['groupId'];
+                    $results[] = ['songId' => $ids[$i]] + array_diff_key($r, ['ok' => 1]);
+                }
+                if ($failure !== null) {
+                    sendJson(['error' => $failure['error'], 'song_id' => $failure['songId'], 'linked' => $results], $failure['status']);
+                    break;
+                }
+                logActivity('api.admin.song.link', 'song', $ids[0], ['groupId' => $groupId, 'members' => $ids]);
+                sendJson(['ok' => true, 'groupId' => $groupId, 'members' => $ids, 'results' => $results]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.link', 'song', $ids[0] ?? '', $e);
+                error_log('[admin_song_link] ' . $e->getMessage());
+                sendJson(['error' => 'Link failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { song_ids: [SongId, ...] } (a single song_id is also
+           accepted for a one-song unlink). Cluster-batch removal — each id
+           is dropped from its OWN counterpart group independently via the
+           SAME per-song core (includes/song_link_admin.php's
+           songLinkRemove()) manage/duplicate-songs.php's own 'unlink'
+           action also calls — one remove implementation within this
+           batch's scope, and a behavioural MIRROR of api2.php's
+           song_link_remove (api2.php itself was out of scope this batch;
+           see song_link_admin.php's doc-block). */
+        case 'admin_song_unlink': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_songs entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_link_admin.php';
+
+            $ids = $body['song_ids'] ?? ($body['song_id'] ?? []);
+            if (is_string($ids)) { $ids = explode(',', $ids); }
+            $ids = array_values(array_unique(array_filter(
+                array_map(static fn($v): string => trim((string)$v), (array)$ids),
+                static fn(string $v): bool => $v !== ''
+            )));
+            if (count($ids) < 1) {
+                sendJson(['error' => 'Provide at least one song_id to unlink.'], 400);
+                break;
+            }
+
+            try {
+                $deleted = [];
+                foreach ($ids as $sid) {
+                    $r = songLinkRemove($db, null, $sid);
+                    $deleted[$sid] = (int)($r['deleted'] ?? 0);
+                }
+                logActivity('api.admin.song.unlink', 'song', $ids[0], ['song_ids' => $ids, 'deleted' => $deleted]);
+                sendJson(['ok' => true, 'deleted' => $deleted]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.unlink', 'song', $ids[0] ?? '', $e);
+                error_log('[admin_song_unlink] ' . $e->getMessage());
+                sendJson(['error' => 'Unlink failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST, no body — re-runs the fuzzy suggestion builder over the
+           whole catalogue (#1219). Mirrors manage/duplicate-songs.php's
+           'rebuild' action exactly (same shared core,
+           duplicateSongRebuildSuggestions()). Gate matches the page's
+           curator (edit_songs) gate — the page never required
+           manage_duplicate_songs for this read-scoring-only op. */
+        case 'admin_song_suggestions_rebuild': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_songs entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'duplicate_song_admin.php';
+
+            try {
+                $verdict = duplicateSongRebuildSuggestions();
+                if (!$verdict['ok']) {
+                    sendJson(['error' => $verdict['error']], $verdict['status']);
+                    break;
+                }
+                sendJson(['ok' => true, 'message' => $verdict['message']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.suggestions_rebuild', 'song', '', $e);
+                error_log('[admin_song_suggestions_rebuild] ' . $e->getMessage());
+                sendJson(['error' => 'Rebuild failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST, no body — bulk-link cross-book songs sharing a hard id
+           (ISWC/CCLI/ISRC, #1125). Mirrors manage/duplicate-songs.php's
+           'auto_link' action exactly (shared core, duplicateSongAutoLink(),
+           itself a thin wrapper over the pre-existing
+           autoLinkHardIdCounterparts()). Gate = manage_duplicate_songs —
+           the page's own gate for this bulk, non-interactive write. */
+        case 'admin_song_auto_link': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_duplicate_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_duplicate_songs entitlement is required.'], 403);
+                break;
+            }
+            $db = getDbMysqli();
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'duplicate_song_admin.php';
+
+            try {
+                $userId  = (int)($authUser['Id'] ?? 0) ?: null;
+                $verdict = duplicateSongAutoLink($db, $userId);
+                if (!$verdict['ok']) {
+                    sendJson(['error' => $verdict['error']], $verdict['status']);
+                    break;
+                }
+                $r = array_diff_key($verdict, ['ok' => 1]);
+                logActivity('api.admin.song.link.auto', 'song', '', $r);
+                sendJson(['ok' => true] + $r);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.auto_link', 'song', '', $e);
+                error_log('[admin_song_auto_link] ' . $e->getMessage());
+                sendJson(['error' => 'Auto-link failed.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A11 — Deleted songs restore/purge (mirrors manage/deleted-songs.php)
+         * Gates: restore = delete_songs (the page's own gate); purge =
+         * purge_songs (the page's separate, stricter per-action gate —
+         * D3 owner decision so a delete_songs-only role can never
+         * silently gain irreversible purge power). Both delegate to the
+         * ONE lifecycle core, includes/song_soft_delete.php, already
+         * shared with the page — no new core needed here.
+         * ----------------------------------------------------------------- */
+
+        /* POST body: { song_id } */
+        case 'admin_song_restore': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('delete_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The delete_songs entitlement is required.'], 403);
+                break;
+            }
+            $db     = getDbMysqli();
+            $body   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $songId = trim((string)($body['song_id'] ?? ''));
+            $userId = (int)($authUser['Id'] ?? 0) ?: null;
+
+            try {
+                $verdict = songRestore($db, $songId, $userId);
+                if (!$verdict['ok']) {
+                    sendJson(['error' => $verdict['error']], $verdict['status']);
+                    break;
+                }
+                logActivity('api.admin.song.restore', 'song', $songId, [
+                    'title'    => (string)($verdict['title'] ?? ''),
+                    'songbook' => (string)($verdict['songbook'] ?? ''),
+                ]);
+                sendJson(['ok' => true, 'songId' => $songId]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.restore', 'song', $songId, $e);
+                error_log('[admin_song_restore] ' . $e->getMessage());
+                sendJson(['error' => 'Restore failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { song_id, confirm, redirect_to? }
+           `confirm` MUST equal `song_id` exactly (case-insensitive) — the
+           #1218 §2 type-to-confirm ceremony re-enforced server-side
+           (rule #29-adjacent: a client-side arm alone cannot be trusted;
+           a replayed/hand-built POST without the typed id is refused). */
+        case 'admin_song_purge': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('purge_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The purge_songs entitlement is required.'], 403);
+                break;
+            }
+            $db      = getDbMysqli();
+            $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $songId  = trim((string)($body['song_id'] ?? ''));
+            $confirm = trim((string)($body['confirm'] ?? ''));
+            if ($songId === '' || strcasecmp($confirm, $songId) !== 0) {
+                sendJson(['error' => 'Type the exact song id to confirm the purge.'], 400);
+                break;
+            }
+            $redirectTo = trim((string)($body['redirect_to'] ?? ''));
+            $userId     = (int)($authUser['Id'] ?? 0) ?: null;
+
+            try {
+                $verdict = songPurge($db, $songId, $userId, $redirectTo === '' ? null : $redirectTo);
+                if (!$verdict['ok']) {
+                    sendJson(['error' => $verdict['error']], $verdict['status']);
+                    break;
+                }
+                logActivity('api.admin.song.purge', 'song', $songId, [
+                    'title'       => (string)($verdict['title'] ?? ''),
+                    'songbook'    => (string)($verdict['songbook'] ?? ''),
+                    'redirect_to' => $verdict['redirectTo'] ?? '(tombstone)',
+                ]);
+                sendJson([
+                    'ok'         => true,
+                    'songId'     => $songId,
+                    'deleted'    => (int)($verdict['deleted'] ?? 0),
+                    'redirectTo' => $verdict['redirectTo'] ?? null,
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.song.purge', 'song', $songId, $e);
+                error_log('[admin_song_purge] ' . $e->getMessage());
+                sendJson(['error' => 'Purge failed.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A13 — Musician-duplicate dismiss/undismiss (mirrors
+         * manage/musician-duplicates.php). Gate = manage_musicians — the
+         * page's ONE uniform gate for view + dismiss + merge (admin_musician_
+         * merge already exists; never re-added here). Both delegate to the
+         * ONE shared core, includes/musician_duplicates.php.
+         * ----------------------------------------------------------------- */
+
+        /* POST body: { ids: "1,2,3" or [1,2,3], reason? } */
+        case 'admin_musician_duplicate_dismiss': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_musicians entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_duplicates.php';
+
+            $idsRaw = $body['ids'] ?? [];
+            if (is_string($idsRaw)) { $idsRaw = explode(',', $idsRaw); }
+            $userId = (int)($authUser['Id'] ?? 0) ?: null;
+
+            try {
+                $result = musicianDuplicatesDismissCluster($db, (array)$idsRaw, $userId, (string)($body['reason'] ?? ''));
+                if (!$result['ok']) {
+                    sendJson(['error' => $result['error']], $result['status']);
+                    break;
+                }
+                logActivity('api.admin.musicians.dupe_dismiss', 'musician', (string)$result['ids'][0], [
+                    'ids' => $result['ids'], 'reason' => $result['reason'],
+                ]);
+                sendJson(['ok' => true, 'ids' => $result['ids'], 'reason' => $result['reason']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musicians.dupe_dismiss', 'musician', '', $e);
+                error_log('[admin_musician_duplicate_dismiss] ' . $e->getMessage());
+                sendJson(['error' => 'Dismiss failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { id_a, id_b } */
+        case 'admin_musician_duplicate_undismiss': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_musicians', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_musicians entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_duplicates.php';
+
+            try {
+                $result = musicianDuplicatesUndismissPair($db, (int)($body['id_a'] ?? 0), (int)($body['id_b'] ?? 0));
+                if (!$result['ok']) {
+                    sendJson(['error' => $result['error']], $result['status']);
+                    break;
+                }
+                logActivity('api.admin.musicians.dupe_undismiss', 'musician', (string)$result['idA'], [
+                    'id_a' => $result['idA'], 'id_b' => $result['idB'],
+                ]);
+                sendJson(['ok' => true, 'deleted' => $result['deleted']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.musicians.dupe_undismiss', 'musician', '', $e);
+                error_log('[admin_musician_duplicate_undismiss] ' . $e->getMessage());
+                sendJson(['error' => 'Undismiss failed.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A14 — Analytics: top songs/books (mirrors manage/analytics.php's
+         * top_songs/top_books CSV-export panels; admin_analytics_searches
+         * already covers the search-query panels, and the public
+         * popular_songs action does NOT substitute — see the doc-block on
+         * analyticsTopSongs()/analyticsTopBooks() (includes/analytics_
+         * ingest.php) for exactly why: popular_songs filters through
+         * songVisibleSql()/songServableSql() + the caller's language
+         * filter, which an admin HISTORICAL report must not apply, and it
+         * has no book-level rollup at all. Gate = view_analytics — the
+         * page's own gate (not the bare admin-role check the older,
+         * pre-existing admin_analytics_searches/admin_data_health actions
+         * happen to use). GET ?range=7|30|90 (default 30). */
+        case 'admin_analytics_top': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('view_analytics', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The view_analytics entitlement is required.'], 403);
+                break;
+            }
+            $range = (int)($_GET['range'] ?? 30);
+            if (!in_array($range, [7, 30, 90], true)) { $range = 30; }
+            $since = (new DateTime("-{$range} days"))->format('Y-m-d H:i:s');
+
+            try {
+                $db = getDbMysqli();
+                $songRows = analyticsTopSongs($db, $since);
+                $bookRows = analyticsTopBooks($db, $since);
+
+                $songs = [];
+                foreach ($songRows as $r) {
+                    $songs[] = [
+                        'songId'      => (string)$r[0],
+                        'title'       => $r[1] !== null ? (string)$r[1] : null,
+                        'songbook'    => $r[2] !== null ? (string)$r[2] : null,
+                        'number'      => $r[3] !== null ? (int)$r[3] : null,
+                        'views'       => (int)$r[4],
+                    ];
+                }
+                $books = [];
+                foreach ($bookRows as $r) {
+                    $books[] = ['songbook' => (string)$r[0], 'views' => (int)$r[1]];
+                }
+
+                sendJson(['range' => $range, 'songs' => $songs, 'books' => $books]);
+            } catch (\Throwable $e) {
+                error_log('[admin_analytics_top] ' . $e->getMessage());
+                sendJson(['error' => 'Analytics unavailable.', 'songs' => [], 'books' => []], 503);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A15 — Data-health "disconnect legacy fallbacks" write (mirrors
+         * manage/data-health.php's disconnect_fallbacks POST). Gate =
+         * drop_legacy_tables — the page's OWN gate (the older, pre-existing
+         * read-only admin_data_health action happens to use a bare
+         * admin-role check instead; this NEW write action matches the
+         * page it mirrors exactly, per the task's instruction). Delegates
+         * to the ONE shared core, includes/data_health_admin.php, whose
+         * op allow-list (rule #20) today recognises only
+         * 'disconnect_fallbacks'.
+         * ----------------------------------------------------------------- */
+
+        /* POST body: { op: "disconnect_fallbacks" } */
+        case 'admin_data_health_fix': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('drop_legacy_tables', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The drop_legacy_tables entitlement is required.'], 403);
+                break;
+            }
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $op   = (string)($body['op'] ?? '');
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'data_health_admin.php';
+
+            try {
+                $result = dataHealthFixApply($op);
+                if (!$result['ok']) {
+                    sendJson(['error' => $result['error']], $result['status']);
+                    break;
+                }
+                $r = array_diff_key($result, ['ok' => 1]);
+                logActivity('api.admin.data_health.fix', 'system', $op, $r);
+                sendJson(['ok' => true, 'op' => $op] + $r);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.data_health.fix', 'system', $op, $e);
+                error_log('[admin_data_health_fix] ' . $e->getMessage());
+                sendJson(['error' => 'Fix failed.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A16 — Activity-log IP geolocation backfill (mirrors
+         * manage/activity-log.php's ?action=geo AJAX endpoint). Gate =
+         * view_activity_log — the page's own gate (this endpoint only
+         * READS/caches geo data for rows the caller can already see; it
+         * never widens what's visible). Delegates to the ONE shared core,
+         * includes/activity_log_geo.php, already reused by the page.
+         * ----------------------------------------------------------------- */
+
+        /* POST body: { ips: "1.2.3.4,5.6.7.8" or [ips...] } (<=25/call) */
+        case 'admin_ip_geolocate': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('view_activity_log', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The view_activity_log entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log_geo.php';
+            if (!activityLogObsColumnsExist($db)) {
+                sendJson(['error' => 'Activity-log observability columns are not migrated on this install yet.'], 503);
+                break;
+            }
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $ips  = $body['ips'] ?? [];
+            if (is_string($ips)) { $ips = explode(',', $ips); }
+
+            try {
+                $countries = activityLogGeoResolveIps($db, (array)$ips);
+                sendJson(['ok' => true, 'countries' => $countries]);
+            } catch (\Throwable $e) {
+                error_log('[admin_ip_geolocate] ' . $e->getMessage());
+                sendJson(['error' => 'Geolocation lookup failed.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * API-COVERAGE BATCH 6a — API-key + webhook administration (plan
+         * `.claude/api-coverage-2026-08-28.md` §4.3 A18/A19). Owner decision
+         * (Q5): expose the MANAGEMENT actions, under a strict SHOW-ONCE
+         * secret discipline — the one condition attached to approval.
+         *
+         * ⚠️ SHOW-ONCE SECRET DISCIPLINE (non-negotiable — read before
+         * touching anything in this section): a plaintext secret (an API
+         * key's value, a webhook signing secret) is returned by this API
+         * ONLY from the action that MINTS or ROTATES it — `admin_api_key_
+         * create`, `admin_api_key_approve_request`, `admin_webhook_create`,
+         * `admin_webhook_rotate_secret`. No other action below returns key
+         * material, and there is deliberately NO `admin_api_key_reveal*` /
+         * `admin_webhook_reveal*` action — `/manage/webhooks`'s own
+         * `reveal_secret` action is INTENTIONALLY NOT ported here; it stays
+         * web-only (session-auth, admin-eyes-on). Every write below
+         * delegates to the SAME shared core its sibling `manage/*.php` page
+         * already uses (rule #22) — `includes/api_keys.php`'s Admin CRUD
+         * core (A18, extracted from manage/api-keys.php's own inline logic
+         * in this batch — see that section's doc-block for why
+         * apiKeyAdminCreate()/apiKeyAdminRequestApprove() are the only two
+         * functions in the whole file capable of returning `rawKey`) and
+         * `includes/webhook_admin.php` (A19, pre-existing — manage/
+         * webhooks.php already delegated to it, so no extraction was
+         * needed; this batch only adds the API twin. The web page's
+         * reveal-existing-secret path was later retired entirely (#1987) —
+         * plaintext is shown once, at create/rotate only, page and API alike).
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * A18 — API-key admin (mirrors manage/api-keys.php's manage-only
+         * actions). Gate = manage_api_keys — the page's own "$canManage"
+         * gate (its self-serve `request_api_keys` gate belongs to
+         * `api_key_request` below, not here). Delegates entirely to
+         * includes/api_keys.php's Admin CRUD core.
+         *
+         * POST body (JSON): { label, scope? } (scope defaults to
+         * 'lyrics:ingest', matching the page's own form default).
+         * ----------------------------------------------------------------- */
+        case 'admin_api_key_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb    = getDbMysqli();
+            $akBody  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $akActor = isset($authUser['Id']) ? (int)$authUser['Id'] : null;
+
+            try {
+                $result = apiKeyAdminCreate(
+                    $akDb,
+                    (string)($akBody['label'] ?? ''),
+                    (string)($akBody['scope'] ?? 'lyrics:ingest'),
+                    $akActor
+                );
+                if (!$result['ok']) {
+                    sendJson(['error' => $result['error'], 'field' => $result['field'] ?? null], $result['status'] ?? 400);
+                    break;
+                }
+                logActivity('api.admin.apikey.create', 'api_key', (string)$result['id'], [
+                    'label' => $result['label'], 'scope' => $result['scope'], 'prefix' => $result['prefix'],
+                ]);
+                /* The raw key is returned ONCE — never retrievable again (show-once). */
+                sendJson([
+                    'ok'     => true,
+                    'id'     => $result['id'],
+                    'rawKey' => $result['rawKey'],
+                    'label'  => $result['label'],
+                    'scope'  => $result['scope'],
+                    'prefix' => $result['prefix'],
+                ], 201);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.create', 'api_key', '0', $te);
+                sendJson(['error' => 'Could not create the API key.'], 500);
+            }
+            break;
+        }
+
+        /* POST body (JSON): { id, active: bool } */
+        case 'admin_api_key_toggle': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb   = getDbMysqli();
+            $akBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $akId   = (int)($akBody['id'] ?? 0);
+
+            try {
+                $result = apiKeyAdminToggle($akDb, $akId, !empty($akBody['active']) ? 1 : 0);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], $result['status'] ?? 400); break; }
+                logActivity('api.admin.apikey.toggle', 'api_key', (string)$result['id'], ['active' => $result['active']]);
+                sendJson(['ok' => true, 'id' => $result['id'], 'active' => $result['active']]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.toggle', 'api_key', (string)$akId, $te);
+                sendJson(['error' => 'Could not toggle the API key.'], 500);
+            }
+            break;
+        }
+
+        /* POST body (JSON): { id } */
+        case 'admin_api_key_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb   = getDbMysqli();
+            $akBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $akId   = (int)($akBody['id'] ?? 0);
+
+            try {
+                $result = apiKeyAdminDelete($akDb, $akId);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], $result['status'] ?? 400); break; }
+                logActivity('api.admin.apikey.delete', 'api_key', (string)$result['id'], []);
+                sendJson(['ok' => true, 'id' => $result['id']]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.delete', 'api_key', (string)$akId, $te);
+                sendJson(['error' => 'Could not delete the API key.'], 500);
+            }
+            break;
+        }
+
+        /* POST body (JSON): { id, per_min?: int|null, per_day?: int|null }
+           Omitted / null / '' clears the limit (no cap). */
+        case 'admin_api_key_set_limits': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb   = getDbMysqli();
+            $akBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $akId   = (int)($akBody['id'] ?? 0);
+            $perMinRaw = $akBody['per_min'] ?? null;
+            $perDayRaw = $akBody['per_day'] ?? null;
+            $akPerMin  = ($perMinRaw === null || $perMinRaw === '') ? null : max(0, (int)$perMinRaw);
+            $akPerDay  = ($perDayRaw === null || $perDayRaw === '') ? null : max(0, (int)$perDayRaw);
+
+            try {
+                $result = apiKeyAdminSetLimits($akDb, $akId, $akPerMin, $akPerDay);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], $result['status'] ?? 400); break; }
+                logActivity('api.admin.apikey.set_limits', 'api_key', (string)$result['id'], [
+                    'perMin' => $result['perMin'], 'perDay' => $result['perDay'],
+                ]);
+                sendJson(['ok' => true, 'id' => $result['id'], 'perMin' => $result['perMin'], 'perDay' => $result['perDay']]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.set_limits', 'api_key', (string)$akId, $te);
+                sendJson(['error' => 'Could not save the rate limits.'], 500);
+            }
+            break;
+        }
+
+        /* Self-serve request review — approve. POST body (JSON): { id }.
+           Mints the key with the request's own (fixed, safe) scope. */
+        case 'admin_api_key_approve_request': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb   = getDbMysqli();
+            $akBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $akId   = (int)($akBody['id'] ?? 0);
+            $akActor = isset($authUser['Id']) ? (int)$authUser['Id'] : null;
+
+            try {
+                $result = apiKeyAdminRequestApprove($akDb, $akId, $akActor);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], $result['status'] ?? 400); break; }
+                logActivity('api.admin.apikey.approve_request', 'api_key_request', (string)$result['id'], [
+                    'keyId' => $result['keyId'], 'label' => $result['label'],
+                ]);
+                /* The raw key is returned ONCE — never retrievable again (show-once). */
+                sendJson([
+                    'ok'     => true,
+                    'id'     => $result['id'],
+                    'keyId'  => $result['keyId'],
+                    'rawKey' => $result['rawKey'],
+                    'label'  => $result['label'],
+                ]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.approve_request', 'api_key_request', (string)$akId, $te);
+                sendJson(['error' => 'Could not approve the request.'], 500);
+            }
+            break;
+        }
+
+        /* Self-serve request review — reject. POST body (JSON): { id, note? } */
+        case 'admin_api_key_reject_request': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb    = getDbMysqli();
+            $akBody  = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $akId    = (int)($akBody['id'] ?? 0);
+            $akActor = isset($authUser['Id']) ? (int)$authUser['Id'] : null;
+
+            try {
+                $result = apiKeyAdminRequestReject($akDb, $akId, $akActor, (string)($akBody['note'] ?? ''));
+                if (!$result['ok']) { sendJson(['error' => $result['error']], $result['status'] ?? 400); break; }
+                logActivity('api.admin.apikey.reject_request', 'api_key_request', (string)$result['id'], ['note' => $result['note']]);
+                sendJson(['ok' => true, 'id' => $result['id']]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.reject_request', 'api_key_request', (string)$akId, $te);
+                sendJson(['error' => 'Could not reject the request.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A18 self-service — submit a request for a `catalogue:read` key.
+         * Gate = request_api_keys (DIFFERENT from every action above — the
+         * page's own two-tier manage/request split). No key material
+         * anywhere in this action; it only writes a pending review row.
+         * POST body (JSON): { label, justification? }
+         * ----------------------------------------------------------------- */
+        case 'api_key_request': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('request_api_keys', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The request_api_keys entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            $akDb   = getDbMysqli();
+            $akBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+
+            try {
+                $result = apiKeyAdminRequestCreate(
+                    $akDb,
+                    (int)($authUser['Id'] ?? 0),
+                    (string)($akBody['label'] ?? ''),
+                    (string)($akBody['justification'] ?? '')
+                );
+                if (!$result['ok']) { sendJson(['error' => $result['error']], $result['status'] ?? 400); break; }
+                logActivity('api.admin.apikey.request', 'api_key_request', (string)$result['id'], [
+                    'label' => $result['label'], 'scope' => $result['scope'],
+                ]);
+                sendJson(['ok' => true, 'id' => $result['id']], 201);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.apikey.request', 'api_key_request', '0', $te);
+                sendJson(['error' => 'Could not submit the request.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * A19 — Webhook admin (mirrors manage/webhooks.php's real action
+         * set, EXCEPT `reveal_secret` — deliberately not ported, see the
+         * show-once banner above this section). Gate = manage_webhooks —
+         * the page's single-tier gate (no request/manage split, unlike
+         * A18). Delegates entirely to the PRE-EXISTING includes/
+         * webhook_admin.php core the page already used (no extraction
+         * needed here — only api-keys.php's page inlined its logic).
+         *
+         * Every action first checks webhookSchemaReady($db), exactly like
+         * the page's own pre-dispatch guard (webhooks.php line ~313) —
+         * most of the core's functions issue a raw SELECT/UPDATE against
+         * tblWebhookSubscriptions and would throw under mysqli's STRICT
+         * mode on an un-migrated install otherwise (rule #9).
+         * ----------------------------------------------------------------- */
+
+        /* POST body (JSON): { label, target_url, events } — events is the
+           SAME space-separated selector string webhookEventSelectorValid()
+           validates (a family wildcard like "song.*" or the literal "*"
+           matches everything). */
+        case 'admin_webhook_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whUserId = isset($authUser['Id']) ? (int)$authUser['Id'] : null;
+
+            try {
+                $result = webhookSubscriptionCreate($whDb, [
+                    'label'      => (string)($whBody['label'] ?? ''),
+                    'target_url' => (string)($whBody['target_url'] ?? ''),
+                    'events'     => (string)($whBody['events'] ?? ''),
+                ], $whUserId);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], 400); break; }
+                logActivity('api.admin.webhook.create', 'webhook', (string)$result['id'], [
+                    'label' => $whBody['label'] ?? '', 'events' => $whBody['events'] ?? '',
+                ]);
+                /* New signing secret returned ONCE — never retrievable again (show-once). */
+                sendJson(['ok' => true, 'id' => $result['id'], 'secret' => $result['secret']], 201);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.create', 'webhook', '0', $te);
+                sendJson(['error' => 'Could not create the subscription.'], 500);
+            }
+            break;
+        }
+
+        /* POST body (JSON): { id, label, target_url, events } — a changed
+           target_url re-opens verification, exactly like the page. */
+        case 'admin_webhook_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody   = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whUserId = isset($authUser['Id']) ? (int)$authUser['Id'] : null;
+            $whId     = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $result = webhookSubscriptionUpdate($whDb, $whId, [
+                    'label'      => (string)($whBody['label'] ?? ''),
+                    'target_url' => (string)($whBody['target_url'] ?? ''),
+                    'events'     => (string)($whBody['events'] ?? ''),
+                ], $whUserId);
+                if (!$result['ok']) { sendJson(['error' => $result['error']], 400); break; }
+                logActivity('api.admin.webhook.update', 'webhook', (string)$whId, [
+                    'label' => $whBody['label'] ?? '', 'events' => $whBody['events'] ?? '',
+                    'url_changed' => !empty($result['url_changed']),
+                ]);
+                sendJson(['ok' => true, 'url_changed' => !empty($result['url_changed'])]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.update', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Could not update the subscription.'], 500);
+            }
+            break;
+        }
+
+        /* Prove control of the target endpoint (echo-challenge handshake).
+           POST body (JSON): { id } */
+        case 'admin_webhook_verify': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whId   = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $result = webhookSendVerification($whDb, $whId);
+                if (!$result['ok']) {
+                    sendJson(['error' => (string)($result['error'] ?? 'Verification failed.'), 'status' => $result['status'] ?? null], 422);
+                    break;
+                }
+                logActivity('api.admin.webhook.verify', 'webhook', (string)$whId, ['http_status' => $result['status'] ?? null]);
+                sendJson(['ok' => true, 'status' => $result['status'] ?? null]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.verify', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Verification failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST body (JSON): { id } — cancels the subscription's queued deliveries. */
+        case 'admin_webhook_pause': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whId   = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $result = webhookSubscriptionSetStatus($whDb, $whId, 'paused');
+                if (!$result['ok']) { sendJson(['error' => $result['error'] ?? 'Could not pause the subscription.'], 400); break; }
+                logActivity('api.admin.webhook.pause', 'webhook', (string)$whId, []);
+                sendJson(['ok' => true]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.pause', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Could not pause the subscription.'], 500);
+            }
+            break;
+        }
+
+        /* POST body (JSON): { id } — resuming re-opens verification
+           (Status becomes 'pending_verification', not 'active', exactly
+           like the page — call admin_webhook_verify next). */
+        case 'admin_webhook_resume': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whId   = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $result = webhookSubscriptionSetStatus($whDb, $whId, 'active');
+                if (!$result['ok']) { sendJson(['error' => $result['error'] ?? 'Could not resume the subscription.'], 400); break; }
+                logActivity('api.admin.webhook.resume', 'webhook', (string)$whId, []);
+                sendJson(['ok' => true]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.resume', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Could not resume the subscription.'], 500);
+            }
+            break;
+        }
+
+        /* Mint a NEW signing secret; the previous one keeps working for the
+           #1909 24h grace window. POST body (JSON): { id } */
+        case 'admin_webhook_rotate_secret': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whId   = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $result = webhookSubscriptionRotateSecret($whDb, $whId);
+                if (!$result['ok']) { sendJson(['error' => $result['error'] ?? 'Subscription not found.'], 404); break; }
+                /* NEVER the secret itself in the audit log Details. */
+                logActivity('api.admin.webhook.secret_rotate', 'webhook', (string)$whId, []);
+                /* New signing secret returned ONCE — never retrievable again (show-once). */
+                sendJson(['ok' => true, 'secret' => $result['secret']]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.secret_rotate', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Could not rotate the secret.'], 500);
+            }
+            break;
+        }
+
+        /* Queue a one-off `webhook.test` delivery. POST body (JSON): { id } */
+        case 'admin_webhook_send_test': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whId   = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $note = 'Test delivery triggered by ' . (string)($authUser['Username'] ?? 'an admin') . ' via the API.';
+                $result = webhookEnqueueForSubscription($whDb, $whId, 'webhook.test', ['note' => $note], ['source' => 'api']);
+                if (!$result['ok']) { sendJson(['error' => $result['error'] ?? 'Could not queue a test event.'], 400); break; }
+                logActivity('api.admin.webhook.test', 'webhook', (string)$whId, ['delivery_id' => $result['delivery_id'] ?? null]);
+                sendJson(['ok' => true, 'delivery_id' => $result['delivery_id'] ?? null]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.test', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Could not queue a test event.'], 500);
+            }
+            break;
+        }
+
+        /* Permanently delete a subscription (its deliveries CASCADE away).
+           POST body (JSON): { id } */
+        case 'admin_webhook_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whId   = (int)($whBody['id'] ?? 0);
+            if ($whId <= 0) { sendJson(['error' => 'id is required.'], 400); break; }
+
+            try {
+                $row = webhookSubscriptionGet($whDb, $whId);
+                if ($row === null) { sendJson(['error' => 'Subscription not found.'], 404); break; }
+                $result = webhookSubscriptionDelete($whDb, $whId);
+                if (!$result['ok']) { sendJson(['error' => 'Could not delete the subscription.'], 400); break; }
+                logActivity('api.admin.webhook.delete', 'webhook', (string)$whId, ['label' => $row['Label']]);
+                sendJson(['ok' => true]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.delete', 'webhook', (string)$whId, $te);
+                sendJson(['error' => 'Could not delete the subscription.'], 500);
+            }
+            break;
+        }
+
+        /* Put a failed/dead/cancelled delivery back in the queue to retry
+           now. POST body (JSON): { delivery_id } */
+        case 'admin_webhook_redrive': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_webhooks', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The manage_webhooks entitlement is required.'], 403);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhook_admin.php';
+            $whDb = getDbMysqli();
+            if (!webhookSchemaReady($whDb)) {
+                sendJson(['error' => 'Webhook tables are not migrated on this environment.'], 409);
+                break;
+            }
+            $whBody       = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $whDeliveryId = (int)($whBody['delivery_id'] ?? 0);
+            if ($whDeliveryId <= 0) { sendJson(['error' => 'delivery_id is required.'], 400); break; }
+
+            try {
+                $result = webhookDeliveryRedrive($whDb, $whDeliveryId);
+                if (!$result['ok']) {
+                    sendJson(['error' => 'Could not re-drive — the delivery may no longer be in a retryable state.'], 409);
+                    break;
+                }
+                logActivity('api.admin.webhook.delivery_redrive', 'webhook', (string)$whDeliveryId, []);
+                sendJson(['ok' => true]);
+            } catch (\Throwable $te) {
+                logActivityError('api.admin.webhook.delivery_redrive', 'webhook', (string)$whDeliveryId, $te);
+                sendJson(['error' => 'Could not re-drive the delivery.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * ADMIN — INTERNET ARCHIVE OCR RECONCILE (#94 Phase 1, ported to
+         * the API by API-coverage batch 6b — .claude/
+         * api-coverage-2026-08-28.md §4.3 A17, owner-confirmed
+         * native-curator surface, Q1=yes)
+         *
+         * Assessed alongside the MARCXML imports above as one of A17's
+         * "genuinely multi-step / interactive tools" — UNLIKE the
+         * bulk-promote wizard (manage/musicians-bulk-promote.php, deferred
+         * — see this batch's report) and the family_manifest wizard
+         * (manage/songbooks.php, also deferred), this one turned out to be
+         * a genuinely clean single POST -> JSON-report call: an
+         * archive.org identifier + a songbook abbreviation in, a scored
+         * candidate report out, with no per-row human correction step and
+         * no server-side stored wizard state (every call recomputes the
+         * plan from the current DB, exactly like force_refresh does for
+         * the cache). Mirrors manage/ia-reconcile.php's POST 'run' handler
+         * exactly, delegating end-to-end to the SAME pure pipeline the
+         * page calls — includes/ia_client.php's iaCachedMetadata()/
+         * iaCachedFulltext() (SSRF-hardened archive.org fetch + DB cache)
+         * and includes/ia_reconcile.php's iaRecSegmentOcr()/
+         * iaRecSongFeatures()/iaRecScoreCandidates()/iaRecPersistRun()
+         * (rule #22) — never a forked fetch/segment/score copy.
+         *
+         * ZERO WRITES TO SONG CONTENT — the only write is audit
+         * bookkeeping (iaRecPersistRun(), itself table-existence-gated and
+         * best-effort: a pre-migration install still gets the report, just
+         * with `persisted: false`). Gate: edit_songs — identical to the
+         * page's own gate (curators who work the gap list can run audits
+         * themselves; there is no destructive action to gate more
+         * tightly, mirroring the page's own doc-block rationale).
+         *
+         * POST body: { identifier (required — an archive.org item id or a
+         *   details/download URL), songbook_abbr (required),
+         *   force_refresh? (bypass the DB cache) }
+         * ================================================================= */
+        case 'admin_ia_reconcile_run': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_songs entitlement is required.'], 403);
+                break;
+            }
+
+            /* Required explicitly rather than leaning on a transitive pull
+               from elsewhere in this file (this file's own top-of-file
+               precedent, #1698's user_status.php comment) — a transitive
+               require is a dependency nothing states and nothing enforces. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ia_client.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ia_reconcile.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'title_normalize.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_similarity.php';
+
+            $body         = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $identifier   = ihymns_canonical_ia_identifier((string)($body['identifier'] ?? ''));
+            $songbookAbbr = trim((string)($body['songbook_abbr'] ?? ''));
+            $forceRefresh = !empty($body['force_refresh']);
+
+            if ($identifier === null || $identifier === '') {
+                sendJson(['error' => 'That does not look like a valid archive.org identifier or URL.'], 400);
+                break;
+            }
+            if ($songbookAbbr === '') {
+                sendJson(['error' => 'songbook_abbr is required.'], 400);
+                break;
+            }
+
+            $db = getDbMysqli();
+
+            /* @disabled-visible: admin surface (#94/#1765) — mirrors the
+               page's own doc-block: a disabled songbook stays fully
+               auditable here (owner decision); a curator reconciling a
+               disabled songbook against an archive.org scan is exactly as
+               legitimate as reconciling any other book. Validate songbook
+               existence via a bound lookup — never trust the posted
+               abbreviation blindly (rule #5); mirrors the page's own
+               against-the-picker-list check. */
+            $sbChk = $db->prepare('SELECT 1 FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1');
+            $sbChk->bind_param('s', $songbookAbbr);
+            $sbChk->execute();
+            $songbookValid = $sbChk->get_result()->fetch_row() !== null;
+            $sbChk->close();
+            if (!$songbookValid) {
+                sendJson(['error' => 'Unknown songbook_abbr.'], 400);
+                break;
+            }
+
+            try {
+                /* A cold fetch + segment + score of a large book can exceed
+                   the default 30s on shared hosting; cached re-runs are
+                   seconds — same rationale as the page's own
+                   set_time_limit() call. */
+                @set_time_limit(300);
+
+                $metadata = iaCachedMetadata($db, $identifier, $forceRefresh);
+                $fulltext = $metadata !== null ? iaCachedFulltext($db, $identifier, $forceRefresh) : null;
+                if ($metadata === null || $fulltext === null) {
+                    sendJson(['error' => 'archive.org did not answer for "' . $identifier . '", the item has no OCR '
+                        . 'text file (_djvu.txt), or the response exceeded the size cap.'], 502);
+                    break;
+                }
+
+                $candidates = iaRecSegmentOcr($fulltext['text']);
+                if (!$candidates) {
+                    sendJson(['error' => 'The OCR text was fetched (' . strlen($fulltext['text']) . ' bytes) but could '
+                        . 'not be segmented into any hymn-shaped candidates.'], 422);
+                    break;
+                }
+
+                $songFeatures = iaRecSongFeatures($db, $songbookAbbr);
+                $reportResult = iaRecScoreCandidates($candidates, $songFeatures);
+                $persisted    = iaRecPersistRun($db, $identifier, $songbookAbbr, $fulltext['sha256'], $reportResult['candidates']);
+
+                logActivity('api.admin.ia_reconcile.run', 'songbook', $songbookAbbr, [
+                    'identifier' => $identifier,
+                    'candidates' => count($reportResult['candidates']),
+                    'gaps'       => $reportResult['summary']['counts']['gap'] ?? 0,
+                ]);
+                sendJson([
+                    'ok'           => true,
+                    'identifier'   => $identifier,
+                    'songbookAbbr' => $songbookAbbr,
+                    'fileName'     => $fulltext['fileName'],
+                    'fetchedAt'    => $fulltext['fetchedAt'],
+                    'persisted'    => $persisted,
+                    'summary'      => $reportResult['summary'],
+                    'candidates'   => $reportResult['candidates'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.ia_reconcile.run', 'songbook', $songbookAbbr, $e);
+                error_log('[admin_ia_reconcile_run] ' . $e->getMessage());
+                sendJson(['error' => 'Could not run the reconcile audit.'], 500);
+            }
             break;
         }
 
@@ -20890,6 +27365,93 @@ function _authProviderListForUser(\mysqli $db, int $userId): array
 function _liveFollowCleanSongId(string $raw): string
 {
     return mb_substr(preg_replace('/[^a-zA-Z0-9_\-]/', '', $raw), 0, 20);
+}
+
+/* =========================================================================
+ * ORG-ADMIN SELF-SERVICE (batch 3, O2/O4) — private wire-shape helpers
+ * ========================================================================= */
+
+/**
+ * Shape an organisation's logo rows for a JSON response. Field names
+ * (`kind`/`variant`/`v`/`alt`/`width`/`height`) match the `my_organisations`
+ * action's existing `logos` field (§6.3, #1830) EXACTLY — the same
+ * `{kind, variant, v}` triple `js/modules/org-logo.js`'s `orgLogoUrl()`
+ * already knows how to turn into a serving URL — plus the admin-only
+ * fields an EDITING surface needs that a public display doesn't
+ * (`mime`/`byteSize`/`isActive`; `my_organisations` pre-filters to
+ * active-only rows so never needs the flag on the wire, and this O2
+ * surface must show hidden rows too so a curator can un-hide them).
+ * NEVER the stored bytes (rule #42 — a logo is served as `<img src>`,
+ * built by the client from `kind`/`variant`/`v`, never inlined here).
+ * Used by the org_admin_logo_upload/_delete/_set_active actions to echo
+ * the STORED state back after a write (rule #35/#40).
+ */
+function _apiOrgLogoWireList(\mysqli $db, int $orgId): array
+{
+    return array_map(static function (array $l): array {
+        return [
+            'kind'     => (string)$l['Kind'],
+            'variant'  => (string)$l['Variant'],
+            'v'        => (string)$l['Sha256'],
+            'alt'      => $l['AltText'] !== null ? (string)$l['AltText'] : null,
+            'width'    => $l['Width']  !== null ? (int)$l['Width']  : null,
+            'height'   => $l['Height'] !== null ? (int)$l['Height'] : null,
+            'mime'     => (string)$l['Mime'],
+            'byteSize' => (int)$l['ByteSize'],
+            'isActive' => (bool)$l['IsActive'],
+        ];
+    }, orgLogoListForOrg($db, $orgId));
+}
+
+/**
+ * Shape one venue row (`venueAdminGetVenue()`'s shape) for a JSON
+ * response — the SAME per-field names the `org_venues` action (API-
+ * coverage batch 1, C2) already emits for a venue object, plus `orgId`
+ * (org_venues nests venues under their org so never needs it repeated; a
+ * single-venue write echo does). Used by the O4 org_admin_venue_save
+ * action to echo the STORED row back (rule #35/#40).
+ */
+function _apiVenueWire(?array $v): ?array
+{
+    if ($v === null) { return null; }
+    return [
+        'id'           => (int)$v['Id'],
+        'orgId'        => (int)$v['OrgId'],
+        'name'         => (string)$v['Name'],
+        'addressLine'  => $v['AddressLine'] ?? null,
+        'city'         => $v['City'] ?? null,
+        'postcode'     => $v['Postcode'] ?? null,
+        'countryCode'  => $v['CountryCode'] ?? null,
+        'latitude'     => $v['Latitude'] !== null ? (float)$v['Latitude'] : null,
+        'longitude'    => $v['Longitude'] !== null ? (float)$v['Longitude'] : null,
+        'radiusMetres' => $v['RadiusMetres'] !== null ? (int)$v['RadiusMetres'] : null,
+        'timeZone'     => (string)$v['TimeZone'],
+        'isActive'     => (bool)$v['IsActive'],
+    ];
+}
+
+/**
+ * Shape one service-schedule row (`venueAdminGetSchedule()`'s shape) for a
+ * JSON response — the SAME per-field names `org_venues` already emits for
+ * a schedule object, plus `orgId`/`venueId` (org_venues nests schedules
+ * under their venue so never needs either repeated). Used by the O4
+ * org_admin_schedule_save action.
+ */
+function _apiScheduleWire(?array $s): ?array
+{
+    if ($s === null) { return null; }
+    return [
+        'id'             => (int)$s['Id'],
+        'orgId'          => (int)$s['OrgId'],
+        'venueId'        => (int)$s['VenueId'],
+        'title'          => (string)$s['Title'],
+        'dayOfWeek'      => (int)($s['DayOfWeek'] ?? 0),
+        'startTime'      => (string)$s['StartTime'],
+        'durationMins'   => (int)$s['DurationMins'],
+        'recurrenceKind' => (string)$s['RecurrenceKind'],
+        'timeZone'       => (string)$s['_EffTz'],
+        'isActive'       => (bool)$s['IsActive'],
+    ];
 }
 
 /**

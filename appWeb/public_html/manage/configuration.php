@@ -56,7 +56,7 @@ if (!isAuthenticated()) {
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_configuration', $currentUser['role'] ?? null)) {
     http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_configuration required</h1></body></html>';
+    echo '<!DOCTYPE html><html lang="en"><body><h1>403 — manage_configuration required</h1></body></html>';
     exit;
 }
 $activePage = 'configuration';
@@ -72,76 +72,23 @@ $csrf = csrfToken();
  * (still saveable; the field shows a placeholder); also redacted from
  * the activity-log details. The on-the-wire POST still carries it
  * (over HTTPS) when the admin actually changes it.
+ *
+ * #2004 — the four vocabulary arrays that used to be typed HERE now live in
+ * `includes/email_options.php` as plain functions, so the "Connect a
+ * service" guided wizard's registry (`includes/integration_registry.php`)
+ * can build its own Email step from the SAME source instead of typing a
+ * second copy (rule #22). This re-point is BYTE-IDENTICAL for every
+ * downstream reader on this page: `ihymnsEmailSettingsModel()`'s rows carry
+ * a 5th `authShow` element the `save_email` loop below never reads (PHP's
+ * `[$label, $type, $secret, $providers]` destructure simply ignores it —
+ * see that file's own doc-block for why that's safe), and the three option
+ * maps are returned exactly as they were declared inline here.
  * ---------------------------------------------------------------------- */
-$EMAIL_SETTINGS = [
-    /* key                     => [label, type, secret, providers] */
-    'email_service'             => ['Email service',             'select', false, null],
-    /* #1309 — 'office365' and 'gmail' are first-class SMTP-AUTH providers, so
-       the SMTP + common field groups are visible for them too. */
-    'email_from_address'        => ['From address',              'email',  false, ['smtp','office365','gmail','sendgrid','mailgun','ses']],
-    'email_from_name'           => ['From name',                 'text',   false, ['smtp','office365','gmail','sendgrid','mailgun','ses']],
-    /* feature C — SMTP provider preset (pre-fills host/port/secure in the
-       UI; constrained server-side to the $SMTP_PRESETS keys). Custom SMTP
-       only — for office365/gmail the preset is implied by the provider. */
-    'email_smtp_preset'         => ['SMTP provider preset',      'select', false, ['smtp']],
-    'email_smtp_host'           => ['SMTP host',                 'text',   false, ['smtp','office365','gmail']],
-    'email_smtp_port'           => ['SMTP port',                 'number', false, ['smtp','office365','gmail']],
-    'email_smtp_user'           => ['SMTP username',             'text',   false, ['smtp','office365','gmail']],
-    'email_smtp_pass'           => ['SMTP password',             'password', true, ['smtp','office365','gmail']],
-    'email_smtp_secure'         => ['SMTP encryption',           'select', false, ['smtp','office365','gmail']],
-    /* feature C — delegate / send-as. Optional; validated as an email in
-       the save handler. When set, mail is sent FROM this mailbox while
-       AUTH still uses the SMTP username above (the login mailbox must be
-       granted Send-As on it in the provider's admin console). */
-    'email_smtp_from_address'   => ['Send-as / From address (delegate)', 'email', false, ['smtp','office365','gmail']],
-    'email_smtp_from_name'      => ['Send-as display name',      'text',   false, ['smtp','office365','gmail']],
-    'email_sendgrid_api_key'    => ['SendGrid API key',          'password', true, ['sendgrid']],
-    'email_mailgun_api_key'     => ['Mailgun API key',           'password', true, ['mailgun']],
-    'email_mailgun_domain'      => ['Mailgun domain',            'text',   false, ['mailgun']],
-    'email_ses_region'          => ['AWS region (e.g. eu-west-1)', 'text', false, ['ses']],
-    'email_ses_access_key'      => ['AWS access key',            'password', true, ['ses']],
-    'email_ses_secret_key'      => ['AWS secret key',            'password', true, ['ses']],
-    /* #1311 — OAuth2 API transport. The auth-method selector applies to the
-       office365/gmail providers; the Graph + Gmail-API credential fields show
-       only when method=oauth2 (client-side data-auth-show). The secrets (client
-       secret, service-account JSON) keep secret=true → blank-skip on save +
-       redaction from the activity-log key list. */
-    'email_auth_method'         => ['Authentication method',          'select',   false, ['office365','gmail']],
-    'email_graph_tenant_id'     => ['Azure tenant ID',                'text',     false, ['office365']],
-    'email_graph_client_id'     => ['Azure app (client) ID',          'text',     false, ['office365']],
-    'email_graph_client_secret' => ['Azure client secret',            'password', true,  ['office365']],
-    'email_graph_sender'        => ['Sender mailbox (UPN)',           'text',     false, ['office365']],
-    'email_gmail_sa_json'       => ['Service-account JSON key',       'textarea', true,  ['gmail']],
-    'email_gmail_sender'        => ['Sender mailbox (impersonated)',  'text',     false, ['gmail']],
-];
-
-/* #1311 — OAuth2 transport options for the office365/gmail providers. */
-$EMAIL_AUTH_METHOD_OPTIONS = [
-    'smtp'   => 'SMTP-AUTH (host + app password)',
-    'oauth2' => 'OAuth2 API (Microsoft Graph / Gmail API — no SMTP)',
-];
-
-/* #1309 — Microsoft 365 + Google Workspace are now FIRST-CLASS providers in
-   this dropdown (they used to be a nested "preset" under a generic SMTP entry,
-   which the owner reported as undiscoverable — the guides showed but the
-   services weren't selectable). The keys match the shared smtp_presets map so
-   the pre-fill JS + EmailService dispatch recognise them; both route through
-   the SMTP-AUTH transport. 'smtp' remains for any OTHER custom server. */
-$EMAIL_SERVICE_OPTIONS = [
-    'none'      => 'None — email login disabled',
-    'office365' => 'Microsoft 365 (Exchange Online)',
-    'gmail'     => 'Google Workspace / Gmail',
-    'smtp'      => 'SMTP (other / custom server)',
-    'sendgrid'  => 'SendGrid',
-    'mailgun'   => 'Mailgun',
-    'ses'       => 'AWS SES',
-];
-
-$SMTP_SECURE_OPTIONS = [
-    'tls'  => 'STARTTLS (port 587)',
-    'ssl'  => 'SSL/TLS implicit (port 465)',
-    'none' => 'None (port 25 — not recommended)',
-];
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'email_options.php';
+$EMAIL_SETTINGS            = ihymnsEmailSettingsModel();
+$EMAIL_AUTH_METHOD_OPTIONS = ihymnsEmailAuthMethodOptions();
+$EMAIL_SERVICE_OPTIONS     = ihymnsEmailServiceOptions();
+$SMTP_SECURE_OPTIONS       = ihymnsSmtpSecureOptions();
 
 /* ----------------------------------------------------------------------
  * feature C — SMTP provider presets. Selecting one pre-fills host / port /
@@ -189,41 +136,24 @@ $loadSettings = function (mysqli $db, array $keys): array {
     return $out;
 };
 
-$saveSetting = function (mysqli $db, string $key, string $value): void {
-    /* Encrypt-at-rest for secret-flagged settings (#1466). Gated on the cutover
-       flag `secret_encryption_active` (set by the encrypt-in-place migration once
-       every docroot has the engine + key) so this is a verified NO-OP until then:
-       pre-cutover, secrets store as plaintext exactly as before; the migration
-       encrypts them in bulk and flips the flag; thereafter every new/updated
-       secret is encrypted here too. secret_crypto.php is required HARD at the top
-       of this page, so isSecretSettingKey()/secretEncrypt()/secretCryptoReady()
-       are GUARANTEED defined here — the gate deliberately carries NO
-       function_exists() guard: guarding on it would fail OPEN (silently store
-       plaintext) if the engine were ever missing. Instead we fail CLOSED — a
-       non-empty secret can NEVER be silently stored as plaintext once encryption
-       is active: if the master key is missing on this docroot we throw rather
-       than write a cleartext secret. */
-    /* #1671 F6 — the rule itself now lives in the PURE
-       appSettingValueForStorage() (includes/secret_crypto.php) because a second
-       page (manage/notifications.php, storing the VAPID private key) needed the
-       identical decision, and a second copy of "encrypt secrets at rest" is the
-       kind of duplication whose divergence is invisible until a secret is
-       sitting in the database in the clear. Behaviour here is UNCHANGED
-       byte-for-byte — including the deliberate absence of a function_exists()
-       guard, which is what makes it fail CLOSED. */
-    $value = appSettingValueForStorage(
-        $key,
-        $value,
-        getAppSetting('secret_encryption_active', '0') === '1'
-    );
-    $stmt = $db->prepare(
-        'INSERT INTO tblAppSettings (SettingKey, SettingValue)
-         VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue)'
-    );
-    $stmt->bind_param('ss', $key, $value);
-    $stmt->execute();
-    $stmt->close();
+/* #2006 — one-line delegate to the ALREADY-SHARED setAppSetting() core
+   (includes/maintenance.php, added by #1671 F6 for manage/notifications.php's
+   VAPID-key write). This closure used to carry its OWN inline copy of the
+   encrypt-at-rest decision + the INSERT … ON DUPLICATE KEY UPDATE — a
+   second copy of the exact same logic setAppSetting() already implements
+   (its own doc-block even anticipated this: "configuration.php now
+   delegates here too, so there is ONE rule" — a claim that was NOT yet
+   true until this change, rule #26's stale-comment lesson). Discovered
+   while wiring the content-gating activation wizard's flip
+   (gatingWizardSetFlag(), includes/gating_wizard.php) onto a shared write
+   core: rather than adding a THIRD near-identical function, this closure
+   now calls the one that already existed (rule #22 — "extract first, use
+   second" applies just as much to "another function already does this" as
+   to "this page already does this"). Every save_* handler below calls
+   $saveSetting exactly as before, so this page's behaviour is
+   byte-identical; setAppSetting() itself is unchanged. */
+$saveSetting = static function (mysqli $db, string $key, string $value): void {
+    setAppSetting($db, $key, $value);
 };
 
 /* ----------------------------------------------------------------------
@@ -235,6 +165,11 @@ $saveWarning = '';     /* #1304 — non-blocking SSRF heads-up (private/reserved
 $webhookNewDrainKey = null;   /* #1909 — one-shot: a freshly regenerated drain key, shown ONCE */
 $langRefreshNewKey  = null;   /* BCP 47 registry plan §3.4 — one-shot: a freshly generated refresh key, shown ONCE */
 $testResult  = null;   /* ['ok' => bool, 'message' => string]|null */
+/* #2003 — set alongside $saveError inside the CSRF-fail branch below so the
+   additive respond=json envelope (§6.3) can tell "CSRF failed" (403) apart
+   from "the handler ran and rejected the input" (422) without regex-matching
+   $saveError's prose (rule #35 — branch on a status/flag, never a sentence). */
+$csrfFailed  = false;
 
 /* #1304 — defence-in-depth: does an SMTP host resolve to a private/reserved
    network address? Used to WARN (never block) on save — an admin pointing the
@@ -269,8 +204,67 @@ $smtpHostIsPrivate = function (string $host): bool {
 };
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
-        $saveError = 'CSRF token invalid — refresh the page and try again.';
+    /* #2003 — "Connect a service" wizard: live-test branch. An early,
+       self-contained JSON-in/JSON-out branch (the external-link-types.php
+       `wizard_create_type` shape, #1992) that runs BEFORE the classic
+       dispatch below and gates on validateCsrfRequest() (rule #29) rather
+       than the baked-token validateCsrf() the classic dispatch still uses —
+       the wizard modal can sit open for a while before an admin clicks
+       "Test connection", and a long-open page must not sporadically 403 on
+       a rotated/GC'd session token. validateCsrfRequest() requires the
+       X-Requested-With header (a browser cannot set it cross-origin without
+       a CORS preflight this server never grants) OR a still-valid session
+       token — a classic form POST from this page never sends that header,
+       so its own validateCsrf()-gated path below is completely unaffected
+       by this branch existing.
+       The response carries STRUCTURAL status keys + numbers ONLY — never a
+       secret, never provider prose the client would regex-match (rule #35).
+       Mapped 'web_only:configuration-secrets' in
+       tests/php/test-manage-action-api-coverage.php — a live-connectivity
+       diagnostic for the server's OWN saved credentials has no native-app
+       use, the same reasoning already covers captcha_probe/test_email. */
+    if ((string)($_POST['action'] ?? '') === 'integration_test') {
+        header('Content-Type: application/json; charset=UTF-8');
+        if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+            http_response_code(403);
+            echo json_encode(['error' => 'CSRF check failed — please retry.']);
+            exit;
+        }
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'integration_registry.php';
+        $integrationKey = (string)($_POST['integration'] ?? '');
+        if (!in_array($integrationKey, array_keys(integrationRegistry()), true)) {
+            http_response_code(422);
+            echo json_encode(['error' => 'Unknown integration.']);
+            exit;
+        }
+        try {
+            $result = integrationTestDispatch($integrationKey, $db);
+            /* configState read-back (rule #35/#40): re-resolve via the SAME
+               resolvers the cards use, so the wizard's confirm step can
+               never disagree with actual runtime behaviour. */
+            $result['configState'] = integrationConfigState($integrationKey);
+            echo json_encode($result);
+        } catch (\Throwable $e) {
+            error_log('[manage configuration integration_test] ' . $e->getMessage());
+            http_response_code(500);
+            echo json_encode(['error' => 'Test failed unexpectedly.']);
+        }
+        exit;
+    }
+
+    /* #2003 rule #29 — widened from the bare validateCsrf() to
+       validateCsrfRequest(): a STRICT superset (still accepts a valid
+       session token — a classic form submit from this page carries no
+       X-Requested-With header, so its behaviour is byte-identical) that
+       also accepts a same-origin AJAX request (X-Requested-With present +
+       any Origin/Referer host matching this one). The wizard's SAVE step
+       (§6.3's respond=json envelope) is the reason this needed widening:
+       without it, a long-open wizard modal would inherit the exact
+       sporadic-403-on-a-stale-baked-token failure mode rule #29 exists to
+       fix. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+        $csrfFailed = true;
+        $saveError  = 'CSRF token invalid — refresh the page and try again.';
     } else {
         $action = (string)($_POST['action'] ?? '');
         if ($action === 'save_email') {
@@ -353,66 +347,25 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
         } elseif ($action === 'test_email') {
-            /* Real send (#898) — replaces the previous stub. Uses
-               EmailService::send() with an ad-hoc payload targeting
-               the current admin's own email so the button is harmless
-               even if a typo lands in From. The EmailSendResult is
-               mirrored into the alert and a structured email.send
-               row goes into tblActivityLog. */
+            /* Real send (#898) — replaces the previous stub. #2004 moved
+               this branch's body into the reusable
+               EmailService::deliveryTest()/deliveryTestMessage() pair (rule
+               #22/#35 — a single core, never a second copy) so the "Connect
+               a service" wizard's own email test
+               (integrationTestEmail(), includes/integration_registry.php)
+               calls the SAME send, never a forked one. deliveryTest() opens
+               with EmailService::resetCache() (the save_email branch above
+               may have just changed the provider config in this same
+               request) and reproduces the exact three gates + real send
+               this branch always ran; deliveryTestMessage() reproduces the
+               four possible sentences byte-for-byte. The EmailSendResult is
+               still mirrored into this page's alert, and
+               EmailService::send() still writes the structured email.send
+               row into tblActivityLog — nothing about WHAT happens changed,
+               only where the logic lives. */
             require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
-            /* The save_email branch above may have just changed the
-               provider config in this same request; reset the cache
-               so the test reads the fresh values. */
-            EmailService::resetCache();
-            /* Reload current settings so the alert text reflects the
-               just-saved provider (the page-level $currentSettings
-               below is fetched after this block runs). */
-            $current = $loadSettings($db, array_keys($EMAIL_SETTINGS));
-            $providerLabel = (string)($current['email_service'] ?? 'none');
-
-            $adminEmail = trim((string)($currentUser['email'] ?? ''));
-            if ($adminEmail === '' || !filter_var($adminEmail, FILTER_VALIDATE_EMAIL)) {
-                $testResult = [
-                    'ok'      => false,
-                    'message' => 'Send-test failed: your admin account has no valid email address on file. '
-                               . 'Set one in Users -> your row -> Edit, then retry.',
-                ];
-            } elseif (!EmailService::isConfigured()) {
-                $testResult = [
-                    'ok'      => false,
-                    'message' => 'Send-test failed: provider is "' . $providerLabel . '". Pick a real provider and Save before testing.',
-                ];
-            } else {
-                $stamp    = gmdate('Y-m-d H:i:s') . ' UTC';
-                $bodyHtml = '<h1>iHymns email delivery test</h1>'
-                          . '<p>This is a delivery test from <strong>' . htmlspecialchars($providerLabel, ENT_QUOTES, 'UTF-8') . '</strong>'
-                          . ' at <strong>' . htmlspecialchars($stamp, ENT_QUOTES, 'UTF-8') . '</strong>.</p>'
-                          . '<p>If you received this, your email provider is correctly configured.</p>';
-                $bodyText = "iHymns email delivery test from {$providerLabel} at {$stamp}.\n\n"
-                          . "If you received this, your email provider is correctly configured.\n";
-                $sendResult = EmailService::send(
-                    $adminEmail,
-                    'iHymns email delivery test (' . $providerLabel . ')',
-                    $bodyHtml,
-                    $bodyText
-                );
-                if ($sendResult->ok) {
-                    $testResult = [
-                        'ok'      => true,
-                        'message' => 'Test email dispatched via ' . $sendResult->provider
-                                   . (($sendResult->providerMessageId ?? '') !== '' ? ' (Message-Id: ' . $sendResult->providerMessageId . ')' : '')
-                                   . '. Check ' . $adminEmail . ' to confirm delivery.',
-                    ];
-                } else {
-                    $testResult = [
-                        'ok'      => false,
-                        'message' => 'Test email FAILED via ' . $sendResult->provider
-                                   . ' (' . ($sendResult->errorClass ?? 'Error') . '): '
-                                   . (string)$sendResult->error
-                                   . '. See the Activity Log "email.send" row for the full record.',
-                    ];
-                }
-            }
+            $r = EmailService::deliveryTest(trim((string)($currentUser['email'] ?? '')));
+            $testResult = ['ok' => $r['ok'], 'message' => EmailService::deliveryTestMessage($r)];
         } elseif ($action === 'save_maintenance') {
             /* System maintenance mode (WS-K #1021). Toggles the public site
                into a 503 maintenance landing page; /manage stays reachable
@@ -876,6 +829,25 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                         . ' until every field is set. This is not an error; it is the documented'
                         . ' fail-open default.';
                 }
+
+                /* L-2 security-audit finding (2026-08-30) — SSRF heads-up on
+                   save (never blocks), mirroring save_email's own
+                   $smtpHostIsPrivate() warning above. The resolver
+                   (_intappsResolveUrl(), just tightened by this same audit
+                   pass) now REFUSES to actually dial a base URL that
+                   resolves to a private/reserved address, so surfacing WHY
+                   here — at save time — turns a later, confusing "Test
+                   connection failed" into an immediate, explained heads-up
+                   instead. Appended to (not replacing) the credential-
+                   completeness warning above — both can be true at once. */
+                $intappsHostVal = (string)(parse_url($baseUrlVal, PHP_URL_HOST) ?? '');
+                if ($intappsHostVal !== '' && ihymnsHostResolvesPrivate($intappsHostVal)) {
+                    $intappsPrivateHostWarning = 'Heads-up: the IntAppsAPI base URL host "' . $intappsHostVal . '" resolves'
+                        . ' to a private/reserved network address, so this server will refuse to actually call it'
+                        . ' (the connectivity test below will report it as unconfigured). If this is not a deliberate'
+                        . ' internal test target, double-check it.';
+                    $saveWarning = $saveWarning !== '' ? ($saveWarning . ' ' . $intappsPrivateHostWarning) : $intappsPrivateHostWarning;
+                }
             } catch (\Throwable $e) {
                 error_log('[manage configuration save_intappsapi] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
@@ -908,6 +880,22 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                         ['keys' => $changedKeys], 'success'); /* key NAMES only — the secret VALUE is never logged */
                 }
                 $saveSuccess = 'CueRCode QR settings saved.';
+
+                /* L-2 security-audit finding (2026-08-30) — SSRF heads-up on
+                   save (never blocks), same shape as save_intappsapi's own
+                   heads-up just above and save_email's $smtpHostIsPrivate()
+                   warning. _cuercodeResolveUrl() (tightened by this same
+                   audit pass) now REFUSES to actually dial a base URL that
+                   resolves to a private/reserved address — surfacing WHY
+                   here turns a later, confusing "Test connection failed"
+                   into an immediate, explained heads-up instead. */
+                $cuercodeHostVal = (string)(parse_url($cuercodeBaseUrlIn, PHP_URL_HOST) ?? '');
+                if ($cuercodeHostVal !== '' && ihymnsHostResolvesPrivate($cuercodeHostVal)) {
+                    $saveWarning = 'Heads-up: the CueRCode base URL host "' . $cuercodeHostVal . '" resolves to a'
+                        . ' private/reserved network address, so this server will refuse to actually call it (QR'
+                        . ' generation will fall back to plain URL/code text). If this is not a deliberate internal'
+                        . ' test target, double-check it.';
+                }
             } catch (\Throwable $e) {
                 error_log('[manage configuration save_cuercode] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
@@ -1161,8 +1149,96 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_pd_publication_threshold] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_search_visibility') {
+            /* Per-channel search-engine visibility (#2024/#2025). ONE setting:
+               the ticked subset of {alpha,beta,production} that search
+               engines may list, stored as CSV (the webhooks_enabled_channels /
+               intappsapi_enabled_channels precedent — rule #20's "growable
+               vocabulary as CSV, never ENUM" applied to a channel allow-list).
+               Unlike those two dormancy gates, an EMPTY tick-set here is a
+               real, meaningful state ("hide every channel"), so it is stored
+               as the literal 'none' rather than '' — setAppSetting()'s own
+               convention reads '' as "unset", and 'none' is self-describing
+               (see includes/search_visibility.php's doc-block for the full
+               reasoning). Requires search_visibility.php for the setting-key
+               constant (rule #35 — never retype the key literal). */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+            try {
+                /* Posted field name is deliberately DIFFERENT from the
+                   settings-key literal itself (the webhooks_channels[] vs
+                   webhooks_enabled_channels precedent) — so a tree-wide scan
+                   for the quoted settings-key string (tests/php/test-search-
+                   visibility.php PASS 2) finds it in exactly one file. */
+                $postedChans = (array)($_POST['search_engine_channels'] ?? []);
+                $validChans  = ['alpha', 'beta', 'production'];
+                $chansOut    = [];
+                foreach ($postedChans as $c) {
+                    $c = trim((string)$c);
+                    if (in_array($c, $validChans, true) && !in_array($c, $chansOut, true)) {
+                        $chansOut[] = $c;
+                    }
+                }
+                $csv = $chansOut === [] ? 'none' : implode(',', $chansOut);
+                $saveSetting($db, SEARCH_VISIBILITY_SETTING_KEY, $csv);
+                if (function_exists('logActivity')) {
+                    logActivity('app_setting.update', 'app_setting', SEARCH_VISIBILITY_SETTING_KEY,
+                        ['channels' => $csv], 'success');
+                }
+                /* Plain-language confirmation naming what's now listed/hidden —
+                   and a reminder that search engines take time to react, so an
+                   admin doesn't expect an instant change in search results. */
+                $friendlyChanName = static fn(string $c): string => $c === 'alpha' ? 'Alpha (dev)' : ucfirst($c);
+                $listedNames = array_map($friendlyChanName, $chansOut);
+                $hiddenNames = array_map($friendlyChanName, array_diff($validChans, $chansOut));
+                $saveSuccess = 'Saved. Listed in search engines: '
+                    . ($listedNames === [] ? 'none' : implode(', ', $listedNames))
+                    . '. Hidden: ' . ($hiddenNames === [] ? 'none' : implode(', ', $hiddenNames))
+                    . '. Changes reach search results gradually as pages are re-crawled.';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_search_visibility] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         }
     }
+}
+
+/* #2003 — additive AJAX envelope for the "Connect a service" wizard's SAVE
+   step. A classic full-page form submit NEVER sends respond=json, so it
+   renders the page exactly as before this existed — this block is placed
+   AFTER every existing action case runs (never inside one), so it can only
+   ever observe the SAME $saveSuccess/$saveError/$saveWarning/$csrfFailed
+   the page was already going to render, never change what happened above.
+   The wizard posts the EXISTING save_intappsapi/save_cuercode/save_captcha
+   actions (§D3 of the plan) plus this one extra field, so the handler that
+   actually runs is byte-for-byte the one the manual form runs — no forked
+   write path (rule #22).
+   `ok` is STRUCTURAL, never a prose match (rule #35): the client branches
+   on `result.ok` and the HTTP status (403 = CSRF, 422 = the handler's own
+   validation error), never on the wording of `error`/`success`/`warning`.
+   `warning` matters beyond a courtesy: it carries the intapps "channel
+   listed but credentials incomplete" fail-open notice and captcha's
+   both-doors lockout warning into the wizard verbatim — one source of
+   prose, never a second copy of either message. */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (string)($_POST['respond'] ?? '') === 'json') {
+    header('Content-Type: application/json; charset=UTF-8');
+    if ($csrfFailed) {
+        http_response_code(403);
+    } elseif ($saveError !== '') {
+        http_response_code(422);
+    }
+    echo json_encode([
+        'ok'      => !$csrfFailed && $saveError === '',
+        'success' => $saveSuccess !== '' ? $saveSuccess : null,
+        'error'   => $saveError   !== '' ? $saveError   : null,
+        'warning' => $saveWarning !== '' ? $saveWarning : null,
+        /* #2004 — additive: null on every action except a save_webhooks that
+           just regenerated the drain key. The wizard's webhooks entry reads
+           this to show the show-once key (§ the driver's runSaveAndTest()) —
+           the key was minted by THIS save, so whether the admin ever sees it
+           must never depend on the SUBSEQUENT connection test's verdict. */
+        'drainKey' => $webhookNewDrainKey,
+    ]);
+    exit;
 }
 
 /* ----------------------------------------------------------------------
@@ -1171,6 +1247,17 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 $currentSettings    = $loadSettings($db, array_keys($EMAIL_SETTINGS));
 $currentService     = $currentSettings['email_service'] ?? 'none';
 $envCurrent          = ihymns_environment();   // #1233 — per-env maintenance keys
+
+/* Search-engine visibility (#2024/#2025) — read through the SAME constant
+   + parse the runtime itself uses (require_once is idempotent; this page
+   may not have loaded search_visibility.php yet if no save action ran),
+   so this card can never disagree with actual behaviour — the same
+   no-drift discipline maintenanceRefreshSeconds() follows just above. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+$searchVisChannels = ihymns_parse_channels_csv(
+    (string)(getAppSetting(SEARCH_VISIBILITY_SETTING_KEY, SEARCH_VISIBILITY_DEFAULT_CSV) ?? SEARCH_VISIBILITY_DEFAULT_CSV)
+);
+
 $maintenanceSettings = $loadSettings($db, [
     'maintenance_mode_' . $envCurrent,
     'maintenance_message_' . $envCurrent,
@@ -1311,15 +1398,15 @@ $langRefreshSchemaReady = languageRegistrySchemaReady($db);
 
 /* Per-form native-impact captions (the D3 warning made permanent UI). Keyed by
    captchaFormKeys() value; a key without an entry falls back to a generic
-   caption, so the card can never silently drop a newly-added form. */
-$captchaFormMeta = [
-    'registration'   => ['label' => 'Registration',        'caption' => 'Breaks native app sign-up until the apps add widget support.'],
-    'login'          => ['label' => 'Login',               'caption' => 'Breaks native sign-in. Login already carries the strongest rate limits — enable last, if at all.'],
-    'password_reset' => ['label' => 'Password reset',      'caption' => 'Breaks native password reset until the apps add widget support.'],
-    'email_login'    => ['label' => 'Email login (code)',  'caption' => 'Breaks native magic-link login until the apps add widget support.'],
-    'song_request'   => ['label' => 'Song requests',       'caption' => 'Guards the web /request form only — no native impact. The native-app request endpoint and any direct API submission carry no widget, so they stay bounded by the per-IP daily cap instead. Ends the no-JS form fallback while enabled.'],
-    'manage_login'   => ['label' => 'Admin login (/manage)','caption' => 'Admin login page — no native impact.'],
-];
+   caption, so the card can never silently drop a newly-added form.
+   #2003 (owner sub-decision O3, plan §5.1) — this map now lives in
+   includes/integration_registry.php::integrationCaptchaFormMeta() so the
+   "Connect a service" wizard's CAPTCHA checkbox step can show the SAME
+   labels/captions without a second, driftable copy (rule #35). This is an
+   OUTPUT-IDENTICAL extract-first (rule #22): the array below is unchanged,
+   word for word — only where it is DEFINED moved. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'integration_registry.php';
+$captchaFormMeta = integrationCaptchaFormMeta();
 
 /* #1770 §4.7 — the APP-DEFAULT layer of the leader-idle precedence chain;
    read via the SAME resolver-adjacent constants service_mode.php declares
@@ -1360,7 +1447,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="d-flex justify-content-between align-items-start mb-3">
         <div>
             <h1 class="h3 mb-1">
-                <i class="bi bi-sliders me-2"></i>Settings
+                <i aria-hidden="true" class="bi bi-sliders me-2"></i>Settings
                 <?= entitlementLockChipHtml('manage_configuration') ?>
             </h1>
             <p class="text-secondary small mb-0">
@@ -1374,17 +1461,17 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     <?php if ($saveSuccess !== ''): ?>
         <div class="alert alert-success">
-            <i class="bi bi-check-circle me-1"></i><?= htmlspecialchars($saveSuccess, ENT_QUOTES, 'UTF-8') ?>
+            <i aria-hidden="true" class="bi bi-check-circle me-1"></i><?= htmlspecialchars($saveSuccess, ENT_QUOTES, 'UTF-8') ?>
         </div>
     <?php endif; ?>
     <?php if ($saveError !== ''): ?>
         <div class="alert alert-danger">
-            <i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($saveError, ENT_QUOTES, 'UTF-8') ?>
+            <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($saveError, ENT_QUOTES, 'UTF-8') ?>
         </div>
     <?php endif; ?>
     <?php if ($saveWarning !== ''): /* #1304 — non-blocking SSRF heads-up; host value escaped here */ ?>
         <div class="alert alert-warning">
-            <i class="bi bi-shield-exclamation me-1"></i><?= htmlspecialchars($saveWarning, ENT_QUOTES, 'UTF-8') ?>
+            <i aria-hidden="true" class="bi bi-shield-exclamation me-1"></i><?= htmlspecialchars($saveWarning, ENT_QUOTES, 'UTF-8') ?>
         </div>
     <?php endif; ?>
 
@@ -1394,7 +1481,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-cone-striped me-2"></i>System maintenance
+                <i aria-hidden="true" class="bi bi-cone-striped me-2"></i>System maintenance
                 <span class="badge bg-secondary ms-1 text-uppercase"><?= htmlspecialchars($envCurrent, ENT_QUOTES, 'UTF-8') ?></span>
             </h2>
             <span class="badge <?= $maintenanceOn ? 'bg-danger' : 'bg-success' ?>">
@@ -1409,7 +1496,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 their cached offline experience and see a maintenance banner.
             </p>
             <p class="small text-secondary mb-3">
-                <i class="bi bi-hdd-network me-1"></i><strong>Per-environment.</strong>
+                <i aria-hidden="true" class="bi bi-hdd-network me-1"></i><strong>Per-environment.</strong>
                 The three environments share one database, but each has its own flag —
                 this toggles <strong><?= htmlspecialchars($envCurrent, ENT_QUOTES, 'UTF-8') ?></strong>
                 only. Manage another environment from <em>its own</em> <code>/manage</code>.
@@ -1458,7 +1545,74 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </label>
                 </div>
                 <button type="submit" class="btn btn-primary">
-                    <i class="bi bi-save me-1"></i>Save maintenance settings
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save maintenance settings
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         SEARCH ENGINE VISIBILITY SECTION (#2024/#2025)
+         =========================== -->
+    <div class="card bg-body-tertiary border-secondary mb-4" id="search-visibility">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i aria-hidden="true" class="bi bi-search me-2"></i>Search engine visibility
+            </h2>
+            <span class="badge <?= in_array('production', $searchVisChannels, true) ? 'bg-success' : 'bg-warning text-dark' ?>">
+                <?= in_array('production', $searchVisChannels, true) ? 'Production listed' : 'Production hidden' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-2">
+                Controls whether each of the three iHymns sites &mdash; the live site, the beta
+                preview, and the dev site &mdash; is listed by search engines like Google.
+            </p>
+            <p class="small text-secondary mb-3">
+                Switching a site off tells search engines not to list any of its pages (every page
+                carries a &ldquo;do not index&rdquo; signal), takes away its sitemap, and stops
+                <code>robots.txt</code> advertising it. The site keeps working normally for
+                everyone &mdash; this only changes whether it shows up in search results, and
+                pages disappear from those results gradually as search engines revisit them
+                (days to weeks, not instantly).
+            </p>
+            <p class="small mb-3">
+                <i aria-hidden="true" class="bi bi-geo-alt me-1"></i>
+                You are viewing this admin page on: <strong class="text-uppercase"><?= htmlspecialchars($envCurrent, ENT_QUOTES, 'UTF-8') ?></strong>
+            </p>
+            <p class="small text-secondary mb-3">
+                <i aria-hidden="true" class="bi bi-hdd-network me-1"></i><strong>All three at once, from anywhere.</strong>
+                Unlike System maintenance above (which only manages the environment you're currently
+                signed in to), this card edits the ONE shared setting behind all three sites &mdash;
+                because beta and dev may not always have an admin signed in on them, seeing all
+                three together IS the control.
+            </p>
+            <form method="post">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_search_visibility">
+                <div class="mb-2">
+                    <label class="form-label mb-1" id="search-vis-channels-label">Listed in search engines</label>
+                    <div class="d-flex flex-column gap-2" role="group" aria-labelledby="search-vis-channels-label">
+                        <?php foreach (['production' => 'Production (ihymns.app)', 'beta' => 'Beta (beta.ihymns.app)', 'alpha' => 'Alpha &mdash; dev (dev.ihymns.app)'] as $chOpt => $chLabel): ?>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" name="search_engine_channels[]"
+                                       value="<?= $chOpt ?>" id="sv_ch_<?= $chOpt ?>"<?= in_array($chOpt, $searchVisChannels, true) ? ' checked' : '' ?>>
+                                <label class="form-check-label" for="sv_ch_<?= $chOpt ?>">
+                                    <?= $chLabel /* fixed, safe strings from the loop above — no user input */ ?>
+                                    <?php if ($chOpt === $envCurrent): ?><span class="badge bg-info text-dark ms-1">this site</span><?php endif; ?>
+                                </label>
+                                <?php if ($chOpt === 'production'): ?>
+                                    <div class="form-text text-warning-emphasis">
+                                        <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>Turning Production off removes
+                                        the live site from search results over the following weeks &mdash; only do this deliberately.
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save search engine visibility
                 </button>
             </form>
         </div>
@@ -1470,7 +1624,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4" id="feature-gating">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-shield-lock me-2"></i>Feature gating
+                <i aria-hidden="true" class="bi bi-shield-lock me-2"></i>Feature gating
             </h2>
             <span class="badge <?= ($contentGatingEnabledVal && $featureGatingRulesEnabledVal) ? 'bg-success' : 'bg-secondary' ?>">
                 <?= $contentGatingEnabledVal
@@ -1491,7 +1645,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <a href="/manage/gating-noop-verify" class="alert-link">No-Op Verifier</a>).
             </p>
             <p class="small text-secondary mb-3">
-                <i class="bi bi-info-circle me-1"></i>
+                <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
                 Also see <a href="/manage/restrictions" class="alert-link">Content Restrictions</a>
                 (per-song/songbook/feature rules — inert while content gating is off) and
                 <a href="/manage/tiers" class="alert-link">Access Tiers</a> (per-tier capability values).
@@ -1520,7 +1674,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </label>
                 </div>
                 <button type="submit" class="btn btn-primary">
-                    <i class="bi bi-save me-1"></i>Save feature-gating flags
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save feature-gating flags
                 </button>
             </form>
         </div>
@@ -1532,7 +1686,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-pencil-square me-2"></i>Song Editor
+                <i aria-hidden="true" class="bi bi-pencil-square me-2"></i>Song Editor
             </h2>
             <span class="badge <?= $editorV2DefaultVal ? 'bg-success' : 'bg-warning text-dark' ?>">
                 <?= $editorV2DefaultVal ? 'New editor (v2)' : 'Legacy editor' ?>
@@ -1563,7 +1717,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </label>
                 </div>
                 <button type="submit" class="btn btn-primary">
-                    <i class="bi bi-save me-1"></i>Save editor setting
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save editor setting
                 </button>
             </form>
         </div>
@@ -1575,10 +1729,23 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-broadcast-pin me-2"></i>IntAppsAPI Gateway
+                <i aria-hidden="true" class="bi bi-broadcast-pin me-2"></i>IntAppsAPI Gateway
             </h2>
-            <span class="badge <?= $intappsResolvedEnabled ? 'bg-success' : 'bg-secondary' ?>">
-                <?= $intappsResolvedEnabled ? 'Active' : 'Dormant' ?>
+            <span class="d-flex align-items-center gap-2">
+                <?php /* #2003 — "Connect a service" wizard launcher. Additive: opens the
+                         ONE shared modal (§6.5) with data-integration naming this card;
+                         the badge beside it is untouched. type="button" is load-bearing
+                         (the #1999 lesson) — this page has no surrounding <form> today,
+                         but a bare <button> with no explicit type still defaults to
+                         type="submit" and would otherwise submit whichever form the
+                         browser deems nearest. */ ?>
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+                        data-bs-target="#integrationConnectModal" data-integration="intapps">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Set up with a guide
+                </button>
+                <span class="badge <?= $intappsResolvedEnabled ? 'bg-success' : 'bg-secondary' ?>">
+                    <?= $intappsResolvedEnabled ? 'Active' : 'Dormant' ?>
+                </span>
             </span>
         </div>
         <div class="card-body">
@@ -1589,11 +1756,11 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 design</strong> — with no channel listed below, this integration performs zero
                 HTTP calls and zero database reads beyond this page, byte-identical to a build
                 with no gateway integration at all. Full status + snapshot viewer:
-                <a href="/manage/intapps-status" class="link-light">IntApps Gateway status</a>.
+                <a href="/manage/intapps-status">IntApps Gateway status</a>.
             </p>
             <?php if (!$intappsAppUuidVal && !$intappsApiKeySet && !$intappsHmacSecretSet): ?>
                 <p class="small text-body-secondary border-start border-secondary border-3 ps-2 mb-3">
-                    <i class="bi bi-info-circle me-1"></i><strong>Dormant — awaiting gateway
+                    <i aria-hidden="true" class="bi bi-info-circle me-1"></i><strong>Dormant — awaiting gateway
                     registration (#1726).</strong> Nothing below is an error; it is the expected
                     state until the owner-only gateway-registration prerequisite closes and
                     real credentials are pasted here.
@@ -1650,7 +1817,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save IntAppsAPI settings
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save IntAppsAPI settings
                     </button>
                 </div>
             </form>
@@ -1663,15 +1830,23 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-qr-code me-2"></i>CueRCode QR Generator
+                <i aria-hidden="true" class="bi bi-qr-code me-2"></i>CueRCode QR Generator
             </h2>
-            <span class="badge <?= $cuercodeConfigured ? 'bg-success' : 'bg-secondary' ?>">
-                <?= $cuercodeConfigured ? 'Active' : 'Dormant' ?>
+            <span class="d-flex align-items-center gap-2">
+                <?php /* #2003 — "Connect a service" wizard launcher (see the IntAppsAPI
+                         card above for the full rationale comment). */ ?>
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+                        data-bs-target="#integrationConnectModal" data-integration="cuercode">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Set up with a guide
+                </button>
+                <span class="badge <?= $cuercodeConfigured ? 'bg-success' : 'bg-secondary' ?>">
+                    <?= $cuercodeConfigured ? 'Active' : 'Dormant' ?>
+                </span>
             </span>
         </div>
         <div class="card-body">
             <p class="small text-secondary mb-3">
-                Credentials for the <a href="https://cuercode.net" class="link-light" target="_blank" rel="noopener">CueRCode</a>
+                Credentials for the <a href="https://cuercode.net" target="_blank" rel="noopener">CueRCode</a>
                 service, which generates every QR code in iHymns (the print-template QR block and the
                 Service-Projection join QR) via its API — server-side, so the secret key never reaches a
                 browser. <strong>Dormant until keyed</strong>: with no API key saved, the <code>/qr</code>
@@ -1679,7 +1854,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </p>
             <?php if (!$cuercodeApiKeySet): ?>
                 <p class="small text-body-secondary border-start border-secondary border-3 ps-2 mb-3">
-                    <i class="bi bi-info-circle me-1"></i><strong>Dormant — awaiting an API key.</strong>
+                    <i aria-hidden="true" class="bi bi-info-circle me-1"></i><strong>Dormant — awaiting an API key.</strong>
                     Generate a key in the CueRCode admin panel and paste it below; QR codes light up the
                     moment it is saved.
                 </p>
@@ -1705,7 +1880,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save CueRCode settings
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save CueRCode settings
                     </button>
                 </div>
             </form>
@@ -1721,10 +1896,18 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4" id="captcha">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-shield-check me-2"></i>CAPTCHA (bot protection)
+                <i aria-hidden="true" class="bi bi-shield-check me-2"></i>CAPTCHA (bot protection)
             </h2>
-            <span class="badge <?= $captchaConfiguredNow ? 'bg-success' : 'bg-secondary' ?>">
-                <?= $captchaConfiguredNow ? 'Active' : 'Dormant' ?>
+            <span class="d-flex align-items-center gap-2">
+                <?php /* #2003 — "Connect a service" wizard launcher (see the IntAppsAPI
+                         card above for the full rationale comment). */ ?>
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+                        data-bs-target="#integrationConnectModal" data-integration="captcha">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Set up with a guide
+                </button>
+                <span class="badge <?= $captchaConfiguredNow ? 'bg-success' : 'bg-secondary' ?>">
+                    <?= $captchaConfiguredNow ? 'Active' : 'Dormant' ?>
+                </span>
             </span>
         </div>
         <div class="card-body">
@@ -1736,7 +1919,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </p>
             <?php if (!$captchaConfiguredNow): ?>
                 <p class="small text-body-secondary border-start border-secondary border-3 ps-2 mb-3">
-                    <i class="bi bi-info-circle me-1"></i><strong>Dormant.</strong>
+                    <i aria-hidden="true" class="bi bi-info-circle me-1"></i><strong>Dormant.</strong>
                     Pick a provider, paste its site key + secret key (create an account with the provider
                     first), then tick the forms to guard. The challenge goes live the moment all three are set.
                 </p>
@@ -1767,7 +1950,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 ?>
                 <div class="border-start border-3 <?= $captchaHealthStatusV === 'up' ? 'border-success' : 'border-warning' ?> ps-2 mb-3">
                     <p class="small mb-1">
-                        <span class="badge <?= $hsBadgeClass ?>"><i class="bi <?= $hsIcon ?> me-1"></i><?= htmlspecialchars($hsBadgeText, ENT_QUOTES, 'UTF-8') ?></span>
+                        <span class="badge <?= $hsBadgeClass ?>"><i aria-hidden="true" class="bi <?= $hsIcon ?> me-1"></i><?= htmlspecialchars($hsBadgeText, ENT_QUOTES, 'UTF-8') ?></span>
                         <?php if ($captchaWindowOpen): ?>
                             <span class="badge bg-warning text-dark ms-1">Grace window OPEN</span>
                         <?php endif; ?>
@@ -1804,7 +1987,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         <?php endif; ?>
                     </p>
                     <p class="small text-secondary mb-2">
-                        <i class="bi bi-info-circle me-1"></i>This answers &ldquo;can <em>this server</em> reach the
+                        <i aria-hidden="true" class="bi bi-info-circle me-1"></i>This answers &ldquo;can <em>this server</em> reach the
                         provider?&rdquo; If the provider is up for us but blocked for some visitors (an ad-blocker, a
                         corporate filter, a regional outage), the status stays healthy and those visitors are still
                         refused &mdash; the &ldquo;widget would not load&rdquo; count above is the only sign of it.
@@ -1813,7 +1996,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                         <input type="hidden" name="action" value="captcha_probe">
                         <button type="submit" class="btn btn-sm btn-outline-secondary">
-                            <i class="bi bi-arrow-repeat me-1"></i>Check provider now
+                            <i aria-hidden="true" class="bi bi-arrow-repeat me-1"></i>Check provider now
                         </button>
                     </form>
                 </div>
@@ -1851,7 +2034,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <div class="form-text">Server-side only. Encrypted at rest; never sent to a browser.</div>
                 </div>
                 <div class="col-12">
-                    <label class="form-label mb-1">Guard these forms</label>
+                    <label class="form-label mb-1" id="captcha-guard-forms-label">Guard these forms</label>
                     <p class="form-text small mt-0 mb-2">
                         If the provider ever goes down, a guarded form normally falls back to the ordinary
                         rate limits rather than locking people out &mdash; automatically, and only while
@@ -1859,7 +2042,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         &ldquo;keep strict&rdquo; on a form you would rather see fail than let through
                         during such an outage.
                     </p>
-                    <div class="row g-2">
+                    <div class="row g-2" role="group" aria-labelledby="captcha-guard-forms-label">
                         <?php foreach (captchaFormKeys() as $fKey): ?>
                             <?php
                             $fMeta   = $captchaFormMeta[$fKey] ?? ['label' => $fKey, 'caption' => ''];
@@ -1894,7 +2077,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save CAPTCHA settings
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save CAPTCHA settings
                     </button>
                 </div>
             </form>
@@ -1937,16 +2120,24 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-broadcast me-2"></i>Partner webhooks
+                <i aria-hidden="true" class="bi bi-broadcast me-2"></i>Partner webhooks
             </h2>
-            <a href="/manage/webhooks" class="btn btn-sm btn-outline-light">
-                <i class="bi bi-list-ul me-1"></i>Manage subscriptions
-            </a>
+            <span class="d-flex align-items-center gap-2">
+                <?php /* #2004 — "Connect a service" wizard launcher (see the IntAppsAPI
+                         card's own rationale comment near the top of this page). */ ?>
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+                        data-bs-target="#integrationConnectModal" data-integration="webhooks">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Set up with a guide
+                </button>
+                <a href="/manage/webhooks" class="btn btn-sm btn-outline-light">
+                    <i aria-hidden="true" class="bi bi-list-ul me-1"></i>Manage subscriptions
+                </a>
+            </span>
         </div>
         <div class="card-body">
             <p class="small text-secondary mb-3">
                 Outbound event delivery (#1909): external systems subscribe on
-                <a href="/manage/webhooks" class="link-light">Webhooks</a> and receive signed HTTP callbacks
+                <a href="/manage/webhooks">Webhooks</a> and receive signed HTTP callbacks
                 when songs / songbooks change, a set-list is shared, or a service goes live. This card is the
                 <strong>master switch</strong> and the drain-key custody — the tables do nothing until a channel
                 is ticked below.
@@ -1962,8 +2153,8 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="action" value="save_webhooks">
                 <div class="mb-3">
-                    <label class="form-label mb-1">Enabled channels</label>
-                    <div class="d-flex flex-wrap gap-3">
+                    <label class="form-label mb-1" id="webhook-channels-label">Enabled channels</label>
+                    <div class="d-flex flex-wrap gap-3" role="group" aria-labelledby="webhook-channels-label">
                         <?php foreach (['alpha', 'beta', 'production'] as $chOpt): ?>
                             <div class="form-check">
                                 <input class="form-check-input" type="checkbox" name="webhooks_channels[]"
@@ -1987,8 +2178,8 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         Allow <code>http://127.0.0.1</code> targets (local testing only)
                     </label>
                 </div>
-                <div class="mb-3">
-                    <label class="form-label mb-1">
+                <div class="mb-3" role="group" aria-labelledby="webhook-drain-key-label">
+                    <label class="form-label mb-1" id="webhook-drain-key-label">
                         Drain key
                         <?= $webhookDrainKeySet ? '<span class="badge bg-success">set</span>' : '<span class="badge bg-secondary">not set</span>' ?>
                     </label>
@@ -2010,7 +2201,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </div>
                 </div>
                 <button type="submit" class="btn btn-primary">
-                    <i class="bi bi-save me-1"></i>Save webhook settings
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save webhook settings
                 </button>
             </form>
             <hr class="border-secondary">
@@ -2040,10 +2231,10 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-translate me-2"></i>Language registry refresh
+                <i aria-hidden="true" class="bi bi-translate me-2"></i>Language registry refresh
             </h2>
             <a href="/manage/languages" class="btn btn-sm btn-outline-light">
-                <i class="bi bi-list-ul me-1"></i>Manage languages
+                <i aria-hidden="true" class="bi bi-list-ul me-1"></i>Manage languages
             </a>
         </div>
         <div class="card-body">
@@ -2051,7 +2242,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 Keeps the IETF BCP 47 / IANA Language Subtag Registry + CLDR display names (#738) current
                 automatically — a monthly GitHub Action pokes the endpoint below so nobody has to remember to
                 click "Refresh from IANA + CLDR" on
-                <a href="/manage/setup-database" class="link-light">Setup / Database</a> by hand. This card is the
+                <a href="/manage/setup-database">Setup / Database</a> by hand. This card is the
                 key custody only; the refresh itself runs server-side against the SAME core the manual button uses.
             </p>
             <?php if (!$langRefreshSchemaReady): ?>
@@ -2072,8 +2263,8 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <form method="post" class="mb-3">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="action" value="save_language_registry_refresh">
-                <div class="mb-3">
-                    <label class="form-label mb-1">
+                <div class="mb-3" role="group" aria-labelledby="lang-refresh-key-label">
+                    <label class="form-label mb-1" id="lang-refresh-key-label">
                         Refresh key
                         <?= $langRefreshKeySet ? '<span class="badge bg-success">set</span>' : '<span class="badge bg-secondary">not set</span>' ?>
                     </label>
@@ -2099,7 +2290,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </div>
                 </div>
                 <button type="submit" class="btn btn-primary">
-                    <i class="bi bi-save me-1"></i>Save
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                 </button>
             </form>
         </div>
@@ -2111,7 +2302,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-broadcast-pin me-2"></i>Live Follow
+                <i aria-hidden="true" class="bi bi-broadcast-pin me-2"></i>Live Follow
             </h2>
         </div>
         <div class="card-body">
@@ -2119,10 +2310,10 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 A worship leader's "Go Live" session auto-closes after this many minutes with no
                 genuine leader interaction (opening the app doesn't count — reading, navigating,
                 or driving a section does). This is the site-wide DEFAULT — a leader's own
-                <a href="/settings" class="link-light">Settings</a> can shorten or lengthen it,
+                <a href="/settings">Settings</a> can shorten or lengthen it,
                 and an organisation can override or lock it on
-                <a href="/manage/organisations" class="link-light">Organisations</a>
-                (site admin) or <a href="/manage/my-organisations" class="link-light">My organisations</a>
+                <a href="/manage/organisations">Organisations</a>
+                (site admin) or <a href="/manage/my-organisations">My organisations</a>
                 (org admin).
             </p>
             <form method="post" class="row g-3 align-items-end">
@@ -2142,7 +2333,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                     </button>
                 </div>
             </form>
@@ -2155,7 +2346,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-shield-check me-2"></i>Public-domain suggestion
+                <i aria-hidden="true" class="bi bi-shield-check me-2"></i>Public-domain suggestion
             </h2>
         </div>
         <div class="card-body">
@@ -2183,7 +2374,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                     </button>
                 </div>
             </form>
@@ -2196,10 +2387,21 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-apple me-2"></i>Apple native app
+                <i aria-hidden="true" class="bi bi-apple me-2"></i>Apple native app
             </h2>
-            <span class="badge <?= $appleTeamId === '' ? 'bg-secondary' : 'bg-success' ?>">
-                <?= $appleTeamId === '' ? 'Team ID not set (AASA uses placeholder)' : 'Team ID set' ?>
+            <span class="d-flex align-items-center gap-2">
+                <?php /* #2004 — "Connect a service" wizard launcher (see the IntAppsAPI
+                         card's own rationale comment near the top of this page). The
+                         wizard's scope is Sign in with Apple (+ the Team ID it rides
+                         on) — NOT the separate APNs Auth Key section further down this
+                         card, which stays a classic-only field group. */ ?>
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+                        data-bs-target="#integrationConnectModal" data-integration="siwa">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Set up with a guide
+                </button>
+                <span class="badge <?= $appleTeamId === '' ? 'bg-secondary' : 'bg-success' ?>">
+                    <?= $appleTeamId === '' ? 'Team ID not set (AASA uses placeholder)' : 'Team ID set' ?>
+                </span>
             </span>
         </div>
         <div class="card-body">
@@ -2213,7 +2415,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 Links won't resolve until a real value is saved here.
             </p>
             <p class="small text-warning-emphasis border-start border-warning border-3 ps-2 mb-3">
-                <i class="bi bi-exclamation-triangle me-1"></i><strong>This field and the
+                <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i><strong>This field and the
                 <code>APPLE_TEAM_ID</code> GitHub secret are two independent copies that must be
                 identical — neither overrides the other.</strong> They are read by <em>different</em>
                 systems: the GitHub secret signs the app <strong>at build time</strong> (baked into
@@ -2240,7 +2442,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12">
                     <h3 class="h6 mb-1">
-                        <i class="bi bi-key me-1"></i>Sign in with Apple (#1402)
+                        <i aria-hidden="true" class="bi bi-key me-1"></i>Sign in with Apple (#1402)
                         <span class="badge <?= $appleSiwaKeyId === '' ? 'bg-secondary' : 'bg-success' ?> ms-1" style="font-size: 0.65rem;">
                             <?= $appleSiwaKeyId === '' ? 'Key ID not set' : 'Key ID set' ?>
                         </span>
@@ -2291,7 +2493,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12">
                     <h3 class="h6 mb-1">
-                        <i class="bi bi-globe me-1"></i>Sign in with Apple — Web (#1470)
+                        <i aria-hidden="true" class="bi bi-globe me-1"></i>Sign in with Apple — Web (#1470)
                         <span class="badge <?= $appleSiwaServicesId === '' ? 'bg-secondary' : 'bg-success' ?> ms-1" style="font-size: 0.65rem;">
                             <?= $appleSiwaServicesId === '' ? 'Services ID not set' : 'Services ID set' ?>
                         </span>
@@ -2342,7 +2544,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12">
                     <h3 class="h6 mb-1">
-                        <i class="bi bi-bell me-1"></i>APNs Auth Key — Live Activities (#1429)
+                        <i aria-hidden="true" class="bi bi-bell me-1"></i>APNs Auth Key — Live Activities (#1429)
                         <span class="badge <?= $appleApnsKeyId === '' ? 'bg-secondary' : 'bg-success' ?> ms-1" style="font-size: 0.65rem;">
                             <?= $appleApnsKeyId === '' ? 'Key ID not set' : 'Key ID set' ?>
                         </span>
@@ -2392,7 +2594,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save Apple settings
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save Apple settings
                     </button>
                 </div>
             </form>
@@ -2406,7 +2608,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-phone me-2"></i>Native app stores
+                <i aria-hidden="true" class="bi bi-phone me-2"></i>Native app stores
             </h2>
             <span class="badge <?= $nativeAppsAnySet ? 'bg-success' : 'bg-secondary' ?>">
                 <?= $nativeAppsAnySet ? 'Configured' : 'Not configured — PWA install prompt only' ?>
@@ -2433,7 +2635,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12 col-lg-4">
                     <label for="native_app_ios" class="form-label">
-                        <i class="bi bi-apple me-1"></i>Apple App Store
+                        <i aria-hidden="true" class="bi bi-apple me-1"></i>Apple App Store
                     </label>
                     <input type="text" name="native_app_ios" id="native_app_ios" class="form-control"
                            placeholder="https://apps.apple.com/app/id1234567890 or 1234567890"
@@ -2446,7 +2648,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12 col-lg-4">
                     <label for="native_app_android" class="form-label">
-                        <i class="bi bi-google-play me-1"></i>Google Play
+                        <i aria-hidden="true" class="bi bi-google-play me-1"></i>Google Play
                     </label>
                     <input type="text" name="native_app_android" id="native_app_android" class="form-control"
                            placeholder="https://play.google.com/store/apps/details?id=ltd.mwbmpartners.ihymns or ltd.mwbmpartners.ihymns"
@@ -2456,7 +2658,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12 col-lg-4">
                     <label for="native_app_amazon" class="form-label">
-                        <i class="bi bi-amazon me-1"></i>Amazon Appstore
+                        <i aria-hidden="true" class="bi bi-amazon me-1"></i>Amazon Appstore
                     </label>
                     <input type="text" name="native_app_amazon" id="native_app_amazon" class="form-control"
                            placeholder="https://www.amazon.com/dp/B0XXXXXXXX or B0XXXXXXXX"
@@ -2466,7 +2668,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save native app settings
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save native app settings
                     </button>
                 </div>
             </form>
@@ -2479,10 +2681,18 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
-                <i class="bi bi-envelope-at me-2"></i>Email service
+                <i aria-hidden="true" class="bi bi-envelope-at me-2"></i>Email service
             </h2>
-            <span class="badge <?= $currentService === 'none' ? 'bg-secondary' : 'bg-success' ?>">
-                <?= $currentService === 'none' ? 'Not configured' : 'Configured: ' . htmlspecialchars($currentService, ENT_QUOTES, 'UTF-8') ?>
+            <span class="d-flex align-items-center gap-2">
+                <?php /* #2004 — "Connect a service" wizard launcher (see the IntAppsAPI
+                         card's own rationale comment near the top of this page). */ ?>
+                <button type="button" class="btn btn-sm btn-outline-info" data-bs-toggle="modal"
+                        data-bs-target="#integrationConnectModal" data-integration="email">
+                    <i aria-hidden="true" class="bi bi-magic me-1"></i>Set up with a guide
+                </button>
+                <span class="badge <?= $currentService === 'none' ? 'bg-secondary' : 'bg-success' ?>">
+                    <?= $currentService === 'none' ? 'Not configured' : 'Configured: ' . htmlspecialchars($currentService, ENT_QUOTES, 'UTF-8') ?>
+                </span>
             </span>
         </div>
         <div class="card-body">
@@ -2567,7 +2777,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <!-- SMTP-specific: custom SMTP, OR the office365/gmail providers when method=SMTP-AUTH (#1309/#1311) -->
                 <div class="email-fields" data-provider-show="smtp,office365,gmail" data-auth-show="smtp">
                     <hr class="text-secondary">
-                    <h3 class="h6 mb-3"><i class="bi bi-server me-1"></i>SMTP server</h3>
+                    <h3 class="h6 mb-3"><i aria-hidden="true" class="bi bi-server me-1"></i>SMTP server</h3>
 
                     <!-- feature C — provider preset. Pre-fills host / port /
                          encryption client-side from $SMTP_PRESETS (see the
@@ -2654,7 +2864,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <div class="row g-3 mb-3">
                         <div class="col-12">
                             <div class="form-text mb-1">
-                                <i class="bi bi-person-badge me-1"></i><strong>Send on behalf of a different mailbox (optional).</strong>
+                                <i aria-hidden="true" class="bi bi-person-badge me-1"></i><strong>Send on behalf of a different mailbox (optional).</strong>
                                 Leave blank to send as the username above. To send as a shared / delegate
                                 mailbox, the username must be granted <em>Send As</em> on it in your provider's
                                 admin console (see the setup guide below).
@@ -2680,7 +2890,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <!-- #1311 — Microsoft Graph (OAuth2 app-only); M365 + method=OAuth2 API -->
                 <div class="email-fields" data-provider-show="office365" data-auth-show="oauth2">
                     <hr class="text-secondary">
-                    <h3 class="h6 mb-3"><i class="bi bi-microsoft me-1"></i>Microsoft Graph (OAuth2)</h3>
+                    <h3 class="h6 mb-3"><i aria-hidden="true" class="bi bi-microsoft me-1"></i>Microsoft Graph (OAuth2)</h3>
                     <div class="row g-3 mb-3">
                         <div class="col-md-6">
                             <label for="email_graph_tenant_id" class="form-label">Azure tenant ID</label>
@@ -2719,7 +2929,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <!-- #1311 — Gmail API (OAuth2 service-account + domain-wide delegation); Google + method=OAuth2 API -->
                 <div class="email-fields" data-provider-show="gmail" data-auth-show="oauth2">
                     <hr class="text-secondary">
-                    <h3 class="h6 mb-3"><i class="bi bi-google me-1"></i>Gmail API (OAuth2 service account)</h3>
+                    <h3 class="h6 mb-3"><i aria-hidden="true" class="bi bi-google me-1"></i>Gmail API (OAuth2 service account)</h3>
                     <div class="row g-3 mb-3">
                         <div class="col-md-6">
                             <label for="email_gmail_sender" class="form-label">Sender mailbox (impersonated)</label>
@@ -2746,7 +2956,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <!-- SendGrid -->
                 <div class="email-fields" data-provider-show="sendgrid">
                     <hr class="text-secondary">
-                    <h3 class="h6 mb-3"><i class="bi bi-cloud me-1"></i>SendGrid</h3>
+                    <h3 class="h6 mb-3"><i aria-hidden="true" class="bi bi-cloud me-1"></i>SendGrid</h3>
                     <div class="mb-3">
                         <label for="email_sendgrid_api_key" class="form-label">
                             API key
@@ -2763,7 +2973,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <!-- Mailgun -->
                 <div class="email-fields" data-provider-show="mailgun">
                     <hr class="text-secondary">
-                    <h3 class="h6 mb-3"><i class="bi bi-cloud me-1"></i>Mailgun</h3>
+                    <h3 class="h6 mb-3"><i aria-hidden="true" class="bi bi-cloud me-1"></i>Mailgun</h3>
                     <div class="row g-3 mb-3">
                         <div class="col-md-6">
                             <label for="email_mailgun_domain" class="form-label">Sending domain</label>
@@ -2789,7 +2999,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <!-- AWS SES -->
                 <div class="email-fields" data-provider-show="ses">
                     <hr class="text-secondary">
-                    <h3 class="h6 mb-3"><i class="bi bi-cloud me-1"></i>AWS SES</h3>
+                    <h3 class="h6 mb-3"><i aria-hidden="true" class="bi bi-cloud me-1"></i>AWS SES</h3>
                     <div class="row g-3 mb-3">
                         <div class="col-md-4">
                             <label for="email_ses_region" class="form-label">Region</label>
@@ -2825,18 +3035,18 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
                 <div class="d-flex gap-2">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save email configuration
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save email configuration
                     </button>
                     <button type="submit" name="action" value="test_email" class="btn btn-outline-info"
                             <?= $currentService === 'none' ? 'disabled title="Configure a provider first"' : '' ?>>
-                        <i class="bi bi-send me-1"></i>Send test email
+                        <i aria-hidden="true" class="bi bi-send me-1"></i>Send test email
                     </button>
                 </div>
             </form>
 
             <?php if ($testResult !== null): ?>
                 <div class="alert <?= $testResult['ok'] ? 'alert-success' : 'alert-warning' ?> mt-3 mb-0">
-                    <i class="bi bi-<?= $testResult['ok'] ? 'check-circle' : 'info-circle' ?> me-1"></i>
+                    <i aria-hidden="true" class="bi bi-<?= $testResult['ok'] ? 'check-circle' : 'info-circle' ?> me-1"></i>
                     <?= htmlspecialchars($testResult['message'], ENT_QUOTES, 'UTF-8') ?>
                 </div>
             <?php endif; ?>
@@ -2849,7 +3059,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="card bg-body-tertiary border-secondary mb-4">
         <div class="card-header">
             <h2 class="h5 mb-0">
-                <i class="bi bi-book me-2"></i>Step-by-step provider setup
+                <i aria-hidden="true" class="bi bi-book me-2"></i>Step-by-step provider setup
             </h2>
         </div>
         <div class="card-body">
@@ -2859,7 +3069,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-graph">
-                            <i class="bi bi-microsoft me-2"></i>OAuth2 — Microsoft 365 via Graph (recommended; no SMTP)
+                            <i aria-hidden="true" class="bi bi-microsoft me-2"></i>OAuth2 — Microsoft 365 via Graph (recommended; no SMTP)
                         </button>
                     </h3>
                     <div id="instr-graph" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -2882,7 +3092,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-gmail-api">
-                            <i class="bi bi-google me-2"></i>OAuth2 — Google Workspace via Gmail API (recommended; no SMTP)
+                            <i aria-hidden="true" class="bi bi-google me-2"></i>OAuth2 — Google Workspace via Gmail API (recommended; no SMTP)
                         </button>
                     </h3>
                     <div id="instr-gmail-api" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -2905,7 +3115,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-m365">
-                            <i class="bi bi-microsoft me-2"></i>SMTP — Microsoft 365 (recommended)
+                            <i aria-hidden="true" class="bi bi-microsoft me-2"></i>SMTP — Microsoft 365 (recommended)
                         </button>
                     </h3>
                     <div id="instr-m365" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -2942,7 +3152,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-gws">
-                            <i class="bi bi-google me-2"></i>SMTP — Google Workspace / Gmail
+                            <i aria-hidden="true" class="bi bi-google me-2"></i>SMTP — Google Workspace / Gmail
                         </button>
                     </h3>
                     <div id="instr-gws" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -2980,7 +3190,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-smtp">
-                            <i class="bi bi-server me-2"></i>SMTP — any other provider (custom)
+                            <i aria-hidden="true" class="bi bi-server me-2"></i>SMTP — any other provider (custom)
                         </button>
                     </h3>
                     <div id="instr-smtp" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -2998,7 +3208,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                             <p class="text-secondary mb-2"><strong>Tip:</strong> if Send test fails with <em>auth_failed</em>,
                                the username / password is wrong or the provider hasn't enabled SMTP AUTH. <em>mail_from_rejected</em>
                                / <em>relay denied</em> means the From / Send-as address isn't authorised for that login.</p>
-                            <p class="text-info mb-0"><i class="bi bi-info-circle me-1"></i><strong>Future direction:</strong>
+                            <p class="text-info mb-0"><i aria-hidden="true" class="bi bi-info-circle me-1"></i><strong>Future direction:</strong>
                                this uses SMTP AUTH with an app password + delegate today. OAuth2 sign-in (and the planned
                                <em>MailerMatt</em> delivery service) is the eventual path — not built yet; SMTP AUTH is the
                                supported mechanism for now.</p>
@@ -3011,7 +3221,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-sendgrid">
-                            <i class="bi bi-cloud me-2"></i>SendGrid — API key
+                            <i aria-hidden="true" class="bi bi-cloud me-2"></i>SendGrid — API key
                         </button>
                     </h3>
                     <div id="instr-sendgrid" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -3033,7 +3243,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-mailgun">
-                            <i class="bi bi-cloud me-2"></i>Mailgun — API key + verified domain
+                            <i aria-hidden="true" class="bi bi-cloud me-2"></i>Mailgun — API key + verified domain
                         </button>
                     </h3>
                     <div id="instr-mailgun" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -3055,7 +3265,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-ses">
-                            <i class="bi bi-cloud me-2"></i>AWS SES — IAM user + verified identity
+                            <i aria-hidden="true" class="bi bi-cloud me-2"></i>AWS SES — IAM user + verified identity
                         </button>
                     </h3>
                     <div id="instr-ses" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
@@ -3086,6 +3296,72 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 </main>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>
+
+<?php
+/* #2003 — "Connect a service" guided wizard: the ONE shared modal shell +
+   its secret-free JSON projection + the bootstrap that wires it to every
+   "Set up with a guide" launcher button rendered on the three cards above.
+   integration_registry.php was already require_once'd earlier on this page
+   (the $captchaFormMeta extract, and possibly the integration_test POST
+   branch) — require_once here is a no-op in that case and the ONLY load on
+   a plain GET request. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'integration_registry.php';
+$integrationProjection = integrationClientProjection(
+    static fn(string $k, ?string $d = null): ?string => getAppSetting($k, $d)
+);
+$_icwPath = dirname(__DIR__) . '/js/modules/integration-connect-wizard.js';
+$icwVer   = is_file($_icwPath) ? (string)filemtime($_icwPath) : '1';
+?>
+<script type="application/json" data-integration-registry><?= json_encode(
+    $integrationProjection,
+    JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+) ?></script>
+
+<div class="modal fade" id="integrationConnectModal" tabindex="-1" aria-hidden="true"
+     aria-labelledby="integrationConnectModalLabel" data-bs-backdrop="static">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5 mb-0" id="integrationConnectModalLabel">Connect a service</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <!-- data-icw-steps wraps the progress trail + the driver-built
+             [data-wiz-step] panes as ONE unit, so showDonePane() (in
+             integration-connect-wizard.js) can hide both together — the
+             manage/venues.php svcwiz-steps-wrap shape. -->
+        <div data-icw-steps>
+          <div data-wiz-progress class="mb-3"></div>
+          <div data-icw-panes></div>
+        </div>
+        <div data-icw-done hidden>
+          <h3 tabindex="-1" data-icw-done-heading class="h6 mb-3">Connected</h3>
+          <div data-icw-done-body class="small"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-wiz-back hidden>Back</button>
+        <button type="button" class="btn btn-primary" data-wiz-next>Next</button>
+        <button type="button" class="btn btn-primary" data-icw-done-close data-bs-dismiss="modal" hidden>Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script type="module">
+/* #2003 — inline module bootstrap on /manage/* (the established, CSP-safe
+   house pattern — manage/external-link-types.php's own comment on this
+   exact point: this page sends no script-src, so there is no CSP obstacle
+   to a plain inline module here). The bulky logic lives in the shared
+   js/modules/integration-connect-wizard.js file, keeping this bootstrap a
+   few lines so a future hub page (plan §D1 option B, not built in Phase 1)
+   could reuse the same module without touching this page. */
+import { initIntegrationConnectWizard } from '/js/modules/integration-connect-wizard.js?v=<?= htmlspecialchars($icwVer, ENT_QUOTES) ?>';
+initIntegrationConnectWizard({
+    modalEl:   document.getElementById('integrationConnectModal'),
+    registry:  JSON.parse(document.querySelector('[data-integration-registry]').textContent),
+    csrfToken: <?= json_encode($csrf, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>,
+});
+</script>
 
 <script>
 (function () {

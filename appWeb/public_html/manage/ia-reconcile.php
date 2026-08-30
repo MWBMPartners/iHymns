@@ -209,7 +209,7 @@ if ($method === 'POST' && (string)($_POST['action'] ?? '') === 'run') {
                     $persisted = iaRecPersistRun($db, $identifier, $songbookAbbr, $fulltext['sha256'], $reportResult['candidates']);
                     if (!$persisted) {
                         $amberMessage = 'Results were computed but NOT persisted — run the "IA Reconcile" '
-                            . 'migration card on <a href="/manage/setup-database" class="link-light">Database Setup</a> '
+                            . 'migration card on <a href="/manage/setup-database">Database Setup</a> '
                             . 'to keep results across page loads.';
                     }
 
@@ -274,7 +274,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-archive me-2"></i>Scan Import</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-archive me-2"></i>Scan Import</h1>
         <p class="text-secondary small mb-4">
             Compare a scanned songbook from the Internet Archive (archive.org) against one of your
             songbooks in iHymns. Pick a songbook and a scan, then run the check to see which hymns in
@@ -383,12 +383,12 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                        id="ia-reconcile-table" data-default-sort-key="verdict" data-default-sort-dir="asc">
                     <thead>
                         <tr>
-                            <th data-col-priority="secondary" data-sort-key="num" data-sort-type="text">#</th>
-                            <th data-col-priority="primary" data-sort-key="title" data-sort-type="text">OCR candidate title</th>
-                            <th data-col-priority="tertiary" data-sort-key="first" data-sort-type="text">First line</th>
-                            <th data-col-priority="primary" data-sort-key="match" data-sort-type="text">Best iHymns match</th>
-                            <th data-col-priority="primary" data-sort-key="score" data-sort-type="number">Score</th>
-                            <th data-col-priority="primary" data-sort-key="verdict" data-sort-type="text">Verdict</th>
+                            <th scope="col" data-col-priority="secondary" data-sort-key="num" data-sort-type="text">#</th>
+                            <th scope="col" data-col-priority="primary" data-sort-key="title" data-sort-type="text">OCR candidate title</th>
+                            <th scope="col" data-col-priority="tertiary" data-sort-key="first" data-sort-type="text">First line</th>
+                            <th scope="col" data-col-priority="primary" data-sort-key="match" data-sort-type="text">Best iHymns match</th>
+                            <th scope="col" data-col-priority="primary" data-sort-key="score" data-sort-type="number">Score</th>
+                            <th scope="col" data-col-priority="primary" data-sort-key="verdict" data-sort-type="text">Verdict</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -428,7 +428,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <div class="card-header"><h2 class="h6 mb-0">In songbook, not found in OCR</h2></div>
                     <div class="table-responsive">
                         <table class="table table-sm mb-0">
-                            <thead><tr><th>SongId</th><th>Number</th><th>Title</th></tr></thead>
+                            <thead><tr><th scope="col">SongId</th><th scope="col">Number</th><th scope="col">Title</th></tr></thead>
                             <tbody>
                                 <?php foreach ($reportResult['notFoundSongs'] as $s): ?>
                                     <tr>

@@ -522,7 +522,13 @@ declare(strict_types=1);
             <!-- Theme selection -->
             <div class="mb-3">
                 <label class="form-label fw-semibold">Theme</label>
-                <div class="d-flex flex-wrap gap-2" role="radiogroup" aria-label="Theme selection">
+                <?php /* a11y audit M5 (2026-08-28): role="radiogroup" requires role="radio"
+                         children with aria-checked — these are plain aria-pressed toggle
+                         buttons, so AT announced a radio group whose members weren't radios
+                         (broken group-position + selection semantics, arrow-key nav expected
+                         but absent). role="group" is the valid ARIA pattern for a set of
+                         aria-pressed buttons — no change to the JS state-syncing below. */ ?>
+                <div class="d-flex flex-wrap gap-2" role="group" aria-label="Theme selection">
                     <button type="button" class="btn btn-theme-option" data-setting-theme="light" aria-pressed="false">
                         <i class="fa-solid fa-sun me-1" aria-hidden="true"></i> Light
                     </button>
@@ -556,6 +562,26 @@ declare(strict_types=1);
                 <small class="text-muted mt-1 d-block">
                     Adjusts the colour palette for users with colour vision deficiencies.
                 </small>
+            </div>
+
+            <!-- Accessible links — opt-in at-rest cue (#1984 S1; underline added #2027/D1
+                 so the mode reaches WCAG AA — colour alone couldn't on card surfaces). -->
+            <div class="mb-3">
+                <div class="form-check form-switch">
+                    <input class="form-check-input"
+                           type="checkbox"
+                           id="setting-link-emphasis"
+                           role="switch"
+                           aria-label="Emphasise links with an accent colour and underline">
+                    <label class="form-check-label" for="setting-link-emphasis">
+                        <strong>Emphasise Links</strong>
+                        <small class="text-muted d-block">
+                            Show links in an accent colour and underline them, so they stand out
+                            clearly from ordinary text. Off by default; links are otherwise
+                            identified by a colour shift on hover.
+                        </small>
+                    </label>
+                </div>
             </div>
 
             <!-- Default songbook (#96) -->
@@ -1028,27 +1054,40 @@ declare(strict_types=1);
                 <dt class="col-sm-4">Application</dt>
                 <dd class="col-sm-8"><?= htmlspecialchars($app["Application"]["Name"]) ?></dd>
 
+                <?php /* Version / Build / Channel / Commit / Date — the owner display
+                        contract's five labelled About rows (the versioning-scheme
+                        split + deliberate patch releases; see rule #46 in
+                        .claude/CLAUDE.md for the full contract). Version is now the
+                        bare marketing MAJOR.MINOR.PATCH — the channel badge that used
+                        to sit on this row moved to its own dedicated Channel row below
+                        so each row answers exactly one question. */ ?>
                 <dt class="col-sm-4">Version</dt>
+                <dd class="col-sm-8"><?= htmlspecialchars($app["Application"]["Version"]["Number"]) ?></dd>
+
+                <?php /* The per-commit build number, fully separate from the marketing
+                        Version above — it is NOT encoded in the version string any more
+                        (rule #35: two different views, read straight from Build.Number
+                        rather than re-parsed out of the version). NULL-guarded so it
+                        renders nothing on an un-injected checkout (local dev). */ ?>
+                <?php if (!empty($app["Application"]["Version"]["Build"]["Number"])): ?>
+                    <dt class="col-sm-4">Build</dt>
+                    <dd class="col-sm-8"><?= htmlspecialchars((string)$app["Application"]["Version"]["Build"]["Number"]) ?></dd>
+                <?php endif; ?>
+
+                <?php /* Channel — which deploy environment this copy is running on.
+                        "Production" is not a Development.Status VALUE (that field is
+                        NULL there, see infoAppVer.php) — it's what this row says on
+                        NULL, mirroring the admin footer's identical fallback. */ ?>
+                <dt class="col-sm-4">Channel</dt>
                 <dd class="col-sm-8">
-                    <?= htmlspecialchars($app["Application"]["Version"]["Number"]) ?>
                     <?php if ($app["Application"]["Version"]["Development"]["Status"]): ?>
                         <span class="badge bg-warning text-dark">
                             <?= htmlspecialchars($app["Application"]["Version"]["Development"]["Status"]) ?>
                         </span>
+                    <?php else: ?>
+                        Production
                     <?php endif; ?>
                 </dd>
-
-                <?php /* #1963 — the raw per-commit build number, shown independently of
-                        Version.Number's tag-derived MAJOR.RELEASE.BUILD (rule #35: two
-                        different views of the same value, so this reads it straight from
-                        Build.Number rather than re-parsing the version string). Guarded so
-                        it renders nothing on an un-injected checkout (local dev) — where
-                        Build.Number is still NULL — same degrade-gracefully shape as the
-                        Repo.Commit.SHA-derived "Build" row further down this list. */ ?>
-                <?php if (!empty($app["Application"]["Version"]["Build"]["Number"])): ?>
-                    <dt class="col-sm-4">Build</dt>
-                    <dd class="col-sm-8">#<?= htmlspecialchars((string)$app["Application"]["Version"]["Build"]["Number"]) ?></dd>
-                <?php endif; ?>
 
                 <dt class="col-sm-4">Developer</dt>
                 <dd class="col-sm-8"><?= htmlspecialchars($app["Application"]["Vendor"]["Name"]) ?></dd>
@@ -1077,6 +1116,24 @@ declare(strict_types=1);
                             <?= htmlspecialchars($app["Application"]["Version"]["Repo"]["Commit"]["SHA"]["Short"]) ?>
                         <?php endif; ?>
                     </dd>
+                <?php endif; ?>
+
+                <?php
+                    /* Date — the deploy commit timestamp, relocated here from the public
+                       footer (where it used to show as a raw 14-digit blob) and rendered
+                       human-formatted. deploy.yml injects Repo.Commit.Date as
+                       "Y-m-d H:i:s" (step "Inject build info into infoAppVer.php"); parse
+                       that EXACT shape and fall back to the raw string if it ever changes
+                       (degrade, never blank). NULL-guarded like Commit above — both read
+                       the same deploy-injected field, so both go missing together on an
+                       un-injected local checkout. */
+                    $_aboutCommitDate = $app["Application"]["Version"]["Repo"]["Commit"]["Date"] ?? null;
+                    if ($_aboutCommitDate !== null):
+                        $_aboutDt = \DateTime::createFromFormat('Y-m-d H:i:s', (string)$_aboutCommitDate);
+                        $_aboutDateDisplay = $_aboutDt ? $_aboutDt->format('j M Y, H:i') : (string)$_aboutCommitDate;
+                ?>
+                    <dt class="col-sm-4">Date</dt>
+                    <dd class="col-sm-8"><?= htmlspecialchars($_aboutDateDisplay) ?></dd>
                 <?php endif; ?>
             </dl>
         </div>

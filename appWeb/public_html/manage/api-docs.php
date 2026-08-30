@@ -103,7 +103,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <div class="d-flex justify-content-between align-items-start mb-3 flex-wrap gap-2">
         <div>
             <h1 class="h3 mb-1">
-                <i class="bi bi-file-earmark-code me-2"></i>API Docs
+                <i aria-hidden="true" class="bi bi-file-earmark-code me-2"></i>API Docs
             </h1>
             <p class="text-secondary small mb-0">
                 A developer reference for the iHymns web API: every request the
@@ -119,7 +119,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </p>
         </div>
         <a href="/api-docs.yaml" class="btn btn-sm btn-outline-secondary" download>
-            <i class="bi bi-download me-1"></i>Download spec
+            <i aria-hidden="true" class="bi bi-download me-1"></i>Download spec
         </a>
     </div>
 

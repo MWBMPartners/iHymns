@@ -34,15 +34,20 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 
 class SongMediaStorage
 {
-    /* Kind → backend routing. Audio is the only kind on disk; the rest
-       fit comfortably in a MEDIUMBLOB (~16MB cap). */
-    public const FS_KINDS = ['audio'];
+    /* Kind → backend routing. Filesystem for the large binary kinds
+       (audio, and — #1968 P4 — video/image, since motion loops are tens
+       of MiB, well past the ~16MB MEDIUMBLOB cap); the rest fit in a blob. */
+    public const FS_KINDS = ['audio', 'video', 'image'];
     public const DB_KINDS = ['sheet-music', 'midi', 'musicxml'];
 
     /* Per-kind upload size caps. Audio is intentionally generous so
-       FLAC / WAV uploads aren't kneecapped; the others are tight. */
+       FLAC / WAV uploads aren't kneecapped; the others are tight.
+       #1968 P4: video 100 MiB (= the .probundle upload cap — a video that
+       can't arrive in a bundle can't need a bigger cap), image 10 MiB. */
     public const SIZE_CAPS = [
         'audio'       => 50 * 1024 * 1024,
+        'video'       => 100 * 1024 * 1024,
+        'image'       => 10 * 1024 * 1024,
         'sheet-music' => 10 * 1024 * 1024,
         'midi'        =>  1 * 1024 * 1024,
         'musicxml'    =>  1 * 1024 * 1024,
@@ -66,6 +71,20 @@ class SongMediaStorage
             'audio/vorbis'    => 'ogg',
             'audio/aiff'      => 'aiff',
             'audio/x-aiff'    => 'aiff',
+        ],
+        /* #1968 P4 — ProPresenter background media. Tight allow-lists on
+           purpose; a new container type is a one-line addition. finfo often
+           sniffs .mov as video/quicktime, so both it and video/mp4 are listed. */
+        'video' => [
+            'video/mp4'        => 'mp4',
+            'video/quicktime'  => 'mov',
+            'video/webm'       => 'webm',
+            'video/x-m4v'      => 'm4v',
+        ],
+        'image' => [
+            'image/jpeg' => 'jpg',
+            'image/png'  => 'png',
+            'image/webp' => 'webp',
         ],
         'sheet-music' => [
             'application/pdf' => 'pdf',
@@ -323,6 +342,8 @@ class SongMediaStorage
     {
         return match ($kind) {
             'audio'       => 'Audio',
+            'video'       => 'Video',
+            'image'       => 'Image',
             'sheet-music' => 'Sheet music (PDF)',
             'midi'        => 'MIDI',
             'musicxml'    => 'MusicXML',

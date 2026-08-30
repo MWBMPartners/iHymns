@@ -514,15 +514,23 @@ if ($getSongByIdBody !== null) {
    LIVE map (rule #34), never a hand-typed list, so a 9th entity type added
    later fails this test until it either gets a real resolver or an
    explicit dormant allow-entry (catalogue's shape below) citing WHY.
-   (Mutation: remove the tune pre-step from pages/tune.php -> RED; add a
+   (Mutation: remove the tune pre-step from tune_helpers.php -> RED; add a
    9th IHYMNS_ILID_TYPES entry with neither a resolver nor an allow-entry
    -> RED.) */
 $resolverFileFor = [
     'song'      => $repo . '/appWeb/public_html/includes/SongData.php',
     'work'      => $repo . '/appWeb/public_html/includes/SongData.php',
     'musician'  => $repo . '/appWeb/public_html/includes/pages/musician.php',
-    'tune'      => $repo . '/appWeb/public_html/includes/pages/tune.php',
-    'publisher' => $repo . '/appWeb/public_html/includes/pages/publisher.php',
+    /* #1969 (API-coverage batch 1, C3/C4) — the tune/publisher IL-id
+       pre-step moved from the page files into their shared read cores
+       (tuneResolveDisplayData() / publisherResolveDisplayData()) so the
+       new ?action=tune / ?action=publisher_detail JSON endpoints share
+       the SAME resolution ladder as the HTML pages (rule #22). The
+       ilidParse( reference genuinely lives in the *_helpers.php file now,
+       not the page — this points the guard at the real location rather
+       than the page that merely calls it transitively. */
+    'tune'      => $repo . '/appWeb/public_html/includes/tune_helpers.php',
+    'publisher' => $repo . '/appWeb/public_html/includes/publisher_helpers.php',
     'songbook'  => $repo . '/appWeb/public_html/includes/pages/songbook.php',
     'document'  => $repo . '/appWeb/public_html/song-media.php',
 ];

@@ -80,8 +80,17 @@ check('service-follow imports the shared announcer',
     /from\s+['"]\.\.\/utils\/announce\.js['"]/.test(follow));
 check('a section change is announced', /announce\(/.test(follow));
 
+/* a11y audit L7 (2026-08-30): this used to check the in-app toggle
+   directly (`document.body.classList.contains('reduce-motion')`); it now
+   goes through the shared `prefersReducedMotion()` helper
+   (js/utils/motion.js), which checks BOTH that toggle AND the OS-level
+   `prefers-reduced-motion` media query — a strict superset of what this
+   check verified before, so the assertion is updated to match rather
+   than weakened. */
 check('scroll honours the reduced-motion preference',
-    /reduce-motion/.test(follow) && /behavior:\s*document\.body\.classList\.contains/.test(follow));
+    /from\s+['"]\.\.\/utils\/motion\.js['"]/.test(follow)
+        && /prefersReducedMotion/.test(follow)
+        && /behavior:\s*prefersReducedMotion\(\)/.test(follow));
 
 /* ---- #1665: the render race ------------------------------------------- */
 

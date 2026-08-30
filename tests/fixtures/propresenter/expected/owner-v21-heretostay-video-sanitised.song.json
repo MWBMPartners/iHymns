@@ -1,0 +1,129 @@
+{
+    "title": "Here To Stay",
+    "songbookName": "",
+    "entry": 0,
+    "language": "",
+    "ccli": "",
+    "copyright": "Anthem Worship",
+    "writers": [
+        "David Olson",
+        "Jared Jamieson",
+        "Joshua Jamieson"
+    ],
+    "components": [
+        {
+            "type": "verse",
+            "number": 1,
+            "lines": [
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2"
+            ]
+        },
+        {
+            "type": "verse",
+            "number": 2,
+            "lines": [
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2"
+            ]
+        },
+        {
+            "type": "chorus",
+            "number": 0,
+            "lines": [
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2"
+            ]
+        },
+        {
+            "type": "verse",
+            "number": 3,
+            "lines": [
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2"
+            ]
+        },
+        {
+            "type": "bridge",
+            "number": 0,
+            "lines": [
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2"
+            ]
+        },
+        {
+            "type": "tag",
+            "number": 0,
+            "lines": [
+                "Sanitised line 1",
+                "Sanitised line 2",
+                "Sanitised line 1",
+                "Sanitised line 2"
+            ]
+        }
+    ],
+    "arrangement": [
+        0,
+        1,
+        2,
+        3,
+        2,
+        4,
+        2,
+        5
+    ],
+    "warnings": [
+        "skipped non-lyric group \"Song Title\"",
+        "skipped non-lyric group \"Lyrics Background\"",
+        "arrangement referenced an unresolved group 316FF915-5FCD-454C-A8C5-664573556E0D",
+        "artist_credits \"Anthem Worship (LLUC)\" is not imported (no tblSongArtists writer yet)"
+    ],
+    "mediaRefs": [
+        {
+            "absoluteString": "file:///Users/church/Library/Application%20Support/RenewedVision/ProPresenter/UserWorkspaces/Cambridge%20Mill%20Road%20SDA%20Church/Media/Assets/Here%20to%20Stay%20(Acoustic)%20%E2%80%93%20Anthem%20Worship.mp4",
+            "localRoot": 10,
+            "localPath": "Media/Assets/Here to Stay (Acoustic) – Anthem Worship.mp4"
+        }
+    ],
+    "timeline": {
+        "duration": 300.0,
+        "loop": false,
+        "cues": [
+            {
+                "triggerSeconds": 0.619806180334395,
+                "cueUuid": "",
+                "name": "Here to Stay (Acoustic) – Anthem Worship.mp4"
+            }
+        ]
+    }
+}

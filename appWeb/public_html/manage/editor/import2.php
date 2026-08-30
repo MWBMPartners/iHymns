@@ -112,9 +112,18 @@ $formats = [
     ?>
 </head>
 <body class="p-3">
-    <div class="container-fluid" style="max-width: 760px;">
+    <!-- a11y audit L8 (WCAG 2.4.1 Bypass Blocks, 2026-08-30): this small,
+         single-purpose upload page had an <h1> but no landmark to skip to
+         and no skip link — same standalone-shell reasoning as
+         editor2.php's own copy just above. -->
+    <a href="#import2-main"
+       class="visually-hidden-focusable position-absolute top-0 start-0 p-3 bg-primary text-white z-3"
+       id="skip-nav">
+        Skip to main content
+    </a>
+    <main class="container-fluid" id="import2-main" tabindex="-1" style="max-width: 760px;">
         <div class="d-flex align-items-center gap-2 mb-3">
-            <h1 class="h4 mb-0"><i class="bi bi-upload me-2"></i>Import songs <span class="badge bg-info">v2</span></h1>
+            <h1 class="h4 mb-0"><i aria-hidden="true" class="bi bi-upload me-2"></i>Import songs <span class="badge bg-info">v2</span></h1>
             <a href="/manage/editor/" class="btn btn-sm btn-outline-secondary ms-auto">Editor</a>
         </div>
 
@@ -150,13 +159,13 @@ $formats = [
                         </div>
                     </div>
                 </div>
-                <button id="imp-go" type="button" class="btn btn-primary btn-sm mt-3"><i class="bi bi-upload me-1"></i>Import</button>
+                <button id="imp-go" type="button" class="btn btn-primary btn-sm mt-3"><i aria-hidden="true" class="bi bi-upload me-1"></i>Import</button>
                 <span id="imp-status" class="text-muted small ms-2"></span>
             </div>
         </div>
 
         <div id="imp-result" class="mt-3"></div>
-    </div>
+    </main>
 
     <script type="module">
         import {

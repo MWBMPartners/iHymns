@@ -192,6 +192,7 @@ $rewrites = [
     '/og-image'          => '/og-image.php',
     '/service-worker.js' => '/service-worker.js.php',
     '/sitemap.xml'       => '/sitemap.xml.php',
+    '/robots.txt'        => '/robots.txt.php', // #2024/#2025 — robots.txt is now dynamic; .htaccess must agree (rule #35)
 ];
 if (isset($rewrites[$uri])) {
     chdir($docroot);

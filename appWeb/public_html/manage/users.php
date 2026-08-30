@@ -422,18 +422,18 @@ function canManage(array $target, array $actor): bool {
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-4"><i class="bi bi-people me-2"></i>User Management</h1>
+        <h1 class="h4 mb-4"><i aria-hidden="true" class="bi bi-people me-2"></i>User Management</h1>
 
         <?php if ($success): ?>
             <div class="alert alert-success py-2 alert-dismissible fade show">
-                <i class="bi bi-check-circle me-1"></i><?= htmlspecialchars($success) ?>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
+                <i aria-hidden="true" class="bi bi-check-circle me-1"></i><?= htmlspecialchars($success) ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
             </div>
         <?php endif; ?>
         <?php if ($error): ?>
             <div class="alert alert-danger py-2 alert-dismissible fade show">
-                <i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
+                <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
             </div>
         <?php endif; ?>
 
@@ -444,16 +444,16 @@ function canManage(array $target, array $actor): bool {
                 <table class="table table-sm table-borderless mb-0 cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
-                            <th data-sort-key="username"     data-sort-type="text">Username</th>
-                            <th data-sort-key="display_name" data-sort-type="text">Display Name</th>
-                            <th data-sort-key="email"        data-sort-type="text">Email</th>
-                            <th data-sort-key="role"         data-sort-type="text">Role</th>
-                            <th data-sort-key="tier"         data-sort-type="text"
+                            <th scope="col" data-sort-key="username"     data-sort-type="text">Username</th>
+                            <th scope="col" data-sort-key="display_name" data-sort-type="text">Display Name</th>
+                            <th scope="col" data-sort-key="email"        data-sort-type="text">Email</th>
+                            <th scope="col" data-sort-key="role"         data-sort-type="text">Role</th>
+                            <th scope="col" data-sort-key="tier"         data-sort-type="text"
                                 title="Access tier — controls lyrics / audio / MIDI / PDF / offline access for regular users">Tier</th>
-                            <th data-sort-key="orgs"         data-sort-type="text"
+                            <th scope="col" data-sort-key="orgs"         data-sort-type="text"
                                 title="Organisations this user is a direct member of (#636) — the user inherits each org's licence-derived tier transitively up the nesting chain">Orgs</th>
-                            <th data-sort-key="status"       data-sort-type="text">Status</th>
-                            <th class="text-end">Actions</th>
+                            <th scope="col" data-sort-key="status"       data-sort-type="text">Status</th>
+                            <th scope="col" class="text-end">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -523,19 +523,22 @@ function canManage(array $target, array $actor): bool {
                                 <?php if ($manageable): ?>
                                     <!-- Edit Profile -->
                                     <button class="btn btn-outline-info" title="Edit profile"
+                                            aria-label="Edit profile for <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>"
                                             onclick="openEditModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['display_name'], ENT_QUOTES) ?>', '<?= htmlspecialchars($u['email'] ?? '', ENT_QUOTES) ?>')">
-                                        <i class="bi bi-pencil"></i>
+                                        <i class="bi bi-pencil" aria-hidden="true"></i>
                                     </button>
                                     <!-- Rename (change username) -->
                                     <button class="btn btn-outline-info" title="Rename user"
+                                            aria-label="Rename user <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>"
                                             onclick="openRenameModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['username'], ENT_QUOTES) ?>')">
-                                        <i class="bi bi-at"></i>
+                                        <i class="bi bi-at" aria-hidden="true"></i>
                                     </button>
                                     <!-- Change Role (not for self) -->
                                     <?php if (!$isSelf): ?>
                                     <button class="btn btn-outline-warning" title="Change role"
+                                            aria-label="Change role for <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>"
                                             onclick="openRoleModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['username'], ENT_QUOTES) ?>', '<?= htmlspecialchars((string)$u['role'], ENT_QUOTES) ?>')">
-                                        <i class="bi bi-shield"></i>
+                                        <i class="bi bi-shield" aria-hidden="true"></i>
                                     </button>
                                     <?php endif; ?>
                                     <!-- Change Access Tier -->
@@ -549,8 +552,9 @@ function canManage(array $target, array $actor): bool {
                                     <?php endif; ?>
                                     <!-- Reset Password -->
                                     <button class="btn btn-outline-secondary" title="Reset password"
+                                            aria-label="Reset password for <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>"
                                             onclick="openPasswordModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['username'], ENT_QUOTES) ?>')">
-                                        <i class="bi bi-key"></i>
+                                        <i class="bi bi-key" aria-hidden="true"></i>
                                     </button>
                                     <!-- Disable / Enable (not for self).
                                          #1698 — an ERASED account is a tombstone with no identity
@@ -607,7 +611,7 @@ function canManage(array $target, array $actor): bool {
 
         <!-- Create new user form -->
         <div class="card-admin p-3">
-            <h2 class="h6 mb-3"><i class="bi bi-person-plus me-2"></i>Create New User</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-person-plus me-2"></i>Create New User</h2>
 
             <form method="POST">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
@@ -650,7 +654,7 @@ function canManage(array $target, array $actor): bool {
                 </div>
 
                 <button type="submit" class="btn btn-amber">
-                    <i class="bi bi-person-plus me-1"></i>Create User
+                    <i aria-hidden="true" class="bi bi-person-plus me-1"></i>Create User
                 </button>
             </form>
         </div>
@@ -661,7 +665,8 @@ function canManage(array $target, array $actor): bool {
          ================================================================ -->
 
     <!-- Edit Profile Modal -->
-    <div class="modal fade" id="editModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30, M6 pattern): wire the modal-title heading to the dialog. -->
+    <div class="modal fade" id="editModal" tabindex="-1" aria-labelledby="editModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -669,16 +674,16 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="action" value="update_profile">
                     <input type="hidden" name="user_id" id="edit-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title"><i class="bi bi-pencil me-2"></i>Edit Profile</h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <h5 class="modal-title" id="editModal-label"><i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit Profile</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="mb-3">
-                            <label class="form-label">Display Name</label>
+                            <label class="form-label" for="edit-display-name">Display Name</label>
                             <input type="text" class="form-control" name="display_name" id="edit-display-name" required>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Email</label>
+                            <label class="form-label" for="edit-email">Email</label>
                             <input type="email" class="form-control" name="email" id="edit-email" placeholder="Optional">
                         </div>
                     </div>
@@ -692,7 +697,8 @@ function canManage(array $target, array $actor): bool {
     </div>
 
     <!-- Change Role Modal -->
-    <div class="modal fade" id="roleModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30) — see the editModal comment above. -->
+    <div class="modal fade" id="roleModal" tabindex="-1" aria-labelledby="roleModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -700,8 +706,8 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="action" value="change_role">
                     <input type="hidden" name="user_id" id="role-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title"><i class="bi bi-shield me-2"></i>Change Role — <span id="role-username"></span></h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <h5 class="modal-title" id="roleModal-label"><i aria-hidden="true" class="bi bi-shield me-2"></i>Change Role — <span id="role-username"></span></h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <select class="form-select" name="new_role" id="role-select">
@@ -726,7 +732,8 @@ function canManage(array $target, array $actor): bool {
     </div>
 
     <!-- Rename User Modal -->
-    <div class="modal fade" id="renameModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30) — see the editModal comment above. -->
+    <div class="modal fade" id="renameModal" tabindex="-1" aria-labelledby="renameModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -734,12 +741,12 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="action" value="rename_user">
                     <input type="hidden" name="user_id" id="rename-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title"><i class="bi bi-at me-2"></i>Rename — <span id="rename-current-username"></span></h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <h5 class="modal-title" id="renameModal-label"><i aria-hidden="true" class="bi bi-at me-2"></i>Rename — <span id="rename-current-username"></span></h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="mb-3">
-                            <label class="form-label">New username</label>
+                            <label class="form-label" for="rename-new-username">New username</label>
                             <input type="text" class="form-control" name="new_username" id="rename-new-username"
                                    minlength="3" maxlength="100" pattern="[A-Za-z0-9_.\-]+"
                                    autocomplete="off" autocapitalize="none" spellcheck="false" required>
@@ -749,7 +756,7 @@ function canManage(array $target, array $actor): bool {
                             </div>
                         </div>
                         <div class="alert alert-info py-2 small mb-0">
-                            <i class="bi bi-info-circle me-1"></i>
+                            <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
                             Existing tokens, setlists, favourites and revisions stay tied to the
                             user. Old login attempts logged under the previous username remain in
                             the audit history.
@@ -775,10 +782,10 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="user_id" id="tier-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
                         <h5 class="modal-title" id="tierModalLabel"><i class="bi bi-stars me-2" aria-hidden="true"></i>Change Access Tier — <span id="tier-username"></span></h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
-                        <label class="form-label small">Access tier</label>
+                        <label class="form-label small" for="tier-select">Access tier</label>
                         <select class="form-select" name="new_tier" id="tier-select">
                             <?php foreach ($accessTiers as $at): ?>
                                 <option value="<?= htmlspecialchars($at['Name']) ?>">
@@ -805,7 +812,8 @@ function canManage(array $target, array $actor): bool {
     <?php endif; ?>
 
     <!-- Reset Password Modal -->
-    <div class="modal fade" id="passwordModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30) — see the editModal comment above. -->
+    <div class="modal fade" id="passwordModal" tabindex="-1" aria-labelledby="passwordModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -813,17 +821,17 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="action" value="reset_password">
                     <input type="hidden" name="user_id" id="pw-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title"><i class="bi bi-key me-2"></i>Reset Password — <span id="pw-username"></span></h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <h5 class="modal-title" id="passwordModal-label"><i aria-hidden="true" class="bi bi-key me-2"></i>Reset Password — <span id="pw-username"></span></h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="mb-3">
-                            <label class="form-label">New Password</label>
-                            <input type="password" class="form-control" name="new_password" minlength="8" required
+                            <label class="form-label" for="pw-new-password">New Password</label>
+                            <input type="password" class="form-control" name="new_password" id="pw-new-password" minlength="8" required
                                    placeholder="Minimum 8 characters">
                         </div>
                         <div class="alert alert-warning py-2 small mb-0">
-                            <i class="bi bi-exclamation-triangle me-1"></i>
+                            <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>
                             This will invalidate all active sessions and API tokens for this user.
                         </div>
                     </div>

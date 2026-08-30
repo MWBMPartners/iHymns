@@ -1069,6 +1069,12 @@ $personDisambiguation = trim((string)($person['Disambiguation'] ?? ''));
                            so the shared `.song-number-badge:empty::before` book glyph shows
                            instead of a literal "0" (matches history.js:376). */ ?>
                         <span class="song-number-badge" data-songbook="<?= htmlspecialchars($s['SongbookAbbr']) ?>" aria-hidden="true"><?= ((int)$s['Number'] > 0) ? (int)$s['Number'] : '' ?></span>
+                        <?php /* a11y audit M2 (2026-08-28) — the badge above is aria-hidden with no
+                                 other visible number, so without this the song number never reached
+                                 screen readers at all. */ ?>
+                        <?php if ((int)$s['Number'] > 0): ?>
+                            <span class="visually-hidden">Song <?= (int)$s['Number'] ?>: </span>
+                        <?php endif; ?>
                         <div class="song-info flex-grow-1">
                             <span class="song-title"><?= htmlspecialchars(toTitleCase((string)$s['Title'])) ?></span>
                             <small class="text-muted d-block">

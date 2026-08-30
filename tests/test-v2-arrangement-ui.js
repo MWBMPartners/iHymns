@@ -32,18 +32,34 @@
  *       SERVER's response (`res.arrangement`), never from the local
  *       tentative array it sent — "do not optimistically trust the local
  *       array" from the task brief, verified structurally.
+ *   (6) #1991 — the ONE shared `iconBtn()` guard. Tree-derived (glob every
+ *       *.js directly under manage/editor/v2/, rule #34) rather than a
+ *       hand-typed three-file list, so a FOURTH copy showing up anywhere in
+ *       the directory in future is caught too, not just a regression of the
+ *       three known ones: exactly one `function iconBtn(` definition may
+ *       exist anywhere under manage/editor/v2/ (in ui-helpers.js), that one
+ *       definition sets `aria-label` from `title` (the #1990 a11y sweep's
+ *       behaviour the extraction must not lose), and media-tab.js /
+ *       structure-tab.js / arrangement-editor.js each import it from
+ *       './ui-helpers.js' rather than redefining it locally.
  *
  * Every assertion here was mutation-tested against a deliberately broken
  * copy of arrangement-editor.js (see the session report for the pass/fail
  * pairs) before being trusted — an assertion that cannot be proven to fail
- * is not a test.
+ * is not a test. Assertion (6) was mutation-checked the same way when added
+ * (#1991): temporarily re-adding a second `function iconBtn(...) { ... }`
+ * definition into structure-tab.js sent the "exactly one definition" check
+ * RED (reporting both files), and temporarily changing ui-helpers.js's
+ * `setAttribute('aria-label', title)` to a hardcoded string sent the
+ * aria-label check RED; both were reverted and reverified GREEN before this
+ * guard was trusted.
  *
  *   node tests/test-v2-arrangement-ui.js
  *
  * Exit status 0 = all pass, 1 = at least one failure.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -192,6 +208,51 @@ for (const [code, what] of [['409', 'migration not run'], ['422', 'empty section
    weakened or deleted rather than fixed. */
 check('arrangement-editor.js does not regex-match the server error prose to decide failure kind',
     !/\/[^/\n]*(?:migration has not been run|empty sections)[^/\n]*\/[a-z]*\s*\.test\s*\(/i.test(arr));
+
+/* ---- 6. #1991 — iconBtn() is the ONE shared editor-v2 helper -------------
+ *
+ * Tree-derived (glob manage/editor/v2/*.js, not a typed three-file list) so
+ * a NEW file that redefines iconBtn locally in future is caught the same
+ * way a regression of one of the three known copies would be.
+ */
+
+console.log('\n#1991 — iconBtn() consolidated into ui-helpers.js\n');
+
+const DEFN_RE = /\bfunction\s+iconBtn\s*\(/g;
+
+const v2Files = readdirSync(EDITOR_V2)
+    .filter((name) => name.endsWith('.js'))
+    .sort();
+check('scanned a plausible number of editor-v2 .js files (parser sanity, >= 10)', v2Files.length >= 10);
+
+const definitionSites = [];
+for (const name of v2Files) {
+    const stripped = stripJs(readFileSync(join(EDITOR_V2, name), 'utf8'));
+    const hits = stripped.match(DEFN_RE);
+    if (hits) { definitionSites.push({ name, count: hits.length }); }
+}
+const totalDefinitions = definitionSites.reduce((n, d) => n + d.count, 0);
+
+check('exactly ONE `function iconBtn(` definition exists under manage/editor/v2/'
+        + (totalDefinitions === 1 ? '' : ` (found: ${definitionSites.map((d) => `${d.name} x${d.count}`).join(', ') || 'none'})`),
+    totalDefinitions === 1);
+check('the one surviving definition lives in ui-helpers.js (not a stray copy elsewhere)',
+    definitionSites.length === 1 && definitionSites[0].name === 'ui-helpers.js');
+
+const uiHelpersSrc = stripJs(readFileSync(join(EDITOR_V2, 'ui-helpers.js'), 'utf8'));
+check("ui-helpers.js's iconBtn() sets aria-label FROM title (the #1990 a11y sweep behaviour)",
+    /setAttribute\(\s*'aria-label'\s*,\s*title\s*\)/.test(uiHelpersSrc));
+check('ui-helpers.js exports iconBtn (import { iconBtn } from \'./ui-helpers.js\' must resolve)',
+    /export\s+function\s+iconBtn\s*\(/.test(uiHelpersSrc));
+
+/* Each of the three known consumers imports the shared helper rather than
+   redefining it — checked individually (not just via the tree-wide count
+   above) so a failure here names the exact file that regressed. */
+for (const consumer of ['media-tab.js', 'structure-tab.js', 'arrangement-editor.js']) {
+    const src = readFileSync(join(EDITOR_V2, consumer), 'utf8');
+    check(`${consumer} imports iconBtn from './ui-helpers.js'`,
+        /import\s*\{\s*iconBtn\s*\}\s*from\s*['"]\.\/ui-helpers\.js['"]/.test(src));
+}
 
 /* ---------------------------------------------------------------------- */
 

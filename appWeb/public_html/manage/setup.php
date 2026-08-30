@@ -65,22 +65,22 @@ $csrf = csrfToken();
 <body class="auth-center-page">
     <div class="setup-card">
         <div class="text-center mb-4">
-            <h1><i class="bi bi-music-note-beamed me-2"></i>iHymns</h1>
+            <h1><i aria-hidden="true" class="bi bi-music-note-beamed me-2"></i>iHymns</h1>
             <p class="text-muted mb-0">Create your Global Admin account</p>
         </div>
 
         <?php if ($success): ?>
             <div class="alert alert-success" role="alert">
-                <i class="bi bi-check-circle me-1"></i>Global Admin account created successfully.
+                <i aria-hidden="true" class="bi bi-check-circle me-1"></i>Global Admin account created successfully.
             </div>
             <a href="/manage/login" class="btn btn-amber w-100">
-                <i class="bi bi-box-arrow-in-right me-1"></i>Go to Login
+                <i aria-hidden="true" class="bi bi-box-arrow-in-right me-1"></i>Go to Login
             </a>
         <?php else: ?>
 
             <?php if ($error): ?>
                 <div class="alert alert-danger py-2" role="alert">
-                    <i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?>
+                    <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($error) ?>
                 </div>
             <?php endif; ?>
 
@@ -136,7 +136,7 @@ $csrf = csrfToken();
                 </div>
 
                 <button type="submit" class="btn btn-amber w-100">
-                    <i class="bi bi-shield-lock me-1"></i>Create Global Admin Account
+                    <i aria-hidden="true" class="bi bi-shield-lock me-1"></i>Create Global Admin Account
                 </button>
             </form>
         <?php endif; ?>

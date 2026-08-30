@@ -44,7 +44,13 @@ These are enforced conventions; new code must follow them (see
   matched against central maps.
 - **Output** — DB/user-derived values are escaped with
   `htmlspecialchars(…, ENT_QUOTES, 'UTF-8')` server-side and an `escapeHtml()`
-  helper client-side; no `innerHTML = userInput`.
+  helper client-side; no `innerHTML = userInput`. Structured-data blocks
+  embedded inside a `<script type="application/ld+json">` tag are additionally
+  encoded with `JSON_HEX_TAG` — ordinary HTML escaping does not stop a
+  `</script>` breakout inside a `<script>` element, so a plain `json_encode()`
+  call on its own is not enough there (a missing `JSON_HEX_TAG` on one such
+  block was found and closed on 2026-08-30; a tree-derived test now checks
+  every such block in the codebase).
 - **Authentication** — Bearer token (`tblApiTokens`, SHA-256-hashed) with a
   `SameSite=Lax`, `HttpOnly`, `Secure` cookie fallback (`ihymns_auth`). The
   `manage/*` admin area adopts the API-token session. **First-admin
@@ -171,8 +177,12 @@ These are enforced conventions; new code must follow them (see
   cross-origin door shut. It gates duplicate-songs merge/delete, places-api,
   musician-duplicates merge/dismiss (#1785), publishers CRUD (#93), licence-types
   CRUD and the tiers/restrictions/entitlements gating pages (#1769), the set-list
-  share-link mint/update/revoke (#1791), `live_follow_extend` (#1798), and a
-  single top-level POST guard over all legacy `/manage/editor/api.php` writes.
+  share-link mint/update/revoke (#1791), `live_follow_extend` (#1798), a
+  single top-level POST guard over all legacy `/manage/editor/api.php` writes,
+  and (2026-08-30 audit finding L-1) the Database Setup dashboard's `?action=`
+  links (Install, Apply-all-migrations, Backup, Restore, and every
+  per-migration card) — previously the only defence against a forged
+  cross-site GET there was the session cookie's `SameSite=Strict` attribute.
 - **Custom print layouts are sanitised** (#1767) — uploaded full-page HTML
   layouts (`tblPrintTemplateCustomLayout`) pass through the allowlist HTML/CSS
   sanitiser (`includes/html_sanitizer.php`) on save AND on the server-PDF render
@@ -193,6 +203,22 @@ These are enforced conventions; new code must follow them (see
   host-bound to archive.org, size-capped with an aborting write-callback, follows
   no redirects, and keeps SSL verification on (the same house pattern as
   `intapps_client.php` / `cuercode_client.php`).
+- **Outbound admin-configured service URLs are checked against private/internal
+  addresses** (2026-08-30 audit finding L-2) — an admin-typed base URL for
+  CueRCode, IntApps or the Internet Archive client used to be treated as safe
+  purely for being `https://`, regardless of where it actually resolved. A new
+  shared core, `includes/network_guard.php`, resolves the host first and
+  refuses one that lands on a private (RFC 1918), loopback, or link-local/
+  cloud-metadata address (`169.254.169.254`) — closing the gap where a typo or
+  a compromised admin account could point an outbound call back at the server's
+  own internal network. All three outbound clients call the one shared check;
+  the admin-facing save handlers surface a heads-up immediately if a saved URL
+  will now be refused. A follow-up review the same day found the guard could
+  still be sidestepped by writing the same private address a different way —
+  a bracketed IPv6 literal (`[::1]`) or a numeric-decimal/hex form of an IPv4
+  address (`2130706433`, `0x7f000001`) both slipped through unrecognised. The
+  check now normalises both shapes before classifying the address, closing
+  that gap.
 - **Organisation-logo SVG uploads are sanitised by a dedicated, stricter module**
   (#1830) — `includes/svg_sanitizer.php`, separate from and stricter than the
   print-layout sanitiser above (which correctly keeps blocking `<svg>` outright).
@@ -259,7 +285,18 @@ These are enforced conventions; new code must follow them (see
   the bytes (not the client type) against an allow-list and store by SHA-256.
 - **Secrets** — DB credentials, keys and tokens live outside the web root
   (`appWeb/.auth/`, `appWeb/private_html/`) and are never committed. CI scans for
-  committed secrets.
+  committed secrets. **Application-runtime secrets stored in the database**
+  (e.g. the Sign-in-with-Apple `.p8` key, email-provider credentials) go through
+  a dedicated **encrypt-at-rest** engine (`includes/secret_crypto.php`, #1466) —
+  each flagged value is stored as a self-describing
+  `enc:v1:<alg>:<keyid>:<nonce>:<ciphertext+tag>` envelope (libsodium
+  `crypto_secretbox`, AES-256-GCM fallback), with the master key held on the
+  filesystem outside every docroot (never in the database itself), so
+  disclosure needs **two** separate primitives — a DB read *and* a filesystem
+  read. The engine and its readers are **readers-first** and roll out in
+  phases; a secret stays legacy plaintext (a verified no-op) until an operator
+  provisions the master key on all three docroots and runs the one-shot
+  encrypt-in-place migration — see `DEV_NOTES.md`'s operator runbook.
 - **CI/CD workflow hardening** — GitHub Actions `run:` steps never interpolate
   attacker-controllable text (e.g. a commit message) via `${{ }}` directly into
   the shell script body, since that pastes the raw text into the script before
@@ -305,7 +342,25 @@ These are enforced conventions; new code must follow them (see
   dependencies, logging).
 - Periodic **adversarial multi-agent security audits** sweep the codebase and
   verify each finding before a fix lands (e.g. the 2026-06 audit fixed a critical
-  SQL-injection in the EasyWorship importer and a `.mxl` path-traversal).
+  SQL-injection in the EasyWorship importer and a `.mxl` path-traversal). The
+  **2026-08-30 audit** covered the whole codebase in two passes. The first
+  closed two Low-severity findings (the CSRF gate and the outbound SSRF guard
+  described above) plus a batch of accessibility fixes across the favourites,
+  link-editor, compare and guided-wizard surfaces, and a coordinated
+  colour-contrast pass that fixed five failures affecting admin-area text and
+  buttons in Light/System-light mode (dark theme was already unaffected). A
+  second, deeper pass the same day closed a stored-XSS gap in a structured-data
+  block (described above), widened the SSRF guard to two address forms it had
+  missed (also described above), fixed a licence-expiry check that had only
+  been enforced on one of two code paths (so an **expired** legacy
+  organisation licence could still grant paid-tier access), and completed a
+  whole-app WCAG 2.1 AA accessibility review (epic #2027 — 0 Critical, 2 High,
+  8 Medium, 10 Low findings, all fixed): raised colour contrast further across
+  admin buttons/badges and small text, gave four more pop-up panels a proper
+  keyboard focus trap, added real per-record browser-tab titles, added an
+  underline to the opt-in "Emphasise Links" accessibility mode so it clears
+  text-contrast requirements in both themes, and filled in dozens of smaller
+  labelling gaps across the admin area and the classic song editor.
 
 ## Dependencies
 

@@ -76,6 +76,7 @@
  * ========================================================================== */
 
 import { announce } from '/js/utils/announce.js';
+import { iconBtn } from './ui-helpers.js';
 
 /* ---- section labelling — ported from v1's getComponentLabel() (editor.js
    ~1832), which delegates to componentHeaderLabel(): "Verse 1", "Chorus"
@@ -197,20 +198,12 @@ function isEmptySections(err) {
     return !!err && err.status === 422;
 }
 
-/* Same small per-file helper structure-tab.js and media-tab.js already
-   duplicate locally (there is no shared v2 "UI kit" module yet) — matching
-   their existing style rather than introducing a new shared module as a
-   side effect of this feature. */
-function iconBtn(icon, title, disabled, onClick) {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.className = 'btn btn-sm btn-outline-secondary arr-btn';
-    b.title = title;
-    b.disabled = !!disabled;
-    b.innerHTML = '<i class="bi ' + icon + '"></i>';
-    b.addEventListener('click', onClick);
-    return b;
-}
+/* #1991 — the arrangement chip toolbar's icon-only buttons want a wider
+   class list than the shared default (btn-sm + the arr-btn sizing hook),
+   so every call site here passes it explicitly via iconBtn()'s opts —
+   this keeps the rendered markup byte-identical to the pre-extraction
+   local copy while still sharing the ONE implementation in ui-helpers.js. */
+const ARR_ICON_BTN_OPTS = { className: 'btn btn-sm btn-outline-secondary arr-btn' };
 
 export function mountArrangementEditor(container, ctx) {
     const { store, api, songId } = ctx;
@@ -517,15 +510,15 @@ export function mountArrangementEditor(container, ctx) {
                 tag.title = (customStrip !== '' ? customStrip + ' (' + label + ')' : label)
                     + ' — position ' + (pos + 1) + ' of ' + arr.length;
 
-                const btnLeft = iconBtn('bi-arrow-left', 'Move ' + label + ' earlier', isFirst, () => move(pos, -1));
+                const btnLeft = iconBtn('bi-arrow-left', 'Move ' + label + ' earlier', isFirst, () => move(pos, -1), ARR_ICON_BTN_OPTS);
                 btnLeft.classList.add('arr-move-left');
                 btnLeft.dataset.pos = String(pos);
 
-                const btnRight = iconBtn('bi-arrow-right', 'Move ' + label + ' later', isLast, () => move(pos, 1));
+                const btnRight = iconBtn('bi-arrow-right', 'Move ' + label + ' later', isLast, () => move(pos, 1), ARR_ICON_BTN_OPTS);
                 btnRight.classList.add('arr-move-right');
                 btnRight.dataset.pos = String(pos);
 
-                const btnRemove = iconBtn('bi-x-lg', 'Remove ' + label, false, () => removeAt(pos));
+                const btnRemove = iconBtn('bi-x-lg', 'Remove ' + label, false, () => removeAt(pos), ARR_ICON_BTN_OPTS);
                 btnRemove.classList.add('arr-remove', 'text-danger');
                 btnRemove.dataset.pos = String(pos);
 

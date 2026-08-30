@@ -32,7 +32,7 @@
   - Component pool: click to add components (V1, C, B, PC1, etc.)
   - Arrangement strip: drag-and-drop to reorder, click to remove
   - Live lyrics preview of the custom arrangement
-  - 12 component types with colour-coded short tags
+  - 11 component types with colour-coded short tags (plus `refrain` as a display alias of Chorus)
 - **Share setlists** — generate shareable links with optional arrangements
 - **Import shared setlists** — import from shared links
 - **Cross-device sync** — merge local and server setlists when logged in
@@ -50,7 +50,7 @@
 See [[Live Follow & Service Mode]] for the full comparison and setup requirements.
 
 ### Export & Present
-- **Export ▾** — on any song page or songbook page, download the words in the format your projection software uses: OpenSong, OpenLyrics/OpenLP, ProPresenter 6, ProPresenter 7+, VideoPsalm, FreeShow, Proclaim, or ChordPro (a plain chord-sheet file) — 8 formats, offered on both surfaces. Exporting a large songbook (500+ songs, e.g. Mission Praise) asks for confirmation first and shows progress while the ProPresenter bundle builds (#1571).
+- **Export ▾** — on any song page or songbook page, download the words in the format your projection software uses: OpenSong, OpenLyrics/OpenLP, ProPresenter 6, ProPresenter 7+, VideoPsalm, FreeShow, Proclaim, or ChordPro (a plain chord-sheet file) — 8 formats, offered on both surfaces. Exporting a large songbook (500+ songs, e.g. Mission Praise) asks for confirmation first and shows progress while the ProPresenter bundle builds (#1571). When a single song has a **published background video or image**, its ProPresenter 7+ export is delivered as a `.probundle` that **embeds that media** (referenced from a "Lyrics Background" cue, resolved next to the bundle) so the background travels with the song; songs without a background export as a plain `.pro` (#1979).
 - **Present** — opens a full-screen, one-stanza-at-a-time view for projection, no export needed
 - **Print & Download PDF** — Print a song or set list through a curator-designed **print template**; signed-in users also get **Download PDF** (a server-rendered PDF — a whole set list becomes one file, #1767 remainder) and CCLI copy reporting where the org holds a licence. See [[Setlists & Arrangements]] § Printing & PDF
 - If the Export menu opens but nothing downloads, a hard-reload once usually fixes it (an older cached service worker) — see [[Troubleshooting & FAQ]]
@@ -167,7 +167,7 @@ See [[User Accounts & Roles]] for full details.
 
 ### SEO
 - **Canonical URLs** — prevents duplicate content
-- **Dynamic XML sitemap** — auto-generated from song database (`sitemap.xml.php`)
+- **Dynamic XML sitemap** — `/sitemap.xml` is a sitemap INDEX, auto-generated from the live database (`sitemap.xml.php`); its children (`?section=…&page=…`, served as `/sitemap-<section>[-<page>].xml`) cover songbooks, songs (paginated at 10,000/page), musicians, themes, works, publishers and tunes, each with an honest `<lastmod>` sourced from that row's own last-updated timestamp (never a placeholder "today"). Supports conditional GET (ETag / Last-Modified / 304) so a repeat crawler hit costs almost nothing when nothing changed, and degrades to a still-valid, DB-free body + `503 Retry-After` on a database outage rather than a broken response (2026-08-30 hardening, #2023).
 - **Flexible permalinks** — `MP-1` normalises to `MP-0001`
 
 ---
@@ -185,3 +185,5 @@ See [[User Accounts & Roles]] for full details.
 - **Colourblind-safe palette** — Wong 2011 CVD-safe colours
 - **Keyboard shortcuts** — full keyboard navigation without mouse
 - **Card reorder without dragging** — Move up / Move down buttons alongside drag-and-drop for the admin dashboard and home page card layout, meeting WCAG 2.2 SC 2.5.7 (#1151)
+- **Emphasise Links** (#1984) — an opt-in Settings toggle that gives in-text links an accent colour plus an underline (the underline was added 2026-08-30 so the mode clears WCAG AA text contrast in both themes); off by default, since the site's normal link styling is a deliberately understated hover-only cue
+- **2026-08-30 WCAG 2.1 AA audit** (epic #2027) — a full pass across the public/PWA surface, the admin area and both editors found and fixed 20 findings (2 High, 8 Medium, 10 Low): dynamic, per-record browser-tab titles for every song/songbook/tag/musician/publisher/tune/work page; a proper keyboard focus trap on four more pop-up panels (keyboard shortcuts, a second presentation overlay, song comparison, the quick song-number picker); `prefers-reduced-motion` honoured consistently by every JS-driven smooth-scroll site; and dozens of smaller accessible-name gaps closed across the admin area and the legacy song editor

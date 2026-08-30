@@ -78,7 +78,7 @@ export class Transpose {
         /* Capo badge */
         if (capo) {
             html += `
-                <span class="badge bg-warning text-dark me-2" aria-label="Capo on fret ${capo}">
+                <span class="badge bg-warning text-dark me-2" role="img" aria-label="Capo on fret ${capo}">
                     <i class="fa-solid fa-guitar me-1" aria-hidden="true"></i>
                     Capo ${capo}
                 </span>`;

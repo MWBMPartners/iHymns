@@ -39,6 +39,14 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    render path (api.php's print_templates action) reads the SAME table via
    this module's separate render-path functions, never HtmlOriginal. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_custom_layout.php';
+/* API-coverage batch 4b-ii A8 — the tblPrintTemplates scalar-row CRUD
+   shared core (save/clone/delete/set_default). This page's POST handlers
+   below call these SAME functions the new admin_print_template_* API
+   actions call — one validation/persist core, two thin callers
+   (rule #22/#35). Deliberately does NOT cover layout_save/layout_delete
+   (already a shared core, print_custom_layout.php, required above) or
+   import (out of scope for this batch — see that file's doc-block). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'print_template_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -62,18 +70,7 @@ $csrf    = csrfToken();
 $JSON_SAFE = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE;
 
 /* ---- Schema probe (pre-migration safe) ---- */
-$hasSchema = false;
-try {
-    $r = $db->query(
-        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME = 'tblPrintTemplates' LIMIT 1"
-    );
-    $hasSchema = $r && $r->fetch_row() !== null;
-    if ($r) { $r->close(); }
-} catch (\Throwable $e) {
-    error_log('[print-templates] schema probe failed: ' . $e->getMessage());
-}
+$hasSchema = printTemplateAdminTableExists($db); /* API-coverage batch 4b-ii A8 — shared probe */
 
 /* ---- POST actions ---- */
 if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
@@ -88,73 +85,33 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
             case 'save': {
                 $id       = (int)($_POST['id'] ?? 0);
-                $name     = trim((string)($_POST['name'] ?? ''));
-                $name     = mb_substr($name, 0, 120);
                 $isActive = !empty($_POST['is_active']) ? 1 : 0;
 
-                if ($name === '') { $error = 'A template name is required.'; break; }
-
-                /* Decode + sanitise the block list. Must be a non-empty
-                   array of recognised blocks AFTER sanitisation, else
-                   reject (req #2). We persist the RE-ENCODED clean JSON,
-                   never the raw POST string. */
-                $rawBlocks = json_decode((string)($_POST['blocks_json'] ?? ''), true);
-                if (!is_array($rawBlocks) || $rawBlocks === []) {
-                    $error = 'Add at least one block before saving.';
-                    break;
-                }
-                $blocks = ptSanitiseBlocks($rawBlocks, $BLOCK_SCHEMA, $SHOWIF_CONDITIONS);
-                if ($blocks === []) {
-                    $error = 'None of the submitted blocks were recognised.';
-                    break;
-                }
-                $blocksJson = json_encode($blocks, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-
-                /* Page options decode → sanitise → JSON or NULL. */
-                $rawPageOpts = json_decode((string)($_POST['page_options_json'] ?? ''), true);
-                $pageOpts    = ptSanitisePageOptions($rawPageOpts, $PAGE_OPTION_SCHEMA);
-                $pageOptsJson = $pageOpts !== null
-                    ? json_encode($pageOpts, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-                    : null; // bound as SQL NULL below
+                [$fields, $fieldError] = printTemplateAdminValidateContent(
+                    (string)($_POST['name'] ?? ''),
+                    (string)($_POST['blocks_json'] ?? ''),
+                    (string)($_POST['page_options_json'] ?? ''),
+                    $BLOCK_SCHEMA, $SHOWIF_CONDITIONS, $PAGE_OPTION_SCHEMA
+                );
+                if ($fieldError !== null) { $error = $fieldError; break; }
 
                 if ($id > 0) {
                     /* UPDATE — scoped to 'song' so this page can never
                        touch another scope's rows. */
-                    $stmt = $db->prepare(
-                        'UPDATE tblPrintTemplates
-                            SET Name = ?, BlocksJson = ?, PageOptionsJson = ?, IsActive = ?
-                          WHERE Id = ? AND Scope = ?'
-                    );
-                    $scope = 'song';
-                    $stmt->bind_param('sssiis', $name, $blocksJson, $pageOptsJson, $isActive, $id, $scope);
-                    $stmt->execute();
-                    $stmt->close();
+                    printTemplateAdminUpdate($db, $id, $fields['name'], $fields['blocksJson'], $fields['pageOptsJson'], $isActive);
                     if (function_exists('logActivity')) {
                         logActivity('print_template.update', 'print_template', (string)$id, [
-                            'name' => $name, 'blocks' => count($blocks), 'is_active' => (bool)$isActive,
+                            'name' => $fields['name'], 'blocks' => $fields['blocksCount'], 'is_active' => (bool)$isActive,
                         ]);
                     }
                 } else {
                     /* INSERT — Scope='song', OwnerId NULL (curated),
                        SortOrder appended to the end of the list. */
-                    $sortRes  = $db->query("SELECT COALESCE(MAX(SortOrder),0)+1 AS n FROM tblPrintTemplates WHERE Scope='song'");
-                    $sortRow  = $sortRes ? $sortRes->fetch_assoc() : null;
-                    if ($sortRes) { $sortRes->close(); }
-                    $sortOrder = (int)($sortRow['n'] ?? 0);
                     $createdBy = (int)($currentUser['id'] ?? 0);
-
-                    $stmt = $db->prepare(
-                        "INSERT INTO tblPrintTemplates
-                            (Name, Scope, OwnerId, BlocksJson, PageOptionsJson, IsActive, IsDefault, SortOrder, CreatedBy)
-                         VALUES (?, 'song', NULL, ?, ?, ?, 0, ?, ?)"
-                    );
-                    $stmt->bind_param('sssiii', $name, $blocksJson, $pageOptsJson, $isActive, $sortOrder, $createdBy);
-                    $stmt->execute();
-                    $newId = (int)$db->insert_id;
-                    $stmt->close();
+                    $newId = printTemplateAdminCreate($db, $fields['name'], $fields['blocksJson'], $fields['pageOptsJson'], $isActive, $createdBy);
                     if (function_exists('logActivity')) {
                         logActivity('print_template.create', 'print_template', (string)$newId, [
-                            'name' => $name, 'blocks' => count($blocks),
+                            'name' => $fields['name'], 'blocks' => $fields['blocksCount'],
                         ]);
                     }
                 }
@@ -168,11 +125,7 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             case 'delete': {
                 $id = (int)($_POST['id'] ?? 0);
                 if ($id > 0) {
-                    $scope = 'song';
-                    $stmt = $db->prepare('DELETE FROM tblPrintTemplates WHERE Id = ? AND Scope = ?');
-                    $stmt->bind_param('is', $id, $scope);
-                    $stmt->execute();
-                    $stmt->close();
+                    printTemplateAdminDelete($db, $id);
                     if (function_exists('logActivity')) {
                         logActivity('print_template.delete', 'print_template', (string)$id, []);
                     }
@@ -187,33 +140,10 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             case 'clone': {
                 $id = (int)($_POST['id'] ?? 0);
                 if ($id > 0) {
-                    $src = $db->prepare(
-                        "SELECT Name, BlocksJson, PageOptionsJson FROM tblPrintTemplates
-                          WHERE Id = ? AND Scope = 'song' LIMIT 1"
-                    );
-                    $src->bind_param('i', $id);
-                    $src->execute();
-                    $srcRow = $src->get_result()->fetch_assoc();
-                    $src->close();
-                    if ($srcRow) {
-                        $cloneName = mb_substr(trim((string)$srcRow['Name']) . ' (copy)', 0, 120);
-                        $sortRes   = $db->query("SELECT COALESCE(MAX(SortOrder),0)+1 AS n FROM tblPrintTemplates WHERE Scope='song'");
-                        $sortRow   = $sortRes ? $sortRes->fetch_assoc() : null;
-                        if ($sortRes) { $sortRes->close(); }
-                        $sortOrder = (int)($sortRow['n'] ?? 0);
-                        $createdBy = (int)($currentUser['id'] ?? 0);
-                        $ins = $db->prepare(
-                            "INSERT INTO tblPrintTemplates
-                                (Name, Scope, OwnerId, BlocksJson, PageOptionsJson, IsActive, IsDefault, SortOrder, CreatedBy)
-                             VALUES (?, 'song', NULL, ?, ?, 1, 0, ?, ?)"
-                        );
-                        $ins->bind_param('sssii', $cloneName, $srcRow['BlocksJson'], $srcRow['PageOptionsJson'], $sortOrder, $createdBy);
-                        $ins->execute();
-                        $newId = (int)$db->insert_id;
-                        $ins->close();
-                        if (function_exists('logActivity')) {
-                            logActivity('print_template.clone', 'print_template', (string)$newId, ['source' => $id, 'name' => $cloneName]);
-                        }
+                    $createdBy = (int)($currentUser['id'] ?? 0);
+                    $cloned = printTemplateAdminClone($db, $id, $createdBy);
+                    if ($cloned && function_exists('logActivity')) {
+                        logActivity('print_template.clone', 'print_template', (string)$cloned['id'], ['source' => $id, 'name' => $cloned['name']]);
                     }
                 }
                 header('Location: /manage/print-templates?cloned=1');
@@ -227,20 +157,9 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             case 'set_default': {
                 $id = (int)($_POST['id'] ?? 0);
                 if ($id > 0) {
-                    $db->begin_transaction();
-                    try {
-                        $db->query("UPDATE tblPrintTemplates SET IsDefault = 0 WHERE Scope = 'song' AND IsDefault = 1");
-                        $s = $db->prepare("UPDATE tblPrintTemplates SET IsDefault = 1, IsActive = 1 WHERE Id = ? AND Scope = 'song'");
-                        $s->bind_param('i', $id);
-                        $s->execute();
-                        $s->close();
-                        $db->commit();
-                        if (function_exists('logActivity')) {
-                            logActivity('print_template.set_default', 'print_template', (string)$id, []);
-                        }
-                    } catch (\Throwable $e) {
-                        $db->rollback();
-                        throw $e;
+                    printTemplateAdminSetDefault($db, $id);
+                    if (function_exists('logActivity')) {
+                        logActivity('print_template.set_default', 'print_template', (string)$id, []);
                     }
                 }
                 header('Location: /manage/print-templates?default_set=1');
@@ -516,7 +435,7 @@ if ($hasSchema) {
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
     <div class="container-admin py-4">
-        <h1 class="h4 mb-3"><i class="bi bi-printer me-2"></i>Print Templates</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-printer me-2"></i>Print Templates</h1>
         <p class="text-secondary small mb-4">
             Compose the printer-friendly song layouts curators can choose from the
             <strong>Print song</strong> dialog. A template is an ordered list of
@@ -544,7 +463,7 @@ if ($hasSchema) {
                     database. Run the migration, then return here to author templates.
                 </p>
                 <a href="/manage/setup-database" class="btn btn-amber btn-sm">
-                    <i class="bi bi-database-gear me-1"></i>Run the Print Templates migration (#1350)
+                    <i aria-hidden="true" class="bi bi-database-gear me-1"></i>Run the Print Templates migration (#1350)
                 </a>
             </div>
         <?php else: ?>
@@ -552,9 +471,9 @@ if ($hasSchema) {
         <!-- List of existing scope='song' templates -->
         <div class="card-admin p-3 mb-4">
             <div class="d-flex align-items-center mb-3">
-                <h2 class="h6 mb-0"><i class="bi bi-list-ul me-2"></i>Templates</h2>
+                <h2 class="h6 mb-0"><i aria-hidden="true" class="bi bi-list-ul me-2"></i>Templates</h2>
                 <button type="button" class="btn btn-amber btn-sm ms-auto" id="pt-new">
-                    <i class="bi bi-plus-lg me-1"></i>New template
+                    <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>New template
                 </button>
             </div>
 
@@ -565,10 +484,10 @@ if ($hasSchema) {
                     <table class="table table-sm align-middle cp-sortable mb-0 admin-table-responsive">
                         <thead>
                             <tr>
-                                <th data-col-priority="primary"   data-sort-key="name"   data-sort-type="text">Name</th>
-                                <th data-col-priority="secondary" data-sort-key="blocks" data-sort-type="number" class="text-center">Blocks</th>
-                                <th data-col-priority="primary"   data-sort-key="active" data-sort-type="text"   class="text-center">Active</th>
-                                <th data-col-priority="primary"   class="text-end">Actions</th>
+                                <th scope="col" data-col-priority="primary"   data-sort-key="name"   data-sort-type="text">Name</th>
+                                <th scope="col" data-col-priority="secondary" data-sort-key="blocks" data-sort-type="number" class="text-center">Blocks</th>
+                                <th scope="col" data-col-priority="primary"   data-sort-key="active" data-sort-type="text"   class="text-center">Active</th>
+                                <th scope="col" data-col-priority="primary"   class="text-end">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -591,7 +510,7 @@ if ($hasSchema) {
                                     <td data-col-priority="primary" class="text-end">
                                         <div class="btn-group btn-group-sm" role="group">
                                             <button type="button" class="btn btn-outline-info pt-edit" data-id="<?= (int)$t['id'] ?>">
-                                                <i class="bi bi-pencil"></i> Edit
+                                                <i aria-hidden="true" class="bi bi-pencil"></i> Edit
                                             </button>
                                             <!-- #1767 J — make this the system default (single-default invariant enforced server-side). -->
                                             <?php if (!$t['isDefault']): ?>
@@ -600,7 +519,7 @@ if ($hasSchema) {
                                                 <input type="hidden" name="action" value="set_default">
                                                 <input type="hidden" name="id" value="<?= (int)$t['id'] ?>">
                                                 <button type="submit" class="btn btn-outline-secondary" title="Make this the default template">
-                                                    <i class="bi bi-star"></i> Set default
+                                                    <i aria-hidden="true" class="bi bi-star"></i> Set default
                                                 </button>
                                             </form>
                                             <?php endif; ?>
@@ -610,19 +529,19 @@ if ($hasSchema) {
                                                 <input type="hidden" name="action" value="clone">
                                                 <input type="hidden" name="id" value="<?= (int)$t['id'] ?>">
                                                 <button type="submit" class="btn btn-outline-secondary" title="Duplicate this template">
-                                                    <i class="bi bi-files"></i> Clone
+                                                    <i aria-hidden="true" class="bi bi-files"></i> Clone
                                                 </button>
                                             </form>
                                             <!-- #1767 Z — export this template as JSON (import partner below). -->
                                             <a class="btn btn-outline-secondary" href="/manage/print-templates?export=<?= (int)$t['id'] ?>" title="Download as JSON">
-                                                <i class="bi bi-download"></i> Export
+                                                <i aria-hidden="true" class="bi bi-download"></i> Export
                                             </a>
                                             <form method="POST" class="d-inline" onsubmit="return confirm('Delete this template?');">
                                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                                                 <input type="hidden" name="action" value="delete">
                                                 <input type="hidden" name="id" value="<?= (int)$t['id'] ?>">
                                                 <button type="submit" class="btn btn-outline-danger">
-                                                    <i class="bi bi-trash"></i> Delete
+                                                    <i aria-hidden="true" class="bi bi-trash"></i> Delete
                                                 </button>
                                             </form>
                                         </div>
@@ -641,7 +560,7 @@ if ($hasSchema) {
                  way. -->
             <?php if ($hasSchema): ?>
             <details class="mt-3">
-                <summary class="text-info" style="cursor:pointer;"><i class="bi bi-upload me-1"></i>Import a template from JSON</summary>
+                <summary class="text-info" style="cursor:pointer;"><i aria-hidden="true" class="bi bi-upload me-1"></i>Import a template from JSON</summary>
                 <form method="POST" class="mt-2">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                     <input type="hidden" name="action" value="import">
@@ -649,7 +568,7 @@ if ($hasSchema) {
                     <textarea name="import_json" id="pt-import-json" class="form-control font-monospace" rows="4"
                               placeholder='{"name":"My template","blocks":[…],"pageOptions":{…}}'></textarea>
                     <button type="submit" class="btn btn-sm btn-outline-info mt-2">
-                        <i class="bi bi-upload me-1"></i>Import template
+                        <i aria-hidden="true" class="bi bi-upload me-1"></i>Import template
                     </button>
                 </form>
             </details>
@@ -666,7 +585,7 @@ if ($hasSchema) {
                 <input type="hidden" name="page_options_json" id="pt-page-options-json" value="">
 
                 <div class="d-flex align-items-center mb-3">
-                    <h2 class="h6 mb-0" id="pt-editor-title"><i class="bi bi-pencil-square me-2"></i>New template</h2>
+                    <h2 class="h6 mb-0" id="pt-editor-title"><i aria-hidden="true" class="bi bi-pencil-square me-2"></i>New template</h2>
                     <button type="button" class="btn btn-outline-secondary btn-sm ms-auto" id="pt-cancel">Cancel</button>
                 </div>
 
@@ -685,11 +604,11 @@ if ($hasSchema) {
                             <label class="form-check-label small" for="pt-active">Active — offer this template in the print dialog</label>
                         </div>
 
-                        <label class="form-label small mb-1">Page options</label>
-                        <div class="row g-2 align-items-end mb-3" id="pt-page-options"><!-- controls injected by JS from PRINT_PAGE_OPTIONS --></div>
+                        <label class="form-label small mb-1" id="pt-page-options-label">Page options</label>
+                        <div class="row g-2 align-items-end mb-3" id="pt-page-options" role="group" aria-labelledby="pt-page-options-label"><!-- controls injected by JS from PRINT_PAGE_OPTIONS --></div>
 
-                        <label class="form-label small mb-1">Add a block</label>
-                        <div class="d-flex flex-wrap gap-2 mb-2" id="pt-palette"><!-- buttons injected by JS --></div>
+                        <label class="form-label small mb-1" id="pt-palette-label">Add a block</label>
+                        <div class="d-flex flex-wrap gap-2 mb-2" id="pt-palette" role="group" aria-labelledby="pt-palette-label"><!-- buttons injected by JS --></div>
                         <div class="alert alert-info py-2 px-3 small mb-3" role="note">
                             <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
                             <strong>Songbook &amp; number blocks are context-aware.</strong>
@@ -700,15 +619,15 @@ if ($hasSchema) {
                             song. Official-hymnal songs print their book and number as normal.
                         </div>
 
-                        <label class="form-label small mb-1">Blocks (in print order)</label>
-                        <div class="vstack gap-2" id="pt-block-list"><!-- rows injected by JS --></div>
+                        <label class="form-label small mb-1" id="pt-block-list-label">Blocks (in print order)</label>
+                        <div class="vstack gap-2" id="pt-block-list" role="group" aria-labelledby="pt-block-list-label"><!-- rows injected by JS --></div>
                     </div>
 
                     <!-- Right column: live preview -->
                     <div class="col-lg-5">
                         <div class="d-flex align-items-center justify-content-between mb-1">
-                            <label class="form-label mb-0">
-                                <i class="bi bi-eye me-1"></i>Live preview <span class="text-muted">(sample song)</span>
+                            <label class="form-label mb-0" id="pt-preview-label">
+                                <i aria-hidden="true" class="bi bi-eye me-1"></i>Live preview <span class="text-muted">(sample song)</span>
                             </label>
                             <!-- #1767 remainder P4 (§3.3, "AA") — a TRUE paginated PDF
                                  preview, rendered by the same server pipeline a curator's
@@ -719,16 +638,16 @@ if ($hasSchema) {
                                  comment); this is the real thing. -->
                             <button type="button" class="btn btn-outline-info btn-sm" id="pt-preview-pdf"
                                     title="Render a true paginated PDF preview using this template">
-                                <i class="bi bi-file-earmark-pdf me-1"></i>Preview as PDF
+                                <i aria-hidden="true" class="bi bi-file-earmark-pdf me-1"></i>Preview as PDF
                             </button>
                         </div>
-                        <div class="pt-preview-paper" id="pt-preview"><!-- renderTemplateBodyHtml output --></div>
+                        <div class="pt-preview-paper" id="pt-preview" role="region" aria-labelledby="pt-preview-label"><!-- renderTemplateBodyHtml output --></div>
                     </div>
                 </div>
 
                 <div class="d-flex gap-2 mt-3">
                     <button type="submit" class="btn btn-amber btn-sm ms-auto">
-                        <i class="bi bi-save me-1"></i>Save template
+                        <i aria-hidden="true" class="bi bi-save me-1"></i>Save template
                     </button>
                 </div>
             </form>
@@ -742,7 +661,7 @@ if ($hasSchema) {
             <hr class="my-4">
             <div id="pt-layout-editor" class="d-none">
                 <div class="d-flex align-items-center mb-2">
-                    <h3 class="h6 mb-0"><i class="bi bi-file-earmark-richtext me-2"></i>Custom full-page layout</h3>
+                    <h3 class="h6 mb-0"><i aria-hidden="true" class="bi bi-file-earmark-richtext me-2"></i>Custom full-page layout</h3>
                     <span id="pt-layout-status" class="badge bg-secondary-subtle text-secondary-emphasis ms-2"></span>
                 </div>
                 <p class="text-secondary small mb-3">
@@ -767,10 +686,10 @@ if ($hasSchema) {
                               rows="8" placeholder='&lt;div class="cover-page"&gt;&#10;  &lt;h1&gt;{{title}}&lt;/h1&gt;&#10;  {{content}}&#10;&lt;/div&gt;'></textarea>
                     <div class="d-flex gap-2 mt-2">
                         <button type="submit" class="btn btn-amber btn-sm">
-                            <i class="bi bi-save me-1"></i>Save layout
+                            <i aria-hidden="true" class="bi bi-save me-1"></i>Save layout
                         </button>
                         <button type="button" class="btn btn-outline-danger btn-sm d-none" id="pt-layout-remove">
-                            <i class="bi bi-trash me-1"></i>Remove layout
+                            <i aria-hidden="true" class="bi bi-trash me-1"></i>Remove layout
                         </button>
                     </div>
                 </form>
@@ -789,7 +708,7 @@ if ($hasSchema) {
                 <div class="modal-content" style="height:85vh;">
                     <div class="modal-header">
                         <h2 class="modal-title h6 mb-0" id="pt-pdf-preview-title">
-                            <i class="bi bi-file-earmark-pdf me-2"></i>PDF preview</h2>
+                            <i aria-hidden="true" class="bi bi-file-earmark-pdf me-2"></i>PDF preview</h2>
                         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                     </div>
                     <div class="modal-body p-0">
@@ -877,7 +796,7 @@ if ($hasSchema) {
                 const btn = document.createElement('button');
                 btn.type = 'button';
                 btn.className = 'btn btn-outline-info btn-sm';
-                btn.innerHTML = '<i class="bi bi-plus-lg me-1"></i>' + esc(PRINT_BLOCK_TYPES[type].label || type);
+                btn.innerHTML = '<i aria-hidden="true" class="bi bi-plus-lg me-1"></i>' + esc(PRINT_BLOCK_TYPES[type].label || type);
                 btn.addEventListener('click', () => {
                     working.blocks.push(freshBlock(type));
                     renderBlocks();
@@ -940,7 +859,7 @@ if ($hasSchema) {
             if (pdfRow.children.length) {
                 const heading = document.createElement('div');
                 heading.className = 'small text-muted mt-2 mb-1';
-                heading.innerHTML = '<i class="bi bi-file-earmark-pdf me-1"></i>PDF only '
+                heading.innerHTML = '<i aria-hidden="true" class="bi bi-file-earmark-pdf me-1"></i>PDF only '
                     + '<span class="badge bg-info-subtle text-info-emphasis">no effect on browser Print</span>';
                 pageOptsEl.appendChild(heading);
                 pageOptsEl.appendChild(pdfRow);
@@ -1201,7 +1120,7 @@ if ($hasSchema) {
             idEl.value     = working.id ? String(working.id) : '';
             nameEl.value   = working.name || '';
             activeEl.checked = working.isActive;
-            titleEl.innerHTML = '<i class="bi bi-pencil-square me-2"></i>' + (working.id ? 'Edit template' : 'New template');
+            titleEl.innerHTML = '<i aria-hidden="true" class="bi bi-pencil-square me-2"></i>' + (working.id ? 'Edit template' : 'New template');
 
             buildPageOptions();
             renderBlocks();

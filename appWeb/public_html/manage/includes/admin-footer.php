@@ -23,19 +23,18 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
 
-/* Mirror the $versionDisplay composition in public_html/index.php so
-   the admin footer stays in lock-step with the main app footer. */
-$_adminFooterVersion = $app['Application']['Version']['Number'] ?? '';
-if (!empty($app['Application']['Version']['Development']['Status'])) {
-    $_adminFooterVersion .= ' ' . $app['Application']['Version']['Development']['Status'];
+/* Owner display contract: "iHymns v<MAJOR.MINOR.PATCH> ·
+   build <commit-count> · <channel>" — channel ALWAYS shown on the admin
+   footer, "Production" when Development.Status is NULL. Kept in lockstep
+   with index.php's $versionDisplay by tests/test-versioning-pipeline.js
+   (the " · build " literal + Build.Number read are asserted in BOTH files —
+   rule #35: this comment is no longer the only thing holding them together).
+   @see .claude/CLAUDE.md rule #46 (the full versioning contract) */
+$_adminFooterVersion = 'iHymns v' . ($app['Application']['Version']['Number'] ?? '');
+if (!empty($app['Application']['Version']['Build']['Number'])) {
+    $_adminFooterVersion .= ' · build ' . $app['Application']['Version']['Build']['Number'];
 }
-$_adminFooterCommitDate = $app['Application']['Version']['Repo']['Commit']['Date'] ?? null;
-if (($app['Application']['Version']['Development']['Status'] ?? null) === 'Alpha' && $_adminFooterCommitDate !== null) {
-    $_adminFooterBuildStamp = preg_replace('/[^0-9]/', '', (string)$_adminFooterCommitDate);
-    if (strlen($_adminFooterBuildStamp) >= 12) {
-        $_adminFooterVersion .= ' · ' . substr($_adminFooterBuildStamp, 0, 14);
-    }
-}
+$_adminFooterVersion .= ' · ' . ($app['Application']['Version']['Development']['Status'] ?? 'Production');
 ?>
 <?php
 /* Close the admin-layout flex wrapper opened by admin-nav.php (#460).
@@ -51,7 +50,7 @@ if (!empty($GLOBALS['_adminLayoutOpen'])):
     <small>
         <?= $app['Application']['Copyright']['Full'] ?? '' ?>
         &nbsp;|&nbsp;
-        v<?= htmlspecialchars($_adminFooterVersion) ?>
+        <?= htmlspecialchars($_adminFooterVersion) ?>
         &nbsp;|&nbsp;
         <a href="/terms" class="footer-link">Terms</a>
         &nbsp;|&nbsp;

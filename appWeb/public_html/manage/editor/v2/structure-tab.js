@@ -28,6 +28,7 @@
  * ========================================================================== */
 
 import { buildEnrichmentPanel } from './enrichment-panel.js';
+import { iconBtn } from './ui-helpers.js';
 
 /* #1869 (epic #1863, CLAUDE.md rule #43's LAST picker item — registry
    SOURCING, not a typeahead). This was the whole section-type vocabulary
@@ -446,7 +447,7 @@ export function mountStructureTab(container, opts) {
         const workToggle = document.createElement('button');
         workToggle.type = 'button';
         workToggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
-        workToggle.innerHTML = '<i class="bi bi-link-45deg me-1"></i>Source work';
+        workToggle.innerHTML = '<i class="bi bi-link-45deg me-1" aria-hidden="true"></i>Source work';
 
         const workBox = document.createElement('div');
         workBox.className = 'mt-1 d-flex align-items-center gap-2';
@@ -556,7 +557,7 @@ export function mountStructureTab(container, opts) {
         const chordsToggle = document.createElement('button');
         chordsToggle.type = 'button';
         chordsToggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
-        chordsToggle.innerHTML = '<i class="bi bi-music-note-beamed me-1"></i>Chords';
+        chordsToggle.innerHTML = '<i class="bi bi-music-note-beamed me-1" aria-hidden="true"></i>Chords';
         const chordsBox = document.createElement('div');
         chordsBox.className = 'mt-1';
         chordsBox.style.display = hasChords ? '' : 'none';
@@ -566,7 +567,18 @@ export function mountStructureTab(container, opts) {
         chordsArea.placeholder = 'One line of chords per lyric line, e.g.  C    G    Am';
         chordsArea.value = componentChordsToText(comp);
         chordsArea.addEventListener('input', () => {
-            const rows = chordsArea.value.split('\n').map((l) => l.trim());
+            /* #1968 P6 (commit C5) — RIGHT-trim only, never l.trim(). Mirrors the identical fix
+               in v1's editor.js (manage/editor/editor.js) — this is v2's OWN independent copy of
+               the same chords textarea (#1627 item 1 above says so explicitly: "mirrors v1's card
+               layout order"), so it carried the SAME bug: a stored chord cell is a POSITIONED
+               STRING (#299/#1094, and — since #1968 P6 — PP7's own import/export shape, plan
+               §2.2), so `l.trim()` silently destroyed a PP7-imported chord's leading column the
+               moment a curator touched this box. A right-trim-only transform still correctly
+               collapses an all-whitespace line to '' (every character IS trailing whitespace),
+               so the CLEAR-SEMANTICS logic two lines below (`rows.some((r) => r !== '')`) is
+               unaffected — only a line with a REAL leading gap before its first chord changes
+               behaviour, from corrupted to preserved. */
+            const rows = chordsArea.value.split('\n').map((l) => l.replace(/\s+$/, ''));
             /* CLEAR-SEMANTICS TRAP, opposite direction from the per-line
                language one in enrichment-panel.js: component_upsert PRESERVES
                the stored chords when the `chords` key is absent/null
@@ -595,17 +607,6 @@ export function mountStructureTab(container, opts) {
 
         card.append(header, body);
         return card;
-    }
-
-    function iconBtn(icon, title, disabled, onClick) {
-        const b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'btn btn-outline-secondary';
-        b.title = title;
-        b.disabled = !!disabled;
-        b.innerHTML = '<i class="bi ' + icon + '"></i>';
-        b.addEventListener('click', onClick);
-        return b;
     }
 
     /* ---- structural ops (these DO re-render via the store) ---- */
@@ -676,7 +677,7 @@ export function mountStructureTab(container, opts) {
         const addBtn = document.createElement('button');
         addBtn.type = 'button';
         addBtn.className = 'btn btn-sm btn-outline-primary';
-        addBtn.innerHTML = '<i class="bi bi-plus-lg me-1"></i>Add section';
+        addBtn.innerHTML = '<i class="bi bi-plus-lg me-1" aria-hidden="true"></i>Add section';
         addBtn.addEventListener('click', addComponent);
         container.appendChild(addBtn);
     }

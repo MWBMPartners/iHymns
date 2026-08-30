@@ -40,6 +40,39 @@
  * here — that is the whole point. Neither has a hand-maintained allowlist,
  * because an allowlist is where this class of bug goes to hide.
  *
+ * WIDENED SCOPE (silent-wiring sweep, 2026-08-30, epic #2008)
+ * -------------------------------------------------------------
+ * Assertion 1's needle corpus used to be `appWeb/public_html/js/**` only —
+ * the PUBLIC app. That left the entire `manage/**` tree and every inline
+ * `<script>` body in every `.php` page (public AND admin) unscanned, which is
+ * exactly where the #2008 sweep found real dead wiring living: eight leftover
+ * `btn-*-export` id lookups in `manage/editor/index.php` (dead "enable this
+ * button" wiring from the #1166 unified Export dropdown) and a dead
+ * `#song-count` update in `manage/editor/editor.js` (#1180 leftover, removed
+ * from the markup but not from the JS). It is also the historical home of the
+ * gwiz-rollback-inline bug (`manage/gating.php`, a11y audit A0, 2026-08-30):
+ * a button rendered with `data-gwiz-rollback-inline` and NO `id`, looked up
+ * with `getElementById('gwiz-rollback-inline')` — a named, focusable, silently
+ * dead control. So the needle corpus is now every `*.js` under
+ * `appWeb/public_html` (not just `js/`) PLUS every inline `<script>` body
+ * extracted from every `*.php` under `public_html` (external `src=` scripts
+ * and inert `application/(ld+)?json` islands are skipped — same allow-shape
+ * as `tests/php/test-fragment-inline-scripts.php` / `tests/test-manage-php-urls.js`).
+ * Comments are stripped from the needle side too (string-aware, char-by-char,
+ * so a `//` inside a quoted URL string is never mistaken for a comment —
+ * mirrors `stripJsComments()` in `tests/test-manage-php-urls.js`), with every
+ * stripped span replaced by same-length whitespace/newlines so a reported
+ * line number is always the real source line (the #1701 / rule #34 gotcha:
+ * an earlier prototype of this widening deleted newlines outright and
+ * mis-reported findings by ~200 lines).
+ *
+ * The haystack also gained a shape the widened needle side needs:
+ * `'id' => 'x'` / `"id" => "x"` — a PHP array-config literal handed to a
+ * field-rendering helper (e.g. `manage/songbook-series.php`'s
+ * `ihymns_slug_advanced_field(['id' => 'create-slug', …])`). Without this
+ * shape a perfectly live id renders through a helper instead of a literal
+ * `id="…"` attribute and this scanner would false-flag it as dead.
+ *
  *   node tests/test-dom-target-integrity.js
  *
  * Exit status 0 = all pass, 1 = at least one failure.
@@ -78,10 +111,115 @@ function walk(dir, re, out = []) {
 
 const rel = (p) => p.slice(PUB.length + 1);
 
+/* Inline `<script>` opening tag + body. Attributes captured separately so the
+   src=/JSON-island exemptions below can be checked without re-matching. */
+const SCRIPT_TAG_RE = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+
+/**
+ * String/template-literal/regex-AWARE JS comment stripper — walks the source
+ * one character at a time, tracking whether it is inside a string / template
+ * literal / regex literal / line comment / block comment, so a `//` sitting
+ * inside a quoted URL (`'https://…'`) is never mistaken for the start of a
+ * real comment (the #1701 regex-literal trap). Blanks comments to
+ * same-length whitespace, newlines kept, so a line number computed against
+ * the output still lands on the real source line.
+ *
+ * Base algorithm copied from tests/test-manage-php-urls.js rather than
+ * imported — each tests/test-*.js file is self-contained per house style (no
+ * shared helper module exists on the JS test side; the PHP side shares via
+ * tests/php/lib/ instead) — but WIDENED here with regex-literal recognition,
+ * which that file's narrower use case never needed and this one does.
+ *
+ * REGEX-LITERAL TRAP (found scanning manage/gating.php during the
+ * silent-wiring sweep, epic #2008 — recording it here so it is never
+ * rediscovered): `.replace(/"/g, '&quot;')` — a real, common pattern in this
+ * codebase's HTML-escaping helpers — contains a `/"/ ` regex literal whose
+ * PATTERN is a bare double-quote. A quote-tracking walker with no concept of
+ * regex literals sees the `/` as an ordinary character (it is neither `//`
+ * nor `/*`) and then reads the `"` inside the pattern as the OPENING of a
+ * real double-quoted string. Every following `"` in the file then toggles
+ * that phantom string state on/off, which — over the following ~1600
+ * characters of a large inline script — desynced the walker enough that it
+ * failed to recognise a REAL `/* ... *\/` doc-comment describing the historic
+ * gwiz-rollback-inline bug, and this guard reported the comment's own PROSE
+ * (`getElementById('gwiz-rollback-inline')`, quoted for the reader) as a live
+ * dead lookup. A false alarm citing a sentence, not code — worse than a
+ * missed one, because rule #34 says a guard that cries wolf gets deleted.
+ *
+ * The fix is the classic regex-vs-division heuristic: `/` opens a regex
+ * literal only when the last significant (non-whitespace) character emitted
+ * so far is one this codebase's style only ever pairs with a regex argument
+ * — `(` `,` `=` `:` `;` `!` `&` `|` `?` `{` `[` `+` `-` `*` `%` `<` `>` a
+ * newline, or nothing (start of file). After an identifier, digit, `)` or
+ * `]`, `/` is division and is left untouched — the walker is deliberately
+ * biased toward UNDER-detecting regex literals in ambiguous cases (rule #34:
+ * under-reporting a suppression only costs recall on some other file, never
+ * turns a real bug invisible here — this file's job is finding dead id
+ * lookups, not perfectly tokenising JavaScript).
+ * https://developer.mozilla.org/docs/Web/JavaScript/Reference/Lexical_grammar#comments
+ * https://developer.mozilla.org/docs/Web/JavaScript/Reference/Regular_expressions
+ */
+function stripJsComments(src) {
+    let out = '';
+    let i = 0;
+    const n = src.length;
+    let mode = null; // null | 'sq' | 'dq' | 'tpl' | 'line' | 'block' | 'regex'
+    let inCharClass = false; // regex mode only: inside a [...] class, where an unescaped '/' does not close the regex
+    let lastSig = '';        // last non-whitespace character actually emitted, for the regex/division heuristic
+    const REGEX_PRECEDERS = new Set(['(', ',', '=', ':', ';', '!', '&', '|', '?', '{', '[', '+', '-', '*', '%', '<', '>', '\n', '']);
+
+    while (i < n) {
+        const c  = src[i];
+        const c2 = i + 1 < n ? src[i + 1] : '';
+
+        if (mode === 'line') {
+            if (c === '\n') { out += '\n'; mode = null; } else { out += ' '; }
+            i++; continue;
+        }
+        if (mode === 'block') {
+            if (c === '*' && c2 === '/') { out += '  '; i += 2; mode = null; continue; }
+            out += (c === '\n' ? '\n' : ' ');
+            i++; continue;
+        }
+        if (mode === 'sq' || mode === 'dq' || mode === 'tpl') {
+            if (c === '\\') { out += c + c2; i += 2; continue; }
+            const closer = mode === 'sq' ? '\'' : mode === 'dq' ? '"' : '`';
+            out += c;
+            if (c === closer) { mode = null; lastSig = closer; }
+            i++; continue;
+        }
+        if (mode === 'regex') {
+            if (c === '\\') { out += c + c2; i += 2; continue; }
+            if (c === '[') { inCharClass = true; out += c; i++; continue; }
+            if (c === ']') { inCharClass = false; out += c; i++; continue; }
+            if (c === '/' && !inCharClass) {
+                out += c; i++;
+                while (i < n && /[a-z]/i.test(src[i])) { out += src[i]; i++; } /* flags: g, i, m, … */
+                mode = null; lastSig = '/';
+                continue;
+            }
+            if (c === '\n') { mode = null; out += c; i++; continue; } /* unterminated — bail, don't eat the rest of the file */
+            out += c; i++; continue;
+        }
+
+        if (c === '/' && c2 === '/') { mode = 'line';  out += '  '; i += 2; continue; }
+        if (c === '/' && c2 === '*') { mode = 'block'; out += '  '; i += 2; continue; }
+        if (c === '/' && REGEX_PRECEDERS.has(lastSig)) { mode = 'regex'; inCharClass = false; out += c; i++; continue; }
+        if (c === '\'') { mode = 'sq';  out += c; i++; continue; }
+        if (c === '"')  { mode = 'dq';  out += c; i++; continue; }
+        if (c === '`')  { mode = 'tpl'; out += c; i++; continue; }
+        out += c;
+        if (!/\s/.test(c)) lastSig = c;
+        i++;
+    }
+    return out;
+}
+
 /* ======================================================================
- * Assertion 1 — every id the public JS looks up is emitted somewhere
+ * Assertion 1 — every id JS looks up (whole tree + inline scripts) is
+ * emitted somewhere
  * ==================================================================== */
-console.log('\nAssertion 1 — every id public JS looks up is emitted somewhere in the tree:\n');
+console.log('\nAssertion 1 — every id JS looks up (public + manage + inline <script>) is emitted somewhere in the tree:\n');
 
 /* The HAYSTACK is deliberately the WHOLE web tree, not just the public
    fragments: a public module may legitimately be reused by an admin page that
@@ -104,11 +242,19 @@ const haystack = haystackFiles
     .replace(/\/\*[\s\S]*?\*\//g, '');
 
 /* Ids emitted literally: id="x" in markup, id="x" inside a JS template string
-   (where the quotes may be escaped), and the two programmatic forms. */
+   (where the quotes may be escaped), and the three programmatic/PHP-config
+   forms. */
 const emitted = new Set();
 for (const m of haystack.matchAll(/\bid\s*=\s*(?:\\?["'])([A-Za-z][\w:.-]*)(?:\\?["'])/g)) emitted.add(m[1]);
 for (const m of haystack.matchAll(/\.id\s*=\s*['"`]([\w:.-]+)['"`]/g)) emitted.add(m[1]);
 for (const m of haystack.matchAll(/setAttribute\(\s*['"]id['"]\s*,\s*['"`]([\w:.-]+)['"`]/g)) emitted.add(m[1]);
+/* `'id' => 'x'` / `"id" => "x"` — a PHP array-config literal handed to a
+   field-rendering helper (widened-scope addition, epic #2008). Real
+   instance: manage/songbook-series.php passes `['id' => 'create-slug', …]`
+   to ihymns_slug_advanced_field() — no literal `id="…"` attribute is ever
+   written for that field, so without this shape the scanner false-flags a
+   perfectly live id. */
+for (const m of haystack.matchAll(/['"]id['"]\s*=>\s*['"]([\w:.-]+)['"]/g)) emitted.add(m[1]);
 
 /* Ids built dynamically — `id="row-${i}"`, `id="card-<?= $x ?>"`. Only the
    static PREFIX is knowable, so record it and treat any lookup starting with
@@ -117,24 +263,70 @@ for (const m of haystack.matchAll(/setAttribute\(\s*['"]id['"]\s*,\s*['"`]([\w:.
 const dynPrefixes = [];
 for (const m of haystack.matchAll(/\bid\s*=\s*\\?["'`]([\w-]*)(?:\$\{|<\?)/g)) if (m[1]) dynPrefixes.push(m[1]);
 
-const jsFiles = walk(join(PUB, 'js'), /\.js$/);
+/* NEEDLE gathering (widened-scope addition, epic #2008): every `*.js` under
+   the WHOLE `appWeb/public_html` tree (not just `js/`) PLUS every inline
+   `<script>` body extracted from every `*.php` under `public_html`. See the
+   file-header note on why (the #1166/#1180/gwiz-rollback-inline bugs all
+   lived in this previously-unscanned scope). */
+const jsFiles = walk(PUB, /\.js$/);
+const jsSources = jsFiles.map((f) => ({ file: rel(f), text: readFileSync(f, 'utf8'), lineOffset: 0 }));
+
+let scriptBlocksScanned = 0;
+const phpFiles = walk(PUB, /\.php$/);
+for (const f of phpFiles) {
+    const raw = readFileSync(f, 'utf8');
+    /* HTML `<!-- -->` and block `/* *\/` comments blanked (newline-preserving,
+       gotcha #1/#5 — a `<script>` mentioned only in a doc-comment must not be
+       extracted as real, and every offset computed against the blanked text
+       stays valid against `raw` because the length never changes). */
+    const cleanedForTags = raw
+        .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '))
+        .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
+    SCRIPT_TAG_RE.lastIndex = 0;
+    let sm;
+    while ((sm = SCRIPT_TAG_RE.exec(cleanedForTags)) !== null) {
+        const attrs = sm[1];
+        /* External `src=` scripts are governed by the emitting file itself
+           (already in the corpus); inert JSON data islands are never
+           executable. Same allow-shape as test-fragment-inline-scripts.php /
+           test-manage-php-urls.js. */
+        if (/\bsrc\s*=/i.test(attrs)) continue;
+        if (/type\s*=\s*["']application\/(ld\+)?json["']/i.test(attrs)) continue;
+        scriptBlocksScanned++;
+        const bodyStart = sm.index + 7 /* '<script'.length */ + attrs.length + 1 /* '>' */;
+        const rawBody = raw.slice(bodyStart, bodyStart + sm[2].length);
+        const lineOffset = cleanedForTags.slice(0, bodyStart).split('\n').length - 1;
+        jsSources.push({ file: `${rel(f)} [inline]`, text: rawBody, lineOffset });
+    }
+}
+check(`scanner extracted a plausible number of inline <script> blocks (${scriptBlocksScanned})`,
+    scriptBlocksScanned >= 30, `only found ${scriptBlocksScanned} — an extraction regression, not a clean tree`);
+
 const lookups = new Map();   /* id -> ["file:line", ...] */
-for (const f of jsFiles) {
-    readFileSync(f, 'utf8').split('\n').forEach((line, i) => {
+for (const s of jsSources) {
+    /* String-aware JS comment stripping (mirrors stripJsComments() in
+       tests/test-manage-php-urls.js) so a `//` or `id` mentioned only inside
+       a quoted string or a comment can never register as a real lookup, and
+       so the #1701 regex-literal trap (a `//` inside a URL string mistaken
+       for a line comment) cannot recur here either. Newline-preserving —
+       gotcha #1 — so reported line numbers stay true. */
+    const stripped = stripJsComments(s.text);
+    stripped.split('\n').forEach((line, i) => {
+        const loc = `${s.file}:${s.lineOffset + i + 1}`;
         for (const m of line.matchAll(/getElementById\(\s*['"]([\w:.-]+)['"]\s*\)/g)) {
             if (!lookups.has(m[1])) lookups.set(m[1], []);
-            lookups.get(m[1]).push(`${rel(f)}:${i + 1}`);
+            lookups.get(m[1]).push(loc);
         }
         for (const m of line.matchAll(/querySelector(?:All)?\(\s*['"]#([\w:.-]+)['"]\s*\)/g)) {
             if (!lookups.has(m[1])) lookups.set(m[1], []);
-            lookups.get(m[1]).push(`${rel(f)}:${i + 1}`);
+            lookups.get(m[1]).push(loc);
         }
     });
 }
 
 /* A zero here would mean the scanner matched nothing and every assertion below
    is vacuously true — the "confident green that verifies nothing" failure. */
-check(`scanner found id lookups to check (${lookups.size} distinct, across ${jsFiles.length} JS files)`,
+check(`scanner found id lookups to check (${lookups.size} distinct, across ${jsFiles.length} JS files + ${scriptBlocksScanned} inline script blocks)`,
     lookups.size > 50, `only found ${lookups.size}`);
 check(`scanner found ids emitted by the tree (${emitted.size} literal, ${dynPrefixes.length} templated)`,
     emitted.size > 100, `only found ${emitted.size}`);

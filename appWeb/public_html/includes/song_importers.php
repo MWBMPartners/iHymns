@@ -4586,6 +4586,292 @@ function _bulkImport_pro7RtfMaxFontHalfPts(string $rtf): int
     return $max;
 }
 
+/* ===========================================================================
+ *  ProPresenter 7+ chord import (#1968 P6, folds into #1080)
+ *
+ * ELI5
+ * ----
+ * A PP7 slide's chords are not typed into the lyric text — they are a
+ * separate list of "put chord X starting at character N" records riding
+ * alongside the clean lyric text (`includes/propresenter7_decode.php`'s
+ * `pp7DecodeCue()['slideElementChords']`, one list per slide text element,
+ * decoded from `Graphics.Text.attributes.custom_attributes[]`). This section
+ * turns those character-offset records into the POSITIONED STRING chord
+ * cells iHymns already displays everywhere (`includes/chord_display.php`,
+ * `js/modules/print.js`, the editor's chords textarea) — a chord line like
+ * "G        G7       C   G" sitting above its lyric line.
+ *
+ * The chords flow onto the component as a `chords` array parallel to
+ * `lines`, persisted via the SANCTIONED `lyricLinesWriteComponents()` write
+ * path — never a direct ChordsJson read/write (rule #25), and NEVER a new
+ * SQL table (rule for this feature — it rides the EXISTING parallel array
+ * the ChordPro importer already uses).
+ *
+ * ⚠️ SCOPE NOTE — `chord_pro` (Graphics.Text field 12) is DELIBERATELY NOT
+ * decoded/consulted anywhere in this import path. The plan's §3.1 decoder-
+ * extension bullet list (the concrete build spec) never lists a `chord_pro`
+ * field table; only §3.4's prose separately floats an OPTIONAL enhancement
+ * ("when `chord_pro.enabled && notation ∉ {0}`, append one summary warning
+ * — chords use numbers/numerals/do-re-mi notation"). Chord strings import
+ * VERBATIM regardless — satisfying §3.4's first sentence trivially, since
+ * this code never branches on notation at all — and §5's own fixture bullet
+ * ("`chord_pro{enabled:true}` on one element and absent on another — import
+ * must not care") is exactly this: chord_pro is presentation-only metadata
+ * (§1.3), never content. The notation-specific warning is left for a
+ * follow-up if a real chord-bearing file (owner checklist D4) ever shows a
+ * non-zero notation in practice; nothing in §6's guard list requires it.
+ *
+ * @see .claude/propresenter-chords-plan.md   §2.2 (the mapping decision), §3.3 (this algorithm)
+ * =========================================================================== */
+
+/**
+ * `.claude/propresenter-chords-plan.md` §1.2 flags ONE genuine open question about PP7's own
+ * wire format that this repo cannot resolve without a real chord-bearing ProPresenter export
+ * (owner checklist D4): does a line break ("\n" in the plain text a `CustomAttribute.range`
+ * indexes into) count as 1 UTF-16 code unit in a chord's offset, or as 0? The two independent
+ * reference implementations studied for this feature disagree (chordlib counts it as 1 — the
+ * Cocoa `NSAttributedString.string` convention, adopted here as primary; greyshirtguy's tool
+ * counts it as 0). Isolated behind this ONE named constant (mirrored on the export side by
+ * `propresenter-export.js`'s own `NEWLINE_UNITS`) so flipping the convention after D4 evidence
+ * is a one-line change + fixture regen, never a re-derivation of the bucketing math below.
+ */
+const PP7_CHORD_NEWLINE_UNITS = 1;
+
+/**
+ * Count a UTF-8 string's length in UTF-16 code UNITS — the unit PP7's `IntRange.start`/`.end`
+ * offsets are expressed in (`.claude/propresenter-chords-plan.md` §1.2, both reference
+ * implementations agree). A code point above U+FFFF (e.g. most emoji) is ONE code point but TWO
+ * UTF-16 units (a surrogate pair) — this is the one place that distinction matters on the import
+ * side; everywhere else in this app, chord/line positions are code points (rule #21).
+ *
+ * @param string $s a single line of plain UTF-8 text (never the whole multi-line document —
+ *                   callers add `PP7_CHORD_NEWLINE_UNITS` per line break themselves)
+ */
+function _bulkImport_pro7Utf16Length(string $s): int
+{
+    if ($s === '') {
+        return 0;
+    }
+    $len = 0;
+    foreach (mb_str_split($s, 1, 'UTF-8') as $ch) {
+        $cp = mb_ord($ch, 'UTF-8');
+        $len += ($cp !== false && $cp > 0xFFFF) ? 2 : 1;
+    }
+    return $len;
+}
+
+/**
+ * Convert a UTF-16 code-unit offset WITHIN one line to a CODE-POINT column (rule #21 — this
+ * decoder's protobuf offsets are UTF-16 per the plan §1.2; iHymns' own chord model is
+ * code-point-positioned everywhere else: `chord_display.php`, `print.js`, the editor textarea).
+ *
+ * ELI5: PP7 counts "how far into this line" in a unit that splits emoji into two pieces; iHymns
+ * counts in whole characters. This walks the line one character at a time, adding up PP7's units
+ * as it goes, and stops at the character whose PP7-unit-count matches the target — that
+ * character's position (in whole characters) is the column iHymns wants.
+ *
+ * DETAILED: a target offset that lands MID-SURROGATE-PAIR (only possible from a malformed or
+ * adversarial file — no real UTF-16 writer ever splits a surrogate pair mid-character) clamps to
+ * the code-point boundary BEFORE that character, and reports that it had to clamp, rather than
+ * producing a corrupt column or refusing the whole import (the plan §3.3 point 4's "degrade, not
+ * refuse" posture — mirrors why this decoder never hard-errors the way chordlib's own validator
+ * does). An offset beyond the line's own UTF-16 length (a genuinely OUT-OF-BOUNDS offset, handled
+ * ONE layer up by the caller's overflow clamp — see `_bulkImport_pro7ChordCellsFromRanges()`)
+ * also falls through this same loop and lands at the line's own code-point length, which is
+ * exactly the "anchor at line end" behaviour that case needs too.
+ *
+ * @return array{0:int,1:bool}  [codePointColumn, wasClampedMidSurrogate]
+ */
+function _bulkImport_pro7Utf16OffsetToCodePointColumn(string $line, int $utf16Offset): array
+{
+    if ($utf16Offset <= 0 || $line === '') {
+        return [0, false];
+    }
+    $col  = 0;
+    $unit = 0;
+    foreach (mb_str_split($line, 1, 'UTF-8') as $ch) {
+        if ($unit >= $utf16Offset) {
+            break;
+        }
+        $cp      = mb_ord($ch, 'UTF-8');
+        $chUnits = ($cp !== false && $cp > 0xFFFF) ? 2 : 1;
+        if ($unit + $chUnits > $utf16Offset) {
+            // The target offset lands strictly BETWEEN this code point's two UTF-16 units (a
+            // surrogate pair split mid-character) — clamp to the boundary BEFORE it.
+            return [$col, true];
+        }
+        $unit += $chUnits;
+        $col++;
+    }
+    return [$col, false];
+}
+
+/**
+ * PURE: turn one text element's decoded chord rows into per-line POSITIONED STRING cells
+ * (`.claude/propresenter-chords-plan.md` §3.3 — the range->cell algorithm, steps 1-5). Parallel
+ * to `explode("\n", $plainText)`.
+ *
+ * ALGORITHM (plan §3.3):
+ *   1. Drop rows whose chord symbol is blank once trimmed (both reference implementations do —
+ *      greyshirtguy's own editor even creates transient empty `[]` runs). Collapse INTERIOR
+ *      whitespace in a symbol to nothing — a cell is whitespace-DELIMITED (`ihymns_chord_line_to_string()`
+ *      / the editor's chord textarea both split on whitespace runs), so an embedded space would
+ *      split one chord into two tokens on the next read.
+ *   2. Sort by `start` ascending — the repeated `custom_attributes[]` field's wire order is NOT
+ *      guaranteed to already be `start`-sorted (chordlib input L230; PP itself may reorder on
+ *      re-save).
+ *   3. Bucket each row to the LINE whose `[lineStart, lineStart + utf16len(line))` interval
+ *      contains its `start` — line offsets accumulate as UTF-16 length + `PP7_CHORD_NEWLINE_UNITS`
+ *      per line break (mirrors how the SAME lines were joined by `\par` on the RTF/exporter side).
+ *      A `start` beyond the WHOLE text's end clamps to the last line's very end (never dropped —
+ *      #1080's "never silently drop a chord" clamp philosophy) and collects ONE summary warning.
+ *   4. Convert the in-line UTF-16 offset to a CODE-POINT column (`_bulkImport_pro7Utf16OffsetToCodePointColumn()`);
+ *      build the cell by space-padding out to that column, or inserting a single separating space
+ *      when two chords' columns collide (never silently overwriting/merging two symbols).
+ *   5. `range.end` is IGNORED for placement (plan §1.2 — both reference implementations position
+ *      by `start` alone; `end` merely TILES to the next chord's `start` on write).
+ *
+ * @param string                                    $plainText the SAME text `explode("\n", ...)`
+ *                                                    the caller's line-accumulation already uses
+ * @param list<array{start:int,end:int,chord:string}> $rows    this element's decoded chord rows
+ *                                                    (UNSORTED — see step 2)
+ * @param list<string>                              &$warnings  the parser's shared warnings list
+ *                                                    (mutated — appends at most one overflow-clamp
+ *                                                    warning and one surrogate-clamp warning)
+ * @return list<string> cells parallel to `explode("\n", $plainText)`
+ */
+function _bulkImport_pro7ChordCellsFromRanges(string $plainText, array $rows, array &$warnings): array
+{
+    $clean = [];
+    foreach ($rows as $row) {
+        $sym = trim((string)($row['chord'] ?? ''));
+        if ($sym === '') {
+            continue; // step 1 — drop a blank/whitespace-only chord row
+        }
+        $sym = (string)preg_replace('/\s+/u', '', $sym); // step 1 — a cell is whitespace-delimited
+        $clean[] = ['start' => (int)($row['start'] ?? 0), 'chord' => $sym];
+    }
+    if (empty($clean)) {
+        return [];
+    }
+
+    usort($clean, static fn(array $a, array $b): int => $a['start'] <=> $b['start']); // step 2
+
+    $lines = explode("\n", $plainText);
+    $cells = array_fill(0, count($lines), '');
+
+    $lineStarts = [];
+    $cursor     = 0;
+    foreach ($lines as $k => $line) {
+        $lineStarts[$k] = $cursor;
+        $cursor += _bulkImport_pro7Utf16Length($line) + PP7_CHORD_NEWLINE_UNITS;
+    }
+    $lastIdx       = count($lines) - 1;
+    $totalUtf16Len = $lineStarts[$lastIdx] + _bulkImport_pro7Utf16Length($lines[$lastIdx]);
+
+    $sawOverflow  = false;
+    $sawSurrogate = false;
+
+    foreach ($clean as $row) {
+        $start = $row['start'];
+        if ($start > $totalUtf16Len) {
+            $start       = $totalUtf16Len; // step 3's "beyond text end -> clamp to last line's end"
+            $sawOverflow = true;
+        } elseif ($start < 0) {
+            $start = 0; // defensive — pp7DecodeIntRange() already rejects a negative `start`
+        }
+
+        $lineIdx = $lastIdx;
+        for ($k = 0; $k <= $lastIdx; $k++) {
+            $lineEnd = $lineStarts[$k] + _bulkImport_pro7Utf16Length($lines[$k]);
+            if ($start <= $lineEnd) {
+                $lineIdx = $k;
+                break;
+            }
+        }
+        $inLineOffset = max(0, $start - $lineStarts[$lineIdx]);
+
+        [$col, $wasClamped] = _bulkImport_pro7Utf16OffsetToCodePointColumn($lines[$lineIdx], $inLineOffset);
+        if ($wasClamped) {
+            $sawSurrogate = true;
+        }
+
+        $existingLen = mb_strlen($cells[$lineIdx]);
+        if ($col < $existingLen) {
+            // step 4's collision case — a single separating space, never overwrite/merge.
+            $cells[$lineIdx] .= ' ' . $row['chord'];
+        } else {
+            $cells[$lineIdx] .= str_repeat(' ', $col - $existingLen) . $row['chord'];
+        }
+    }
+
+    if ($sawOverflow) {
+        $warnings[] = 'a chord offset landed beyond the end of the text and was clamped to the last line\'s end';
+    }
+    if ($sawSurrogate) {
+        $warnings[] = 'a chord offset landed mid-character and was clamped to the nearest code-point boundary';
+    }
+
+    return $cells;
+}
+
+/**
+ * Resolve chord placement for ONE cue's chosen element, handling the PR-1 dominant-font filter's
+ * interplay with chord offsets (plan §3.3 "Font-suppression interplay"): a `CustomAttribute.range`
+ * offset indexes the element's FULL attributed text, but `_bulkImport_pro7SelectCueText()`
+ * extracts through `_bulkImport_rtfToText($rtf, $maxFs)`, which may DROP a smaller-font run —
+ * making the emitted (filtered) text SHORTER than what the chord offsets were written against.
+ *
+ * In the overwhelmingly common single-font case, filtered text === unfiltered text and the ranges
+ * bucket directly. When they differ, this aligns the filtered lines to the unfiltered lines by
+ * EXACT CONTENT + ORDER and keeps only the matching lines' cells; if that alignment cannot account
+ * for every filtered line, the chords are DROPPED with one collected warning rather than risking a
+ * mis-anchored chord (plan §3.3: "A wrong chord placement is worse than a reported absence").
+ *
+ * @param string                                      $rtf          the chosen element's rtf_data
+ * @param int                                          $maxFs        the dominant-font cutoff
+ *                                                                    already computed for `$rtf`
+ * @param string                                       $filteredText `_bulkImport_rtfToText($rtf, $maxFs)`
+ *                                                                    — what the caller's `$text` is
+ * @param list<array{start:int,end:int,chord:string}>  $chordRows    this element's decoded chord rows
+ * @param list<string>                                &$warnings     mutated on drop/clamp
+ * @return list<string> cells parallel to `explode("\n", $filteredText)`
+ */
+function _bulkImport_pro7ChordCellsForCue(string $rtf, int $maxFs, string $filteredText, array $chordRows, array &$warnings): array
+{
+    $unfilteredText = _bulkImport_rtfToText($rtf, 0);
+    if ($unfilteredText === $filteredText) {
+        return _bulkImport_pro7ChordCellsFromRanges($filteredText, $chordRows, $warnings);
+    }
+
+    // Filtered != unfiltered — the ranges index the UNFILTERED text (plan §3.3), so bucket
+    // against THAT, then align its lines to the filtered lines by exact content + order.
+    $unfilteredCells = _bulkImport_pro7ChordCellsFromRanges($unfilteredText, $chordRows, $warnings);
+    $unfilteredLines = explode("\n", $unfilteredText);
+    $filteredLines   = explode("\n", $filteredText);
+
+    $aligned = [];
+    $srcIdx  = 0;
+    foreach ($filteredLines as $fLine) {
+        $found = false;
+        while ($srcIdx < count($unfilteredLines)) {
+            if ($unfilteredLines[$srcIdx] === $fLine) {
+                $aligned[] = $unfilteredCells[$srcIdx] ?? '';
+                $srcIdx++;
+                $found = true;
+                break;
+            }
+            $srcIdx++;
+        }
+        if (!$found) {
+            $warnings[] = 'chords present but could not be aligned to the imported text';
+            return [];
+        }
+    }
+
+    return $aligned;
+}
+
 /**
  * Select ONE cue's "lyric" text + count how many of its OTHER elements carry
  * real (non-empty, once RTF-stripped) text — the element-selection rule from
@@ -4634,17 +4920,23 @@ function _bulkImport_pro7RtfMaxFontHalfPts(string $rtf): int
  *                    into ONE summary warning (never per-cue — plan §3.4:
  *                    "P1 imports element 0 only and appends ONE summary
  *                    warning")
- * @return string the selected element's UTF-8 plain text (via
- *                 `_bulkImport_rtfToText()`), or '' when the cue carries no
- *                 usable text at all
+ * @return array{text:string,chordCells:list<string>} `text` is the selected
+ *         element's UTF-8 plain text (via `_bulkImport_rtfToText()`, '' when
+ *         the cue carries no usable text at all); `chordCells` is PARALLEL
+ *         to `explode("\n", text)` — one positioned chord-line STRING cell
+ *         per lyric line ('' when that line carries no chords), built from
+ *         that SAME chosen element's `CustomAttribute` chord rows (#1968 P6
+ *         — never another element's; a translation layer's chords must
+ *         never cross-attach to the chosen lyric text)
  */
-function _bulkImport_pro7SelectCueText(array $cue, int &$translationLayerCount): string
+function _bulkImport_pro7SelectCueText(array $cue, int &$translationLayerCount, array &$warnings): array
 {
-    $rtfList  = $cue['slideRtf'] ?? [];
-    $infoList = $cue['slideElementInfos'] ?? [];
-    $n        = count($rtfList);
+    $rtfList    = $cue['slideRtf'] ?? [];
+    $infoList   = $cue['slideElementInfos'] ?? [];
+    $chordsList = $cue['slideElementChords'] ?? [];
+    $n          = count($rtfList);
     if ($n === 0) {
-        return '';
+        return ['text' => '', 'chordCells' => []];
     }
 
     $chosen = null;
@@ -4663,11 +4955,12 @@ function _bulkImport_pro7SelectCueText(array $cue, int &$translationLayerCount):
         }
     }
     if ($chosen === null) {
-        return '';
+        return ['text' => '', 'chordCells' => []];
     }
 
     $chosenRtf = (string)$rtfList[$chosen];
-    $text      = _bulkImport_rtfToText($chosenRtf, _bulkImport_pro7RtfMaxFontHalfPts($chosenRtf));
+    $maxFs     = _bulkImport_pro7RtfMaxFontHalfPts($chosenRtf);
+    $text      = _bulkImport_rtfToText($chosenRtf, $maxFs);
 
     for ($idx = 0; $idx < $n; $idx++) {
         if ($idx === $chosen) { continue; }
@@ -4678,26 +4971,43 @@ function _bulkImport_pro7SelectCueText(array $cue, int &$translationLayerCount):
         }
     }
 
-    return $text;
+    $chordRows  = (array)($chordsList[$chosen] ?? []);
+    $chordCells = [];
+    if (!empty($chordRows)) {
+        $chordCells = _bulkImport_pro7ChordCellsForCue($chosenRtf, $maxFs, $text, $chordRows, $warnings);
+    }
+
+    return ['text' => $text, 'chordCells' => $chordCells];
 }
 
 /**
- * Append one cue's selected text onto a GROUP's accumulating `$lines` array,
- * using the exact concatenation idiom `_bulkImport_parsePro6()` already
- * uses at L3798-3806 (skip LEADING empty lines; keep interior/trailing ones
- * — the caller does ONE trailing-blank trim pass after every cue in the
- * group has been appended, matching how the exporter chunks one group's
- * lyrics across several slides with `linesPerSlide`).
+ * Append one cue's selected text + its parallel chord cells onto a GROUP's
+ * accumulating `$lines`/`$cells` arrays, using the exact concatenation
+ * idiom `_bulkImport_parsePro6()` already uses at L3798-3806 (skip LEADING
+ * empty lines; keep interior/trailing ones — the caller does ONE trailing-
+ * blank trim pass after every cue in the group has been appended, matching
+ * how the exporter chunks one group's lyrics across several slides with
+ * `linesPerSlide`). `$cells` is kept in LOCKSTEP with `$lines` — every push
+ * (and every caller's later `array_pop()` trim) happens to BOTH arrays
+ * together, so index N of one always corresponds to index N of the other
+ * (#1968 P6 plan §3.2).
  *
- * @param array<int,string> &$lines the group's line accumulator (mutated)
- * @param string             $text  one cue's already-RTF-stripped text
+ * @param array<int,string> &$lines      the group's line accumulator (mutated)
+ * @param string             $text       one cue's already-RTF-stripped text
+ * @param list<string>       $chordCells parallel to `explode("\n", $text)` — this
+ *                                       cue's positioned chord cells (possibly [])
+ * @param array<int,string> &$cells      the group's chord-cell accumulator (mutated,
+ *                                       parallel to `$lines`)
  */
-function _bulkImport_pro7AppendCueLines(array &$lines, string $text): void
+function _bulkImport_pro7AppendCueLines(array &$lines, string $text, array $chordCells, array &$cells): void
 {
-    foreach (explode("\n", str_replace(["\r\n", "\r"], "\n", $text)) as $ln) {
-        $ln = rtrim($ln);
+    $normalized = explode("\n", str_replace(["\r\n", "\r"], "\n", $text));
+    foreach ($normalized as $i => $ln) {
+        $ln   = rtrim($ln);
+        $cell = (string)($chordCells[$i] ?? '');
         if ($ln !== '' || !empty($lines)) {
             $lines[] = $ln;
+            $cells[] = $cell;
         }
     }
 }
@@ -4857,9 +5167,12 @@ function _bulkImport_sniffProDialect(string $body): string
  * @param string $body raw bytes of one `.pro` file
  * @return array{0: ?array, 1: ?string}  [parsed, errorReason] — parsed carries
  *         {title, songbookName:'', entry:0, language:'', ccli, copyright,
- *         writers[], components[], arrangement:?int[], warnings[]}
+ *         writers[], components[], arrangement:?int[], warnings[],
+ *         mediaRefs?:array, timeline?:array{duration:?float,loop:bool,cues:array}}
+ *         (`mediaRefs`/`timeline` are SPARSE — present only when non-empty)
  * @see .claude/propresenter-interop-1968-plan.md   §3.3 (the walk), §3.4 (element selection), §3.5 (label mapping)
  * @see includes/propresenter7_decode.php           pp7DecodePresentation() — the decoder this builds on
+ * @see includes/pp7_timeline.php                    pp7TimelineStore() — the (dormant/gated) DB write side
  * @see tests/php/test-pp7-parse.php                 real-fixture validation
  */
 function _bulkImport_parsePro7(string $body): array
@@ -4931,20 +5244,22 @@ function _bulkImport_parsePro7(string $body): array
             continue;
         }
 
-        $lines = [];
+        $lines  = [];
+        $chords = [];
         foreach ((array)($group['cueIdentifiers'] ?? []) as $cueUuid) {
             if (!isset($cuesByUuid[$cueUuid])) {
                 $warnings[] = "cue {$cueUuid} referenced by group \"{$trimmedName}\" was not found";
                 continue;
             }
-            $text = _bulkImport_pro7SelectCueText($cuesByUuid[$cueUuid], $translationLayerCount);
-            _bulkImport_pro7AppendCueLines($lines, $text);
+            $sel = _bulkImport_pro7SelectCueText($cuesByUuid[$cueUuid], $translationLayerCount, $warnings);
+            _bulkImport_pro7AppendCueLines($lines, $sel['text'], $sel['chordCells'], $chords);
             /* Mark as referenced — whatever remains in $cuesByUuid after
                every group has been walked is step 4's "unreferenced cues". */
             unset($cuesByUuid[$cueUuid]);
         }
         while (!empty($lines) && trim((string)end($lines)) === '') {
             array_pop($lines);
+            array_pop($chords);
         }
         if (empty($lines)) {
             $warnings[] = $trimmedName !== ''
@@ -4955,6 +5270,14 @@ function _bulkImport_parsePro7(string $body): array
 
         $mapped    = _bulkImport_pro7GroupType($groupName);
         $component = ['type' => $mapped['type'], 'number' => $mapped['number'], 'lines' => $lines];
+        /* #1968 P6 — attach `chords` ONLY when at least one cell is non-empty, mirroring
+           _bulkImport_parseChordPro()'s flush gate, so a CHORDLESS import stays byte-identical
+           to today (the non-regression the existing fixtures + test-pp7-parse.php pin, rule #25). */
+        $hasChords = false;
+        foreach ($chords as $c) { if (trim((string)$c) !== '') { $hasChords = true; break; } }
+        if ($hasChords) {
+            $component['chords'] = $chords;
+        }
         if ($mapped['label'] !== null) {
             $component['label'] = $mapped['label'];
         }
@@ -4975,17 +5298,25 @@ function _bulkImport_parsePro7(string $body): array
             if ($uuid === '' || !isset($cuesByUuid[$uuid])) {
                 continue; // referenced by a group, or carries no uuid at all
             }
-            $text  = _bulkImport_pro7SelectCueText($cue, $translationLayerCount);
-            $lines = [];
-            _bulkImport_pro7AppendCueLines($lines, $text);
+            $sel    = _bulkImport_pro7SelectCueText($cue, $translationLayerCount, $warnings);
+            $lines  = [];
+            $chords = [];
+            _bulkImport_pro7AppendCueLines($lines, $sel['text'], $sel['chordCells'], $chords);
             while (!empty($lines) && trim((string)end($lines)) === '') {
                 array_pop($lines);
+                array_pop($chords);
             }
             if (empty($lines)) {
                 continue; // an unreferenced, empty cue contributes nothing
             }
             $vnum++;
-            $components[] = ['type' => 'verse', 'number' => $vnum, 'lines' => $lines];
+            $verseComponent = ['type' => 'verse', 'number' => $vnum, 'lines' => $lines];
+            $hasChords      = false;
+            foreach ($chords as $c) { if (trim((string)$c) !== '') { $hasChords = true; break; } }
+            if ($hasChords) {
+                $verseComponent['chords'] = $chords;
+            }
+            $components[] = $verseComponent;
             $warnings[]   = "cue {$uuid} was not referenced by any group — appended as verse {$vnum}";
         }
     }
@@ -5078,7 +5409,29 @@ function _bulkImport_parsePro7(string $body): array
         return [null, 'no song title (no CCLI song_title, no presentation name, no slide text)'];
     }
 
-    return [[
+    /* #1968 P4 — surface the decoder's per-cue media references (#853 media
+       ingest, plan §6.4). Flattened in cue order, deduped on the
+       {absoluteString, localRoot, localPath} triple. Emitted SPARSELY (the
+       rule-#45 sparse-`label` precedent): the key is present ONLY when the
+       document actually references media, so only the media-bearing fixtures'
+       expected JSONs gain it, not all of them. The parser only EXPOSES the
+       refs — resolution + ingest happen in the bundle/playlist processors,
+       which have the container bytes to resolve them against. */
+    $mediaRefs = [];
+    $seenRefs  = [];
+    foreach ($decoded['cues'] as $cue) {
+        foreach ((array)($cue['mediaRefs'] ?? []) as $ref) {
+            $abs  = $ref['absoluteString'] ?? null;
+            $root = $ref['localRoot'] ?? null;
+            $path = $ref['localPath'] ?? null;
+            $key  = ($abs ?? '') . "\x1f" . ($root ?? '') . "\x1f" . ($path ?? '');
+            if (isset($seenRefs[$key])) { continue; }
+            $seenRefs[$key] = true;
+            $mediaRefs[] = ['absoluteString' => $abs, 'localRoot' => $root, 'localPath' => $path];
+        }
+    }
+
+    $result = [
         'title'        => $title,
         'songbookName' => '',   // .pro carries no songbook; caller supplies one
         'entry'        => 0,
@@ -5089,7 +5442,29 @@ function _bulkImport_parsePro7(string $body): array
         'components'   => $components,
         'arrangement'  => $arrangement,
         'warnings'     => $warnings,
-    ], null];
+    ];
+    if (!empty($mediaRefs)) {
+        $result['mediaRefs'] = $mediaRefs;
+    }
+
+    /* #1968 dormant groundwork — carry the decoder's captured auto-advance timeline through
+       (owner steer 2026-08-28: capture on import, OFF by default via a toggle, played back
+       later). Emitted SPARSELY (the rule-#45 sparse-key precedent, same posture as mediaRefs
+       immediately above): every real committed fixture decodes SOME `timeline` submessage —
+       ProPresenter appears to always write a placeholder one (duration=300, zero cues) even
+       on a song with no real auto-advance schedule — so gating on mere non-null presence would
+       put a content-free `timeline` key on every parsed song. The key is present only when
+       there is at least one actual cue to capture; the only consumer (the ingest step's
+       pp7TimelineStore() call, itself gated on the pp7_timeline_import_enabled toggle) has
+       nothing to store for an empty/placeholder timeline anyway. Carried through UNCHANGED
+       (pp7DecodeTimeline()'s own {duration,loop,cues:[{triggerSeconds,cueUuid,name}]} shape) —
+       this function does no timeline INTERPRETATION, only decode + sparse carry-through; DB
+       storage happens one layer up, in the bundle/playlist ingest step. */
+    if ($decoded['timeline'] !== null && !empty($decoded['timeline']['cues'])) {
+        $result['timeline'] = $decoded['timeline'];
+    }
+
+    return [$result, null];
 }
 
 /**
@@ -5130,7 +5505,7 @@ function _bulkImport_parsePro7(string $body): array
  *               trusting this value on that path; see that function's
  *               doc-block.
  */
-function _bulkImport_processPro7(string $body, ?string $filenameHint = null): array
+function _bulkImport_processPro7(string $body, ?string $filenameHint = null, bool $warnUnembeddedMedia = false): array
 {
     /* @disabled-visible: importer / batch system path (#1765) — operates over all
        songbooks regardless of public disabled state */
@@ -5204,7 +5579,7 @@ function _bulkImport_processPro7(string $body, ?string $filenameHint = null): ar
         $cnt->close();
     }
 
-    return [
+    $summary = [
         'ok'                     => true,
         'songbooks_created'      => $songbooksCreated,
         'songbooks_existing'     => $songbooksExisting,
@@ -5220,6 +5595,54 @@ function _bulkImport_processPro7(string $body, ?string $filenameHint = null): ar
         'songbook_abbr'          => $abbr,
         'number'                 => $number,
     ];
+    /* #1968 P4 — carry the parsed media references up SPARSELY (the `song_id`
+       precedent — every caller reads named keys). The bundle/playlist
+       processors read this to ingest a resolved media file into tblSongMedia. */
+    if (!empty($parsed['mediaRefs'])) {
+        $summary['media_refs'] = $parsed['mediaRefs'];
+        /* Only a BARE `.pro` upload warns here: a lone `.pro` references media
+           by absolute path but carries no container to resolve it against, so
+           nothing can be ingested (the owner's real `Here To Stay …[Video].pro`
+           is exactly this shape). The bundle/playlist processors pass false —
+           they DO resolve + ingest, so this line would be misleading there. */
+        if ($warnUnembeddedMedia) {
+            $n = count($parsed['mediaRefs']);
+            $summary['warnings'][] = "{$n} media reference(s) are not embedded in a .pro file — "
+                . 'export a .probundle from ProPresenter to bring the media across.';
+        }
+    }
+
+    /* #1968 dormant groundwork — capture the auto-advance timeline (owner steer 2026-08-28:
+       capture on import, OFF by default via a toggle, played back later). Placed HERE, not
+       deferred to the bundle/playlist orchestrators the way media ingest is (see
+       _bulkImport_pp7IngestMedia()'s call sites), because — unlike media — a timeline needs
+       NO container bytes to resolve: everything pp7TimelineStore() needs (the DB handle, the
+       just-created SongId, the decoded timeline) is already in scope right here, for every
+       pathway that funnels through this ONE shared single-file pipeline (bare `.pro` upload,
+       `.probundle` per-entry, `.proplaylist` embedded song alike — rule #22, no duplicated
+       call site in each of the three outer processors).
+       Only on a genuine 'create': _bulkImport_saveSong()'s own doc-block warns that on
+       'skipped' (a re-imported duplicate) $song['id'] is a FRESH id that was NEVER inserted,
+       not the real pre-existing row — storing against it would either silently attach the
+       timeline to a nonexistent SongId (the FK rejects it, caught below, a no-op) or, worse,
+       corrupt data on a future SongId reuse. Capturing on re-import of a duplicate is future
+       work; this task's scope is dormant capture on fresh import.
+       NON-BLOCKING: wrapped in its OWN try/catch (pp7TimelineStore() already guards itself
+       internally too — this is defence in depth) so a timeline hiccup can never fail the
+       surrounding song import, exactly like the media ingest call above. VERIFIED NO-OP by
+       construction while the toggle is at its shipped '0' default: pp7TimelineStore()'s own
+       first gate check (pp7TimelineImportEnabled()) returns 0 before touching the database at
+       all. */
+    if ($action === 'create' && !empty($parsed['timeline']) && ($song['id'] ?? '') !== '') {
+        try {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'pp7_timeline.php';
+            pp7TimelineStore($db, (string)$song['id'], '', $parsed['timeline']);
+        } catch (\Throwable $_e) {
+            // Non-blocking: a timeline-capture hiccup never fails the song import.
+        }
+    }
+
+    return $summary;
 }
 
 /* ===========================================================================
@@ -5430,15 +5853,29 @@ function _bulkImport_pp7MediaDeferredWarning(int $mediaCount, array $mediaNames)
         . ($more > 0 ? " (+{$more} more)" : '');
 }
 
-function _bulkImport_probundleFinishSummary(array $agg, int $mediaCount, array $mediaNames): array
+/**
+ * @param array{ingested:int,duplicate:int,unresolved:int,skipped:int}|null $mediaIngest
+ *        #1968 P4 — the aggregated ingest counts (null on a non-P4 path).
+ * @param bool $ingestActive whether media ingest actually ran on this env (the
+ *        `pp7_media_ingest_enabled` gate was open). When true, the deferred-media
+ *        warning is REPLACED by real `media_ingested`/`media_duplicate`/
+ *        `media_unresolved` keys; when false, today's deferred warning is kept
+ *        byte-identically (the dormant default).
+ */
+function _bulkImport_probundleFinishSummary(array $agg, int $mediaCount, array $mediaNames, ?array $mediaIngest = null, bool $ingestActive = false): array
 {
     $warnings = $agg['warnings'];
-    $mediaWarning = _bulkImport_pp7MediaDeferredWarning($mediaCount, $mediaNames);
-    if ($mediaWarning !== null) {
-        $warnings[] = $mediaWarning;
+
+    /* Keep the deferred-media warning UNLESS ingest actually ran on this env
+       (owner flipped pp7_media_ingest_enabled) — then real counts speak for it. */
+    if (!$ingestActive) {
+        $mediaWarning = _bulkImport_pp7MediaDeferredWarning($mediaCount, $mediaNames);
+        if ($mediaWarning !== null) {
+            $warnings[] = $mediaWarning;
+        }
     }
 
-    return [
+    $summary = [
         'ok'                     => true,
         'songbooks_created'      => array_keys($agg['songbooksCreated']),
         'songbooks_existing'     => array_keys($agg['songbooksExisting']),
@@ -5451,9 +5888,311 @@ function _bulkImport_probundleFinishSummary(array $agg, int $mediaCount, array $
         'media_present'          => $mediaCount,
         'media_files'            => $mediaNames,
     ];
+    if ($ingestActive && $mediaIngest !== null) {
+        $summary['media_ingested']   = (int)$mediaIngest['ingested'];
+        $summary['media_duplicate']  = (int)$mediaIngest['duplicate'];
+        $summary['media_unresolved'] = (int)$mediaIngest['unresolved'];
+    }
+    return $summary;
 }
 
-function _bulkImport_processProbundle(string $bytes, ?string $filenameHint = null): array
+/**
+ * #1968 P4 — split a path into its basename on BOTH separators. ProPresenter
+ * media REFERENCES can be Windows absolute paths (`C:\…\ImageSample1.jpg`,
+ * byte-verified in v7-feature-test-win.pro) while ZIP entry names are always
+ * `/`-separated — PHP's own `basename()` only splits on `/`, so a Windows ref
+ * would keep its whole path as the "basename" and never match. Splits on `/`
+ * and `\`, returns the last non-empty segment.
+ */
+function _bulkImport_pp7Basename(string $path): string
+{
+    $parts = preg_split('#[/\\\\]#', $path) ?: [];
+    for ($i = count($parts) - 1; $i >= 0; $i--) {
+        if (($parts[$i] ?? '') !== '') { return $parts[$i]; }
+    }
+    return '';
+}
+
+/** #1968 P4 — length (in characters) of the longest common SUFFIX of two paths,
+ *  used to disambiguate two media entries that share a basename by which one
+ *  shares more of its trailing path with the reference. */
+function _bulkImport_pp7CommonSuffixLen(string $a, string $b): int
+{
+    $i = strlen($a) - 1;
+    $j = strlen($b) - 1;
+    $n = 0;
+    while ($i >= 0 && $j >= 0 && $a[$i] === $b[$j]) { $n++; $i--; $j--; }
+    return $n;
+}
+
+/**
+ * #1968 P4 — resolve ONE decoder media reference to a bundle media ENTRY, PURE
+ * + DB-free (plan §6.4). The ground-truth rule (§2): the ZIP entry name is the
+ * media's absolute path with the scheme stripped and percent-DECODED, while the
+ * ref's `absoluteString` is percent-ENCODED — so match by url-decoded BASENAME,
+ * disambiguating same-basename collisions by the longest common suffix of the
+ * full decoded paths. NEVER GUESS: zero matches, or a genuine suffix tie,
+ * returns null (the caller warns + skips). Attaching the WRONG media to a song
+ * is exactly the false-positive class the owner's #1 rule for this epic bans.
+ * Covers all three observed layouts (absolute external path; in-library
+ * `Media/x.png`; portable `CURRENT_RESOURCE` flat form).
+ *
+ * @param array{absoluteString:?string,localRoot:?int,localPath:?string} $ref
+ * @param array<string,array<int,array>> $mediaEntriesByBasename decoded-basename => [entry, …]
+ * @return array|null the matched raw ZIP entry (pp7ZipListEntries() shape), or null
+ */
+function _bulkImport_pp7ResolveMediaRef(array $ref, array $mediaEntriesByBasename): ?array
+{
+    $abs = (string)($ref['absoluteString'] ?? '');
+    $decodedAbs = '';
+    if ($abs !== '') {
+        $noScheme   = preg_replace('#^[a-zA-Z][a-zA-Z0-9+.\-]*://#', '', $abs);
+        $decodedAbs = rawurldecode((string)$noScheme);
+    }
+    $localPath = (string)($ref['localPath'] ?? '');
+
+    $refBasename = $decodedAbs !== '' ? _bulkImport_pp7Basename($decodedAbs) : '';
+    if ($refBasename === '' && $localPath !== '') { $refBasename = _bulkImport_pp7Basename($localPath); }
+    if ($refBasename === '') { return null; }
+
+    $cands = $mediaEntriesByBasename[$refBasename] ?? [];
+    if (count($cands) === 0) { return null; }
+    if (count($cands) === 1) { return $cands[0]; }
+
+    /* Same basename in >1 entry (different directories) — pick the entry whose
+       full decoded name shares the longest trailing path with the ref; a tie is
+       ambiguous, so refuse rather than guess. */
+    $needle  = $decodedAbs !== '' ? $decodedAbs : $localPath;
+    $best    = null;
+    $bestLen = -1;
+    $tie     = false;
+    foreach ($cands as $c) {
+        $name = rawurldecode((string)($c['name'] ?? ''));
+        $len  = _bulkImport_pp7CommonSuffixLen($needle, $name);
+        if ($len > $bestLen)      { $best = $c; $bestLen = $len; $tie = false; }
+        elseif ($len === $bestLen) { $tie = true; }
+    }
+    return $tie ? null : $best;
+}
+
+/**
+ * #1968 P4 — THE shared media-ingest core (bundle + playlist both call it,
+ * rule #22). Resolves each media reference of ONE imported song to a bundle
+ * entry, validates the bytes through the EXISTING upload path, dedupes by
+ * content, and stores each as a `Visibility='admin'` (curator-only) tblSongMedia
+ * row (owner decision D1). Returns per-song counts.
+ *
+ * FAIL-CLOSED BY CONSTRUCTION (plan §6.3/§6.4):
+ *   1. Runs at all ONLY when BOTH the `pp7_media_ingest_enabled` app setting is
+ *      '1' AND the Visibility column exists — else returns all-zeros and the
+ *      caller keeps emitting today's deferred-media warning (truthful: media
+ *      was SEEN, not imported). A row that cannot be stored `admin` is never
+ *      stored at all — the opposite branch ("store public for now") is the D1
+ *      violation. The read gate (song_media_visibility.php) and this write gate
+ *      degrade in lockstep.
+ *   2. Validation reuses SongMediaStorage::validateUpload() UNCHANGED (finfo
+ *      sniff + MIME allow-list + size cap) — never a second validation path
+ *      (rule #42). Kind is derived from the SNIFFED MIME, then validateUpload
+ *      cross-checks the specific type.
+ *
+ * @param array<int,array{absoluteString:?string,localRoot:?int,localPath:?string}> $mediaRefs
+ * @param array<string,array<int,array>> $mediaEntriesByBasename decoded-basename => [entry, …]
+ * @param string $sourceLabel activity-log source ('bulk_import_probundle'|'bulk_import_proplaylist')
+ * @param array<int,string> $warnings by-ref — one line per unresolved/skipped ref
+ * @return array{ingested:int,duplicate:int,unresolved:int,skipped:int}
+ */
+/**
+ * #1968 P4 — map a finfo-sniffed MIME to a tblSongMedia media KIND, PURE. Only
+ * the three top-level media families ProPresenter backgrounds use are accepted;
+ * anything else (a `.pro`, a `.txt`, an unknown type) returns null so the ingest
+ * core skips it with a warning. SongMediaStorage::validateUpload() then does the
+ * specific-type cross-check against its own allow-list (never a second path,
+ * rule #42) — this only picks the KIND bucket.
+ */
+function _bulkImport_pp7KindFromMime(string $mime): ?string
+{
+    if (str_starts_with($mime, 'video/')) { return 'video'; }
+    if (str_starts_with($mime, 'image/')) { return 'image'; }
+    if (str_starts_with($mime, 'audio/')) { return 'audio'; }
+    return null;
+}
+
+/**
+ * #1968 P4 — the ONE bundle-level "is media ingest active on this env?" gate,
+ * shared by the ingest core (its own fail-closed step 1) AND the container
+ * orchestrators (which decide whether the summary shows real counts or the
+ * deferred-media warning), so the two can never disagree (rule #22/#35).
+ * Requires BOTH the app setting flipped '1' AND the Visibility column present —
+ * the read gate and this write gate degrade in lockstep. Default is inert.
+ */
+function _bulkImport_pp7MediaIngestActive(\mysqli $db): bool
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'maintenance.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_media_visibility.php';
+    return getAppSetting('pp7_media_ingest_enabled', '0') === '1'
+        && songMediaVisibilityColumnExists($db);
+}
+
+function _bulkImport_pp7IngestMedia(
+    \mysqli $db,
+    string $songId,
+    array $mediaRefs,
+    string $bundleBytes,
+    array $mediaEntriesByBasename,
+    ?int $userId,
+    string $sourceLabel,
+    array &$warnings
+): array {
+    $counts = ['ingested' => 0, 'duplicate' => 0, 'unresolved' => 0, 'skipped' => 0];
+    if ($songId === '' || empty($mediaRefs)) { return $counts; }
+
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'SongMediaStorage.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_media_flags.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'activity_log.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'propresenter7_zip.php';
+
+    /* Step 1 — the dormancy + lockstep gate. Fail CLOSED: if we cannot store a
+       row as 'admin', we store nothing (the caller's deferred-media warning
+       still fires, so nothing is silently dropped). */
+    if (!_bulkImport_pp7MediaIngestActive($db)) {
+        return $counts;
+    }
+
+    foreach ($mediaRefs as $ref) {
+        $entry = _bulkImport_pp7ResolveMediaRef($ref, $mediaEntriesByBasename);
+        if ($entry === null) {
+            $counts['unresolved']++;
+            $refName = (string)($ref['localPath'] ?? $ref['absoluteString'] ?? 'unknown');
+            $warnings[] = 'media reference could not be matched to a bundled file (not imported): '
+                        . _bulkImport_pp7Basename($refName);
+            continue;
+        }
+
+        $staged = null;
+        $tmpPath = null;
+        try {
+            $bytes = pp7ZipReadEntry($bundleBytes, $entry);
+            $size  = strlen($bytes);
+
+            /* Kind from the SNIFFED MIME (never the filename), then validateUpload
+               cross-checks the specific type against SongMediaStorage's allow-list. */
+            $sniff = (new \finfo(FILEINFO_MIME_TYPE))->buffer($bytes) ?: '';
+            $kind  = _bulkImport_pp7KindFromMime($sniff);
+            if ($kind === null) {
+                $counts['skipped']++;
+                $warnings[] = 'bundled media has an unsupported type (' . ($sniff ?: 'unknown')
+                            . ', not imported): ' . _bulkImport_pp7Basename((string)($entry['name'] ?? ''));
+                continue;
+            }
+
+            $tmpPath = tempnam(sys_get_temp_dir(), 'pp7media');
+            if ($tmpPath === false || file_put_contents($tmpPath, $bytes) === false) {
+                throw new \RuntimeException('could not stage media bytes to a tempfile');
+            }
+            $meta = SongMediaStorage::validateUpload($tmpPath, $kind, $size);
+
+            /* Step 5 — dedupe by content: re-importing the same bundle (even over
+               a dedupe-'skipped' song) never double-stores. */
+            $sha = hash('sha256', $bytes);
+            $dup = $db->prepare('SELECT 1 FROM tblSongMedia WHERE SongId = ? AND Kind = ? AND Sha256 = ? LIMIT 1');
+            $dup->bind_param('sss', $songId, $kind, $sha);
+            $dup->execute();
+            $already = $dup->get_result()->fetch_row() !== null;
+            $dup->close();
+            if ($already) { $counts['duplicate']++; @unlink($tmpPath); $tmpPath = null; continue; }
+
+            $staged   = SongMediaStorage::stage($bytes, $kind, $meta['extension']);
+            $baseName = _bulkImport_pp7Basename((string)($entry['name'] ?? 'media'));
+            $fileName = mb_substr(preg_replace('/[\x00-\x1f\x7f]/', '', $baseName) ?: 'media', 0, 255);
+            $annotation = mb_substr('ProPresenter import: ' . $baseName, 0, 255);
+            $visibility = 'admin';   // owner decision D1 — never public on ingest
+
+            $db->begin_transaction();
+            try {
+                $mx = $db->prepare('SELECT COALESCE(MAX(SortOrder), -1) AS m FROM tblSongMedia WHERE SongId = ? AND Kind = ?');
+                $mx->bind_param('ss', $songId, $kind);
+                $mx->execute();
+                $nextOrder = (int)($mx->get_result()->fetch_assoc()['m'] ?? -1) + 1;
+                $mx->close();
+
+                $ins = $db->prepare(
+                    'INSERT INTO tblSongMedia
+                        (SongId, Kind, StorageBackend, FileName, MimeType, SizeBytes,
+                         Sha256, Content, StoragePath, Annotation, Visibility, SortOrder, UploadedBy)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                );
+                $ins->bind_param(
+                    'sssssisssssii',
+                    $songId, $kind, $staged['backend'], $fileName, $meta['mime'], $size,
+                    $staged['sha256'], $staged['content'], $staged['path'], $annotation, $visibility, $nextOrder, $userId
+                );
+                $ins->execute();
+                $newId = (int)$db->insert_id;
+                $ins->close();
+                ilidStampNewRow($db, 'document', $newId);
+                $db->commit();
+            } catch (\Throwable $e) {
+                $db->rollback();
+                throw $e;
+            }
+
+            /* Step 7 — REQUIRED post-commit recompute (own failure boundary; the
+               tree-derived test-editor2-metadata-1862.php guard demands this hook
+               on every tblSongMedia INSERT). Harmless for video/image (outside the
+               flag-kind map); an admin AUDIO row is excluded by the recompute's own
+               public filter (§6.3.4), keeping the derived flags honest. */
+            songMediaRecomputeFlags($db, $songId);
+
+            logActivity('song-media.upload', 'song', $songId, [
+                'media_id'   => $newId,
+                'kind'       => $kind,
+                'backend'    => $staged['backend'],
+                'file_name'  => $fileName,
+                'mime'       => $meta['mime'],
+                'size_bytes' => $size,
+                'sha256'     => $staged['sha256'],
+                'source'     => $sourceLabel,
+                'visibility' => $visibility,
+            ]);
+            $counts['ingested']++;
+        } catch (\Throwable $e) {
+            $counts['skipped']++;
+            /* Unlink a staged FS orphan if the DB write never landed. */
+            if (is_array($staged) && ($staged['backend'] ?? '') === 'filesystem' && !empty($staged['path'])) {
+                try { SongMediaStorage::deleteStorage(['StorageBackend' => 'filesystem', 'StoragePath' => $staged['path']]); } catch (\Throwable $_e) {}
+            }
+            $warnings[] = 'a bundled media file could not be imported (' . $e->getMessage() . '): '
+                        . _bulkImport_pp7Basename((string)($entry['name'] ?? ''));
+        } finally {
+            if ($tmpPath !== null && is_file($tmpPath)) { @unlink($tmpPath); }
+        }
+    }
+
+    return $counts;
+}
+
+/**
+ * #1968 P4 — build the decoded-basename => [entry, …] index the resolver needs,
+ * ONCE per container (plan §6.4). Keyed by the url-decoded basename of each
+ * media entry's name.
+ *
+ * @param array<int,array> $mediaEntries the classifier's media bucket
+ * @return array<string,array<int,array>>
+ */
+function _bulkImport_pp7IndexMediaByBasename(array $mediaEntries): array
+{
+    $index = [];
+    foreach ($mediaEntries as $entry) {
+        $name = rawurldecode((string)($entry['name'] ?? ''));
+        $bn   = _bulkImport_pp7Basename($name);
+        if ($bn === '') { continue; }
+        $index[$bn][] = $entry;
+    }
+    return $index;
+}
+
+function _bulkImport_processProbundle(string $bytes, ?string $filenameHint = null, ?int $userId = null): array
 {
     /* @disabled-visible: importer / batch system path (#1765) — operates over all
        songbooks regardless of public disabled state */
@@ -5516,6 +6255,14 @@ function _bulkImport_processProbundle(string $bytes, ?string $filenameHint = nul
         'warnings'          => [],
     ];
 
+    /* #1968 P4 — index the bundle's media entries by decoded basename ONCE, so
+       each imported song can resolve its own per-cue media refs. Dormant until
+       the owner flips pp7_media_ingest_enabled (the ingest core's own gate). */
+    $mediaByBasename = _bulkImport_pp7IndexMediaByBasename($mediaEntries);
+    $mediaIngest = ['ingested' => 0, 'duplicate' => 0, 'unresolved' => 0, 'skipped' => 0];
+    $db = getDbMysqli();                       // for media ingest + skipped-song re-resolution
+    $ingestActive = _bulkImport_pp7MediaIngestActive($db);
+
     foreach ($proEntries as $entry) {
         $name = $entry['name'];
 
@@ -5541,9 +6288,39 @@ function _bulkImport_processProbundle(string $bytes, ?string $filenameHint = nul
            `_bulkImport_saveSong()` -> `lyricLinesWriteComponents()`. */
         $inner = _bulkImport_processPro7($proBytes, $name);
         $agg   = _bulkImport_probundleFoldInnerSummary($agg, $name, $inner);
+
+        /* #1968 P4 — ingest this song's referenced media into tblSongMedia
+           (admin-only, D1). Additive + entirely dormant behind the core's
+           pp7_media_ingest_enabled gate. Resolve the target SongId: a 'create'
+           reports it directly; a dedupe-'skipped' reports the never-inserted
+           fresh id, so re-derive the real existing row (its doc-block exists
+           for exactly this). */
+        if (($inner['ok'] ?? false) && !empty($inner['media_refs']) && !empty($mediaByBasename)) {
+            $targetSongId = null;
+            if ((int)($inner['songs_created'] ?? 0) > 0) {
+                $targetSongId = (string)($inner['song_id'] ?? '');
+            } elseif ((int)($inner['songs_skipped_existing'] ?? 0) > 0) {
+                $resolved = _bulkImport_proplaylistResolveSkippedSong(
+                    $db,
+                    (string)($inner['songbook_abbr'] ?? ''),
+                    (string)($inner['title'] ?? ''),
+                    (string)($inner['song_id'] ?? '')
+                );
+                $targetSongId = $resolved !== null ? (string)$resolved['songId'] : null;
+            }
+            if ($targetSongId !== null && $targetSongId !== '') {
+                $ic = _bulkImport_pp7IngestMedia(
+                    $db, $targetSongId, $inner['media_refs'], $bytes,
+                    $mediaByBasename, $userId, 'bulk_import_probundle', $agg['warnings']
+                );
+                foreach ($ic as $k => $v) { $mediaIngest[$k] += $v; }
+            } else {
+                $agg['warnings'][] = "'{$name}': referenced media not imported (could not resolve the imported song)";
+            }
+        }
     }
 
-    return _bulkImport_probundleFinishSummary($agg, $mediaCount, $mediaNames);
+    return _bulkImport_probundleFinishSummary($agg, $mediaCount, $mediaNames, $mediaIngest, $ingestActive);
 }
 
 /* ===========================================================================
@@ -6086,9 +6863,15 @@ if (!function_exists('_bulkImport_proplaylistResolveEmbedded')) {
         string $bytes,
         array $zipEntriesByName,
         string $entryName,
-        array &$cache
+        array &$cache,
+        array $mediaEntriesByBasename = [],
+        ?int $userId = null,
+        ?array &$mediaIngestAcc = null
     ): array {
         if (isset($cache[$entryName])) {
+            /* Cache hit — a `.pro` referenced by two playlist items imports (and
+               ingests its media) exactly ONCE; the media counts were already
+               accumulated on the first, non-cached resolution below. */
             return $cache[$entryName];
         }
 
@@ -6135,6 +6918,21 @@ if (!function_exists('_bulkImport_proplaylistResolveEmbedded')) {
         }
 
         $ok = $songId !== '';
+
+        /* #1968 P4 — ingest this song's referenced media into tblSongMedia
+           (admin-only, D1), ONCE per unique entry (this is the non-cached path).
+           Additive + dormant behind the ingest core's own gate. */
+        $mediaWarnings = [];
+        if ($ok && !empty($inner['media_refs']) && !empty($mediaEntriesByBasename)) {
+            $ic = _bulkImport_pp7IngestMedia(
+                $db, $songId, $inner['media_refs'], $bytes,
+                $mediaEntriesByBasename, $userId, 'bulk_import_proplaylist', $mediaWarnings
+            );
+            if ($mediaIngestAcc !== null) {
+                foreach ($ic as $k => $v) { $mediaIngestAcc[$k] += $v; }
+            }
+        }
+
         return $cache[$entryName] = [
             'ok'                => $ok,
             'created'           => (int)($inner['songs_created'] ?? 0),
@@ -6142,7 +6940,7 @@ if (!function_exists('_bulkImport_proplaylistResolveEmbedded')) {
             'failed'            => $ok ? (int)($inner['songs_failed'] ?? 0) : 1,
             'songbooksCreated'  => (array)($inner['songbooks_created'] ?? []),
             'songbooksExisting' => (array)($inner['songbooks_existing'] ?? []),
-            'warnings'          => (array)($inner['warnings'] ?? []),
+            'warnings'          => array_merge((array)($inner['warnings'] ?? []), $mediaWarnings),
             'error'             => $ok ? null : 'song could not be resolved to a SongId',
             'songRef'           => $ok
                 ? ['id' => $songId, 'title' => $title, 'songbook' => $songbookAbbr, 'number' => $number]
@@ -6290,6 +7088,17 @@ function _bulkImport_processProplaylist(int $userId, string $bytes, ?string $fil
     $cache             = [];
     $slotSeq           = 0;
 
+    /* #1968 P4 — media ingest context: index the bundle's media entry OBJECTS
+       (looked up from $zipEntriesByName by name) by decoded basename once, plus
+       an accumulator and the one-shot gate. Dormant until pp7_media_ingest_enabled. */
+    $mediaEntryObjects = [];
+    foreach ($mediaNames as $mn) {
+        if (isset($zipEntriesByName[$mn])) { $mediaEntryObjects[] = $zipEntriesByName[$mn]; }
+    }
+    $mediaByBasename = _bulkImport_pp7IndexMediaByBasename($mediaEntryObjects);
+    $mediaIngestAcc  = ['ingested' => 0, 'duplicate' => 0, 'unresolved' => 0, 'skipped' => 0];
+    $ingestActive    = _bulkImport_pp7MediaIngestActive($db);
+
     foreach ($plan as $entry) {
         switch ($entry['kind']) {
             case 'header':
@@ -6310,7 +7119,10 @@ function _bulkImport_processProplaylist(int $userId, string $bytes, ?string $fil
                 break;
 
             case 'song-embedded':
-                $res = _bulkImport_proplaylistResolveEmbedded($db, $bytes, $zipEntriesByName, $entry['entryName'], $cache);
+                $res = _bulkImport_proplaylistResolveEmbedded(
+                    $db, $bytes, $zipEntriesByName, $entry['entryName'], $cache,
+                    $mediaByBasename, $userId, $mediaIngestAcc
+                );
                 $songsCreated += $res['created'];
                 $songsSkipped += $res['skipped'];
                 foreach ($res['songbooksCreated'] as $a) {
@@ -6427,16 +7239,19 @@ function _bulkImport_processProplaylist(int $userId, string $bytes, ?string $fil
         ];
     }
 
-    /* Media is never ingested by this import (deferred to plan §6 / P4,
-       exactly like `.probundle`) — never silently dropped either: the SAME
-       shared warning line `.probundle` uses (rule #22/#35 — one wording,
-       not two importers each typing their own prose). */
-    $mediaWarning = _bulkImport_pp7MediaDeferredWarning($mediaCount, $mediaNames);
-    if ($mediaWarning !== null) {
-        $warnings[] = $mediaWarning;
+    /* #1968 P4 — when media ingest is ACTIVE (owner flipped
+       pp7_media_ingest_enabled) real counts speak for the media; otherwise the
+       SAME shared deferred-media warning `.probundle` uses (rule #22/#35 — one
+       wording, not two importers each typing their own prose) still fires so
+       nothing is silently dropped. */
+    if (!$ingestActive) {
+        $mediaWarning = _bulkImport_pp7MediaDeferredWarning($mediaCount, $mediaNames);
+        if ($mediaWarning !== null) {
+            $warnings[] = $mediaWarning;
+        }
     }
 
-    return [
+    $summary = [
         'ok'                     => true,
         'songbooks_created'      => array_keys($songbooksCreated),
         'songbooks_existing'     => array_keys($songbooksExisting),
@@ -6450,6 +7265,12 @@ function _bulkImport_processProplaylist(int $userId, string $bytes, ?string $fil
         'media_present'          => $mediaCount,
         'media_files'            => $mediaNames,
     ];
+    if ($ingestActive) {
+        $summary['media_ingested']   = (int)$mediaIngestAcc['ingested'];
+        $summary['media_duplicate']  = (int)$mediaIngestAcc['duplicate'];
+        $summary['media_unresolved'] = (int)$mediaIngestAcc['unresolved'];
+    }
+    return $summary;
 }
 
 /* ===========================================================================

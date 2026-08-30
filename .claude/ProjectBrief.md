@@ -4,6 +4,283 @@
 
 ---
 
+## 📌 Continuation note — 2026-08-30 (whole-codebase cleanup pass — security + a11y + lint/annotation + docs)
+
+Same branch, head **`534af87f`**, suite **258 PHP / 92 Node**, `php -l` (1037) + `node --check` (118) +
+`eslint` all clean. An owner-requested cleanup pipeline landed on top of the search-visibility feature
+(sequential Fable audit → Sonnet/Opus fix each): **security** — whole `appWeb/` audited, one confirmed
+Low stored-XSS straggler fixed (`publisher.php` JSON-LD missing `JSON_HEX_TAG`, `fe77f6d9`, #2026) +
+tree-derived guard `test-jsonld-escaping.php`; everything else verified solid. **Accessibility** —
+WCAG 2.1 AA across public/admin/editor, 2 High + 8 Med + 10 Low all fixed (epic #2027 + 19 subs, four
+commits), six mutation-proven guards incl. a **computed-contrast guard** that reads live CSS tokens per
+theme; owner decisions D1 (Emphasise-Links mode now underlines — rule #18 + guard updated in lockstep)
+and D2 (v1 editor cheap fixes, drag-builder deferred to v1-sunset #2036/#2038). **Code-quality** — lint
+clean tree-wide, 11 highest-value files annotation-backfilled, coverage 45%→71% on tracked epic #1158.
+**Docs** — README/SECURITY/PROJECT_STATUS/DEV_NOTES/help/wiki-mirror refreshed against the code
+(#2047 copy fix `534af87f`). Version unchanged (`feat:`→1.4.0 on merge, from the search-visibility
+feature below); the three version mirrors move in lockstep via `deploy.yml`. Branch still HELD for
+owner review — NO PR. Real GitHub Wiki push still blocked (no write grant) — tracked follow-up.
+
+## 📌 Continuation note — 2026-08-30 (per-channel search-engine visibility, #2024/#2025 — closes #2024)
+
+Same branch, head **`a5c4042d`**, suite **257 PHP / 89 Node**. Answers #2024 (the sitemap-hardening
+pass's own for-consideration follow-up, just below) with the owner's actual decision: a per-channel,
+admin-controllable toggle — new "Search engine visibility" card on `/manage/configuration`, three
+switches (Production/Beta/Alpha-dev). Locked defaults, no DB migration needed: production listed,
+beta hidden, alpha (dev) hidden. Switching a channel OFF is three pieces hanging off ONE
+`tblAppSettings` row (`search_visibility_channels`, CSV — the webhooks/intappsapi storage precedent)
+and ONE new helper `includes/search_visibility.php`: (1) `X-Robots-Tag: noindex` on every response
+(`index.php`/`api.php`/`og-image.php`/`qr.php`/`org-logo.php`/`song-media.php`/`audio-media.php`,
+plus `index.php`'s matching `<meta name="robots">`); (2) `/sitemap.xml` (+children) 404s, gated before
+the DB fingerprint work and conditional GET; (3) `robots.txt` — now dynamic (`robots.txt.php`, static
+file deleted, never-5xx by total `try/catch`) — drops the `Sitemap:` line and now advertises only its
+OWN host (fixing a wart where every channel used to list all three). Deliberately never adds
+`Disallow: /` — a blocked crawler can't see the noindex, so staying crawlable is what makes it work;
+mechanically banned by the new guard. `includes/environment.php` gained the extracted, shared
+`ihymns_parse_channels_csv()` (rule #22 — `webhooks.php`'s own parser is now a one-line delegate).
+Two guards, both run through their full mutation-proof procedure for real: `test-sitemap-coverage.php`
+PASS 7 (2 mutations) + new `test-search-visibility.php` (6 passes, 10 mutations — incl. an active,
+verified-narrow ban on a bare `Disallow: /`, the one mutation that would defeat the feature's whole
+SEO premise). 6 atomic commits, all pushed, no PR. **Version: this is a genuine `feat:`, which
+outranks the pending `v1.3.1` patch-release plan from the runtime-bug-hunt pass (major > minor > patch,
+rule #46) — the branch as a whole now bumps to minor 1.4.0 on merge, not patch 1.3.1; F-1/F-2/F-3 ride
+along inside 1.4.0.** Docs done: WHATS-NEW (new `## 1.4.0` heading), CHANGELOG, `manage/help.php`, the
+in-repo wiki mirror (`Deployment-&-CI-CD.md`, `Troubleshooting-&-FAQ.md` — same GitHub-Wiki-push-blocked
+caveat as the sitemap-hardening note below). Tracking: **#2025** (this work); **closes #2024**. Full
+detail: `sessions/2026-08-30-HANDOFF.md`.
+
+---
+
+## 📌 Current state — 2026-08-30 (v1.3.0; dormant-feature activation program COMPLETE)
+
+Branch `claude/dormant-features-settings-1sdw4t`, suite **252 PHP / 84 Node**, version **1.3.0**
+(marketing version now SEPARATE from the counting-up build number — footer `iHymns v1.3.0 · build <n> · Alpha`).
+The owner-requested **dormant-feature activation program** (epic **#2002**) landed in full on top of the first
+guided-wizard program (detailed below): **4 more wizards** on the shared `admin-wizard.js` stepper —
+Connect-a-service (registry-driven, 6 integrations, `includes/integration_registry.php` + one generic driver),
+first-run environment setup, content-gating safe turn-on (warn-but-allow), extend (Email/SIWA/Webhooks); the
+**version-number rework** (marketing-version-vs-build-number split + a deliberate `Release: patch` mechanism,
+rule #46); and a **whole-codebase security + accessibility audit** with EVERY finding fixed — security CLEAN
+(no Critical/High/Medium; 2 Low + a 3rd SSRF file all fixed via the new `includes/network_guard.php`
+`ihymnsHostResolvesPrivate()` core + the setup-runner CSRF gate); a11y 26 findings ALL AA-fixed across 3 batches,
+**#2000 closed**; new **rule #49** documents the wizard framework + integration registry + SSRF core. Docs
+(in-app help, wiki, repo .md, .claude/) all current. Model method: sequential Fable-5 planning → serialized
+Sonnet implementation → Opus review-before-commit. Open follow-ups (non-blocking): #1994, #1998, #2007; owner-
+pending: native build-number adoption, D4, #1985, #946↔#1769. **No PR** (same-branch per directive; open on
+request — at merge, DON'T title the squash `feat:` or the anchor double-bumps past 1.3.0). Full detail:
+`sessions/2026-08-29-HANDOFF.md`.
+
+---
+
+## 📌 Continuation note — 2026-08-30 (sitemap hardening — index + honest lastmod + conditional GET, #2023)
+
+Same branch, head **`52e7d6eb`**, suite **256 PHP / 89 Node**. A separate, smaller task on top of the
+2026-08-29 "queue complete" state above (not a supersession of it): hardened `sitemap.xml.php` (#151),
+which told crawlers every URL "changed today" and was missing `/work/`/`/publisher/`/`/tune/`/`/whats-new`/
+`/request` while still advertising the per-user `/favorites`/`/settings`. Rewritten IN PLACE as a sitemap
+INDEX at the same `/sitemap.xml` URL, children served via `?section=&page=` (`static`/`songbooks`/
+`songs`[paginated 10k]/`musicians`/`themes`/`works`/`publishers`[active-only]/`tunes`), every `<lastmod>`
+real (from `UpdatedAt`, omitted when unknown — never invented), conditional GET (ETag/Last-Modified/304)
+off cheap per-table aggregates, the old per-songbook bulk-record read replaced with a slim `SongId +
+UpdatedAt` query, host resolution now via the shared `appCanonicalHost()`. New
+`includes/sitemap_helpers.php` (two pure functions only, extracted so a CI guard can call them without
+executing the request-handling file's `exit;`-ending flow); `includes/theme_index.php` gained an additive
+`lastTouched` column + `themeIndexMembershipCount()`. `.htaccess` routes the new child URLs + compresses/
+caches the sitemap; `robots.txt`'s `alpha.ihymns.app` → `dev.ihymns.app` (the real hostname). New
+tree-derived, mutation-proven `tests/php/test-sitemap-coverage.php` (10 real mutations run against the
+tree, every one RED-then-byte-identical-restore-then-GREEN — see the tracking issue for the full list).
+Three PRE-EXISTING guards (`test-song-visibility-guard.php`, `test-songbook-visibility-guard.php`,
+`test-theme-index.php`) briefly went red on the first draft — their per-FUNCTION static scan couldn't see
+through a shared WHERE-builder helper I'd introduced; fixed by inlining the visibility-predicate calls
+directly into each SQL-building function instead (documented in both places) and delegating the
+`tblSongTagMap` fingerprint count to a new `theme_index.php` function rather than a second inline query —
+**if you touch `sitemap.xml.php` again, read those three guards' failure output carefully, they're doing
+their job.** Tracking: **#2023** (main), **#2024** (for-consideration: should dev/beta be `noindex`'d
+entirely? — deliberately NOT decided here). **Wiki**: the in-repo `wiki/PWA-Features.md` mirror is
+updated and committed; the REAL GitHub Wiki push failed (this session has read-only access to
+`MWBMPartners/iHymns.wiki` — `add_repo` refused it) — a matching commit is staged locally at
+`/tmp/wiki-clone` (commit `8213d0c`) for a future session with push access to apply. Full detail:
+`sessions/2026-08-30-HANDOFF.md`.
+
+---
+
+## 📌 Continuation note — 2026-08-29 (guided-wizard program — shared admin-wizard.js + 5 wizards)
+
+Same branch, head **`8cb189e8`**, suite **245 PHP / 83 JS**. Owner asked for a
+guided wizard to add External Link Types, then approved four more, under two hard
+rules: every wizard is STRICTLY ADDITIVE (the manual method always stays, and is
+mechanically guarded) and they share ONE stepper (rule #1, never 5 copies). Model
+routing per directive: Fable deep analysis → Sonnet implementation → Opus
+verification + commit.
+
+Shared **`js/modules/admin-wizard.js`** (`createWizard`, markup-derived steps,
+`validateStep` gate, bootstrap-modal/overlay hosts, zero domain knowledge) + five
+consumers: **#1992** External Link Type (`c971c3d3`, also added the missing manual
+create), **#1993** Songbook (`d24f4a7b`, extracted `songbook_admin.php`, permanent-
+abbreviation step), **#1995** Live Service HYBRID (`0093960b`, zero new endpoints,
+teaches LF-vs-Service-Mode), **#1996** Organisation+licence (`2a192d0e`, extracted
+`organisation_admin.php` + `admin_organisation_create` twin, the finer
+`manage_org_licences` gate enforced server-side), **#1997** New-song in Editor2
+(`8cb189e8`, fits Editor2 as-is, seeds via `lyricLinesWriteComponents`). Each has a
+tree-derived mutation-proven guard incl. the manual-path assertion. Then
+**#1999 `302619b1`** empty-state "Get started" launchers (shared partial, reuses each
+wizard modal's `data-bs-target`); **#39/#40 `84236694`** the wizard-suite security +
+WCAG-2.1-AA audit (no Critical/High/Medium; all Low/Info fixed; retrospective tracker
+**#2001**); **#38 `4d2a266a`** in-app Help + wiki docs. **Program complete — queue done.**
+Suite 246 PHP / 83 JS. Follow-ups open (deliberate, non-blocking): **#1994** (MARCXML
+fold), **#1998** (org licence join-row gap), **#2000** (app-wide button-token contrast).
+Full record: `.claude/sessions/2026-08-29-HANDOFF.md` (Guided-wizard program section).
+
+---
+
+## 📌 Continuation note — 2026-08-29 (follow-ups pass — all five owner-answered items landed; queue empty)
+
+Same branch `claude/dormant-features-settings-1sdw4t`, head **`b5ba5a36`**, suite **239 PHP / 82 JS**.
+After the API-coverage program (note below), the five owner-answered follow-ups were implemented
+sequentially — Fable analysis → Sonnet implementation → Opus verification + commit — each
+mutation-proven and page-parity-checked:
+
+- **#1984 `6dfbfc55`** — opt-in "Emphasise Links" a11y mode (CVD-mechanism twin; rule #18 default kept).
+- **#1986 `f2367a64`+`2b263b04`** — 11 bare-role→entitlement gate swaps (behaviour-neutral) + a real
+  licence-field authz gap closed in `admin_organisation_update` (now mirrors the page's
+  `manage_org_licences` preserve).
+- **#1988 `511f3e86`** — Works "extras" over the API (extras/origin-city/membership/external-links);
+  7 closures extracted into `work_admin.php`, page re-pointed byte-identically; `getWork()`
+  round-trip keys added.
+- **#1987 `6ec83022`** — webhook show-once: retired the one remaining reveal-existing leak
+  (`webhooks.php::reveal_secret` + `webhookSubscriptionRevealSecret()`); signing/encrypt-at-rest
+  untouched.
+- **#1990 `f414ee30`** — a11y m2/m8 sweep: 313 `<th>` scope attrs + ~694 decorative-icon
+  `aria-hidden` + 2 `role="img"` + 11 icon-only `aria-label`, across 68 files, guarded.
+
+Each shipped a mutation-proven guard. GitHub reconciliation: #1200 closed, #517/#946↔#1769 noted
+(the #946↔#1769 naming-vs-gating overlap is an **open A/B/C decision for the owner** — recommend
+folding #946 into #1769's P4). New follow-ups filed: **#1989** (re-wrap pre-cutover table-held
+webhook secrets — the #1909 A.14 card, never filed) and **#1991** (consolidate the 3 duplicate
+editor-v2 `iconBtn()` helpers) — both **open, non-blocking**. Owner-pending (unchanged, non-blocking):
+D4 (real ProPresenter chord/timeline `.pro`), #1985 (FCM/ADM creds + `fcmSend`). Full session record:
+`.claude/sessions/2026-08-29-HANDOFF.md` (Continuation section).
+
+---
+
+## 📌 Continuation note — 2026-08-29 (API-coverage program complete — every admin/curator action reachable over the API; redo security audit clean bar one Medium IDOR, fixed)
+
+Branch `claude/dormant-features-settings-1sdw4t` (continuation of the 2026-08-28 session below).
+Plan: `.claude/api-coverage-2026-08-28.md` — a from-code gap analysis (not a guess) of every
+`/manage/*.php` state-changing action against `api.php`/`api2.php`, batched into a priority-ordered
+implementation plan. All six batches landed, plus a close-out batch (F2) for the last 8 gaps the
+standing guard surfaced. Full CI-faithful gate green at the final commit (per its own message):
+**node 82/82, php 235/235**.
+
+**Headline: the API now covers *all* functionality.** The Web/PWA, and both native apps
+(Apple, Android/FireOS), can interact with the backend exclusively through `api.php` and the
+song-editor API — no admin/curator capability exists only as a browser-session-only
+`/manage/*.php` form-POST. Two pieces made this true:
+
+1. **~90 new `admin_*`/`org_admin_*` actions** (`api.php` grew from 223 → **312** public actions),
+   each delegating to the SAME shared core its `/manage/*.php` page uses (rule #22) — extracting
+   that core first, and re-pointing the page at it, where none existed yet. Covers: registry CRUD
+   (publishers, works + medley, tags + canonicalisation, catalogues, songbook series, languages,
+   external-link types, print templates, API keys, webhooks — all show-once secret discipline),
+   org self-service (Live-Follow idle timeout + set-list edit-audience defaults, logo upload incl.
+   SVG sanitiser, brand colour, venues + recurring schedules), curator workflows (duplicate-song
+   merge/link/dismiss, deleted-song restore/purge, musician-duplicate dismiss, data-health fix,
+   activity-log geo), MARCXML + IA-reconcile imports, a handful of consumer reads (`tune`,
+   `publisher_detail`, `org_ccli_report`, `org_venues`), and a **dormant** Android/FireOS push
+   scaffold (`fcm_register`/`fcm_unregister`, new `tblPushTokens`, `includes/fcm.php` — registers
+   tokens only, `fcmSend()` is a structural no-op until FCM/ADM credentials are provisioned).
+2. **Bearer auth on the editor API (#1968-adjacent).** `manage/editor/api2.php` (66 actions),
+   the legacy `manage/editor/api.php` shim, `manage/places-api.php`, and `manage/print-pdf.php`
+   previously accepted only the `/manage` session cookie. All four now resolve
+   `Authorization: Bearer <token>` through ONE shared verifier, `apiTokenResolveBearerUser()`
+   (`includes/api_tokens.php`), falling through to the exact pre-existing cookie check when no
+   Bearer header verifies. A Bearer write is CSRF-immune by construction, so the
+   `X-Requested-With` gate now applies only to the cookie path; per-action entitlement checks are
+   unchanged. Owner-approved (native curator editing).
+
+**The mechanism that keeps this true going forward:** `tests/php/test-manage-action-api-coverage.php`
+— a tree-derived, mutation-proven standing guard (not a one-off audit) that enumerates every
+state-changing `manage/*.php` action from the source and asserts each maps to a real API action,
+an explicit `web_only:<reason>` entry, or a `native:<reason>` marker. It now reports **zero**
+uncovered actions (140 api-mapped / 44 web-only-with-reason / 2 native-marker, per the close-out
+commit). A new admin button without a mapping fails this guard the next time it runs.
+
+**Redo security audit (2026-08-29), scoped to the new surface.** Checked the Bearer seam, secrets
+handling, uploads, and injection across the whole batch. Found one genuine issue and two
+Low/hardening items, all fixed same-session:
+- **Medium — cross-tenant IDOR in `org_admin_schedule_save`** (Batch 3): the action authorised
+  against the org derived from the *posted* `venue_id` but never re-checked the *existing*
+  schedule row's own owning org, so an org-A admin could re-parent org B's schedule via a crafted
+  `schedule_id`. Fixed by mirroring `org_admin_venue_save`'s existing-row double-check. Guard:
+  `tests/php/test-security-schedule-idor.php` (mutation-proven).
+- **Low — `print-pdf.php` `copies` unclamped at the endpoint** before reaching the CCLI usage log
+  (defence-in-depth; `printUsageLog()` already clamped it downstream, so never externally
+  exploitable).
+- **Low/hardening — entitlement-gate cleanup (F2):** several new `admin_*` actions moved off a
+  bare role check onto the `userHasEntitlement()` call their own page already uses
+  (behaviour-neutral today; a future entitlement revocation now reaches the API too).
+Everything else the redo pass checked came back clean.
+
+**Docs refreshed to match** (this pass): `wiki/API-Reference.md` (auth model — Bearer-or-cookie,
+editor-API Bearer seam, new action families, the standing coverage guard; also corrected a
+now-stale claim that IA-reconcile has no public API — it does, `admin_ia_reconcile_run`),
+`wiki/Architecture.md` (new "API coverage — everything through the API" section + security-summary
+addendum for the redo audit), `wiki/Native-Apps-(Apple-&-Android).md` (Bearer-capable editor API
+= a native curator app is now technically possible; new Push Notifications section for the FCM/ADM
+scaffold), `wiki/Database-&-Migrations.md` (`tblPushTokens`), `README.md` (Administration section).
+`appWeb/public_html/api-docs.yaml` was updated action-by-action inside each implementation commit
+except the Bearer-auth-on-editor-API commit, which explicitly deferred its OpenAPI/security-scheme
+write-up ("docs land in the OpenAPI pass") — **that top-of-file Editor API v2 description block
+still reads session-cookie-only as of this note; flagged, not yet corrected** (out of scope for
+this docs-only pass, which was told not to touch `api-docs.yaml`).
+
+## 📌 Continuation note — 2026-08-28 (ProPresenter interop epic #1968 complete through P6; multi-licence orgs; device management; docs + security + a11y sweep in flight)
+
+Branch `claude/dormant-features-settings-1sdw4t` (the long-running ProPresenter interop
+program branch). Full CI-faithful gate green: **node 82/82, php 219/219**
+(`node tools/run-node-tests.js`, `php tools/run-php-tests.php`).
+
+**Versioning is now TAG-FREE (#1963/#1965)** — the earlier "1.0.0 tag-derived since #1899"
+in the older notes below is SUPERSEDED. The version anchor is the committed `Version.Number`
+in `appWeb/public_html/includes/infoAppVer.php` (MAJOR.MINOR authoritative; deploy injects
+`MAJOR.MINOR.<git rev-list --count HEAD>`). Bump level is decided by the Conventional-Commit
+prefix on the squash-merge subject (`classify-bump.sh`): `feat:`→minor, `!`/`BREAKING CHANGE:`
+→major, everything else→build-only. NO git tags, NO GitHub Releases. Every user-visible `feat:`
+push also adds a plain-language `WHATS-NEW.md` bullet (rule #46, NO internals — security).
+
+**ProPresenter 7+ interoperability program (epic #1968)** — landed on this branch:
+- P0–P1: `.pro` import routing fix + single-song import + golden-fixture harness.
+- P2: `.probundle` import (ZIP64 reader `propresenter7_zip.php` + bundle flow).
+- P3/P3b: `.proplaylist` import↔set-lists + export set-list → `.proplaylist`.
+- P4 (#1976): bundle/playlist media → `tblSongMedia` (`Visibility='admin'`, curator opt-in,
+  dormant behind `pp7_media_ingest_enabled='0'`). Export half (#1979): media embedded into
+  `.probundle` with `ROOT_CURRENT_RESOURCE` URLs (guard `test-pp7-media-export.js`).
+- P6 chords (#1080 fold): PP7 stores chords as positioned `CustomAttribute{range, chord}` over
+  CLEAN RTF — NOT inline `[G]` brackets (premise corrected + proto-verified). Import→per-line
+  positioned cells via the existing `chords` array (rule #25); export→`custom_attributes[]`,
+  `buildRTF()` unchanged (no `[` ever in RTF — mutation-proven premise-guard). Non-circular
+  fixture (protobufjs reflection). Plan `.claude/propresenter-chords-plan.md`.
+- P6 timeline (#1980): DORMANT groundwork — `pp7DecodeTimeline()` reads `Timeline.cues`
+  (field 1, not `cues_v2`), dormant `tblSongPresentationCues` + `pp7_timeline_import_enabled='0'`
+  toggle + gated non-blocking capture. Auto-advance OFF by default. Playback is later work.
+- Owner checklist D4 (blocks "done" not "build"): real chord-bearing + timeline-bearing `.pro`
+  from ProPresenter to settle the newline-unit convention and confirm a real open; deferred C6
+  song-key ↔ `presentation.music` (#1982). Reference sources: `.claude/propresenter-reference-sources.md`.
+
+**Also landed this session's queue:**
+- **#1969** — multiple licences per organisation: shared CRUD core `includes/org_licence_admin.php`
+  (non-destructive sync, registry-driven), tier resolver honours licence expiry. CLOSED.
+- **#1975** — signed-in device management: auto-name from UA ("Chrome on Windows") + per-device
+  rename (`device_rename`, own-only, `validateCsrfRequest`). Open with minor residual.
+- What's-New retrospective 1.1.0 + the markdown_lite wrapped-bullet line-break fix (#1583).
+
+**In flight this session (2026-08-28):** documentation currency sweep (repo `.md`, in-app
+`help.php`, `wiki/*.md`, `api-docs.yaml`, this `.claude/` set — Sonnet implementation agents on
+disjoint file sets), a whole-codebase **security audit** (Fable-5 analysis → `.claude/security-audit-2026-08-28.md`
+→ Sonnet fixes), an **accessibility (WCAG 2.1 AA) audit** (queued behind the security Fable pass),
+and a **GitHub issues/milestones/project sweep**. Model routing (owner-directed): analysis/planning
+= sequential Fable-5; implementation = Sonnet.
+
 ## 📌 Continuation note — 2026-08-25 (BCP 47 language registry — scheduled refresh + live-search picker + unknown-tag curation, BUILD pass done, NOT YET COMMITTED)
 
 Full implementation of `.claude/bcp47-language-registry-plan.md` (M1-M5) on branch

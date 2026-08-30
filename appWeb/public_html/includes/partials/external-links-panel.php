@@ -146,7 +146,7 @@ if (!empty($panelLinks)):
                                 <span class="text-muted small">— <?= htmlspecialchars((string)$l['note']) ?></span>
                             <?php endif; ?>
                             <?php if (!empty($l['verified'])): ?>
-                                <i class="fa-solid fa-circle-check text-success small" aria-label="Verified" title="Verified"></i>
+                                <i class="fa-solid fa-circle-check text-success small" role="img" aria-label="Verified" title="Verified"></i>
                             <?php endif; ?>
                         </a>
                     <?php endforeach; ?>

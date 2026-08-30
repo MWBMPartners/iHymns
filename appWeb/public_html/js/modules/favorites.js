@@ -276,13 +276,31 @@ export class Favorites {
         const currentTags = this.getTags(songId);
         const allTags = [...new Set([...Favorites.COMMON_TAGS, ...this.getAllTags()])].sort();
 
-        /* Build tag picker content */
+        /* A6 fix (a11y audit 2026-08-30, WCAG 2.1.1 Keyboard / 4.1.2
+           Name-Role-Value): each pill used to be
+           `<label><input type="checkbox" class="d-none">…</label>` —
+           `d-none` is `display:none`, which pulls an element out of BOTH
+           the tab order and the accessibility tree. Keyboard users could
+           never reach these checkboxes at all, and a screen reader saw
+           plain unlabelled text with no role or state. The fix is
+           Bootstrap's own "checkbox toggle button" recipe (already used
+           elsewhere in this codebase, e.g. settings-language-filter.js):
+           a REAL sibling `<input class="btn-check">` (hidden only via
+           `clip:rect(0,0,0,0)`, so it stays focusable/tabbable) plus a
+           `<label for>` that native browser behaviour already wires up
+           for both mouse and keyboard (Tab to it, Space/Enter toggles it,
+           just like any other checkbox). See:
+           https://getbootstrap.com/docs/5.3/forms/checks-radios/#checkbox-toggle-buttons
+           `tagIdSeq` gives each pill — including ones added later via the
+           custom-tag box below — a unique id to pair with its label,
+           since tag TEXT isn't guaranteed unique-as-an-id (spaces, etc). */
+        let tagIdSeq = 0;
         const tagHtml = allTags.map(tag => {
             const checked = currentTags.includes(tag) ? 'checked' : '';
             const escaped = escapeHtml(tag);
-            return `<label class="btn btn-sm ${checked ? 'btn-primary' : 'btn-outline-secondary'} rounded-pill tag-toggle-btn">
-                        <input type="checkbox" class="d-none tag-checkbox" value="${escaped}" ${checked}> ${escaped}
-                    </label>`;
+            const id = `tag-toggle-${tagIdSeq++}`;
+            return `<input type="checkbox" class="btn-check tag-checkbox" id="${id}" value="${escaped}" autocomplete="off" ${checked}>
+                    <label class="btn btn-sm ${checked ? 'btn-primary' : 'btn-outline-secondary'} rounded-pill tag-toggle-btn" for="${id}">${escaped}</label>`;
         }).join('');
 
         /* Create modal */
@@ -306,8 +324,10 @@ export class Favorites {
                         <div class="d-flex flex-wrap gap-2 mb-3">${tagHtml}</div>
                         <div class="input-group input-group-sm">
                             <input type="text" class="form-control" id="tag-custom-input"
-                                   placeholder="Add custom tag..." maxlength="30">
-                            <button type="button" class="btn btn-outline-primary" id="tag-custom-add">
+                                   placeholder="Add custom tag..." maxlength="30"
+                                   aria-label="Add custom tag">
+                            <button type="button" class="btn btn-outline-primary" id="tag-custom-add"
+                                    aria-label="Add tag">
                                 <i class="fa-solid fa-plus" aria-hidden="true"></i>
                             </button>
                         </div>
@@ -318,17 +338,25 @@ export class Favorites {
                     </div>
                 </div>
             </div>`;
+        /* ^ A13 fix: #tag-custom-add's only content is an aria-hidden icon
+           (no visible text) — aria-label names it for screen readers.
+           A19 fix: #tag-custom-input's only name was its placeholder,
+           which most screen readers announce weakly (or not as a real
+           accessible name at all) — aria-label gives it a proper one. */
 
         document.body.appendChild(modal);
         const bsModal = new bootstrap.Modal(modal);
 
-        /* Toggle button styling on checkbox change */
-        modal.querySelectorAll('.tag-toggle-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                const cb = btn.querySelector('.tag-checkbox');
-                cb.checked = !cb.checked;
-                btn.className = `btn btn-sm ${cb.checked ? 'btn-primary' : 'btn-outline-secondary'} rounded-pill tag-toggle-btn`;
+        /* A6 fix, continued — the checkbox is now a real sibling input, so
+           the native `<label for>` association already forwards both
+           clicks and keyboard activation (Space/Enter while focused) to
+           it; we just need to keep the pill's visible colour (primary vs
+           outline) in sync whenever the checkbox's state changes, from
+           WHATEVER caused it (mouse OR keyboard). */
+        modal.querySelectorAll('.tag-checkbox').forEach(cb => {
+            cb.addEventListener('change', () => {
+                const lbl = modal.querySelector(`label[for="${cb.id}"]`);
+                if (lbl) lbl.className = `btn btn-sm ${cb.checked ? 'btn-primary' : 'btn-outline-secondary'} rounded-pill tag-toggle-btn`;
             });
         });
 
@@ -337,33 +365,56 @@ export class Favorites {
             const input = modal.querySelector('#tag-custom-input');
             const tag = input.value.trim();
             if (!tag) return;
-            /* Check if already exists */
-            const existing = modal.querySelector(`.tag-checkbox[value="${escapeHtml(tag)}"]`);
+            /* Check if already exists.
+               F-3 fix (2026-08-30 correctness review): this used to splice
+               `escapeHtml(tag)` into a CSS attribute-selector string —
+               `escapeHtml` turns a `"` into the HTML entity `&quot;`, which
+               is the RIGHT escaping for putting text inside markup but the
+               WRONG escaping for putting text inside a CSS selector (which
+               instead wants a `"` backslash-escaped as `\"`). So a custom
+               tag containing a literal `"` never matched the pill already
+               rendered for it and silently got re-added as a visible
+               duplicate. Comparing the raw `.value` DOM property directly
+               (over the live NodeList) sidesteps the mismatch entirely —
+               a property read is never re-parsed as markup OR as selector
+               syntax, so there is no escaping rule to get wrong. Mirrors
+               this same file's existing preference for DOM-API construction
+               over selector string-building (see the comment a few lines
+               below, at the custom-tag <input> creation). */
+            const existing = [...modal.querySelectorAll('.tag-checkbox')].find(cb => cb.value === tag);
             if (existing) {
                 existing.checked = true;
-                existing.closest('.tag-toggle-btn').className = 'btn btn-sm btn-primary rounded-pill tag-toggle-btn';
+                const existingLbl = modal.querySelector(`label[for="${existing.id}"]`);
+                if (existingLbl) existingLbl.className = 'btn btn-sm btn-primary rounded-pill tag-toggle-btn';
             } else {
                 const container = modal.querySelector('.d-flex.flex-wrap');
-                const newBtn = document.createElement('label');
-                newBtn.className = 'btn btn-sm btn-primary rounded-pill tag-toggle-btn';
+                /* A6 fix — same btn-check pattern as the initial render
+                   above: a real sibling input + a `label[for]`, not a
+                   `d-none` checkbox wrapped by its label. */
+                const id = `tag-toggle-${tagIdSeq++}`;
                 /* DOM-API construction rather than innerHTML-with-
                    escape, so CodeQL has nothing to trace and a future
                    edit can't accidentally drop the escapeHtml call
                    (#504). */
                 const tagCheckbox = document.createElement('input');
                 tagCheckbox.type = 'checkbox';
-                tagCheckbox.className = 'd-none tag-checkbox';
+                tagCheckbox.className = 'btn-check tag-checkbox';
+                tagCheckbox.id = id;
+                tagCheckbox.autocomplete = 'off';
                 tagCheckbox.value = tag;
                 tagCheckbox.checked = true;
-                newBtn.appendChild(tagCheckbox);
-                newBtn.appendChild(document.createTextNode(' ' + tag));
-                newBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    const cb = newBtn.querySelector('.tag-checkbox');
-                    cb.checked = !cb.checked;
-                    newBtn.className = `btn btn-sm ${cb.checked ? 'btn-primary' : 'btn-outline-secondary'} rounded-pill tag-toggle-btn`;
+
+                const newLabel = document.createElement('label');
+                newLabel.className = 'btn btn-sm btn-primary rounded-pill tag-toggle-btn';
+                newLabel.setAttribute('for', id);
+                newLabel.appendChild(document.createTextNode(tag));
+
+                tagCheckbox.addEventListener('change', () => {
+                    newLabel.className = `btn btn-sm ${tagCheckbox.checked ? 'btn-primary' : 'btn-outline-secondary'} rounded-pill tag-toggle-btn`;
                 });
-                container.appendChild(newBtn);
+
+                container.appendChild(tagCheckbox);
+                container.appendChild(newLabel);
                 this.saveCustomTag(tag);
             }
             input.value = '';
@@ -563,7 +614,17 @@ export class Favorites {
             });
         }
 
-        /* Render favourite items */
+        /* Render favourite items.
+           A20 fix (a11y audit 2026-08-30): this row used to carry
+           role="listitem", which demoted the <a>'s native "link" role for
+           screen readers (an explicit ARIA role always wins over the
+           element's own). The container in favorites.php was switched from
+           role="list" to role="group" for the matching reason — see the
+           long comment there for why a per-row wrapper element (the other
+           textbook fix) isn't safe here (it would break this list's
+           Bootstrap border/radius CSS and app.css's nth-child stagger
+           animation, both of which need these <a> rows to stay DIRECT
+           children of #favorites-list). */
         if (listEl) {
             listEl.innerHTML = favorites.map(fav => {
                 const tags = (fav.tags || []);
@@ -576,8 +637,7 @@ export class Favorites {
                    class="list-group-item list-group-item-action song-list-item"
                    data-navigate="song"
                    data-song-id="${escapeHtml(fav.id)}"
-                   data-tags="${tagsData}"
-                   role="listitem">
+                   data-tags="${tagsData}">
                     <input type="checkbox" class="form-check-input fav-select-check d-none me-2"
                            data-song-id="${escapeHtml(fav.id)}"
                            aria-label="Select ${escapeHtml(toTitleCase(fav.title))}"

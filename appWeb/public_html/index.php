@@ -136,6 +136,20 @@ enforceChannelGate($app["Application"]["Version"]["Development"]["Status"] ?? nu
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
 enforceMaintenanceForPublicSite();
 
+/* Per-channel search-engine visibility (#2024/#2025) — an admin can switch
+   a whole copy of the site (production/beta/alpha) off from search
+   engines. When THIS channel is hidden, every response carries
+   `X-Robots-Tag: noindex` (emitted now, alongside the other bootstrap
+   gates, so it is set well before any other header/output point) and the
+   SPA shell ALSO carries the matching <meta name="robots" content=
+   "noindex"> further down in <head> (the one endpoint that gets BOTH forms
+   — the meta tag survives a saved/proxied copy of the HTML). The flag is
+   computed once here and reused by the <head> block below so the two can
+   never disagree with each other. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+$searchEngineHidden = !searchEngineVisibleHere();
+searchVisibilityEmitNoindexHeader();
+
 /* #947/#340 — the dormant CAPTCHA core, loaded before the CSP block below so
    captchaCspOrigins() can conditionally widen script-src/frame-src for the
    active provider ONLY when configured (byte-identical CSP when dormant). The
@@ -165,19 +179,36 @@ $iosApp     = verifyAppStoreApp('ios', $nativeAppIosVal);
 $androidApp = verifyAppStoreApp('android', $nativeAppAndroidVal);
 $amazonApp  = verifyAppStoreApp('amazon', $nativeAppAmazonVal);
 
-/** Build a display version string (e.g., "0.1.5 Beta") */
-$versionDisplay = $app["Application"]["Version"]["Number"];
+/** Build the display version string per the owner display contract:
+ *  "iHymns v<MAJOR.MINOR.PATCH> · build <commit-count>[ · Alpha|Beta]".
+ *  The build number is ALWAYS labelled with the word "build" (never a bare
+ *  .z / +z suffix); the channel suffix appears only off-production; the old
+ *  raw 14-digit commit-date stamp is gone from the footer (it lives on,
+ *  formatted, as Settings → About's "Date" row — see includes/pages/
+ *  settings.php). Degrades gracefully on an un-injected local checkout
+ *  (Build.Number NULL → no build segment).
+ *  @see .claude/CLAUDE.md rule #46 (the full versioning contract) */
+$versionDisplay = 'iHymns v' . $app["Application"]["Version"]["Number"];
+if (!empty($app["Application"]["Version"]["Build"]["Number"])) {
+    $versionDisplay .= ' · build ' . $app["Application"]["Version"]["Build"]["Number"];
+}
 if ($app["Application"]["Version"]["Development"]["Status"] !== null) {
-    $versionDisplay .= ' ' . $app["Application"]["Version"]["Development"]["Status"];
+    $versionDisplay .= ' · ' . $app["Application"]["Version"]["Development"]["Status"];
 }
 
-/** On alpha: append build timestamp (yyyymmddhhmmss) for tracking deploys */
-$commitDate = $app["Application"]["Version"]["Repo"]["Commit"]["Date"] ?? null;
-if ($app["Application"]["Version"]["Development"]["Status"] === 'Alpha' && $commitDate !== null) {
-    $buildStamp = preg_replace('/[^0-9]/', '', $commitDate);
-    if (strlen($buildStamp) >= 12) {
-        $versionDisplay .= ' · ' . substr($buildStamp, 0, 14);
-    }
+/** Per-deploy asset cache-buster: the marketing version above no longer
+ *  changes on every deploy (only on a real feat/major/patch release), so
+ *  the CSS `?v=` busters below (and the app.js bundle) fold in the
+ *  injected build number (monotonic per commit — strictly fresher than the
+ *  old commit-date stamp, and one shared mechanism instead of two) so
+ *  every deploy still produces a fresh URL and .htaccess' max-age can
+ *  never serve stale CSS/JS after a build-only deploy. Bare version on an
+ *  un-injected local checkout — exactly the pre-split local behaviour.
+ *  URL-only, not a display string, so the "always label with the word
+ *  build" rule above does not apply here. */
+$assetVersion = $app["Application"]["Version"]["Number"];
+if (!empty($app["Application"]["Version"]["Build"]["Number"])) {
+    $assetVersion .= '-' . $app["Application"]["Version"]["Build"]["Number"];
 }
 
 /**
@@ -936,6 +967,14 @@ if (!empty($breadcrumbItems)) {
     <title><?= $ogTitle ?></title>
     <meta name="description" content="<?= htmlspecialchars($ogDescription) ?>">
     <meta name="keywords" content="<?= htmlspecialchars($app["Application"]["Description"]["Keywords"]) ?>">
+    <?php /* #2024/#2025 — mirrors the X-Robots-Tag header set earlier in this
+             file (same $searchEngineHidden flag, so the two can never
+             disagree): this channel has been switched off from search
+             engines by an admin. Absent entirely on a visible channel —
+             never an empty/false-y meta tag. */ ?>
+    <?php if ($searchEngineHidden): ?>
+    <meta name="robots" content="noindex">
+    <?php endif; ?>
     <meta name="author" content="<?= htmlspecialchars($app["Application"]["Vendor"]["Name"]) ?>">
     <meta name="application-name" content="<?= htmlspecialchars($app["Application"]["Name"]) ?>">
     <meta name="generator" content="<?= htmlspecialchars($app["Application"]["Name"]) ?> PWA">
@@ -1045,13 +1084,13 @@ if (!empty($breadcrumbItems)) {
           id="animatecss">
 
     <!-- iHymns Application Stylesheet -->
-    <link rel="stylesheet" href="/css/app.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>">
+    <link rel="stylesheet" href="/css/app.css?v=<?= urlencode($assetVersion) ?>">
 
     <!-- Accessibility Stylesheet (high contrast, colour blind modes, RTL) -->
-    <link rel="stylesheet" href="/css/accessibility.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>">
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= urlencode($assetVersion) ?>">
 
     <!-- Print Stylesheet -->
-    <link rel="stylesheet" href="/css/print.css?v=<?= urlencode($app["Application"]["Version"]["Number"]) ?>" media="print">
+    <link rel="stylesheet" href="/css/print.css?v=<?= urlencode($assetVersion) ?>" media="print">
 
     <!-- ================================================================
          #1832 — CSP-SAFE CDN → /vendor STYLESHEET FALLBACK
@@ -1264,9 +1303,13 @@ if (!empty($breadcrumbItems)) {
          Offers to install the app or redirects to native app stores.
          Dismissible by user; remembers dismissal in localStorage.
          ================================================================ -->
+    <?php /* a11y audit m1 (2026-08-28): role="banner" here creates a SECOND
+             banner landmark — the real page header below is already the one
+             banner landmark a page should have. role="region" is the correct
+             landmark for a named, non-banner chunk of UI like this. */ ?>
     <div id="pwa-install-banner"
          class="pwa-install-banner d-none"
-         role="banner"
+         role="region"
          aria-label="Install application">
         <div class="container-fluid d-flex align-items-center justify-content-between py-2 px-3">
             <div class="d-flex align-items-center gap-2 flex-grow-1">
@@ -1664,7 +1707,7 @@ if (!empty($breadcrumbItems)) {
                        it doubles as the What's New affordance instead of
                        adding a separate footer link. */
                 ?>
-                <a href="/whats-new" data-navigate="whats-new" class="footer-link" aria-label="What's new — v<?= htmlspecialchars($versionDisplay) ?>">v<?= htmlspecialchars($versionDisplay) ?></a>
+                <a href="/whats-new" data-navigate="whats-new" class="footer-link" aria-label="What's new — <?= htmlspecialchars($versionDisplay) ?>"><?= htmlspecialchars($versionDisplay) ?></a>
                 &nbsp;|&nbsp;
                 <a href="/terms" data-navigate="terms" class="footer-link">Terms</a>
                 &nbsp;|&nbsp;
@@ -1883,9 +1926,16 @@ if (!empty($breadcrumbItems)) {
 
     <!-- ================================================================
          TOAST NOTIFICATIONS — For non-intrusive user feedback
+         a11y audit m7 (2026-08-28): this container used to carry its own
+         aria-live="polite" aria-atomic="true" WHILE app.js's showToast()
+         also stamps aria-live on each individual toast it appends —
+         aria-atomic="true" on the ANCESTOR makes assistive tech re-read
+         every currently-open toast whenever a new one lands, on top of
+         each toast's own live-region announcement. Per-toast is the
+         correct grain (a toast is itself a discrete status message), so
+         only the container-level pair is dropped here.
          ================================================================ -->
-    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container"
-         aria-live="polite" aria-atomic="true">
+    <div class="toast-container position-fixed bottom-0 end-0 p-3" id="toast-container">
     </div>
 
     <!-- ================================================================
@@ -1901,7 +1951,14 @@ if (!empty($breadcrumbItems)) {
         $needsConsent = ($hasGa4 || $hasClarity) && !USER_DNT;
     ?>
     <?php if ($needsConsent): ?>
-    <div id="analytics-consent-banner" class="analytics-consent-banner d-none" role="dialog"
+    <?php /* a11y audit m6 (2026-08-28): this is revealed via a class toggle (no
+             focus management, nothing traps Tab, nothing prevents interacting
+             with the page behind it) — role="dialog" claimed a modal contract
+             it never implemented. role="region" matches what this actually is:
+             a non-blocking, dismissible strip. settings.js now announces its
+             appearance since it's revealed silently, at the end of the DOM,
+             with no other signal that it exists. */ ?>
+    <div id="analytics-consent-banner" class="analytics-consent-banner d-none" role="region"
          aria-label="Analytics consent"
          data-has-ga4="<?= $hasGa4 ? '1' : '0' ?>"
          data-has-clarity="<?= $hasClarity ? '1' : '0' ?>"
@@ -2054,18 +2111,13 @@ if (!empty($breadcrumbItems)) {
 
     <!-- iHymns Application Scripts (ES Modules)
 
-         Cache-buster combines the semver with the deploy-time commit-date
-         stamp (injected by the GH Actions pipeline into infoAppVer.php)
-         so every deploy produces a new URL even when the semver hasn't
-         bumped. Without the commit stamp, .htaccess' max-age=3600 holds
-         onto user-auth.js and peers for up to an hour after a deploy. -->
-    <?php
-        $_appJsStamp = preg_replace('/[^0-9]/', '',
-            (string)($app['Application']['Version']['Repo']['Commit']['Date'] ?? ''));
-        $_appJsVersion = $app['Application']['Version']['Number']
-            . ($_appJsStamp !== '' ? '-' . $_appJsStamp : '');
-    ?>
-    <script src="/js/app.js?v=<?= urlencode($_appJsVersion) ?>" type="module"></script>
+         Cache-buster reuses $assetVersion (marketing version + the
+         deploy-injected build number, defined above) so every deploy
+         produces a new URL even when the marketing version hasn't bumped —
+         one shared mechanism instead of a second commit-date-stamp copy.
+         Without it, .htaccess' max-age=3600 holds onto user-auth.js and
+         peers for up to an hour after a build-only deploy. -->
+    <script src="/js/app.js?v=<?= urlencode($assetVersion) ?>" type="module"></script>
 
     <!-- Colour Vision Deficiency (CVD) SVG correction filters (#319) -->
     <?php readfile(__DIR__ . DIRECTORY_SEPARATOR . 'assets' . DIRECTORY_SEPARATOR . 'cvd-filters.svg'); ?>

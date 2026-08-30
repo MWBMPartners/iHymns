@@ -257,15 +257,18 @@ foreach ($API2_UNDOCUMENTED_OK as $a => $why) {
 
    Two files independently state the app version: `info.version` in the
    spec, and `Version.Number` in infoAppVer.php. Nothing enforced they
-   agree. Under #1899 the automated bumper (version-bump.yml) is RETIRED —
-   the committed `Version.Number` is now a hand-edited MAJOR anchor, and
-   the deployed value (MAJOR.RELEASE.BUILD) is injected at deploy from the
-   latest production tag, which rewrites BOTH this file's line AND the
-   deployed api-docs.yaml with the same string (deploy.yml, #1899). So this
-   lockstep guard now protects the COMMITTED pair against a manual edit that
-   updates one file and forgets the other (e.g. the baseline 1.0.0 bump) —
-   its job survived the bumper's deletion, exactly the point of putting the
-   agreement in a test and not in a workflow step (rule #35). */
+   agree. The pipeline is TAG-FREE (#1965): the committed `Version.Number`
+   IS the marketing version (clean `MAJOR.MINOR.PATCH`, the build/commit
+   count lives ONLY in the separate `Version.Build.Number` field — the
+   marketing-version/build-number split), and deploy.yml deploys it
+   VERBATIM (or the alpha classifier's freshly-minted feat/breaking/
+   `Release: patch` bump), rewriting BOTH this file's line AND the deployed
+   api-docs.yaml with the SAME string. So this lockstep guard protects the
+   COMMITTED pair against a manual edit that updates one file and forgets
+   the other (e.g. an owner-directed hand-set version bump) — putting the
+   agreement in a test, not a workflow step, is what catches that (rule
+   #35). See rule #46 in .claude/CLAUDE.md for the full versioning
+   contract. */
 
 $infoAppVerSrc = (string)file_get_contents($pub . '/includes/infoAppVer.php');
 preg_match('/\["Version"\]\["Number"\]\s*=\s*"([^"]+)"/', $infoAppVerSrc, $vm);

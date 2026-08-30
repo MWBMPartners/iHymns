@@ -47,193 +47,24 @@ if (!defined('IHYMNS_PUBLISHER_KINDS')) {
     require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'publisher_helpers.php';
 }
 
-/* #1860 Phase 4 — dual-addressing pre-step, rung 0 of the ladder, BEFORE
-   the lowercasing fold immediately below (run ilidParse() on the RAW
-   $publisherSlug — the fold is irrelevant to an IL id's shape, but running
-   before it keeps this rung's contract independent of whatever that fold
-   does next, matching rule #37's exact->name-fold->alias-fold ordering
-   with the IL match as the earliest, most specific rung). An IL internal
-   id ('ILP…') resolves to the registry's real Slug, which then flows into
-   $pubSlug below exactly as if the curator had typed it. A miss (not an IL
-   id, the column doesn't exist yet, or no row carries it) leaves
-   $publisherSlug UNCHANGED — the fold + ladder still get their turn.
-   try/catch-swallowed + column-probe-gated so this page can never
-   white-screen on an un-migrated install (the #1228 lesson). */
-try {
-    if (!function_exists('ilidParse')) {
-        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
-    }
-    $_ilParsed = ilidParse((string)($publisherSlug ?? ''));
-    if ($_ilParsed !== null && $_ilParsed['entityType'] === 'publisher') {
-        $_ilDb = getDbMysqli();
-        $_ilColProbe = $_ilDb->query(
-            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblPublishers' AND COLUMN_NAME = 'IlId' LIMIT 1"
-        );
-        $_ilColExists = $_ilColProbe && $_ilColProbe->fetch_row() !== null;
-        if ($_ilColProbe) { $_ilColProbe->free(); }
-        if ($_ilColExists) {
-            $_ilStmt = $_ilDb->prepare('SELECT Slug FROM tblPublishers WHERE IlId = ? LIMIT 1');
-            $_ilStmt->bind_param('s', $_ilParsed['canonical']);
-            $_ilStmt->execute();
-            $_ilRow = $_ilStmt->get_result()->fetch_assoc();
-            $_ilStmt->close();
-            if ($_ilRow !== null && (string)($_ilRow['Slug'] ?? '') !== '') {
-                $publisherSlug = (string)$_ilRow['Slug'];
-            }
-        }
-    }
-} catch (\Throwable $_ilE) {
-    // dormant-by-design — fall through to the fold + ladder unchanged
-}
+/**
+ * #1969 (API-coverage batch 1, C4) — the whole resolution + detail-rows
+ * block that used to live inline here (IL-id pre-step, the fold, the
+ * (a)/(b)/(c) lookup ladder, parent/aliases/songbooks detail rows) is now
+ * `publisherResolveDisplayData()` in `includes/publisher_helpers.php` —
+ * extracted verbatim so the new `?action=publisher_detail` JSON endpoint
+ * (api.php) can share this EXACT read path instead of forking a second
+ * copy of rule #37's resolution ladder (rule #22). See that function's
+ * doc-block for the full per-rung rationale, not repeated here (rule #35).
+ */
+$pdb = getDbMysqli();
+$_publisherResolved = publisherResolveDisplayData($pdb, (string)($publisherSlug ?? ''));
 
-/* Same fold the admin slug + song.php-style link builders use, so a
-   name-derived URL resolves (rule #33). */
-$pubSlug = isset($publisherSlug) ? (string)$publisherSlug : '';
-$pubSlug = strtolower(trim(preg_replace('/[^A-Za-z0-9\-]+/', '-', $pubSlug), '-'));
-
-/** Local one-shot INFORMATION_SCHEMA table probe (the tune.php idiom). */
-if (!function_exists('_publisherTableExists')) {
-    function _publisherTableExists(\mysqli $db, string $table): bool
-    {
-        try {
-            $probe = $db->prepare(
-                'SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1'
-            );
-            $probe->bind_param('s', $table);
-            $probe->execute();
-            $exists = $probe->get_result()->fetch_row() !== null;
-            $probe->close();
-            return $exists;
-        } catch (\Throwable $e) {
-            return false;
-        }
-    }
-}
-
-$publisher       = null;   /* tblPublishers row */
-$publisherAliases = [];
-$publisherBooks  = [];
-$parentPublisher = null;   /* [id, name, slug] of the parent, if any */
-
-if ($pubSlug !== '') {
-    $pdb = getDbMysqli();
-    $hasRegistry = _publisherTableExists($pdb, 'tblPublishers');
-
-    if ($hasRegistry) {
-        $rowSelect = 'Id, Name, Slug, Kind, Subtitle, Disambiguation, Ipi, Isni, CityName, ParentId, Notes';
-
-        /* (a) exact slug */
-        try {
-            $stmt = $pdb->prepare("SELECT {$rowSelect} FROM tblPublishers WHERE Slug = ? AND IsActive = 1 LIMIT 1");
-            $stmt->bind_param('s', $pubSlug);
-            $stmt->execute();
-            $publisher = $stmt->get_result()->fetch_assoc() ?: null;
-            $stmt->close();
-        } catch (\Throwable $e) {
-            error_log('[pages/publisher.php] slug lookup: ' . $e->getMessage());
-        }
-
-        /* (b) PHP name-fold over every Name */
-        if ($publisher === null) {
-            try {
-                $stmt = $pdb->prepare('SELECT Id, Name FROM tblPublishers WHERE IsActive = 1');
-                $stmt->execute();
-                $all = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-                $stmt->close();
-                $matchId = null;
-                foreach ($all as $r) {
-                    $cand = strtolower(trim(preg_replace('/[^A-Za-z0-9]+/', '-', (string)$r['Name']), '-'));
-                    if ($cand === $pubSlug) { $matchId = (int)$r['Id']; break; }
-                }
-                if ($matchId !== null) {
-                    $stmt = $pdb->prepare("SELECT {$rowSelect} FROM tblPublishers WHERE Id = ? LIMIT 1");
-                    $stmt->bind_param('i', $matchId);
-                    $stmt->execute();
-                    $publisher = $stmt->get_result()->fetch_assoc() ?: null;
-                    $stmt->close();
-                }
-            } catch (\Throwable $e) {
-                error_log('[pages/publisher.php] name-fold lookup: ' . $e->getMessage());
-            }
-        }
-
-        /* (c) alias fold — a renamed publisher's old name is an alias */
-        if ($publisher === null && _publisherTableExists($pdb, 'tblPublisherAliases')) {
-            try {
-                $stmt = $pdb->prepare(
-                    'SELECT a.Name AS Alias, p.Id AS PublisherId
-                       FROM tblPublisherAliases a
-                       JOIN tblPublishers p ON p.Id = a.PublisherId AND p.IsActive = 1'
-                );
-                $stmt->execute();
-                $all = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-                $stmt->close();
-                $matchId = null;
-                foreach ($all as $r) {
-                    $cand = strtolower(trim(preg_replace('/[^A-Za-z0-9]+/', '-', (string)$r['Alias']), '-'));
-                    if ($cand === $pubSlug) { $matchId = (int)$r['PublisherId']; break; }
-                }
-                if ($matchId !== null) {
-                    $stmt = $pdb->prepare("SELECT {$rowSelect} FROM tblPublishers WHERE Id = ? LIMIT 1");
-                    $stmt->bind_param('i', $matchId);
-                    $stmt->execute();
-                    $publisher = $stmt->get_result()->fetch_assoc() ?: null;
-                    $stmt->close();
-                }
-            } catch (\Throwable $e) {
-                error_log('[pages/publisher.php] alias lookup: ' . $e->getMessage());
-            }
-        }
-
-        /* Detail rows for a resolved publisher. */
-        if ($publisher !== null) {
-            $pid = (int)$publisher['Id'];
-
-            if (!empty($publisher['ParentId'])) {
-                try {
-                    $stmt = $pdb->prepare('SELECT Id, Name, Slug FROM tblPublishers WHERE Id = ? LIMIT 1');
-                    $stmt->bind_param('i', $publisher['ParentId']);
-                    $stmt->execute();
-                    $parentPublisher = $stmt->get_result()->fetch_assoc() ?: null;
-                    $stmt->close();
-                } catch (\Throwable $e) { /* parent optional */ }
-            }
-
-            if (_publisherTableExists($pdb, 'tblPublisherAliases')) {
-                try {
-                    $stmt = $pdb->prepare('SELECT Name FROM tblPublisherAliases WHERE PublisherId = ? ORDER BY Name ASC');
-                    $stmt->bind_param('i', $pid);
-                    $stmt->execute();
-                    $publisherAliases = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Name');
-                    $stmt->close();
-                } catch (\Throwable $e) { /* aliases optional */ }
-            }
-
-            /* Songbooks this publisher published — public visibility predicate
-               (hides disabled books, #1765). data-navigate="songbook" links. */
-            if (_publisherTableExists($pdb, 'tblSongbookPublishers')) {
-                try {
-                    $vis = songbookVisibleSql($pdb, 'b');
-                    $stmt = $pdb->prepare(
-                        "SELECT b.Abbreviation, b.Name, sp.Role
-                           FROM tblSongbookPublishers sp
-                           JOIN tblSongbooks b ON b.Id = sp.SongbookId
-                          WHERE sp.PublisherId = ? AND {$vis}
-                          ORDER BY b.Name ASC"
-                    );
-                    $stmt->bind_param('i', $pid);
-                    $stmt->execute();
-                    $publisherBooks = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-                    $stmt->close();
-                } catch (\Throwable $e) {
-                    error_log('[pages/publisher.php] books lookup: ' . $e->getMessage());
-                }
-            }
-        }
-    }
-}
+$pubSlug          = $_publisherResolved['slug'];
+$publisher        = $_publisherResolved['publisher'];
+$publisherAliases = $_publisherResolved['aliases'];
+$publisherBooks   = $_publisherResolved['books'];
+$parentPublisher  = $_publisherResolved['parentPublisher'];
 
 $pubKindLabel = ($publisher !== null && isset(IHYMNS_PUBLISHER_KINDS[$publisher['Kind']]))
     ? IHYMNS_PUBLISHER_KINDS[$publisher['Kind']]
@@ -365,5 +196,13 @@ $pubRoleLabels = IHYMNS_PUBLISHER_ROLES;
     }
     if ($publisherAliases) { $ld['alternateName'] = array_values($publisherAliases); }
     ?>
-    <script type="application/ld+json"><?= json_encode($ld, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?></script>
+    <?php /* SECURITY: JSON_HEX_TAG|_AMP|_APOS|_QUOT so a DB publisher name, city
+             or alias containing </script> (or &, ", ') cannot break out of this
+             public <script> element and inject HTML (stored XSS). Mirrors the same
+             fix on musician.php:1128; both are guarded by
+             tests/php/test-jsonld-escaping.php. See the 2026-08-30 security audit. */ ?>
+    <script type="application/ld+json"><?= json_encode(
+        $ld,
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
+    ) ?></script>
 <?php endif; ?>

@@ -56,7 +56,7 @@ if (!$isInitialSetup) {
        virgin install there is no user table to have a role in yet. */
     if (!$currentUser || !userHasEntitlement('run_db_install', $currentUser['role'] ?? null)) {
         http_response_code(403);
-        echo '<!DOCTYPE html><html><body><h1>403 — the run_db_install entitlement is required</h1></body></html>';
+        echo '<!DOCTYPE html><html lang="en"><body><h1>403 — the run_db_install entitlement is required</h1></body></html>';
         exit;
     }
 }
@@ -116,6 +116,18 @@ if ($hasCredentials && !defined('DB_HOST')) {
 $secretAdminFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'secret_crypto_admin.php';
 if (is_file($secretAdminFile)) {
     require_once $secretAdminFile;
+}
+
+/* #2005 — the "Guided setup" empty-state launcher (below) reuses the SHARED
+   #1999 partial rather than hand-rolling its own "get started" card
+   (CLAUDE.md's modularity rule — reuse, don't fork). Same defensive
+   `is_file()` load as the secret-admin block just above: this dashboard
+   must still render on a docroot that received a lagging deploy without
+   this file yet, and `ihymns_wizard_empty_state` is only ever CALLED
+   further down behind its own `function_exists()` check. */
+$wizardEmptyStateFile = __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'wizard-empty-state.php';
+if (is_file($wizardEmptyStateFile)) {
+    require_once $wizardEmptyStateFile;
 }
 
 /* =========================================================================
@@ -1156,6 +1168,97 @@ register_shutdown_function(function () use (&$pageRenderedCleanly): void {
 });
 
 /* =========================================================================
+ * CSRF GUARD — ?action= GET dispatch (security-audit finding L-1, 2026-08-30)
+ * ============================================================================
+ * ELI5: every button on this page that actually DOES something — installs
+ * tables, runs a migration, makes a backup, restores one, drops legacy
+ * tables, resets the opcache — is a plain link (`<a href="?action=backup">`).
+ * A plain link is just a GET request, and a browser attaches cookies to a
+ * GET request automatically, from ANYWHERE — including a page loaded on a
+ * completely different website. Without a check here, a malicious page
+ * could embed `<img src="https://yoursite/manage/setup-database?action=backup">`
+ * and, if a global admin merely had this site open in another browser tab,
+ * silently trigger a real backup (or a migration, or worse) using THEIR
+ * session. That's exactly what a CSRF (Cross-Site Request Forgery) token
+ * exists to stop.
+ *
+ * DETAILED / WHY
+ * --------------
+ * This page's session cookie is already `SameSite=Strict`
+ * (`manage/includes/auth.php`), which is a real and adequate mitigation on
+ * modern browsers — a cross-site request never carries the cookie at all,
+ * so a forged link degrades to a login redirect. But relying on ONE cookie
+ * attribute as the ENTIRE CSRF defence for a battery of state-changing
+ * actions (install / migrate / backup / restore / drop-legacy /
+ * opcache-reset / the lyrics-cutover sentinel write) is thin defence-in-
+ * depth, especially for the destructive ones — and every OTHER
+ * state-changing endpoint on this very file already gates on
+ * `validateCsrfRequest()` (the `secret_*` AJAX dispatcher above,
+ * `delete-backup` / `download-backup` / `save-credentials` / `upload-backup`
+ * below): this `?action=` dispatch was the one outlier.
+ *
+ * `validateCsrfRequest()` (`manage/includes/auth.php`) accepts EITHER a
+ * valid `csrf_token` (query or POST field) OR a genuine same-origin AJAX
+ * request (the `X-Requested-With` header — a browser cannot set it
+ * cross-origin without a CORS preflight this server never grants). The JS
+ * per-migration runner (`js/modules/setup-bulk-runner.js`'s `runOne()`,
+ * which the guided setup wizard's `setup-wizard.js` also calls) ALREADY
+ * sends that header on every request, so it passes this gate automatically
+ * with NO client change needed.
+ *
+ * NO-JS FALLBACK (kept working, not broken): every plain `<a href="?action=…">`
+ * link and GET `<form>` on this page that triggers a state-changing action
+ * now carries a `csrf_token` value (rendered server-side by csrfToken()) — either appended to the href
+ * or as a hidden form field — so a curator with JavaScript OFF keeps
+ * working exactly as before; the token just rides along on the same link
+ * or form submit they'd already use. Every such link/form on this page was
+ * traced and updated (rule #33 discipline applied to a token, not just a
+ * URL param): the pending-migration "Run & show output" + "Dry-run" links,
+ * "Apply all", the six top-level action-card links (Install/Users/Cleanup/
+ * Backup/Opcache-reset/Drop-legacy incl. its confirm=1 variant), the
+ * per-migration card's run + dry-run links, the five lyrics-cutover-gate
+ * phase links, and the Restore form's GET submit (a hidden `csrf_token`
+ * field, since a GET `<form>` cannot carry a query string literal).
+ * `?action=deploy-forensics` is the ONE action that is genuinely read-only
+ * ("writes nothing — no reset, no DB mutation", per its own card copy) and
+ * is exempt — a bookmark to it needs no token.
+ *
+ * ONE CHOKE POINT, same reasoning as the entitlement gate immediately
+ * below (and the SAME "why one choke point" applies): dispatched from
+ * three places (the `format=text` fast path, the bulk `apply-all-migrations`
+ * runner, the HTML single-action path) — checked ONCE, here, BEFORE any of
+ * them can run, so a fourth dispatcher added later can't bypass it either.
+ *
+ * `$isInitialSetup` is deliberately NOT exempt here (unlike the entitlement
+ * gate just below it): there is no user/role to check yet on a virgin
+ * install, but a PHP session — and therefore a CSRF token — already exists
+ * the moment this page first renders (`csrfToken()` calls `initSession()`
+ * itself), so the Install link on a fresh install can carry a valid token
+ * from its very first render, the same as every other link on this page.
+ *
+ * @see manage/includes/auth.php::validateCsrfRequest()
+ * @see tests/php/test-setup-database-csrf.php   the standing guard for this block
+ * ========================================================================= */
+if ($action !== '' && $action !== 'deploy-forensics') {
+    $csrfSuppliedForAction = (string)($_GET['csrf_token'] ?? $_POST['csrf_token'] ?? '');
+    if (!validateCsrfRequest($csrfSuppliedForAction)) {
+        http_response_code(403);
+        if ((string)($_GET['format'] ?? '') === 'text') {
+            header('Content-Type: text/plain; charset=UTF-8');
+            header('X-Content-Type-Options: nosniff');
+            echo "STATUS: error\n";
+            echo "ACTION: {$action}\n";
+            echo "ERROR: CSRF check failed — reload the page and try again.\n";
+        } else {
+            header('Content-Type: text/html; charset=UTF-8');
+            echo '<!DOCTYPE html><html lang="en"><body><h1>403 — CSRF check failed. Reload the page and try again.</h1></body></html>';
+        }
+        $pageRenderedCleanly = true;   /* suppress the shutdown chrome-closer */
+        exit;
+    }
+}
+
+/* =========================================================================
  * PER-ACTION ENTITLEMENTS (#1590, entitlement truth-up E1)
  *
  * ELI5: /manage/entitlements has three checkboxes — "Run database migrations",
@@ -1220,7 +1323,7 @@ if ($action !== '' && !$isInitialSetup) {
             echo "ERROR: The {$actionEntitlement} entitlement is required.\n";
         } else {
             header('Content-Type: text/html; charset=UTF-8');
-            echo '<!DOCTYPE html><html><body><h1>403 — the '
+            echo '<!DOCTYPE html><html lang="en"><body><h1>403 — the '
                . htmlspecialchars($actionEntitlement, ENT_QUOTES, 'UTF-8')
                . ' entitlement is required</h1></body></html>';
         }
@@ -2283,7 +2386,7 @@ if ($action !== '') {
              any migration executed, so the schema is untouched. -->
         <div class="alert alert-danger mt-3" role="alert">
             <h5 class="alert-heading mb-2">
-                <i class="bi bi-shield-exclamation me-1"></i>
+                <i aria-hidden="true" class="bi bi-shield-exclamation me-1"></i>
                 Aborted — automatic pre-migration backup did not complete
             </h5>
             <p class="mb-0">
@@ -2303,7 +2406,7 @@ if ($action !== '') {
              the run completed and the failure data was available). -->
         <div class="alert alert-danger mt-3" role="alert">
             <h5 class="alert-heading mb-2">
-                <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                <i aria-hidden="true" class="bi bi-exclamation-triangle-fill me-1"></i>
                 Bulk run failed at step:
                 <code><?= htmlspecialchars((string)$bulkFirstFailStep) ?></code>
             </h5>
@@ -2431,6 +2534,24 @@ if ($hasCredentials && defined('DB_HOST')) {
         </span>
     </p>
 
+    <?php /* #2005 — "Guided setup" header trigger. ELI5: a friendlier front
+             door onto this same page — it opens a step-by-step walkthrough
+             that presses the SAME buttons found further down, in a sensible
+             order, one at a time. Detailed: `data-bs-target="#setupWizardModal"`
+             is the literal Bootstrap hook the standing guard
+             tests/php/test-wizard-empty-state.php checks against the REAL
+             `id="setupWizardModal"` modal element rendered later on this
+             same page (see that element's own comment for why the modal
+             shell lives HERE and not in the required step-panes partial).
+             Always rendered — the wizard's own Step 1 is precisely "get a
+             working database connection", so it must work even before one
+             exists (mirrors the empty-state launcher just below). */ ?>
+    <div class="mb-3">
+        <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#setupWizardModal">
+            <i class="bi bi-magic me-1" aria-hidden="true"></i>Guided setup
+        </button>
+    </div>
+
     <?php if ($credSuccess !== ''): ?>
         <div class="alert alert-success"><?= htmlspecialchars($credSuccess) ?></div>
     <?php endif; ?>
@@ -2443,7 +2564,37 @@ if ($hasCredentials && defined('DB_HOST')) {
         $showCredForm = !$hasCredentials
             || (isset($_GET['reconfigure']) && $_GET['reconfigure'] === '1')
             || $credError !== '';
+
+        /* #2005 — a render-only deep link (rule #33: honour it or don't
+           emit it — this page does both). `?wizard=verify` is the ONLY
+           value ever read; anything else (missing, mistyped, or an old
+           bookmark) leaves the wizard closed on page load exactly like
+           today. This is NOT a dispatched `$action` — it never reaches the
+           per-action entitlement gate above or the migration-runner
+           dispatch below, so it adds no new server action (the standing
+           API-coverage guard's mapping for setup-database.php stays
+           unchanged; tests/php/test-setup-wizard.php confirms this). */
+        $wizardOpenStep = (($_GET['wizard'] ?? '') === 'verify') ? 'verify' : '';
     ?>
+
+    <?php if (($isInitialSetup || !$hasCredentials) && function_exists('ihymns_wizard_empty_state')): ?>
+        <?php /* #2005 — first-run discoverability (#1999 pattern): a
+                 prominent "Get started" card above the credentials form
+                 itself, reusing the SAME shared partial the other four
+                 guided wizards already use rather than a bespoke card
+                 (CLAUDE.md modularity rule). It opens the identical modal
+                 the header button above already opens. */ ?>
+        <?= ihymns_wizard_empty_state([
+            'icon'        => 'bi-magic',
+            'heading'     => 'New to this install? Start here.',
+            'body'        => 'A short, guided walkthrough of connecting the database, bringing it '
+                            . 'up to date, and what to do next — one step at a time.',
+            'modalId'     => 'setupWizardModal',
+            'buttonLabel' => 'Guided setup',
+            'wrap'        => 'bare',
+            'hint'        => 'Or fill in the connection details yourself below.',
+        ]) ?>
+    <?php endif; ?>
 
     <?php if ($action === '' && $showCredForm): ?>
         <!-- ============================================================
@@ -2469,32 +2620,32 @@ if ($hasCredentials && defined('DB_HOST')) {
                     <input type="hidden" name="action" value="save-credentials">
                     <div class="row g-3">
                         <div class="col-md-8">
-                            <label class="form-label small">MySQL Host</label>
-                            <input type="text" name="host" class="form-control form-control-sm"
+                            <label class="form-label small" for="db-cred-host">MySQL Host</label>
+                            <input type="text" name="host" id="db-cred-host" class="form-control form-control-sm"
                                    required value="<?= htmlspecialchars($credFormValues['host']) ?>"
                                    placeholder="127.0.0.1 or mysql.example.com">
                         </div>
                         <div class="col-md-4">
-                            <label class="form-label small">Port</label>
-                            <input type="number" name="port" class="form-control form-control-sm"
+                            <label class="form-label small" for="db-cred-port">Port</label>
+                            <input type="number" name="port" id="db-cred-port" class="form-control form-control-sm"
                                    min="1" max="65535" required
                                    value="<?= htmlspecialchars($credFormValues['port']) ?>">
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label small">Database Name</label>
-                            <input type="text" name="name" class="form-control form-control-sm"
+                            <label class="form-label small" for="db-cred-name">Database Name</label>
+                            <input type="text" name="name" id="db-cred-name" class="form-control form-control-sm"
                                    required value="<?= htmlspecialchars($credFormValues['name']) ?>"
                                    placeholder="ihymns">
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label small">Username</label>
-                            <input type="text" name="user" class="form-control form-control-sm"
+                            <label class="form-label small" for="db-cred-user">Username</label>
+                            <input type="text" name="user" id="db-cred-user" class="form-control form-control-sm"
                                    required value="<?= htmlspecialchars($credFormValues['user']) ?>"
                                    placeholder="ihymns_user">
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label small">Password</label>
-                            <input type="password" name="pass" class="form-control form-control-sm"
+                            <label class="form-label small" for="db-cred-pass">Password</label>
+                            <input type="password" name="pass" id="db-cred-pass" class="form-control form-control-sm"
                                    autocomplete="new-password"
                                    placeholder="<?= $hasCredentials ? '(leave blank to keep existing)' : '' ?>">
                             <?php if ($hasCredentials): ?>
@@ -2504,8 +2655,8 @@ if ($hasCredentials && defined('DB_HOST')) {
                             <?php endif; ?>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label small">Table Prefix <span class="text-secondary">(optional)</span></label>
-                            <input type="text" name="prefix" class="form-control form-control-sm"
+                            <label class="form-label small" for="db-cred-prefix">Table Prefix <span class="text-secondary">(optional)</span></label>
+                            <input type="text" name="prefix" id="db-cred-prefix" class="form-control form-control-sm"
                                    value="<?= htmlspecialchars($credFormValues['prefix']) ?>"
                                    placeholder="e.g. ih_">
                         </div>
@@ -2612,7 +2763,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                     static fn(string $slug): bool => isset($migrationCards[$slug]) && empty($migrationManual[$slug])
                 ));
             ?>
-            <a href="?action=apply-all-migrations"
+            <a href="?action=apply-all-migrations&amp;csrf_token=<?= urlencode(csrfToken()) ?>"
                class="btn btn-primary btn-lg flex-shrink-0 <?= $hasCredentials ? '' : 'disabled' ?>"
                data-bulk-runner-trigger
                data-pending-migrations="<?= htmlspecialchars(implode(',', $bulkRunnerPending), ENT_QUOTES, 'UTF-8') ?>">
@@ -2672,7 +2823,11 @@ if ($hasCredentials && defined('DB_HOST')) {
                                    distinct report-only run link (below) without &confirm=1. */
                                 $_paManual  = !empty($migrationManual[$_pa]);
                                 $_paDryRun  = !empty($migrationDryRunnable[$_pa]);
-                                $_paHref    = '?action=' . htmlspecialchars($_pa) . ($_paManual ? '&amp;confirm=1' : '');
+                                /* L-1 security-audit finding — every state-changing ?action= link
+                                   on this page now carries its own CSRF token (see the CSRF GUARD
+                                   doc-block near the top of this file for the full "why"). */
+                                $_paCsrf    = '&amp;csrf_token=' . urlencode(csrfToken());
+                                $_paHref    = '?action=' . htmlspecialchars($_pa) . ($_paManual ? '&amp;confirm=1' : '') . $_paCsrf;
                                 $_paOnclick = $_paManual
                                     ? ($_paDryRun
                                         ? ' onclick="return confirm(\'This APPLIES the data rewrite immediately (it mutates the database). Use the Dry-run link first to preview. Continue?\');"'
@@ -2684,7 +2839,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             ?>
                             <span class="d-flex gap-2 flex-shrink-0">
                                 <?php if ($_paManual && $_paDryRun): ?>
-                                    <a href="?action=<?= htmlspecialchars($_pa) ?>"
+                                    <a href="?action=<?= htmlspecialchars($_pa) ?><?= $_paCsrf ?>"
                                        class="btn btn-sm btn-outline-info <?= $hasCredentials ? '' : 'disabled' ?>">
                                         Dry-run (report only)
                                     </a>
@@ -2717,7 +2872,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             Create all database tables from <code>schema.sql</code>.
                             Safe to re-run — existing tables are skipped.
                         </p>
-                        <a href="?action=install" class="btn btn-primary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                        <a href="?action=install&amp;csrf_token=<?= urlencode(csrfToken()) ?>" class="btn btn-primary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Install
                         </a>
                     </div>
@@ -2741,7 +2896,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             Import users and setlists from the legacy SQLite database
                             and shared setlist JSON files. Skips existing users.
                         </p>
-                        <a href="?action=users" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                        <a href="?action=users&amp;csrf_token=<?= urlencode(csrfToken()) ?>" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run User Migration
                         </a>
                     </div>
@@ -2776,21 +2931,25 @@ if ($hasCredentials && defined('DB_HOST')) {
                             trailer, the request was cut short (a shared-host timeout) — nothing was armed;
                             just run it again. Use <em>Smoke test</em> first to confirm the path in seconds.
                         </p>
+                        <?php /* L-1 security-audit finding — one shared token for all five
+                                 verify-cutover links below (same reasoning as the CSRF GUARD
+                                 doc-block near the top of this file). */
+                              $_vcCsrf = '&amp;csrf_token=' . urlencode(csrfToken()); ?>
                         <div class="d-flex flex-wrap gap-2">
-                            <a href="?action=verify-cutover&amp;phase=pre&amp;limit=50" class="btn btn-outline-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            <a href="?action=verify-cutover&amp;phase=pre&amp;limit=50<?= $_vcCsrf ?>" class="btn btn-outline-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Smoke test <span class="small ms-1">(first 50 songs — no sentinel)</span>
                             </a>
-                            <a href="?action=verify-cutover&amp;phase=pre" class="btn btn-success btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            <a href="?action=verify-cutover&amp;phase=pre<?= $_vcCsrf ?>" class="btn btn-success btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Run <code>--phase=pre</code> <span class="small ms-1">(baseline + sentinel)</span>
                             </a>
-                            <a href="?action=verify-cutover&amp;phase=soak" class="btn btn-outline-success btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            <a href="?action=verify-cutover&amp;phase=soak<?= $_vcCsrf ?>" class="btn btn-outline-success btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Run <code>--phase=soak</code>
                             </a>
-                            <a href="?action=verify-cutover&amp;phase=pre-drop" class="btn btn-outline-warning btn-action <?= $hasCredentials ? '' : 'disabled' ?>"
+                            <a href="?action=verify-cutover&amp;phase=pre-drop<?= $_vcCsrf ?>" class="btn btn-outline-warning btn-action <?= $hasCredentials ? '' : 'disabled' ?>"
                                onclick="return confirm('pre-drop writes the sentinel that ARMS the irreversible JSON-column drop. Only run this inside the maintenance freeze, immediately before the drop. Continue?');">
                                 Run <code>--phase=pre-drop</code>
                             </a>
-                            <a href="?action=verify-cutover&amp;phase=post-drop" class="btn btn-outline-secondary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            <a href="?action=verify-cutover&amp;phase=post-drop<?= $_vcCsrf ?>" class="btn btn-outline-secondary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Run <code>--phase=post-drop</code>
                             </a>
                         </div>
@@ -2839,7 +2998,14 @@ if ($hasCredentials && defined('DB_HOST')) {
                        link WITHOUT &confirm=1 (and without the type-to-confirm), and we tailor the
                        confirm() / badge wording away from the destructive-DROP defaults (which talk
                        about a "pre-drop verification gate" that doesn't apply here). */
-                    $href    = '?action=' . htmlspecialchars($migAction) . ($isManual ? '&amp;confirm=1' : '');
+                    /* L-1 security-audit finding — a static closure has no
+                       access to an outer-scope variable without `use()`, but
+                       csrfToken() is a plain global function (declared in
+                       manage/includes/auth.php, already `require_once`d at
+                       the top of this file), so calling it directly here
+                       needs no `use()` at all. */
+                    $csrfQs   = '&amp;csrf_token=' . urlencode(csrfToken());
+                    $href    = '?action=' . htmlspecialchars($migAction) . ($isManual ? '&amp;confirm=1' : '') . $csrfQs;
                     $btnClass = $isManual ? 'btn-danger' : 'btn-info';
                     $onclick = $isManual
                         ? ($isDryRunnable
@@ -2854,7 +3020,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                     /* #1380 FIX 4 — the report-only run link: same action, NO &confirm=1 → the
                        script stays in dry-run and only reports. No type-to-confirm / native
                        confirm() (a read-only report needs no speed-bump). */
-                    $dryRunHref = '?action=' . htmlspecialchars($migAction);
+                    $dryRunHref = '?action=' . htmlspecialchars($migAction) . $csrfQs;
                     ?>
                     <div class="col-md-6">
                         <div class="card bg-body-tertiary <?= $isManual ? 'border-danger' : 'border-secondary' ?> h-100">
@@ -2939,7 +3105,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             Delete expired API tokens, email login codes, password reset
                             tokens, and old login attempts (30+ days).
                         </p>
-                        <a href="?action=cleanup" class="btn btn-outline-secondary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                        <a href="?action=cleanup&amp;csrf_token=<?= urlencode(csrfToken()) ?>" class="btn btn-outline-secondary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Cleanup
                         </a>
                     </div>
@@ -2961,7 +3127,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             column already dropped). Reports the OPcache status — incl.
                             <code>validate_timestamps</code> — before resetting. No DB needed.
                         </p>
-                        <a href="?action=opcache-reset" class="btn btn-outline-warning btn-action">
+                        <a href="?action=opcache-reset&amp;csrf_token=<?= urlencode(csrfToken()) ?>" class="btn btn-outline-warning btn-action">
                             Reset OPcache
                         </a>
                     </div>
@@ -3001,7 +3167,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             Create a compressed SQL dump of all tables and data.
                             Keeps the last 7 backups; older ones are auto-deleted.
                         </p>
-                        <a href="?action=backup" class="btn btn-outline-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                        <a href="?action=backup&amp;csrf_token=<?= urlencode(csrfToken()) ?>" class="btn btn-outline-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Backup
                         </a>
                     </div>
@@ -3131,13 +3297,13 @@ if ($hasCredentials && defined('DB_HOST')) {
                                  web root) via the gated download-backup handler at the top
                                  of this page. No DB connection needed, so it stays enabled
                                  even when credentials are unset. -->
-                            <label class="form-label small text-secondary mb-1">
-                                <i class="bi bi-download me-1"></i>Download a backup (to archive off-site):
+                            <label class="form-label small text-secondary mb-1" for="backup-download-file">
+                                <i aria-hidden="true" class="bi bi-download me-1"></i>Download a backup (to archive off-site):
                             </label>
                             <form action="" method="post" class="d-flex gap-2 flex-wrap mb-3">
                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
                                 <input type="hidden" name="action" value="download-backup">
-                                <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
+                                <select name="file" id="backup-download-file" class="form-select form-select-sm" style="flex:1 1 200px">
                                     <?php foreach ($backupFiles as $f): ?>
                                         <option value="<?= htmlspecialchars($f) ?>"><?= htmlspecialchars($f) ?></option>
                                     <?php endforeach; ?>
@@ -3147,12 +3313,17 @@ if ($hasCredentials && defined('DB_HOST')) {
                                 </button>
                             </form>
 
-                            <label class="form-label small text-secondary mb-1">
-                                <i class="bi bi-arrow-counterclockwise me-1"></i>Restore the database from a backup:
+                            <label class="form-label small text-secondary mb-1" for="backup-restore-file">
+                                <i aria-hidden="true" class="bi bi-arrow-counterclockwise me-1"></i>Restore the database from a backup:
                             </label>
+                            <?php /* L-1 security-audit finding — the ONE GET <form> on this page
+                                     that triggers a state-changing action: a hidden field is how a
+                                     GET form carries a token in its query string (there's no href to
+                                     append one to). */ ?>
                             <form action="" method="get" class="d-flex gap-2 flex-wrap mb-2">
                                 <input type="hidden" name="action" value="restore">
-                                <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken(), ENT_QUOTES, 'UTF-8') ?>">
+                                <select name="file" id="backup-restore-file" class="form-select form-select-sm" style="flex:1 1 200px">
                                     <?php foreach ($backupFiles as $f): ?>
                                         <option value="<?= htmlspecialchars($f) ?>"><?= htmlspecialchars($f) ?></option>
                                     <?php endforeach; ?>
@@ -3170,7 +3341,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                                 </button>
                             </form>
                             <p class="text-muted small mb-2">
-                                <i class="bi bi-info-circle me-1"></i>
+                                <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
                                 Restore always takes a pre-restore snapshot first. Data INSERTs
                                 are transactional — a failure rolls data back automatically.
                             </p>
@@ -3184,25 +3355,25 @@ if ($hasCredentials && defined('DB_HOST')) {
                                  credentials are unset. The typed "DELETE" prompt below is a
                                  client-side speed bump only, matching the Restore form's own
                                  onclick convention just above; the real gates are server-side. -->
-                            <label class="form-label small text-secondary mb-1">
-                                <i class="bi bi-trash me-1"></i>Delete a backup (permanent — cannot be undone):
+                            <label class="form-label small text-secondary mb-1" for="backup-delete-file">
+                                <i aria-hidden="true" class="bi bi-trash me-1"></i>Delete a backup (permanent — cannot be undone):
                             </label>
                             <form action="" method="post" class="d-flex gap-2 flex-wrap mb-2">
                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
                                 <input type="hidden" name="action" value="delete-backup">
                                 <input type="hidden" name="confirm" value="1">
-                                <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
+                                <select name="file" id="backup-delete-file" class="form-select form-select-sm" style="flex:1 1 200px">
                                     <?php foreach ($backupFiles as $f): ?>
                                         <option value="<?= htmlspecialchars($f) ?>"><?= htmlspecialchars($f) ?></option>
                                     <?php endforeach; ?>
                                 </select>
                                 <button type="submit" class="btn btn-sm btn-outline-danger"
                                         onclick="return prompt('Type DELETE (all caps) to permanently remove the selected backup file. This CANNOT be undone.') === 'DELETE'">
-                                    <i class="bi bi-trash me-1"></i>Delete
+                                    <i aria-hidden="true" class="bi bi-trash me-1"></i>Delete
                                 </button>
                             </form>
                             <p class="text-muted small mb-0">
-                                <i class="bi bi-shield-check me-1"></i>
+                                <i aria-hidden="true" class="bi bi-shield-check me-1"></i>
                                 At least one backup always stays on disk — the last remaining
                                 file can't be deleted here.
                             </p>
@@ -3216,6 +3387,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
                             <input type="hidden" name="action" value="upload-backup">
                             <input type="file" name="backup" accept=".sql,.sql.gz,.gz" required
+                                   aria-label="Backup file to upload"
                                    class="form-control form-control-sm" style="flex:1 1 200px">
                             <button type="submit" class="btn btn-sm btn-outline-secondary <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Upload
@@ -3234,11 +3406,12 @@ if ($hasCredentials && defined('DB_HOST')) {
                             importing an existing MySQL database that still holds tables
                             from a previous iHymns incarnation.
                         </p>
+                        <?php $_dropLegacyCsrf = '&amp;csrf_token=' . urlencode(csrfToken()); ?>
                         <div class="d-flex gap-2 flex-wrap">
-                            <a href="?action=drop-legacy" class="btn btn-outline-warning btn-sm <?= $hasCredentials ? '' : 'disabled' ?>">
+                            <a href="?action=drop-legacy<?= $_dropLegacyCsrf ?>" class="btn btn-outline-warning btn-sm <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Preview
                             </a>
-                            <a href="?action=drop-legacy&amp;confirm=1" class="btn btn-danger btn-sm <?= $hasCredentials ? '' : 'disabled' ?>"
+                            <a href="?action=drop-legacy&amp;confirm=1<?= $_dropLegacyCsrf ?>" class="btn btn-danger btn-sm <?= $hasCredentials ? '' : 'disabled' ?>"
                                data-type-to-confirm="drop-legacy"
                                onclick="return confirm('This will DROP all tables in the database that are not defined in schema.sql.\n\nThis cannot be undone. Run a Backup first.\n\nContinue?')">
                                 Drop Them
@@ -3471,13 +3644,13 @@ if ($hasCredentials && defined('DB_HOST')) {
                             <table class="table table-dark table-sm mb-0">
                                 <thead>
                                     <tr>
-                                        <th>Docroot</th>
-                                        <th>Present</th>
-                                        <th>Fresh</th>
-                                        <th>Active keyid</th>
-                                        <th>All keyids</th>
-                                        <th>Fingerprint</th>
-                                        <th>Last seen</th>
+                                        <th scope="col">Docroot</th>
+                                        <th scope="col">Present</th>
+                                        <th scope="col">Fresh</th>
+                                        <th scope="col">Active keyid</th>
+                                        <th scope="col">All keyids</th>
+                                        <th scope="col">Fingerprint</th>
+                                        <th scope="col">Last seen</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -3763,7 +3936,7 @@ if ($hasCredentials && defined('DB_HOST')) {
             <?php else: ?>
                 <div class="table-responsive">
                     <table class="table table-dark table-sm table-striped table-hover">
-                        <thead><tr><th>Table</th><th class="text-end">Rows</th></tr></thead>
+                        <thead><tr><th scope="col">Table</th><th scope="col" class="text-end">Rows</th></tr></thead>
                         <tbody>
                         <?php foreach ($dbTables as $t): ?>
                             <tr>
@@ -3917,6 +4090,80 @@ if ($hasCredentials && defined('DB_HOST')) {
 })();
 </script>
 
+<?php
+    /* #2005 — Guided environment setup wizard: the modal SHELL.
+       ELI5: this is the pop-up window frame the "Guided setup" button (and
+       the "Get started" card) opens — the actual step-by-step content
+       inside it lives in a separate, smaller file we `require` below, once
+       we've computed everything that content needs to display.
+       Detailed: rendered here, DELIBERATELY, rather than inside the
+       required `includes/setup-wizard-modal.php` partial — this is the ONE
+       reason the partial exists at all: `tests/php/test-wizard-empty-state.php`
+       (the standing #1999 guard) checks, PER FILE, that a call to
+       `ihymns_wizard_empty_state` (with `modalId` set to `setupWizardModal`)
+       and the real `<div class="modal fade" id="setupWizardModal">` it
+       points at live in the SAME source file — it reads raw file text, so
+       it cannot "see" what a `require`d file contributes. Both the header
+       trigger button and the empty-state launcher call above are in THIS
+       file, so the modal shell has to be too. Bootstrap doesn't care where
+       in the page a modal element physically sits (it's a fixed overlay
+       shown/hidden by JS, @see
+       https://getbootstrap.com/docs/5.3/components/modal/), so placing it
+       here — after every dashboard status variable it needs is already
+       computed — costs nothing.
+       Every value written onto `data-*` below is escaped and is a plain
+       snapshot of page-load state; `js/modules/setup-wizard.js` reads them
+       once at boot. */
+    $_wizDbStatusToken = 'none';
+    if ($dbStatus === 'connected') {
+        $_wizDbStatusToken = 'connected';
+    } elseif ($dbStatus !== null) {
+        $_wizDbStatusToken = 'error';
+    }
+    $_wizDbErrorTail = '';
+    if (is_string($dbStatus) && strncmp($dbStatus, 'error: ', 7) === 0) {
+        $_wizDbErrorTail = substr($dbStatus, 7);
+    }
+    $_wizHasTablesFlag = (count($dbTables) > 0) ? '1' : '0';
+
+    /* Cache-busted import path for the shared stepper (#1992) + this
+       wizard's own wiring module — same filemtime-as-version-query
+       pattern the bulk-runner boot just below already uses (#1196). */
+    $_setupWizardJsPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'setup-wizard.js';
+    $_setupWizardJsVer  = is_file($_setupWizardJsPath) ? (string)filemtime($_setupWizardJsPath) : '1';
+?>
+<div class="modal fade" id="setupWizardModal" tabindex="-1" aria-hidden="true" aria-labelledby="setupWizardModalLabel" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <?php /* The wizard's server-seeded state lives on THIS element
+                 (#setupWizardRoot, the .modal-content), not on the outer
+                 .modal — createWizard(rootEl, …) in setup-wizard.js is
+                 called with THIS element as rootEl, and it is that same
+                 rootEl.dataset the JS reads for db-status/has-tables/
+                 open-step. Every value is a plain, HTML-escaped snapshot
+                 of page-load state (never re-read live by the client). */ ?>
+        <div class="modal-content" id="setupWizardRoot"
+             data-db-status="<?= htmlspecialchars($_wizDbStatusToken, ENT_QUOTES) ?>"
+             data-db-error="<?= htmlspecialchars($_wizDbErrorTail, ENT_QUOTES) ?>"
+             data-has-credentials="<?= $hasCredentials ? '1' : '0' ?>"
+             data-initial-setup="<?= $isInitialSetup ? '1' : '0' ?>"
+             data-has-tables="<?= $_wizHasTablesFlag ?>"
+             data-pending-auto="<?= (int)$_pendingCardCount ?>"
+             data-open-step="<?= htmlspecialchars($wizardOpenStep, ENT_QUOTES) ?>">
+            <div class="modal-header">
+                <h2 class="modal-title h5 mb-0" id="setupWizardModalLabel">Guided environment setup</h2>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'setup-wizard-modal.php'; ?>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" data-wiz-back hidden>Back</button>
+                <button type="button" class="btn btn-primary" data-wiz-next>Next</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- #869 — Per-migration AJAX bulk runner. Replaces the legacy
      full-page "Apply All" redirect with a sequential fetch loop on
      the dashboard, so no single request hits a server-level
@@ -3932,6 +4179,19 @@ if ($hasCredentials && defined('DB_HOST')) {
     import { bootSetupBulkRunner }
         from '/js/modules/setup-bulk-runner.js?v=<?= htmlspecialchars($_bulkRunnerVersion, ENT_QUOTES) ?>';
     bootSetupBulkRunner();
+</script>
+
+<?php /* #2005 — Guided setup wizard boot, deliberately AFTER
+         bootSetupBulkRunner() just above: `setup-wizard.js` reads the
+         `[data-bulk-runner-trigger]` element's `data-pending-migrations`
+         list at RUN time (each button click), not at import time, so the
+         order here isn't load-bearing either way — kept after purely so
+         the two boots read top-to-bottom in the same order the page uses
+         them (bulk grid first, guided wizard second). */ ?>
+<script type="module">
+    import { bootSetupWizard }
+        from '/js/modules/setup-wizard.js?v=<?= htmlspecialchars($_setupWizardJsVer, ENT_QUOTES) ?>';
+    bootSetupWizard();
 </script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

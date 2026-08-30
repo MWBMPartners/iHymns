@@ -290,7 +290,7 @@ $sbfHasOpenLibraryCols = isset($sbfHasOpenLibraryCols) ? (bool)$sbfHasOpenLibrar
      until after create). -->
 <details class="mb-3<?= $sbfMode === 'create' ? ' mt-3' : '' ?>">
     <summary class="form-label small text-muted" style="cursor:pointer;">
-        <i class="bi bi-link-45deg me-1"></i>Online links (optional)
+        <i aria-hidden="true" class="bi bi-link-45deg me-1"></i>Online links (optional)
     </summary>
     <div class="<?= $sbfMode === 'create' ? 'row g-2 mt-1' : 'mt-2' ?>">
         <div class="<?= $sbfMode === 'create' ? 'col-sm-6' : 'mb-2' ?>">
@@ -310,7 +310,7 @@ $sbfHasOpenLibraryCols = isset($sbfHasOpenLibraryCols) ? (bool)$sbfHasOpenLibrar
 
 <details class="mb-3">
     <summary class="form-label small text-muted" style="cursor:pointer;">
-        <i class="bi bi-card-list me-1"></i>Authority identifiers (optional)
+        <i aria-hidden="true" class="bi bi-card-list me-1"></i>Authority identifiers (optional)
     </summary>
     <div class="row g-2 mt-1<?= $sbfMode === 'edit' ? '' : '' ?>">
         <div class="col-sm-6">

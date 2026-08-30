@@ -31,6 +31,14 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    the shape check. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php'; /* placeColumnExists() — generic INFORMATION_SCHEMA column probe (#1765) */
+/* #1969 API-coverage batch 4b-i (A5) — the songbook-series admin CRUD
+   shared cores. The admin_songbook_series_* API actions in api.php call
+   these SAME functions this page's `create`/`update`/`delete` POST
+   handlers call — one validation/write core, two thin callers (rule
+   #22/#35). `marcxml_import` stays page-only (out of scope — see
+   includes/songbook_series_admin.php's doc-block); it does NOT delegate
+   here. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_series_admin.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -65,19 +73,10 @@ $slugFor = static function (string $name): string {
 
 /* Schema probe — if tblSongbookSeries isn't live yet, render a friendly
    "run the migration" page instead of letting every prepared statement
-   blow up. The nav still renders so the curator can navigate away. */
-$hasSchema = false;
-try {
-    $probe = $db->prepare(
-        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongbookSeries' LIMIT 1"
-    );
-    $probe->execute();
-    $hasSchema = $probe->get_result()->fetch_row() !== null;
-    $probe->close();
-} catch (\Throwable $e) {
-    error_log('[songbook-series] schema probe failed: ' . $e->getMessage());
-}
+   blow up. The nav still renders so the curator can navigate away.
+   Delegates to the shared core (rule #22) so the API's
+   admin_songbook_series_* 503 gate reads the identical answer. */
+$hasSchema = songbookSeriesAdminTableExists($db);
 
 /* #1765 Feature 3 — Isbn/Issn/ArkId/OpenLibraryWorkId/OpenLibraryEditionId,
    all five added in one migration stage (migrate-publication-metadata.php
@@ -87,11 +86,7 @@ try {
    whole batch as one unit for rendering purposes is a reasonable
    simplification; it still degrades safely (fields simply don't render,
    handlers simply don't write them) on a pre-migration install. */
-$hasPubIdCols = $hasSchema && placeColumnExists($db, 'tblSongbookSeries', 'Isbn')
-    && placeColumnExists($db, 'tblSongbookSeries', 'Issn')
-    && placeColumnExists($db, 'tblSongbookSeries', 'ArkId')
-    && placeColumnExists($db, 'tblSongbookSeries', 'OpenLibraryWorkId')
-    && placeColumnExists($db, 'tblSongbookSeries', 'OpenLibraryEditionId');
+$hasPubIdCols = $hasSchema && songbookSeriesAdminPubIdColumnsReady($db);
 
 /* ---- GET ?action=songbook_search&q=… (#782 phase C) -------------------
  * JSON typeahead for the edit-modal's "Add a member" input. Returns
@@ -217,22 +212,8 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     try {
         switch ($action) {
             case 'create': {
-                $name        = trim((string)($_POST['name']        ?? ''));
-                $description = trim((string)($_POST['description'] ?? ''));
-                $slug        = trim((string)($_POST['slug']        ?? ''));
-                if ($name === '') { $error = 'Name is required.'; break; }
-                if ($slug === '') { $slug  = $slugFor($name); }
-                if ($slug === '') { $error = 'Name has no usable slug characters — provide one explicitly.'; break; }
-                /* Cap to schema widths (Name 120, Slug 120, Description 255). */
-                $name        = mb_substr($name, 0, 120);
-                $slug        = mb_substr($slug, 0, 120);
-                $description = mb_substr($description, 0, 255);
-                /* #1181 — optional shared series colour. Blank = theme default;
-                   otherwise a validated #RRGGBB hex (never interpolated). */
-                $colour = strtoupper(trim((string)($_POST['colour'] ?? '')));
-                if ($colour !== '' && !preg_match('/^#[0-9A-F]{6}$/', $colour)) {
-                    $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
-                }
+                [$fields, $fieldError] = songbookSeriesAdminValidateCoreFields($_POST);
+                if ($fieldError !== null) { $error = $fieldError; break; }
 
                 /* #1765 Feature 3 — publication-entity identifiers. Validated
                    via the ONE shared validator, mediaIdentifierPublicationClean()
@@ -240,59 +221,30 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                    Written in a schema-tolerant secondary UPDATE after the
                    INSERT below (same pattern as songbooks.php) rather than
                    growing this INSERT's own bind_param() call. */
-                $isbnClean = mediaIdentifierPublicationClean('isbn', (string)($_POST['isbn'] ?? ''));
-                if ($isbnClean['error'] !== null) { $error = $isbnClean['error']; break; }
-                $issnClean = mediaIdentifierPublicationClean('issn', (string)($_POST['issn'] ?? ''));
-                if ($issnClean['error'] !== null) { $error = $issnClean['error']; break; }
-                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
-                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
-                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
-                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
-                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
-                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
-                $isbnVal      = $isbnClean['value'];
-                $issnVal      = $issnClean['value'];
-                $arkVal       = $arkClean['value'];
-                $olWorkVal    = $olWorkClean['value'];
-                $olEditionVal = $olEditionClean['value'];
+                [$pubIds, $pubError] = songbookSeriesAdminValidatePublicationIds($_POST);
+                if ($pubError !== null) { $error = $pubError; break; }
 
                 /* UNIQUE on Slug → check before insert for a friendly error. */
-                $stmt = $db->prepare('SELECT Id FROM tblSongbookSeries WHERE Slug = ?');
-                $stmt->bind_param('s', $slug);
-                $stmt->execute();
-                $exists = $stmt->get_result()->fetch_row() !== null;
-                $stmt->close();
-                if ($exists) { $error = "Slug '{$slug}' already taken — pick another."; break; }
+                if (songbookSeriesAdminSlugTaken($db, $fields['slug'])) {
+                    $error = "Slug '{$fields['slug']}' already taken — pick another."; break;
+                }
 
-                $stmt = $db->prepare(
-                    'INSERT INTO tblSongbookSeries (Name, Slug, Description, Colour) VALUES (?, ?, ?, ?)'
-                );
-                $stmt->bind_param('ssss', $name, $slug, $description, $colour);
-                $stmt->execute();
-                $newId = (int)$db->insert_id;
-                $stmt->close();
+                $newId = songbookSeriesAdminCreate($db, $fields);
 
                 if ($hasPubIdCols) {
-                    $stmt = $db->prepare(
-                        'UPDATE tblSongbookSeries
-                            SET Isbn = ?, Issn = ?, ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ?
-                          WHERE Id = ?'
-                    );
-                    $stmt->bind_param('sssssi', $isbnVal, $issnVal, $arkVal, $olWorkVal, $olEditionVal, $newId);
-                    $stmt->execute();
-                    $stmt->close();
+                    songbookSeriesAdminPersistPublicationIds($db, $newId, $pubIds);
                 }
 
                 if (function_exists('logActivity')) {
                     logActivity('songbook_series.create', 'songbook_series', (string)$newId, [
-                        'name' => $name, 'slug' => $slug, 'description' => $description,
+                        'name' => $fields['name'], 'slug' => $fields['slug'], 'description' => $fields['description'],
                         'publication_ids' => $hasPubIdCols ? array_filter([
-                            'isbn' => $isbnVal, 'issn' => $issnVal, 'ark_id' => $arkVal,
-                            'openlibrary_work_id' => $olWorkVal, 'openlibrary_edition_id' => $olEditionVal,
+                            'isbn' => $pubIds['isbn'], 'issn' => $pubIds['issn'], 'ark_id' => $pubIds['ark'],
+                            'openlibrary_work_id' => $pubIds['olWork'], 'openlibrary_edition_id' => $pubIds['olEdition'],
                         ], fn($v) => $v !== null) : null,
                     ]);
                 }
-                $success = "Series '{$name}' created.";
+                $success = "Series '{$fields['name']}' created.";
                 break;
             }
 
@@ -360,56 +312,25 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             }
 
             case 'update': {
-                $id          = (int)($_POST['id']          ?? 0);
-                $name        = trim((string)($_POST['name']        ?? ''));
-                $description = trim((string)($_POST['description'] ?? ''));
-                $slug        = trim((string)($_POST['slug']        ?? ''));
-                if ($id <= 0)     { $error = 'Series id is required.'; break; }
-                if ($name === '') { $error = 'Name is required.'; break; }
-                if ($slug === '') { $slug  = $slugFor($name); }
-                if ($slug === '') { $error = 'Name has no usable slug characters — provide one explicitly.'; break; }
-                $name        = mb_substr($name, 0, 120);
-                $slug        = mb_substr($slug, 0, 120);
-                $description = mb_substr($description, 0, 255);
-                /* #1181 — optional shared series colour (blank = theme default). */
-                $colour = strtoupper(trim((string)($_POST['colour'] ?? '')));
-                if ($colour !== '' && !preg_match('/^#[0-9A-F]{6}$/', $colour)) {
-                    $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
-                }
+                $id = (int)($_POST['id'] ?? 0);
+                if ($id <= 0) { $error = 'Series id is required.'; break; }
+
+                [$fields, $fieldError] = songbookSeriesAdminValidateCoreFields($_POST);
+                if ($fieldError !== null) { $error = $fieldError; break; }
 
                 /* Pull the before-row for the audit log + collision check. */
-                $stmt = $db->prepare('SELECT Name, Slug, Description FROM tblSongbookSeries WHERE Id = ?');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
-                $before = $stmt->get_result()->fetch_assoc() ?: null;
-                $stmt->close();
+                $before = songbookSeriesAdminFetch($db, $id);
                 if (!$before) { $error = 'Series not found.'; break; }
 
                 /* Slug uniqueness check (excluding self). */
-                $dup = $db->prepare('SELECT Id FROM tblSongbookSeries WHERE Slug = ? AND Id <> ?');
-                $dup->bind_param('si', $slug, $id);
-                $dup->execute();
-                $dupExists = $dup->get_result()->fetch_row() !== null;
-                $dup->close();
-                if ($dupExists) { $error = "Slug '{$slug}' already taken by another series."; break; }
+                if (songbookSeriesAdminSlugTaken($db, $fields['slug'], $id)) {
+                    $error = "Slug '{$fields['slug']}' already taken by another series."; break;
+                }
 
                 /* #1765 Feature 3 — publication-entity identifiers, same
                    validated-via-shared-helper shape as 'create' above. */
-                $isbnClean = mediaIdentifierPublicationClean('isbn', (string)($_POST['isbn'] ?? ''));
-                if ($isbnClean['error'] !== null) { $error = $isbnClean['error']; break; }
-                $issnClean = mediaIdentifierPublicationClean('issn', (string)($_POST['issn'] ?? ''));
-                if ($issnClean['error'] !== null) { $error = $issnClean['error']; break; }
-                $arkClean = mediaIdentifierPublicationClean('ark', (string)($_POST['ark_id'] ?? ''));
-                if ($arkClean['error'] !== null) { $error = $arkClean['error']; break; }
-                $olWorkClean = mediaIdentifierPublicationClean('openlibrary-work', (string)($_POST['openlibrary_work_id'] ?? ''));
-                if ($olWorkClean['error'] !== null) { $error = $olWorkClean['error']; break; }
-                $olEditionClean = mediaIdentifierPublicationClean('openlibrary-edition', (string)($_POST['openlibrary_edition_id'] ?? ''));
-                if ($olEditionClean['error'] !== null) { $error = $olEditionClean['error']; break; }
-                $isbnVal      = $isbnClean['value'];
-                $issnVal      = $issnClean['value'];
-                $arkVal       = $arkClean['value'];
-                $olWorkVal    = $olWorkClean['value'];
-                $olEditionVal = $olEditionClean['value'];
+                [$pubIds, $pubError] = songbookSeriesAdminValidatePublicationIds($_POST);
+                if ($pubError !== null) { $error = $pubError; break; }
 
                 /* Reconcile membership rows. The edit modal posts:
                      member_ids[]            = [12, 47, 99]
@@ -419,93 +340,36 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                    field is intentionally not exposed in v1 — the schema
                    carries it for future use; v2 can light up an inline
                    editor if curators ask. */
-                $postedIds = $_POST['member_ids']  ?? [];
-                $postedSrt = $_POST['member_sort'] ?? [];
-                if (!is_array($postedIds)) $postedIds = [];
-                if (!is_array($postedSrt)) $postedSrt = [];
-                $postedIds = array_values(array_unique(array_map('intval', $postedIds)));
-                $postedIds = array_values(array_filter($postedIds, static fn(int $v): bool => $v > 0));
+                [$postedIds, $postedSrt] = songbookSeriesAdminParseMemberPost(
+                    $_POST['member_ids'] ?? [],
+                    $_POST['member_sort'] ?? []
+                );
 
                 $db->begin_transaction();
                 try {
-                    $stmt = $db->prepare(
-                        'UPDATE tblSongbookSeries
-                            SET Name = ?, Slug = ?, Description = ?, Colour = ?
-                          WHERE Id = ?'
-                    );
-                    $stmt->bind_param('ssssi', $name, $slug, $description, $colour, $id);
-                    $stmt->execute();
-                    $stmt->close();
+                    songbookSeriesAdminUpdate($db, $id, $fields);
 
                     /* #1765 Feature 3 — schema-tolerant secondary UPDATE,
                        same pattern as songbooks.php, inside this same
                        transaction so a downstream failure rolls it back too. */
                     if ($hasPubIdCols) {
-                        $stmt = $db->prepare(
-                            'UPDATE tblSongbookSeries
-                                SET Isbn = ?, Issn = ?, ArkId = ?, OpenLibraryWorkId = ?, OpenLibraryEditionId = ?
-                              WHERE Id = ?'
-                        );
-                        $stmt->bind_param('sssssi', $isbnVal, $issnVal, $arkVal, $olWorkVal, $olEditionVal, $id);
-                        $stmt->execute();
-                        $stmt->close();
+                        songbookSeriesAdminPersistPublicationIds($db, $id, $pubIds);
                     }
 
-                    /* Step 1: remove rows not in $postedIds. Schema is
-                       composite-PK (SeriesId, SongbookId) so DELETE is
-                       cheap and safe even on a large series. */
-                    if ($postedIds) {
-                        $ph = implode(',', array_fill(0, count($postedIds), '?'));
-                        $sql = "DELETE FROM tblSongbookSeriesMembership
-                                 WHERE SeriesId = ?
-                                   AND SongbookId NOT IN ($ph)";
-                        $stmt = $db->prepare($sql);
-                        $types = 'i' . str_repeat('i', count($postedIds));
-                        $args  = array_merge([$id], $postedIds);
-                        $stmt->bind_param($types, ...$args);
-                        $stmt->execute();
-                        $stmt->close();
-                    } else {
-                        $stmt = $db->prepare(
-                            'DELETE FROM tblSongbookSeriesMembership WHERE SeriesId = ?'
-                        );
-                        $stmt->bind_param('i', $id);
-                        $stmt->execute();
-                        $stmt->close();
-                    }
-
-                    /* Step 2: upsert each posted membership with its
-                       SortOrder. ON DUPLICATE KEY UPDATE keeps the
-                       statement single-shot and idempotent on re-saves. */
-                    if ($postedIds) {
-                        $stmt = $db->prepare(
-                            'INSERT INTO tblSongbookSeriesMembership
-                                 (SeriesId, SongbookId, SortOrder)
-                             VALUES (?, ?, ?)
-                             ON DUPLICATE KEY UPDATE SortOrder = VALUES(SortOrder)'
-                        );
-                        foreach ($postedIds as $sbId) {
-                            $sortOrder = isset($postedSrt[$sbId])
-                                ? max(0, min(32767, (int)$postedSrt[$sbId]))
-                                : 0;
-                            $stmt->bind_param('iii', $id, $sbId, $sortOrder);
-                            $stmt->execute();
-                        }
-                        $stmt->close();
-                    }
+                    songbookSeriesAdminReplaceMembership($db, $id, $postedIds, $postedSrt);
 
                     $db->commit();
 
                     if (function_exists('logActivity')) {
                         $changed = [];
-                        if ((string)$before['Name']        !== $name)        $changed[] = 'Name';
-                        if ((string)$before['Slug']        !== $slug)        $changed[] = 'Slug';
-                        if ((string)$before['Description'] !== $description) $changed[] = 'Description';
+                        if ((string)$before['Name']        !== $fields['name'])        $changed[] = 'Name';
+                        if ((string)$before['Slug']        !== $fields['slug'])        $changed[] = 'Slug';
+                        if ((string)$before['Description'] !== $fields['description']) $changed[] = 'Description';
                         logActivity('songbook_series.edit', 'songbook_series', (string)$id, [
                             'fields'           => $changed,
                             'before'           => array_intersect_key($before, array_flip($changed)),
                             'after'            => array_intersect_key([
-                                'Name' => $name, 'Slug' => $slug, 'Description' => $description,
+                                'Name' => $fields['name'], 'Slug' => $fields['slug'], 'Description' => $fields['description'],
                             ], array_flip($changed)),
                             'member_count'     => count($postedIds),
                             /* #1765 Feature 3 — logged unconditionally (not diffed
@@ -513,12 +377,12 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                                own $auditExtras treatment of these same two
                                columns) since $before doesn't carry them. */
                             'publication_ids'  => $hasPubIdCols ? array_filter([
-                                'isbn' => $isbnVal, 'issn' => $issnVal, 'ark_id' => $arkVal,
-                                'openlibrary_work_id' => $olWorkVal, 'openlibrary_edition_id' => $olEditionVal,
+                                'isbn' => $pubIds['isbn'], 'issn' => $pubIds['issn'], 'ark_id' => $pubIds['ark'],
+                                'openlibrary_work_id' => $pubIds['olWork'], 'openlibrary_edition_id' => $pubIds['olEdition'],
                             ], fn($v) => $v !== null) : null,
                         ]);
                     }
-                    $success = "Series '{$name}' updated.";
+                    $success = "Series '{$fields['name']}' updated.";
                 } catch (\Throwable $e) {
                     $db->rollback();
                     throw $e;
@@ -532,18 +396,11 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 /* FK on tblSongbookSeriesMembership is ON DELETE CASCADE
                    so removing the series cleans up its membership rows in
                    the same transaction. */
-                $stmt = $db->prepare('SELECT Name FROM tblSongbookSeries WHERE Id = ?');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
-                $row = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
+                $row = songbookSeriesAdminFetch($db, $id);
                 if (!$row) { $error = 'Series not found.'; break; }
                 $oldName = (string)$row['Name'];
 
-                $stmt = $db->prepare('DELETE FROM tblSongbookSeries WHERE Id = ?');
-                $stmt->bind_param('i', $id);
-                $stmt->execute();
-                $stmt->close();
+                songbookSeriesAdminDelete($db, $id);
                 if (function_exists('logActivity')) {
                     logActivity('songbook_series.delete', 'songbook_series', (string)$id, [
                         'name' => $oldName,
@@ -629,7 +486,7 @@ if ($hasSchema) {
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-collection me-2"></i>Songbook Series</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-collection me-2"></i>Songbook Series</h1>
         <p class="text-secondary small mb-4">
             Group songbooks that belong together but have no single main book to
             point to — like Songs of Fellowship volumes 1/2/3/4, or themed
@@ -656,22 +513,22 @@ if ($hasSchema) {
                     tables haven't been created on this database yet (#782 phase A schema).
                 </p>
                 <a href="/manage/setup-database" class="btn btn-amber btn-sm">
-                    <i class="bi bi-database-gear me-1"></i>Run /manage/setup-database
+                    <i aria-hidden="true" class="bi bi-database-gear me-1"></i>Run /manage/setup-database
                 </a>
             </div>
         <?php else: ?>
 
         <!-- Series list -->
         <div class="card-admin p-3 mb-4">
-            <h2 class="h6 mb-3"><i class="bi bi-list-ul me-2"></i>Existing series</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-list-ul me-2"></i>Existing series</h2>
             <table class="table table-sm align-middle cp-sortable mb-0 admin-table-responsive">
                 <thead>
                     <tr class="text-muted small">
-                        <th data-col-priority="primary"   data-sort-key="name" data-sort-type="text">Name</th>
-                        <th data-col-priority="secondary" data-sort-key="slug" data-sort-type="text">Slug</th>
-                        <th data-col-priority="primary"   data-sort-key="members" data-sort-type="number" class="text-center">Members</th>
-                        <th data-col-priority="tertiary"  data-sort-key="description" data-sort-type="text">Description</th>
-                        <th data-col-priority="primary"   class="text-end">Actions</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="name" data-sort-type="text">Name</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="slug" data-sort-type="text">Slug</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="members" data-sort-type="number" class="text-center">Members</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="description" data-sort-type="text">Description</th>
+                        <th scope="col" data-col-priority="primary"   class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -711,7 +568,7 @@ if ($hasSchema) {
                                 <button type="button" class="btn btn-sm btn-outline-info"
                                         onclick="openSeriesEditModal(<?= htmlspecialchars((string)$rowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Edit series + members">
-                                    <i class="bi bi-pencil"></i>
+                                    <i aria-hidden="true" class="bi bi-pencil"></i>
                                 </button>
                                 <!-- #1765 Feature 5 — export this series as a MARCXML file. -->
                                 <a class="btn btn-sm btn-outline-secondary"
@@ -723,7 +580,7 @@ if ($hasSchema) {
                                 <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick="openSeriesDeleteModal(<?= htmlspecialchars((string)$deleteJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Delete series (memberships cascade)">
-                                    <i class="bi bi-trash"></i>
+                                    <i aria-hidden="true" class="bi bi-trash"></i>
                                 </button>
                             </td>
                         </tr>
@@ -739,10 +596,10 @@ if ($hasSchema) {
         <form method="POST" class="card-admin p-3 mb-4">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
-            <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a series</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a series</h2>
             <div class="row g-2">
                 <div class="col-sm-4">
-                    <label class="form-label small">Name</label>
+                    <label class="form-label small" for="create-name">Name</label>
                     <input type="text" name="name" id="create-name"
                            class="form-control form-control-sm"
                            maxlength="120" required
@@ -759,8 +616,8 @@ if ($hasSchema) {
                     ]) ?>
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Description (optional)</label>
-                    <input type="text" name="description"
+                    <label class="form-label small" for="create-description">Description (optional)</label>
+                    <input type="text" name="description" id="create-description"
                            class="form-control form-control-sm"
                            maxlength="255"
                            placeholder="Brief context for curators">
@@ -769,7 +626,7 @@ if ($hasSchema) {
                     <!-- #1181 — optional shared series colour; the swatch writes
                          its hex into the text field (the submitted value). Blank
                          text = theme default. Auto-contrast (#1179) keeps it readable. -->
-                    <label class="form-label small">Colour <small class="text-muted">(optional, shared)</small></label>
+                    <label class="form-label small" for="create-colour">Colour <small class="text-muted">(optional, shared)</small></label>
                     <div class="input-group input-group-sm">
                         <input type="color" class="form-control form-control-color" value="#888888"
                                title="Pick a colour" aria-label="Series colour swatch"
@@ -791,7 +648,7 @@ if ($hasSchema) {
             ?>
             <?php endif; ?>
             <button type="submit" class="btn btn-amber btn-sm mt-3">
-                <i class="bi bi-plus me-1"></i>Create series
+                <i aria-hidden="true" class="bi bi-plus me-1"></i>Create series
             </button>
         </form>
 
@@ -819,7 +676,8 @@ if ($hasSchema) {
         </form>
 
         <!-- Edit Modal -->
-        <div class="modal fade" id="seriesEditModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30, M6 pattern): wire the modal-title heading to the dialog. -->
+        <div class="modal fade" id="seriesEditModal" tabindex="-1" aria-labelledby="seriesEditModal-label">
             <div class="modal-dialog modal-lg">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST">
@@ -827,15 +685,15 @@ if ($hasSchema) {
                         <input type="hidden" name="action" value="update">
                         <input type="hidden" name="id" id="edit-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title">
-                                <i class="bi bi-pencil me-2"></i>Edit series — <span id="edit-title-label"></span>
+                            <h5 class="modal-title" id="seriesEditModal-label">
+                                <i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit series — <span id="edit-title-label"></span>
                             </h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
                             <div class="row g-2 mb-3">
                                 <div class="col-sm-7">
-                                    <label class="form-label">Name</label>
+                                    <label class="form-label" for="edit-name">Name</label>
                                     <input type="text" name="name" id="edit-name"
                                            class="form-control" maxlength="120" required>
                                 </div>
@@ -851,14 +709,14 @@ if ($hasSchema) {
                                 </div>
                             </div>
                             <div class="mb-3">
-                                <label class="form-label">Description (optional)</label>
+                                <label class="form-label" for="edit-description">Description (optional)</label>
                                 <input type="text" name="description" id="edit-description"
                                        class="form-control" maxlength="255">
                             </div>
                             <div class="mb-3">
                                 <!-- #1181 — shared series colour. All member songbooks
                                      inherit it (own songbook colour still wins). -->
-                                <label class="form-label">Colour <small class="text-muted">(optional — shared by all member songbooks)</small></label>
+                                <label class="form-label" for="edit-colour">Colour <small class="text-muted">(optional — shared by all member songbooks)</small></label>
                                 <div class="input-group" style="max-width:18rem">
                                     <input type="color" class="form-control form-control-color" id="edit-colour-swatch"
                                            value="#888888" title="Pick a colour" aria-label="Series colour swatch"
@@ -881,7 +739,7 @@ if ($hasSchema) {
 
                             <hr>
 
-                            <h6 class="mb-2"><i class="bi bi-collection me-2"></i>Members</h6>
+                            <h6 class="mb-2"><i aria-hidden="true" class="bi bi-collection me-2"></i>Members</h6>
                             <p class="form-text small mt-0 mb-2">
                                 Each row is a member songbook. Sort-order controls display order
                                 within the series (10-spaced steps suggested — leaves room to slot
@@ -891,10 +749,10 @@ if ($hasSchema) {
                             <table class="table table-sm align-middle mb-2" id="edit-members-table">
                                 <thead>
                                     <tr class="text-muted small">
-                                        <th style="width:6rem">Sort</th>
-                                        <th style="width:6rem">Abbr</th>
-                                        <th>Name</th>
-                                        <th class="text-end" style="width:3rem"></th>
+                                        <th scope="col" style="width:6rem">Sort</th>
+                                        <th scope="col" style="width:6rem">Abbr</th>
+                                        <th scope="col">Name</th>
+                                        <th scope="col" class="text-end" style="width:3rem"></th>
                                     </tr>
                                 </thead>
                                 <tbody id="edit-members-tbody">
@@ -911,7 +769,7 @@ if ($hasSchema) {
 
                             <div class="d-flex gap-2 align-items-end">
                                 <div class="flex-grow-1">
-                                    <label class="form-label small mb-1">Add a member songbook</label>
+                                    <label class="form-label small mb-1" for="edit-add-search">Add a member songbook</label>
                                     <input type="text" id="edit-add-search"
                                            class="form-control form-control-sm"
                                            list="edit-add-datalist"
@@ -920,7 +778,7 @@ if ($hasSchema) {
                                     <datalist id="edit-add-datalist"></datalist>
                                 </div>
                                 <button type="button" class="btn btn-outline-info btn-sm" id="edit-add-btn">
-                                    <i class="bi bi-plus-lg me-1"></i>Add
+                                    <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add
                                 </button>
                             </div>
                         </div>
@@ -934,7 +792,8 @@ if ($hasSchema) {
         </div>
 
         <!-- Delete Modal -->
-        <div class="modal fade" id="seriesDeleteModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30) — see the seriesEditModal comment above. -->
+        <div class="modal fade" id="seriesDeleteModal" tabindex="-1" aria-labelledby="seriesDeleteModal-label">
             <div class="modal-dialog">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST">
@@ -942,10 +801,10 @@ if ($hasSchema) {
                         <input type="hidden" name="action" value="delete">
                         <input type="hidden" name="id" id="delete-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title">
-                                <i class="bi bi-trash me-2"></i>Delete series — <span id="delete-name-label"></span>
+                            <h5 class="modal-title" id="seriesDeleteModal-label">
+                                <i aria-hidden="true" class="bi bi-trash me-2"></i>Delete series — <span id="delete-name-label"></span>
                             </h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
                             <p class="text-warning mb-2">
@@ -1021,7 +880,7 @@ if ($hasSchema) {
                   + '<td class="text-end">'
                   + '  <button type="button" class="btn btn-sm btn-outline-danger"'
                   + '          title="Remove from series" data-remove-member="' + id + '">'
-                  + '    <i class="bi bi-x-lg"></i>'
+                  + '    <i aria-hidden="true" class="bi bi-x-lg"></i>'
                   + '  </button>'
                   + '</td>';
                 tbody.appendChild(tr);

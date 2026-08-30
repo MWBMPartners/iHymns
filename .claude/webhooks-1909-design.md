@@ -526,11 +526,19 @@ adds what an **attacker-controlled** target demands:
 - Never logged: `LastError`/`AttemptLogJson` carry status + curl error class only;
   the activity log records subscription ids, never secrets (the
   `activity_log.php` PRIVACY contract).
-- Known gap, accepted + recorded: `secretRotateReencrypt()` re-wraps only
-  tblAppSettings — a **master-key** rotation leaves webhook secrets under the old
-  keyid until touched. Safe while the old keyid is retained in the keyset (decrypt
-  reads the keyid from the envelope); a follow-up "re-wrap table secrets" card is
-  filed at implementation time (§A.14).
+- **Closed by #1989**: `secretEncryptInPlace()`/`secretRotateReencrypt()` (both in
+  `includes/secret_crypto_admin.php`) now also re-wrap this TABLE-held secret —
+  `tblWebhookSubscriptions.Secret`/`.SecretPrevious` — via the shared registry
+  (`secretTableSecretColumns()`) + walker (`_secretAdminRewrapTableSecrets()`), which
+  run INSIDE the same transaction as the `tblAppSettings` loop and fold into the
+  identical `encrypted`/`rewrapped`/`skipped`/`undecryptable` result shape (rule #35 —
+  no second consumer to keep in sync; the existing admin-panel render and the
+  encrypt-in-place migration's report both pick up webhook rows automatically). The
+  double-encryption hazard this previously left open (a stray re-wrap of an
+  already-enveloped value would nest an envelope, corrupting the signing secret
+  silently) is closed by routing the "already encrypted?" decision through the PURE
+  `secretTableRewrapDecision()`, exhaustively truth-tabled by
+  `tests/php/test-secret-crypto-rewrap.php`. Was previously the accepted gap below (§A.14).
 
 ### 7.3 Endpoint verification handshake
 
@@ -724,7 +732,7 @@ loopback stub) → soak: verify sign/retry/dead-letter/re-drive → beta → pro
 | A.11 | **Replay** against the receiver | `t` inside the signed string + documented 300s tolerance (§7.1) |
 | A.12 | **Cross-channel leak** — alpha test events hitting a production partner | `Channel` on all three tables, filtered in EVERY fan-out/claim/list query (rule #26's prod-stale lesson); channel in the envelope so receivers can assert |
 | A.13 | **DB bloat** — unbounded ledger/delivery growth | `ExpiresAt` stamped at insert (30d); pruned by the drain pass + `cleanup.php`; caps per pass |
-| A.14 | **Master-key rotation strands table secrets** | Envelope carries keyid; old keys retained during overlap; follow-up "re-wrap table-held secrets" card filed at implementation (§7.2) |
+| A.14 | **Master-key rotation strands table secrets** — CLOSED #1989 | Envelope carries keyid; old keys retained during overlap; `secretEncryptInPlace()`/`secretRotateReencrypt()` now re-wrap `tblWebhookSubscriptions.Secret`/`.SecretPrevious` too via the shared `_secretAdminRewrapTableSecrets()` walker (§7.2) |
 | A.15 | **Drain-key leak** | Key grants only "spend our own budget faster"; rate-limited; regenerable on the configuration card; hash_equals compare |
 | A.16 | **Loop** — subscription pointed at our own API | Self-host block list (§6.5.5) |
 
@@ -851,3 +859,55 @@ core are identical under every option); B1 should be answered before C4.
   this doc; ProjectBrief's "STILL TODO: Phase-D webhooks" line updated to point
   here (a hand-maintained TODO adjacent to shipped code is the rule-#26 stale
   class — the pointer, not a status claim, is what goes there).
+
+---
+
+## Addendum (2026-08-29): #1987 — owner reversal of the §7.2 / A.6 "reveal is not theatre" call
+
+§7.2 above and abuse-vector A.6 in §A both argued **Reveal is allowed** for the
+webhook signing secret — reasoning that because the secret is necessarily
+stored recoverably (it has to be, to sign outgoing requests), *hiding* it from
+an admin who already controls the row would be theatre, not real protection.
+That reasoning held for a while (`webhookSubscriptionRevealSecret()` shipped,
+gated `manage_webhooks`, activity-logged as `webhook.secret.reveal`) but the
+owner has since **reversed the decision** (#1987, 2026-08-29): the reveal
+action decrypts and hands the CURRENT signing secret back to an admin session
+on demand, and that is a genuine decrypt-to-response leak surface regardless
+of who is nominally allowed to trigger it — the same class of risk API keys
+never had, because a key's hash-at-rest design makes the plaintext
+architecturally unrecoverable after mint. Webhook secrets cannot be hashed
+(the server must recover the plaintext to compute the outgoing HMAC), so the
+fix is not "hash it like a key" — it is **retire the reveal path outright**
+and lean on the rotation story that already existed for exactly this recovery
+case: `/manage/webhooks`'s "Rotate secret" mints a fresh secret (shown once,
+exactly like create) and keeps the previous one dual-signing for the existing
+`WEBHOOK_ROTATION_GRACE_HOURS` (24h) window, so an admin who lost the secret
+loses nothing but a few seconds of asking the partner to note the new value.
+
+**What changed, concretely:**
+- `webhookSubscriptionRevealSecret()` (`includes/webhook_admin.php`) — **deleted**.
+  `webhookSecretReveal()` (`includes/webhooks.php`, the decrypt PRIMITIVE this
+  function called) is untouched — it is still the correct decrypt seam for the
+  SIGNING path (`webhookSendVerification()` here, `_webhookAttemptDelivery()`
+  in webhooks.php) and was never the thing #1987 objected to.
+- `manage/webhooks.php` — the `reveal_secret` POST action and its "Reveal
+  secret" button are **deleted**; the one-shot `$revealSecret` display panel
+  stays exactly as it was, because create and rotate still need somewhere to
+  show the new plaintext ONCE.
+- `api.php` — **untouched**. §8.3/A19's API twin never ported `reveal_secret`
+  in the first place (it was always page-only), so there was no API-side
+  reveal action to retire.
+- New standing guard: `tests/php/test-webhook-secret-show-once.php` — proves,
+  tree-wide, that every `webhookSecretReveal(` call site's enclosing function
+  is signing/verification-only (never a function whose body reaches
+  `sendJson(`/`json_encode(`/`$revealSecret`/`htmlspecialchars(`), so a future
+  decrypt-to-response path anywhere in the tree fails loud rather than
+  reintroducing this leak by a different name.
+
+§7.2's "Reveal is allowed... hiding it would be theatre" sentence and A.6's
+"reveal entitlement-gated + logged" mitigation are **historical record of a
+decision that was later reversed** — left as originally written above (this
+addendum is appended, not a rewrite of history), but no longer the current
+design. Do not resurrect a reveal-existing-secret action on the strength of
+§7.2's argument without a fresh owner sign-off; #1987 already had that
+conversation and the fresh secret was recoverable-by-rotation the whole time.

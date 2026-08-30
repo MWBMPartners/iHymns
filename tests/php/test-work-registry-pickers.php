@@ -503,12 +503,20 @@ $helpersFile     = $web . '/includes/publisher_helpers.php';
 $worksFile       = $web . '/manage/works.php';
 $publishersFile  = $web . '/manage/publishers.php';
 $songbooksFile   = $web . '/manage/songbooks.php';
+/* #1988 — manage/works.php's $persistWorkExtraFields (and the other #1741
+   P4b closures) now one-line-delegate to includes/work_admin.php (the
+   $slugFor -> workSlugify() precedent, rule #22) so the API-coverage
+   admin_work_create/_update actions reuse the SAME write core. B1 below
+   follows the delegation to check the CopyrightHolder<->CopyrightHolderId
+   lockstep where it now actually lives. */
+$workAdminFile   = $web . '/includes/work_admin.php';
 
 foreach ([
     'includes/publisher_helpers.php' => $helpersFile,
     'manage/works.php'               => $worksFile,
     'manage/publishers.php'          => $publishersFile,
     'manage/songbooks.php'           => $songbooksFile,
+    'includes/work_admin.php'        => $workAdminFile,
 ] as $label => $path) {
     if (!is_readable($path)) {
         fwrite(STDERR, "FATAL: could not read {$label} at {$path}\n");
@@ -521,6 +529,19 @@ foreach ([
 $sbFormFieldsFile = $web . '/manage/includes/songbook-form-fields.php';
 if (!is_readable($sbFormFieldsFile)) {
     fwrite(STDERR, "FATAL: could not read manage/includes/songbook-form-fields.php at {$sbFormFieldsFile}\n");
+    exit(1);
+}
+
+/* #1993 — songbooks.php's 'create' case was re-pointed onto the shared
+   songbookAdminValidateCreate()/…Create() core (rule #22, same posture as
+   #1988's work_admin.php extraction above): the field-parsing + the
+   publisher-resolve-and-link block §F polices moved OUT of the case body
+   and into this file. §F below now follows that ONE level of delegation,
+   the same way B1 already follows works.php's delegation into
+   work_admin.php. */
+$songbookAdminFile = $web . '/includes/songbook_admin.php';
+if (!is_readable($songbookAdminFile)) {
+    fwrite(STDERR, "FATAL: could not read includes/songbook_admin.php at {$songbookAdminFile}\n");
     exit(1);
 }
 
@@ -537,6 +558,16 @@ if (!is_readable($groupsFile)) {
 $cataloguesFile = $web . '/manage/catalogues.php';
 if (!is_readable($cataloguesFile)) {
     fwrite(STDERR, "FATAL: could not read manage/catalogues.php at {$cataloguesFile}\n");
+    exit(1);
+}
+
+/* #1969 API-coverage batch 4b-i (A4) — catalogues.php's add_member handler
+   was re-pointed at includes/catalogue_admin.php's shared core (rule #22),
+   so §H's "verify before write" checks below now follow the delegation one
+   level deep into THIS file rather than finding the raw SQL inline. */
+$catalogueAdminFile = $web . '/includes/catalogue_admin.php';
+if (!is_readable($catalogueAdminFile)) {
+    fwrite(STDERR, "FATAL: could not read includes/catalogue_admin.php at {$catalogueAdminFile}\n");
     exit(1);
 }
 
@@ -567,6 +598,7 @@ $sbFormFieldsRaw   = (string)file_get_contents($sbFormFieldsFile);
 $groupsRaw         = (string)file_get_contents($groupsFile);
 $publishersRaw     = (string)file_get_contents($publishersFile);
 $cataloguesRaw     = (string)file_get_contents($cataloguesFile);
+$catalogueAdminRaw = (string)file_get_contents($catalogueAdminFile);
 $requestsRaw       = (string)file_get_contents($requestsFile);
 $reqJsRaw          = (string)file_get_contents($reqJsFile);
 $reqPhpRaw         = (string)file_get_contents($reqPhpFile);
@@ -576,17 +608,23 @@ $reqPhpRaw         = (string)file_get_contents($reqPhpFile);
    applied to songbooks.php for §F, to groups.php/publishers.php for §G, and
    to catalogues.php for §H (all have picker wiring living inside a plain
    <script> tag — the identical T_INLINE_HTML trap). */
-$helpersPhpView = wrpStripPhpComments($helpersRaw);
-$worksPhpView   = wrpStripPhpComments($worksRaw);
-$worksAllView   = wrpStripAllComments($worksRaw);
+$workAdminRaw = (string)file_get_contents($workAdminFile);
+$songbookAdminRaw = (string)file_get_contents($songbookAdminFile);
+
+$helpersPhpView   = wrpStripPhpComments($helpersRaw);
+$worksPhpView     = wrpStripPhpComments($worksRaw);
+$worksAllView     = wrpStripAllComments($worksRaw);
+$workAdminPhpView = wrpStripPhpComments($workAdminRaw);
 $songbooksPhpView = wrpStripPhpComments($songbooksRaw);
 $songbooksAllView = wrpStripAllComments($songbooksRaw);
+$songbookAdminPhpView = wrpStripPhpComments($songbookAdminRaw);
 $groupsPhpView     = wrpStripPhpComments($groupsRaw);
 $groupsAllView     = wrpStripAllComments($groupsRaw);
 $publishersPhpView = wrpStripPhpComments($publishersRaw);
 $publishersAllView = wrpStripAllComments($publishersRaw);
 $cataloguesPhpView = wrpStripPhpComments($cataloguesRaw);
 $cataloguesAllView = wrpStripAllComments($cataloguesRaw);
+$catalogueAdminPhpView = wrpStripPhpComments($catalogueAdminRaw);
 $requestsPhpView   = wrpStripPhpComments($requestsRaw);
 $requestsAllView   = wrpStripAllComments($requestsRaw);
 /* request-a-song.js is JS, not PHP — token_get_all() is PHP-syntax-specific,
@@ -649,18 +687,29 @@ if ($gateHandlerCount < 3) {
 /* ---- B1: works.php's $persistWorkExtraFields closure writes
    CopyrightHolder and CopyrightHolderId TOGETHER, resolving the latter
    through publisherResolvePickedOrCreate() — the TuneName/TuneId lockstep
-   shape (rule #37/#43), never a raw client-supplied id. PHP-comment-
-   stripped view: this file's OWN doc-comment right above the write
-   deliberately names publisherResolvePickedOrCreate() beside the real
-   call (rule #34's wrong-but-green trap), so an unstripped scan would
-   stay green even if the real call were deleted. ---- */
+   shape (rule #37/#43), never a raw client-supplied id.
+   #1988 — the closure now one-line-delegates to the shared
+   workPersistExtraFields() (includes/work_admin.php, rule #22) so
+   admin_work_create/_update (api.php) write the SAME lockstep; B1 follows
+   the delegation and checks the three literals at their new home instead
+   of expecting them inside the (now one-line) closure body. PHP-comment-
+   stripped view throughout: this file's OWN doc-comment right above the
+   write deliberately names publisherResolvePickedOrCreate() beside the
+   real call (rule #34's wrong-but-green trap), so an unstripped scan
+   would stay green even if the real call were deleted. ---- */
 $persistBlock = wrpSliceAssignedClosure($worksPhpView, 'persistWorkExtraFields');
 if ($persistBlock === '') {
     $failures[] = 'could not locate $persistWorkExtraFields = static function (...) { ... }; in manage/works.php';
+} elseif (strpos($persistBlock, 'workPersistExtraFields(') === false) {
+    $failures[] = '$persistWorkExtraFields no longer delegates to the shared workPersistExtraFields() (includes/work_admin.php) — either re-forked inline, or the #1988 extraction was reverted';
+}
+$workPersistExtraFieldsFn = wrpSliceFunctionDecl($workAdminPhpView, 'workPersistExtraFields');
+if ($workPersistExtraFieldsFn === '') {
+    $failures[] = 'includes/work_admin.php does not declare function workPersistExtraFields() — the #1988 extraction target is missing';
 } else {
     foreach (['CopyrightHolder = ?', 'CopyrightHolderId = ?', 'publisherResolvePickedOrCreate('] as $needle) {
-        if (strpos($persistBlock, $needle) === false) {
-            $failures[] = "\$persistWorkExtraFields no longer contains '{$needle}' — the CopyrightHolder<->CopyrightHolderId lockstep write is broken (#1864, rule #37/#43)";
+        if (strpos($workPersistExtraFieldsFn, $needle) === false) {
+            $failures[] = "workPersistExtraFields() (includes/work_admin.php) no longer contains '{$needle}' — the CopyrightHolder<->CopyrightHolderId lockstep write is broken (#1864/#1988, rule #37/#43)";
         }
     }
 }
@@ -743,12 +792,27 @@ if (strpos($worksAllView, 'FROM tblTunes') !== false) {
    $parseWorkExtraFields closure parameter, called with $_POST at both the
    create and update call sites). Raw markup (not comment-stripped — an
    HTML attribute is never inside a comment in the real file) + the
-   PHP-comment-stripped view for the read side. ---- */
+   PHP-comment-stripped view for the read side.
+   #1988 — $parseWorkExtraFields now one-line-delegates to the shared
+   workParseExtraFields() (includes/work_admin.php, rule #22), which is
+   where the ACTUAL $post['copyright_holder_id'] read now lives (the SAME
+   function admin_work_create/_update in api.php call with their JSON
+   body). Checked at BOTH ends of the delegation: the closure genuinely
+   delegates, AND the shared function still does the read. ---- */
 if (substr_count($worksRaw, 'name="copyright_holder_id"') < 2) {
     $failures[] = 'works.php emits name="copyright_holder_id" fewer than 2 times (expected at least 2: the create form + the edit modal) — the picker\'s hidden id is not wired into both forms';
 }
-if (!preg_match('/\$(?:_POST|post)\[\s*\'copyright_holder_id\'\s*\]/', $worksPhpView)) {
-    $failures[] = 'works.php never reads $post[\'copyright_holder_id\'] (or $_POST[...]) — the markup emits the field but nothing consumes it server-side (rule #33: a param nobody reads)';
+$parseBlock = wrpSliceAssignedClosure($worksPhpView, 'parseWorkExtraFields');
+if ($parseBlock === '') {
+    $failures[] = 'could not locate $parseWorkExtraFields = static function (...) { ... }; in manage/works.php';
+} elseif (strpos($parseBlock, 'workParseExtraFields(') === false) {
+    $failures[] = '$parseWorkExtraFields no longer delegates to the shared workParseExtraFields() (includes/work_admin.php) — either re-forked inline, or the #1988 extraction was reverted';
+}
+$workParseExtraFieldsFn = wrpSliceFunctionDecl($workAdminPhpView, 'workParseExtraFields');
+if ($workParseExtraFieldsFn === '') {
+    $failures[] = 'includes/work_admin.php does not declare function workParseExtraFields() — the #1988 extraction target is missing';
+} elseif (!preg_match('/\$(?:_POST|post)\[\s*\'copyright_holder_id\'\s*\]/', $workParseExtraFieldsFn)) {
+    $failures[] = 'workParseExtraFields() (includes/work_admin.php) never reads $post[\'copyright_holder_id\'] (or $_POST[...]) — the markup emits the field but nothing consumes it server-side (rule #33: a param nobody reads)';
 }
 
 /* =========================================================================
@@ -761,52 +825,78 @@ if (!preg_match('/\$(?:_POST|post)\[\s*\'copyright_holder_id\'\s*\]/', $worksPhp
    contract rule #37/#43 requires) and seeds tblSongbookPublishers — the SAME
    funnel + the SAME table the Edit arm's own richer multi-publisher
    reconciliation writes, so there is exactly one write path per table
-   (rule #37's "never a second sync path"). Bounded to the 'create' case ONLY
-   via wrpSliceCaseBlock() — the sibling 'update' case legitimately contains
-   neither of these (it goes through the multi-publisher picker instead), so
-   an unbounded whole-file scan could not tell "the create arm is wired"
-   apart from "this text appears somewhere in a 5000-line file". ---- */
+   (rule #37's "never a second sync path"). #1993 moved this block out of
+   the case body and into includes/songbook_admin.php's songbookAdminCreate()
+   (rule #22 — the SAME extraction B1 above already follows one level deep
+   for works.php/work_admin.php) — so this now (a) confirms the case body
+   DELEGATES via songbookAdminCreate(, then (b) follows that ONE level of
+   indirection into the core function's own body for the actual
+   resolve-and-link assertions, rather than expecting them inline. Bounded
+   to the 'create' case ONLY via wrpSliceCaseBlock() — the sibling 'update'
+   case legitimately contains neither of these (it goes through the
+   multi-publisher picker instead). */
 $sbCreateBlock = wrpSliceCaseBlock($songbooksPhpView, 'create');
+$sbAdminCreateFn = wrpSliceFunctionDecl($songbookAdminPhpView, 'songbookAdminCreate');
 if ($sbCreateBlock === '') {
     $failures[] = "could not locate case 'create': { ... } in manage/songbooks.php (slicer or file shape changed)";
+} elseif (strpos($sbCreateBlock, 'songbookAdminCreate(') === false) {
+    $failures[] = "songbooks.php's 'create' case never calls songbookAdminCreate() — the #1993 delegation to includes/songbook_admin.php is broken (rule #22)";
+}
+if ($sbAdminCreateFn === '') {
+    $failures[] = 'could not locate function songbookAdminCreate() in includes/songbook_admin.php (slicer or file shape changed)';
 } else {
-    if (strpos($sbCreateBlock, 'publisherResolvePickedOrCreate(') === false) {
-        $failures[] = "songbooks.php's 'create' case never calls publisherResolvePickedOrCreate() — the Publisher field's find-or-create-on-commit is broken (#1865, rule #37/#43)";
+    if (strpos($sbAdminCreateFn, 'publisherResolvePickedOrCreate(') === false) {
+        $failures[] = "includes/songbook_admin.php's songbookAdminCreate() never calls publisherResolvePickedOrCreate() — the Publisher field's find-or-create-on-commit is broken (#1865, rule #37/#43)";
     }
     /* Word-boundary, not strpos: rule #34's own documented trap —
        'tblSongbookPublishersXXX' still contains 'tblSongbookPublishers' as
        a bare substring, so a table-name typo/rename would stay wrong-but-
        green under a plain strpos() (see test-publisher-registry.php's
        pubHas() doc-comment for the identical lesson, applied here). */
-    if (!preg_match('/INSERT INTO tblSongbookPublishers\b/', $sbCreateBlock)) {
-        $failures[] = "songbooks.php's 'create' case never writes INSERT INTO tblSongbookPublishers — a brand-new songbook's Publisher field stops short of the registry link (#1865, rule #37)";
+    if (!preg_match('/INSERT INTO tblSongbookPublishers\b/', $sbAdminCreateFn)) {
+        $failures[] = "includes/songbook_admin.php's songbookAdminCreate() never writes INSERT INTO tblSongbookPublishers — a brand-new songbook's Publisher field stops short of the registry link (#1865, rule #37)";
     }
-    if (strpos($sbCreateBlock, 'publisherFindOrCreateByName(') !== false) {
-        $failures[] = "songbooks.php's 'create' case calls publisherFindOrCreateByName() directly — it must go through publisherResolvePickedOrCreate() so a verified picker claim is trusted over a blind name resolve (rule #37/#43)";
+    if (strpos($sbAdminCreateFn, 'publisherFindOrCreateByName(') !== false) {
+        $failures[] = "includes/songbook_admin.php's songbookAdminCreate() calls publisherFindOrCreateByName() directly — it must go through publisherResolvePickedOrCreate() so a verified picker claim is trusted over a blind name resolve (rule #37/#43)";
     }
 }
 
 /* ---- F2: no bare free-text write becomes authoritative over the registry
    — the create INSERT's Publisher column is fed by $publisher (the typed
-   string) as always, but the SAME case must ALSO resolve+link it; F1 above
-   already proves the link exists. This assertion additionally locks in that
-   the resolver call is gated on $hasPublishersSchema (pre-migration safety —
-   rule #9), so an un-migrated install degrades to "display-string-only"
-   instead of a fatal on a missing table. ---- */
-if ($sbCreateBlock !== '' && !preg_match('/hasPublishersSchema[\s\S]{0,400}publisherResolvePickedOrCreate\(/', $sbCreateBlock)) {
-    $failures[] = "songbooks.php's 'create' case calls publisherResolvePickedOrCreate() without gating it on \$hasPublishersSchema first — a pre-migration install (no tblSongbookPublishers yet) would risk a fatal instead of degrading gracefully (rule #9)";
+   string) as always, but the SAME function must ALSO resolve+link it; F1
+   above already proves the link exists. This assertion additionally locks
+   in that the resolver call is gated on the caller's hasPublishersSchema
+   flag (pre-migration safety — rule #9), so an un-migrated install
+   degrades to "display-string-only" instead of a fatal on a missing table.
+   #1993: the flag arrives as $flags['hasPublishersSchema'] (an array key
+   the caller's own hoisted $hasPublishersSchema is passed in as), not the
+   bare local variable §F2 checked for pre-#1993 — same gating discipline,
+   new call shape. ---- */
+if ($sbAdminCreateFn !== '' && !preg_match('/hasPublishersSchema[\s\S]{0,400}publisherResolvePickedOrCreate\(/', $sbAdminCreateFn)) {
+    $failures[] = "includes/songbook_admin.php's songbookAdminCreate() calls publisherResolvePickedOrCreate() without gating it on hasPublishersSchema first — a pre-migration install (no tblSongbookPublishers yet) would risk a fatal instead of degrading gracefully (rule #9)";
+}
+if ($sbCreateBlock !== '' && !preg_match('/songbookAdminCreate\([\s\S]{0,400}hasPublishersSchema/', $sbCreateBlock)) {
+    $failures[] = "songbooks.php's 'create' case never passes hasPublishersSchema through to songbookAdminCreate() — the pre-migration gate in F2 above would never actually engage";
 }
 
 /* ---- F3: the publisher_id wire contract is honoured at BOTH ends
    (rule #33) — the shared form-fields partial EMITS name="publisher_id" and
-   the songbooks.php 'create' case READS $_POST['publisher_id']. Raw markup
-   (an HTML attribute is never inside a comment in the real file) + the
-   PHP-comment-stripped create-block view for the read side. ---- */
+   includes/songbook_admin.php's songbookAdminValidateCreate() READS
+   $in['publisher_id'] (#1993 — the read moved from the page's own
+   $_POST[...] to the shared core's $in[...] parameter, which the case body
+   populates by passing $_POST straight through; both halves are checked
+   below so a delegation that silently drops the field on either side goes
+   red). Raw markup (an HTML attribute is never inside a comment in the
+   real file) + comment-stripped views for the read side. ---- */
 if (strpos($sbFormFieldsRaw, 'name="publisher_id"') === false) {
     $failures[] = 'manage/includes/songbook-form-fields.php no longer emits name="publisher_id" — the create-form Publisher picker\'s hidden id is not wired';
 }
-if ($sbCreateBlock === '' || !preg_match('/\$_POST\[\s*\'publisher_id\'\s*\]/', $sbCreateBlock)) {
-    $failures[] = 'songbooks.php\'s \'create\' case never reads $_POST[\'publisher_id\'] — the partial emits the field but nothing consumes it server-side (rule #33: a param nobody reads)';
+$sbAdminValidateFn = wrpSliceFunctionDecl($songbookAdminPhpView, 'songbookAdminValidateCreate');
+if ($sbAdminValidateFn === '' || !preg_match('/\$in\[\s*\'publisher_id\'\s*\]/', $sbAdminValidateFn)) {
+    $failures[] = 'includes/songbook_admin.php\'s songbookAdminValidateCreate() never reads $in[\'publisher_id\'] — the partial emits the field but nothing consumes it server-side (rule #33: a param nobody reads)';
+}
+if ($sbCreateBlock === '' || !preg_match('/songbookAdminValidateCreate\(\s*\$db\s*,\s*\$_POST\s*\)/', $sbCreateBlock)) {
+    $failures[] = "songbooks.php's 'create' case never calls songbookAdminValidateCreate(\$db, \$_POST) — the page's raw POST body must reach the core's \$in[...] reads for F3's publisher_id wire (and every other field) to actually arrive";
 }
 
 /* ---- F4: the client wiring actually attaches the create-only picker with
@@ -946,33 +1036,59 @@ if ($publishersMergeBlock === '') {
 $cataloguesAddMemberBlock = wrpSliceCaseBlock($cataloguesPhpView, 'add_member');
 
 /* ---- H1: catalogues.php's add_member handler verifies the submitted
-   song_id names a REAL tblSongs row (a SELECT ... FROM tblSongs WHERE
-   SongId = ?) BEFORE the INSERT that writes tblCatalogueSongs — "resolve to
-   a real existing SongId" (#1866's explicit server-side requirement).
-   Position-based (not just presence): a verify-AFTER-the-INSERT would
-   already be too late to matter. Same shape as G1's groups.php check. ---- */
+   song_id names a REAL tblSongs row BEFORE writing tblCatalogueSongs —
+   "resolve to a real existing SongId" (#1866's explicit server-side
+   requirement). #1969 (API-coverage batch 4b-i A4) re-pointed this handler
+   at includes/catalogue_admin.php's shared core (rule #22), so the check
+   now follows the delegation ONE LEVEL DEEP rather than finding the raw SQL
+   inline: (a) the page's add_member case calls
+   catalogueAdminFindVisibleSongTitle( BEFORE catalogueAdminAddMember( —
+   position-based, same "verify-after-write is too late" reasoning as
+   before, just re-anchored on the delegate calls; (b) the delegate
+   functions THEMSELVES are sliced out of catalogue_admin.php and proven to
+   still do the real work — the verify function's body contains a
+   `SELECT ... FROM tblSongs WHERE SongId = ?`, and the write function's
+   body contains the `INSERT IGNORE INTO tblCatalogueSongs`. Same shape as
+   G1's groups.php check, one indirection deeper. ---- */
 if ($cataloguesAddMemberBlock === '') {
     $failures[] = "could not locate case 'add_member': { ... } in manage/catalogues.php (slicer or file shape changed)";
 } else {
-    $selectPos = -1;
-    if (preg_match('/SELECT\s+[\s\S]{0,80}?FROM\s+tblSongs\s+WHERE\s+SongId\s*=\s*\?/', $cataloguesAddMemberBlock, $m, PREG_OFFSET_CAPTURE)) {
-        $selectPos = $m[0][1];
-    }
-    $insertPos = strpos($cataloguesAddMemberBlock, 'INSERT IGNORE INTO tblCatalogueSongs');
-    if ($selectPos < 0) {
-        $failures[] = "catalogues.php's add_member handler no longer verifies the submitted song_id against tblSongs before use (#1866, rule #43 — 'the server MUST verify the id exists')";
-    } elseif ($insertPos === false) {
-        $failures[] = "catalogues.php's add_member handler no longer writes INSERT IGNORE INTO tblCatalogueSongs — the write itself is missing";
-    } elseif (!($selectPos < $insertPos)) {
-        $failures[] = "catalogues.php's add_member handler's existence check does not run BEFORE the INSERT that uses the id — a check that runs after the write is too late to prevent it";
+    $verifyCallPos = strpos($cataloguesAddMemberBlock, 'catalogueAdminFindVisibleSongTitle(');
+    $addCallPos    = strpos($cataloguesAddMemberBlock, 'catalogueAdminAddMember(');
+    if ($verifyCallPos === false) {
+        $failures[] = "catalogues.php's add_member handler no longer calls catalogueAdminFindVisibleSongTitle( — the submitted song_id is no longer verified against tblSongs before use (#1866, rule #43 — 'the server MUST verify the id exists')";
+    } elseif ($addCallPos === false) {
+        $failures[] = "catalogues.php's add_member handler no longer calls catalogueAdminAddMember( — the tblCatalogueSongs write itself is missing";
+    } elseif (!($verifyCallPos < $addCallPos)) {
+        $failures[] = "catalogues.php's add_member handler's catalogueAdminFindVisibleSongTitle( call does not run BEFORE catalogueAdminAddMember( — a check that runs after the write is too late to prevent it";
     }
 }
 
-/* ---- H2: catalogues.php's add_member handler never mints a song row —
-   this surface is search-select ONLY, unlike #1864's Tune/Publisher fields
-   which deliberately DO fall back to a create funnel. ---- */
-if ($cataloguesAddMemberBlock !== '' && strpos($cataloguesAddMemberBlock, 'INSERT INTO tblSongs') !== false) {
-    $failures[] = "catalogues.php's add_member handler contains \"INSERT INTO tblSongs\" — this surface must never invent a song (#1866's explicit no-create-arm scope; songs are authored in the editor)";
+$catFindVisibleSongTitleFn = wrpSliceFunctionDecl($catalogueAdminPhpView, 'catalogueAdminFindVisibleSongTitle');
+$catAddMemberFn            = wrpSliceFunctionDecl($catalogueAdminPhpView, 'catalogueAdminAddMember');
+if ($catFindVisibleSongTitleFn === '') {
+    $failures[] = 'could not locate function catalogueAdminFindVisibleSongTitle(...) { ... } in includes/catalogue_admin.php (slicer or file shape changed)';
+} elseif (!preg_match('/SELECT\s+[\s\S]{0,80}?FROM\s+tblSongs\s+WHERE\s+SongId\s*=\s*\?/', $catFindVisibleSongTitleFn)) {
+    $failures[] = "includes/catalogue_admin.php's catalogueAdminFindVisibleSongTitle() no longer verifies song_id against tblSongs (a SELECT ... FROM tblSongs WHERE SongId = ?) — the delegate call exists but the real check behind it is gone";
+}
+if ($catAddMemberFn === '') {
+    $failures[] = 'could not locate function catalogueAdminAddMember(...) { ... } in includes/catalogue_admin.php (slicer or file shape changed)';
+} elseif (strpos($catAddMemberFn, 'INSERT IGNORE INTO tblCatalogueSongs') === false) {
+    $failures[] = "includes/catalogue_admin.php's catalogueAdminAddMember() no longer writes INSERT IGNORE INTO tblCatalogueSongs — the write itself is missing";
+}
+
+/* ---- H2: neither the add_member handler nor either of its two delegate
+   functions ever mints a song row — this surface is search-select ONLY,
+   unlike #1864's Tune/Publisher fields which deliberately DO fall back to a
+   create funnel. ---- */
+foreach ([
+    'manage/catalogues.php\'s add_member handler' => $cataloguesAddMemberBlock,
+    'includes/catalogue_admin.php\'s catalogueAdminFindVisibleSongTitle()' => $catFindVisibleSongTitleFn,
+    'includes/catalogue_admin.php\'s catalogueAdminAddMember()' => $catAddMemberFn,
+] as $label => $src) {
+    if ($src !== '' && strpos($src, 'INSERT INTO tblSongs') !== false) {
+        $failures[] = "{$label} contains \"INSERT INTO tblSongs\" — this surface must never invent a song (#1866's explicit no-create-arm scope; songs are authored in the editor)";
+    }
 }
 
 /* ---- H3: the "Add a song" markup was actually converted from the old

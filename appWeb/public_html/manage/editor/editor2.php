@@ -222,6 +222,16 @@ $pdSuggestForJs = [
     <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body class="p-0">
+    <!-- a11y audit L8 (WCAG 2.4.1 Bypass Blocks, 2026-08-30): this shell
+         already had an <h1> (below) but no skip link — same standalone-
+         shell reasoning as manage/editor/index.php's own copy (this page
+         deliberately doesn't include admin-nav.php, see the comment
+         below). -->
+    <a href="#v2-main"
+       class="visually-hidden-focusable position-absolute top-0 start-0 p-3 bg-primary text-white z-3"
+       id="skip-nav">
+        Skip to main content
+    </a>
     <?php
     /* Slim editor navbar (Issue A, #1856) — adapted from the legacy editor's
        (manage/editor/index.php:170-269) minus its Save/Revisions/Import
@@ -233,26 +243,26 @@ $pdSuggestForJs = [
     <nav class="navbar navbar-editor d-flex align-items-center">
         <a class="navbar-brand d-flex align-items-center gap-2" href="/manage/"
            title="Back to Admin Dashboard">
-            <i class="bi bi-music-note-beamed"></i>
+            <i aria-hidden="true" class="bi bi-music-note-beamed"></i>
             <span class="navbar-brand-text">iHymns Song Editor</span>
         </a>
         <div class="d-flex align-items-center gap-2 me-auto ms-2">
             <a href="/manage/" class="btn btn-sm btn-outline-secondary" title="Back to Admin Dashboard">
-                <i class="bi bi-speedometer2 me-1"></i>Dashboard
+                <i aria-hidden="true" class="bi bi-speedometer2 me-1"></i>Dashboard
             </a>
             <a href="/" class="btn btn-sm btn-outline-secondary" title="Back to the iHymns app home">
-                <i class="bi bi-house me-1"></i>Home
+                <i aria-hidden="true" class="bi bi-house me-1"></i>Home
             </a>
         </div>
         <div class="d-flex align-items-center gap-2">
             <?php if (hasRole((string)($u['role'] ?? ''), 'admin')): ?>
             <a href="/manage/users" class="btn btn-sm btn-outline-secondary me-1" title="User management">
-                <i class="bi bi-people me-1"></i>Users
+                <i aria-hidden="true" class="bi bi-people me-1"></i>Users
             </a>
             <?php endif; ?>
             <span class="text-muted small d-none d-md-inline me-1"><?= htmlspecialchars((string)($u['display_name'] ?? $u['username'] ?? '')) ?></span>
             <a href="/manage/logout" class="btn btn-sm btn-outline-secondary" title="Sign out">
-                <i class="bi bi-box-arrow-right me-1"></i>Logout
+                <i aria-hidden="true" class="bi bi-box-arrow-right me-1"></i>Logout
             </a>
         </div>
     </nav>
@@ -280,7 +290,7 @@ $pdSuggestForJs = [
         </aside>
         <div id="v2-grip" class="border-end border-start d-none d-lg-block" title="Drag to resize"></div>
 
-        <main class="flex-grow-1 overflow-auto p-3" style="min-width: 0;">
+        <main class="flex-grow-1 overflow-auto p-3" style="min-width: 0;" id="v2-main" tabindex="-1">
             <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
                 <?php /* #1845 — below lg the song list is the offcanvas drawer above,
                          not in-flow content; this is its only way in. Bootstrap's own
@@ -288,7 +298,7 @@ $pdSuggestForJs = [
                          OPEN it — only to close it programmatically, see the boot
                          script's hideSidebarPanel() below). */ ?>
                 <button type="button" class="btn btn-sm btn-outline-secondary d-lg-none" data-bs-toggle="offcanvas" data-bs-target="#v2-sidebar-panel" aria-controls="v2-sidebar-panel"><i class="bi bi-list" aria-hidden="true"></i><span class="ms-1">Songs</span></button>
-                <h1 class="h5 mb-0"><i class="bi bi-music-note-list me-2"></i>Song Editor <span class="badge bg-info">v2</span></h1>
+                <h1 class="h5 mb-0"><i aria-hidden="true" class="bi bi-music-note-list me-2"></i>Song Editor <span class="badge bg-info">v2</span></h1>
                 <div class="ms-auto d-flex gap-2 flex-wrap">
                     <?php /* #1846 — manual Save: flushes every tab's pending DEBOUNCED
                              writes early + confirms once they've settled. Autosave keeps
@@ -297,17 +307,24 @@ $pdSuggestForJs = [
                              loaded, and is enabled in loadSong() alongside the Duplicate
                              button reveal a few lines below. */ ?>
                     <button id="v2-save-btn" type="button" class="btn btn-sm btn-outline-success" disabled><i class="bi bi-check2-all me-1" aria-hidden="true"></i>Save</button>
-                    <button id="v2-new-btn" type="button" class="btn btn-sm btn-primary"><i class="bi bi-plus-lg me-1"></i>New</button>
+                    <button id="v2-new-btn" type="button" class="btn btn-sm btn-primary"><i aria-hidden="true" class="bi bi-plus-lg me-1"></i>New</button>
+                    <!-- #1997 — guided alternative to the plain New-song modal above,
+                         built on the shared stepper (js/modules/admin-wizard.js,
+                         #1992; see manage/venues.php's #1995 wizard for the closest
+                         analog). SEPARATE button + SEPARATE modal (#v2-new-wizard-
+                         modal, below) — #v2-new-btn/#v2-new-modal stay byte-
+                         identical, untouched by this addition. -->
+                    <button id="v2-new-wizard-btn" type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#v2-new-wizard-modal" title="Guided, step-by-step new song"><i aria-hidden="true" class="bi bi-magic me-1"></i>Guided</button>
                     <!-- #1783 — Duplicate the open song as a starting point for a new
                          songbook. Hidden until a song is loaded (shown in loadSong). -->
-                    <button id="v2-duplicate-btn" type="button" class="btn btn-sm btn-outline-primary d-none" title="Duplicate this song as a starting point for a new songbook"><i class="bi bi-files me-1"></i>Duplicate</button>
-                    <a href="/manage/editor/import2.php" class="btn btn-sm btn-outline-secondary"><i class="bi bi-upload me-1"></i>Import</a>
-                    <button id="v2-reflow-btn" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-text-paragraph me-1"></i>Reflow</button>
+                    <button id="v2-duplicate-btn" type="button" class="btn btn-sm btn-outline-primary d-none" title="Duplicate this song as a starting point for a new songbook"><i aria-hidden="true" class="bi bi-files me-1"></i>Duplicate</button>
+                    <a href="/manage/editor/import2.php" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-upload me-1"></i>Import</a>
+                    <button id="v2-reflow-btn" type="button" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-text-paragraph me-1"></i>Reflow</button>
                     <div class="dropdown">
-                        <button id="v2-export-btn" type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-download me-1"></i>Export</button>
+                        <button id="v2-export-btn" type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false"><i aria-hidden="true" class="bi bi-download me-1"></i>Export</button>
                         <ul class="dropdown-menu dropdown-menu-end" id="v2-export-menu"></ul>
                     </div>
-                    <button id="v2-delete-btn" type="button" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</button>
+                    <button id="v2-delete-btn" type="button" class="btn btn-sm btn-outline-danger"><i aria-hidden="true" class="bi bi-trash me-1"></i>Delete</button>
                     <?php /* #1601 — MUST carry ?legacy=1: /manage/editor/ now redirects
                              here, so a bare link would bounce straight back and read as
                              a broken button. */ ?>
@@ -319,16 +336,16 @@ $pdSuggestForJs = [
             <!-- Bulk-actions bar (shown when songs are selected in the sidebar's Select mode) -->
             <div id="v2-bulk-bar" class="alert alert-info py-2 px-3 d-none d-flex align-items-center gap-2 flex-wrap">
                 <span id="v2-bulk-count" class="small fw-semibold"></span>
-                <button id="v2-bulk-verify" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-check2-circle me-1"></i>Mark verified</button>
-                <button id="v2-bulk-tag" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-tag me-1"></i>Add tag…</button>
-                <button id="v2-bulk-untag" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-tag-fill me-1"></i>Remove tag…</button>
+                <button id="v2-bulk-verify" type="button" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-check2-circle me-1"></i>Mark verified</button>
+                <button id="v2-bulk-tag" type="button" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-tag me-1"></i>Add tag…</button>
+                <button id="v2-bulk-untag" type="button" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-tag-fill me-1"></i>Remove tag…</button>
                 <!-- #1628 item 3 — the two remaining v1 bulk actions v2 was
                      missing (move to a different songbook, delete) + a bulk
                      Export so a curator can pull a format bundle for exactly
                      the songs they've selected. -->
-                <button id="v2-bulk-move" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-arrow-left-right me-1"></i>Move…</button>
-                <button id="v2-bulk-export" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-download me-1"></i>Export…</button>
-                <button id="v2-bulk-delete" type="button" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete…</button>
+                <button id="v2-bulk-move" type="button" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-arrow-left-right me-1"></i>Move…</button>
+                <button id="v2-bulk-export" type="button" class="btn btn-sm btn-outline-secondary"><i aria-hidden="true" class="bi bi-download me-1"></i>Export…</button>
+                <button id="v2-bulk-delete" type="button" class="btn btn-sm btn-outline-danger"><i aria-hidden="true" class="bi bi-trash me-1"></i>Delete…</button>
                 <button id="v2-bulk-clear" type="button" class="btn btn-sm btn-outline-secondary ms-auto">Clear</button>
             </div>
 
@@ -336,14 +353,14 @@ $pdSuggestForJs = [
                      wrapped to 3 rows on a phone-width nav-tabs before this;
                      now they're one horizontally-scrollable row instead. */ ?>
             <ul class="nav nav-tabs mb-3 flex-nowrap overflow-x-auto" role="tablist">
-                <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-structure" type="button"><i class="bi bi-list-ol me-1"></i>Structure</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-metadata" type="button"><i class="bi bi-info-circle me-1"></i>Metadata</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-credits" type="button"><i class="bi bi-people me-1"></i>Credits</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-links" type="button"><i class="bi bi-link-45deg me-1"></i>Links</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-tags" type="button"><i class="bi bi-tags me-1"></i>Tags</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-media" type="button"><i class="bi bi-collection-play me-1"></i>Media</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-preview" type="button"><i class="bi bi-eye me-1"></i>Preview</button></li>
-                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-revisions" type="button"><i class="bi bi-clock-history me-1"></i>Revisions</button></li>
+                <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-structure" type="button"><i aria-hidden="true" class="bi bi-list-ol me-1"></i>Structure</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-metadata" type="button"><i aria-hidden="true" class="bi bi-info-circle me-1"></i>Metadata</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-credits" type="button"><i aria-hidden="true" class="bi bi-people me-1"></i>Credits</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-links" type="button"><i aria-hidden="true" class="bi bi-link-45deg me-1"></i>Links</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-tags" type="button"><i aria-hidden="true" class="bi bi-tags me-1"></i>Tags</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-media" type="button"><i aria-hidden="true" class="bi bi-collection-play me-1"></i>Media</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-preview" type="button"><i aria-hidden="true" class="bi bi-eye me-1"></i>Preview</button></li>
+                <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-revisions" type="button"><i aria-hidden="true" class="bi bi-clock-history me-1"></i>Revisions</button></li>
             </ul>
             <div class="tab-content">
                 <div class="tab-pane fade show active" id="pane-structure"><div id="v2-structure"></div><div id="v2-arrangement" class="mt-3"></div></div>
@@ -359,11 +376,15 @@ $pdSuggestForJs = [
     </div>
 
     <!-- New song modal -->
-    <div class="modal fade" id="v2-new-modal" tabindex="-1" aria-hidden="true">
+    <!-- a11y audit M6 (WCAG 4.1.2/2.4.6, 2026-08-30): this modal had a
+         .modal-title heading but no id on it and no aria-labelledby on the
+         dialog — a screen reader entering it announced only "dialog" with
+         no name. Same fix as the three other plain modals below. -->
+    <div class="modal fade" id="v2-new-modal" tabindex="-1" aria-hidden="true" aria-labelledby="v2-new-modal-label">
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2 class="modal-title h6"><i class="bi bi-plus-lg me-1"></i>New song</h2>
+                    <h2 class="modal-title h6" id="v2-new-modal-label"><i aria-hidden="true" class="bi bi-plus-lg me-1"></i>New song</h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -386,12 +407,111 @@ $pdSuggestForJs = [
         </div>
     </div>
 
+    <?php /* #1997 — guided "New song" wizard. Server-rendered [data-wiz-step]
+             panes per js/modules/admin-wizard.js's markup contract (module
+             doc-block): each pane carries data-wiz-heading + a role="alert"
+             data-wiz-alert slot; [data-wiz-progress]/[data-wiz-next]/
+             [data-wiz-back] are the stepper's own generated trail + nav.
+             All domain logic (population, validation, the Finish sequence)
+             lives in manage/editor/v2/new-song-wizard.js — this markup is
+             deliberately inert without it (rule: framework here, behaviour
+             there). Inputs are id-prefixed (v2-nsw-*) and carry NO name=
+             attribute — nothing here is ever submitted as a classic HTML
+             form; every value is read by the module via getElementById. */ ?>
+    <div class="modal fade" id="v2-new-wizard-modal" tabindex="-1" aria-hidden="true" aria-labelledby="v2-new-wizard-modal-label" data-bs-backdrop="static">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 class="modal-title h6" id="v2-new-wizard-modal-label"><i aria-hidden="true" class="bi bi-magic me-1"></i>New song — guided</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div data-wiz-progress class="mb-3"></div>
+
+                    <section data-wiz-step data-wiz-label="Songbook">
+                        <h3 data-wiz-heading class="h6 mb-3">1. Which songbook?</h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <div class="mb-0">
+                            <label class="form-label small mb-1" for="v2-nsw-songbook">Songbook</label>
+                            <select class="form-select form-select-sm" id="v2-nsw-songbook"></select>
+                        </div>
+                    </section>
+
+                    <section data-wiz-step data-wiz-label="Number" hidden>
+                        <h3 data-wiz-heading class="h6 mb-3">2. Song number <span class="text-muted small">(optional)</span></h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <div class="mb-2">
+                            <label class="form-label small mb-1" for="v2-nsw-number">Number</label>
+                            <div class="d-flex gap-2 align-items-center flex-wrap">
+                                <input type="number" min="1" step="1" class="form-control form-control-sm" style="max-width: 9rem;" id="v2-nsw-number">
+                                <button type="button" class="btn btn-sm btn-outline-secondary text-nowrap" id="v2-nsw-next-free">Use next free</button>
+                            </div>
+                        </div>
+                        <div id="v2-nsw-avail" class="small" aria-live="polite" hidden></div>
+                    </section>
+
+                    <section data-wiz-step data-wiz-label="Title" hidden>
+                        <h3 data-wiz-heading class="h6 mb-3">3. Title</h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <div class="mb-3">
+                            <label class="form-label small mb-1" for="v2-nsw-title">Title</label>
+                            <input type="text" class="form-control form-control-sm" id="v2-nsw-title" maxlength="500" placeholder="Song title" aria-required="true">
+                        </div>
+                        <div class="mb-0">
+                            <label class="form-label small mb-1" for="v2-nsw-alt-title-input">Also known as <span class="text-muted small">(optional)</span></label>
+                            <div class="d-flex gap-2">
+                                <input type="text" class="form-control form-control-sm" id="v2-nsw-alt-title-input" maxlength="500" placeholder="Another title this song is known by">
+                                <button type="button" class="btn btn-sm btn-outline-secondary text-nowrap" id="v2-nsw-alt-title-add">Add</button>
+                            </div>
+                            <ul class="list-unstyled d-flex flex-wrap gap-1 mt-2 mb-0" id="v2-nsw-alt-titles"></ul>
+                        </div>
+                    </section>
+
+                    <section data-wiz-step data-wiz-label="Structure" hidden>
+                        <h3 data-wiz-heading class="h6 mb-3">4. Starting structure <span class="text-muted small">(optional)</span></h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <div class="row g-3">
+                            <div class="col-md-4">
+                                <label class="form-label small mb-1" for="v2-nsw-verses">Verses</label>
+                                <input type="number" min="0" max="10" step="1" class="form-control form-control-sm" id="v2-nsw-verses" value="3">
+                            </div>
+                            <div class="col-md-4 d-flex align-items-end">
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="v2-nsw-chorus" checked>
+                                    <label class="form-check-label small" for="v2-nsw-chorus">Chorus</label>
+                                </div>
+                            </div>
+                            <div class="col-md-4 d-flex align-items-end">
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="v2-nsw-bridge">
+                                    <label class="form-check-label small" for="v2-nsw-bridge">Bridge</label>
+                                </div>
+                            </div>
+                        </div>
+                        <p class="form-text small mb-0">Blank sections are added in order (Verse 1, Chorus, Verse 2…) — edit, reorder or add more on the Structure tab afterwards.</p>
+                    </section>
+
+                    <section data-wiz-step data-wiz-label="Review" hidden>
+                        <h3 data-wiz-heading class="h6 mb-3">5. Review &amp; create</h3>
+                        <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
+                        <dl class="row small mb-0" id="v2-nsw-review"></dl>
+                    </section>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" data-wiz-back hidden>Back</button>
+                    <button type="button" class="btn btn-sm btn-primary" data-wiz-next>Next</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Bulk move modal (#1628 item 3) -->
-    <div class="modal fade" id="v2-bulk-move-modal" tabindex="-1" aria-hidden="true">
+    <!-- a11y audit M6 — see the #v2-new-modal comment above. -->
+    <div class="modal fade" id="v2-bulk-move-modal" tabindex="-1" aria-hidden="true" aria-labelledby="v2-bulk-move-modal-label">
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2 class="modal-title h6"><i class="bi bi-arrow-left-right me-1"></i>Move songs to a different songbook</h2>
+                    <h2 class="modal-title h6" id="v2-bulk-move-modal-label"><i aria-hidden="true" class="bi bi-arrow-left-right me-1"></i>Move songs to a different songbook</h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -415,11 +535,12 @@ $pdSuggestForJs = [
     </div>
 
     <!-- Bulk export modal (#1628 item 3) -->
-    <div class="modal fade" id="v2-bulk-export-modal" tabindex="-1" aria-hidden="true">
+    <!-- a11y audit M6 — see the #v2-new-modal comment above. -->
+    <div class="modal fade" id="v2-bulk-export-modal" tabindex="-1" aria-hidden="true" aria-labelledby="v2-bulk-export-modal-label">
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2 class="modal-title h6"><i class="bi bi-download me-1"></i>Export selected songs</h2>
+                    <h2 class="modal-title h6" id="v2-bulk-export-modal-label"><i aria-hidden="true" class="bi bi-download me-1"></i>Export selected songs</h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -443,7 +564,10 @@ $pdSuggestForJs = [
          Export (#1628 item 3). One modal rather than three near-identical
          ones: the failure SHAPE ({id,error,status}) is the same across all
          three actions. -->
-    <div class="modal fade" id="v2-bulk-result-modal" tabindex="-1" aria-hidden="true">
+    <!-- a11y audit M6 — the heading id already existed (v2-bulk-result-
+         title, filled in by JS per action); it just wasn't wired to the
+         dialog itself via aria-labelledby. -->
+    <div class="modal fade" id="v2-bulk-result-modal" tabindex="-1" aria-hidden="true" aria-labelledby="v2-bulk-result-title">
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
@@ -560,6 +684,7 @@ $pdSuggestForJs = [
         import { mountReflowModal }  from './v2/reflow-modal.js';
         import { mountExportMenu }   from './v2/export.js';
         import { mountRevisionsTab } from './v2/revisions-tab.js';
+        import { mountNewSongWizard } from './v2/new-song-wizard.js';
 
         const byId = (id) => document.getElementById(id);
         const initialSongId = <?= json_encode($songId) ?>;
@@ -786,6 +911,23 @@ $pdSuggestForJs = [
         try { window.matchMedia('(min-width: 992px)').addEventListener('change', (e) => { if (e.matches) { hideSidebarPanel(); } }); } catch (_e) {}
 
         const sidebar = mountSidebar(byId('v2-sidebar'), { api: editorApi, toast, onSelect: (id) => { hideSidebarPanel(); loadSong(id); }, onSelectionChange: onSelChange });
+
+        /* #1997 — guided "New song" wizard. Mounted ONCE here (boot-level,
+           like mountSidebar() immediately above — NOT inside mountTabs(),
+           which re-runs per open song). ctx hands the wizard the SAME
+           sidebar accessors + loadSong the manual New-song handler and
+           runPrefill() already use below — it makes no server call this
+           file doesn't already make elsewhere. */
+        mountNewSongWizard({
+            api: editorApi,
+            getSongbooks: () => sidebar.getSongbooks(),
+            whenSongbooksReady: () => sidebar.whenLoaded(),
+            findByBookAndNumber: (abbr, num) => sidebar.findByBookAndNumber(abbr, num),
+            addSong: (stub) => sidebar.addSong(stub),
+            loadSong: (id) => loadSong(id),
+            toast,
+            status,
+        });
 
         /* ---- bulk actions (multi-select) ---- */
         byId('v2-bulk-clear').addEventListener('click', () => sidebar.clearSelection());
@@ -1244,7 +1386,7 @@ $pdSuggestForJs = [
                 const next = sidebar.getFirstId();
                 if (next) { loadSong(next); }
                 else {
-                    status('Song moved to Deleted songs (restorable). Create a New song or pick one.', 'success');
+                    status('Song moved to Deleted songs (restorable). Create a New song, pick one, or try Guided for a step-by-step start.', 'success');
                     /* #1851 FIX #7 — loadSong() enables Save + reveals
                        Duplicate for the song it loads, but nothing reversed
                        that after deleting the LAST song: both stayed
@@ -1333,7 +1475,7 @@ $pdSuggestForJs = [
                it, and mountSidebar's load() is async. */
             sidebar.whenLoaded().then(() => runPrefill(prefillBook, prefillNumber()));
         } else {
-            status('Pick a song from the list, or create a New one.');
+            status('Pick a song from the list, create a New one, or try Guided for a step-by-step start.');
         }
     </script>
     <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

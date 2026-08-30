@@ -126,6 +126,13 @@ Songs are divided into components, each with a `type` field. The 11 primary type
 > **Alias:** `refrain` is accepted as an alias for `chorus` (for import compatibility).
 > Data using `"type": "refrain"` is valid and displays as "Chorus" in the UI.
 
+### Custom labels & medley provenance (#1907, #1860 Phase 5)
+
+Two optional, additive per-section fields ride the same component metadata (never the lyric-line content itself):
+
+- **`Label`** — an optional custom **display** name for a section (e.g. "Kyrie", "isiZulu") shown instead of the derived "Verse 1 / Chorus". It is **display-only**: `type` stays authoritative for CSS/chorus-highlighting, arrangement resolution, and every machine-export keyword (OpenLyrics `<verse name>`, OpenSong `[V1]`, ProPresenter/VideoPsalm/Proclaim round-trip their `type` back on re-import) — a label is never written into an export.
+- **`SourceWorkId`** — links a section to the Work it excerpts, for medleys stitched together from more than one original composition. Setting it records the medley's composition (which Works make up the song, in order) so the song page and a Work's own page can show "Medley of: A, B, C".
+
 ### Short Tags
 
 Short tags use industry-standard abbreviations inspired by ProPresenter 7. Numbered variants are supported: `V1`, `V2`, `C1`, `PC1`, etc.
@@ -145,6 +152,14 @@ Song IDs follow the pattern `<ABBR>-<NNNN>`:
 | Full ID | Combined | `MP-0001`, `CP-0042`, `SDAH-0695` |
 
 The router supports flexible input: `MP-1` is normalised to `MP-0001`.
+
+---
+
+## Editor Import & Export Formats
+
+Beyond the `.SourceSongData/` → `data/songs.json` one-time seed pipeline above, the Song Editor's bulk-import/export tooling reads and writes several projection-software formats. Import: ChordPro, OpenLyrics/OpenLP, ProPresenter 6, **ProPresenter 7+** (`.pro`/`.probundle`/`.proplaylist`), VideoPsalm, FreeShow, EasyWorship, Proclaim, PPTX. Export: the same set (8 formats), offered publicly on any song/songbook page — see [[PWA Features]] § Export & Present.
+
+**ProPresenter 7+ (epic #1968)** gets the most detail here because its wire format has a real gotcha for anyone building against it: PP7 does **not** store chords as inline `[G]`-style brackets in the slide text — that's only ProPresenter's own editing metaphor. A chord is a positioned protobuf attribute (a UTF-16 code-unit range + a chord string) layered over otherwise-clean plain lyric text. iHymns' own per-line `chords` cells are already positioned the same way, so the import/export mapping is direct — no inline-bracket parsing on either side. Decoding is a hand-rolled, independently-cross-validated proto3 wire-walker (`includes/propresenter7_decode.php`), never a self-consistent round-trip against iHymns' own exporter alone. See [[Architecture]] § ProPresenter interop and [[Database & Migrations]] for the fuller picture (media ingest, the dormant presentation-timeline schema).
 
 ---
 

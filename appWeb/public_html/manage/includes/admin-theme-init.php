@@ -17,6 +17,9 @@ declare(strict_types=1);
  *   - data-ihymns-theme     ∈ {light, dark, high-contrast}
  *   - data-ihymns-contrast="high" when ihymns-theme === 'high-contrast'
  *   - data-ihymns-cvd       ∈ {protanopia, deuteranopia, tritanopia, achromatopsia} or absent
+ *   - data-ihymns-linkcue="on" when the opt-in "accessible links" mode
+ *     (#1984, S1) is enabled — absent otherwise. Independent of theme,
+ *     same shape as data-ihymns-cvd above.
  *
  * Also exposes `window.iHymnsAdminApplyTheme(theme)` so the admin-nav
  * theme dropdown can re-apply after writing to storage.
@@ -46,11 +49,13 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
        js/constants.js so admin pages share the SAME preference the
        public site reads/writes. Keep in lock-step if those keys ever
        change. */
-    var THEME_KEY = 'ihymns_theme';
-    var CVD_KEY   = 'ihymns_cvd_mode';
+    var THEME_KEY   = 'ihymns_theme';
+    var CVD_KEY     = 'ihymns_cvd_mode';
+    /* #1984 (S1) — opt-in "accessible links" colour cue. Value 'on' | absent. */
+    var LINKCUE_KEY = 'ihymns_link_emphasis';
 
     /**
-     * Apply a chosen theme by setting the four <html> attributes the
+     * Apply a chosen theme by setting the <html> attributes the
      * stylesheets read. Mirrors settings.js applyTheme() semantics so
      * admin pages and the public site stay visually consistent.
      *
@@ -92,6 +97,17 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
                 html.removeAttribute('data-ihymns-cvd');
             }
         } catch (_e) { /* localStorage unavailable — leave CVD alone */ }
+
+        /* Accessible-links colour cue (#1984, S1) — independent of theme,
+           same shape as CVD above. */
+        try {
+            var linkcue = localStorage.getItem(LINKCUE_KEY);
+            if (linkcue === 'on') {
+                html.setAttribute('data-ihymns-linkcue', 'on');
+            } else {
+                html.removeAttribute('data-ihymns-linkcue');
+            }
+        } catch (_e) { /* localStorage unavailable — leave link-cue alone */ }
     }
 
     /* Synchronous first-paint resolution. */

@@ -545,7 +545,7 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-toggles me-2"></i>Feature Access</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-toggles me-2"></i>Feature Access</h1>
         <p class="text-secondary small mb-4">
             Add your own <strong>extra</strong> permissions — beyond the standard set
             (Lyrics / Copyrighted / Audio / MIDI / PDF / Offline / Needs&nbsp;CCLI) — without needing a
@@ -578,7 +578,7 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
         </div>
 
         <div class="alert alert-secondary py-2 small mb-4">
-            <i class="bi bi-info-circle me-1"></i>
+            <i aria-hidden="true" class="bi bi-info-circle me-1"></i>
             <strong>Coverage:</strong> enforcement rules only affect the <code>song_detail</code> /
             <code>song_data</code> / <code>random</code> API payloads — <strong>not</strong> the HTML
             song page, <code>songbook_export</code>, or the offline (<code>bulk_audio</code>) manifest.
@@ -594,7 +594,7 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                     <code>tblGatingCapabilities</code> (#1481) isn't present on this docroot yet.
                 </p>
                 <a href="/manage/setup-database" class="btn btn-amber btn-sm">
-                    <i class="bi bi-database-gear me-1"></i>Run /manage/setup-database
+                    <i aria-hidden="true" class="bi bi-database-gear me-1"></i>Run /manage/setup-database
                 </a>
             </div>
         <?php else: ?>
@@ -611,11 +611,11 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                        data-default-sort-key="key" data-default-sort-dir="asc">
                     <thead>
                         <tr class="text-muted small">
-                            <th data-col-priority="primary" data-sort-key="key" data-sort-type="text">Key</th>
-                            <th data-col-priority="primary" data-sort-key="label" data-sort-type="text">Label</th>
-                            <th data-col-priority="secondary" data-sort-key="description" data-sort-type="text">Description</th>
-                            <th class="text-center" data-col-priority="tertiary" data-sort-key="storage" data-sort-type="text">Storage</th>
-                            <th class="text-end" data-col-priority="primary" data-sort-key="source" data-sort-type="text">Source</th>
+                            <th scope="col" data-col-priority="primary" data-sort-key="key" data-sort-type="text">Key</th>
+                            <th scope="col" data-col-priority="primary" data-sort-key="label" data-sort-type="text">Label</th>
+                            <th scope="col" data-col-priority="secondary" data-sort-key="description" data-sort-type="text">Description</th>
+                            <th scope="col" class="text-center" data-col-priority="tertiary" data-sort-key="storage" data-sort-type="text">Storage</th>
+                            <th scope="col" class="text-end" data-col-priority="primary" data-sort-key="source" data-sort-type="text">Source</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -648,13 +648,13 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                            data-default-sort-key="key" data-default-sort-dir="asc">
                         <thead>
                             <tr class="text-muted small">
-                                <th data-col-priority="primary" data-sort-key="key" data-sort-type="text">Key</th>
-                                <th data-col-priority="primary" data-sort-key="label" data-sort-type="text">Label</th>
-                                <th data-col-priority="secondary" data-sort-key="description" data-sort-type="text">Description</th>
-                                <th class="text-center" data-col-priority="tertiary" data-sort-key="default" data-sort-type="text">Default</th>
-                                <th class="text-center" data-col-priority="tertiary" data-sort-key="emitapi" data-sort-type="text">Emit in API</th>
-                                <th class="text-center" data-col-priority="secondary" data-sort-key="enabled" data-sort-type="text">Enabled</th>
-                                <th class="text-end" data-col-priority="primary">Actions</th>
+                                <th scope="col" data-col-priority="primary" data-sort-key="key" data-sort-type="text">Key</th>
+                                <th scope="col" data-col-priority="primary" data-sort-key="label" data-sort-type="text">Label</th>
+                                <th scope="col" data-col-priority="secondary" data-sort-key="description" data-sort-type="text">Description</th>
+                                <th scope="col" class="text-center" data-col-priority="tertiary" data-sort-key="default" data-sort-type="text">Default</th>
+                                <th scope="col" class="text-center" data-col-priority="tertiary" data-sort-key="emitapi" data-sort-type="text">Emit in API</th>
+                                <th scope="col" class="text-center" data-col-priority="secondary" data-sort-key="enabled" data-sort-type="text">Enabled</th>
+                                <th scope="col" class="text-end" data-col-priority="primary">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -716,27 +716,27 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
         <form method="POST" class="card-admin p-3 mb-4">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
-            <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a capability</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a capability</h2>
             <div class="row g-2 mb-2">
                 <div class="col-sm-3">
-                    <label class="form-label small">Key (machine)</label>
-                    <input type="text" name="cap_key" class="form-control form-control-sm" maxlength="40" required
+                    <label class="form-label small" for="create-cap-key">Key (machine)</label>
+                    <input type="text" name="cap_key" id="create-cap-key" class="form-control form-control-sm" maxlength="40" required
                            placeholder="e.g. CanRequestSongs" pattern="Can[A-Z][A-Za-z0-9]{1,29}"
                            title="PascalCase, starts 'Can' + an uppercase letter, letters/digits only">
                     <div class="form-text small">Cannot be changed after creation.</div>
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">Label</label>
-                    <input type="text" name="label" class="form-control form-control-sm" maxlength="30" required
+                    <label class="form-label small" for="create-cap-label">Label</label>
+                    <input type="text" name="label" id="create-cap-label" class="form-control form-control-sm" maxlength="30" required
                            placeholder="e.g. Requests">
                 </div>
                 <div class="col-sm-2">
-                    <label class="form-label small">Sort order</label>
-                    <input type="number" name="sort_order" class="form-control form-control-sm" min="0" max="100000" value="0">
+                    <label class="form-label small" for="create-cap-sort">Sort order</label>
+                    <input type="number" name="sort_order" id="create-cap-sort" class="form-control form-control-sm" min="0" max="100000" value="0">
                 </div>
                 <div class="col-sm-4">
-                    <label class="form-label small">Description</label>
-                    <input type="text" name="description" class="form-control form-control-sm" maxlength="255"
+                    <label class="form-label small" for="create-cap-description">Description</label>
+                    <input type="text" name="description" id="create-cap-description" class="form-control form-control-sm" maxlength="255"
                            placeholder="What does this capability unlock?">
                 </div>
             </div>
@@ -755,7 +755,7 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                 </div>
             </div>
             <button type="submit" class="btn btn-amber-solid btn-sm mt-3">
-                <i class="bi bi-plus me-1"></i>Create capability
+                <i aria-hidden="true" class="bi bi-plus me-1"></i>Create capability
             </button>
         </form>
 
@@ -768,13 +768,13 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                 <h2 class="h6 mb-2">Rules schema not yet installed</h2>
                 <p class="text-muted small mb-3"><code>tblGatingRules</code> (#1481) isn't present on this docroot yet.</p>
                 <a href="/manage/setup-database" class="btn btn-amber btn-sm">
-                    <i class="bi bi-database-gear me-1"></i>Run /manage/setup-database
+                    <i aria-hidden="true" class="bi bi-database-gear me-1"></i>Run /manage/setup-database
                 </a>
             </div>
         <?php else: ?>
 
         <div class="card-admin p-3 mb-4">
-            <h2 class="h6 mb-3"><i class="bi bi-shield-slash me-2"></i>Enforcement rules</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-shield-slash me-2"></i>Enforcement rules</h2>
             <p class="text-muted small mb-3">
                 Map a <strong>DB-defined</strong> capability (never one of the built-in seven) to a
                 code-registered behaviour: <strong>strip payload keys</strong> or
@@ -789,11 +789,11 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                     <table class="table table-sm align-middle mb-0 admin-table-responsive cp-sortable">
                         <thead>
                             <tr class="text-muted small">
-                                <th data-col-priority="primary" data-sort-key="capability" data-sort-type="text">Capability</th>
-                                <th data-col-priority="primary" data-sort-key="behaviour" data-sort-type="text">Behaviour</th>
-                                <th data-col-priority="secondary" data-sort-key="effect" data-sort-type="text">Effect</th>
-                                <th class="text-center" data-col-priority="secondary" data-sort-key="enabled" data-sort-type="text">Enabled</th>
-                                <th class="text-end" data-col-priority="primary">Actions</th>
+                                <th scope="col" data-col-priority="primary" data-sort-key="capability" data-sort-type="text">Capability</th>
+                                <th scope="col" data-col-priority="primary" data-sort-key="behaviour" data-sort-type="text">Behaviour</th>
+                                <th scope="col" data-col-priority="secondary" data-sort-key="effect" data-sort-type="text">Effect</th>
+                                <th scope="col" class="text-center" data-col-priority="secondary" data-sort-key="enabled" data-sort-type="text">Enabled</th>
+                                <th scope="col" class="text-end" data-col-priority="primary">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -866,18 +866,18 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                 <form method="POST" class="border-top pt-3 mt-2" style="border-color: var(--ih-border) !important;">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="rule_create">
-                    <h3 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a rule</h3>
+                    <h3 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a rule</h3>
                     <div class="row g-2 mb-2">
                         <div class="col-sm-4">
-                            <label class="form-label small">Capability</label>
-                            <select name="cap_key" class="form-select form-select-sm" required>
+                            <label class="form-label small" for="rule-cap-key">Capability</label>
+                            <select name="cap_key" id="rule-cap-key" class="form-select form-select-sm" required>
                                 <?php foreach ($dbCapKeysForRules as $ck): ?>
                                     <option value="<?= htmlspecialchars($ck) ?>"><?= htmlspecialchars($ck) ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </div>
                         <div class="col-sm-4">
-                            <label class="form-label small">Behaviour kind</label>
+                            <label class="form-label small" for="rule-kind-select">Behaviour kind</label>
                             <select name="behavior_kind" id="rule-kind-select" class="form-select form-select-sm" required
                                     onchange="ihymnsGatingRuleKindChanged(this.value)">
                                 <?php foreach (GATING_BEHAVIOR_KINDS as $kindKey => $kindTuple): ?>
@@ -888,14 +888,14 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                             </select>
                         </div>
                         <div class="col-sm-2">
-                            <label class="form-label small">Sort order</label>
-                            <input type="number" name="sort_order" class="form-control form-control-sm" min="0" max="100000" value="0">
+                            <label class="form-label small" for="rule-sort-order">Sort order</label>
+                            <input type="number" name="sort_order" id="rule-sort-order" class="form-control form-control-sm" min="0" max="100000" value="0">
                         </div>
                     </div>
 
                     <div id="rule-params-strip_payload_keys" class="mb-2">
-                        <label class="form-label small d-block">Keys to strip</label>
-                        <div class="d-flex flex-wrap gap-3">
+                        <label class="form-label small d-block" id="rule-strip-keys-label">Keys to strip</label>
+                        <div class="d-flex flex-wrap gap-3" role="group" aria-labelledby="rule-strip-keys-label">
                             <?php foreach (GATING_STRIPPABLE_KEYS as $keyId => $keyLabel): ?>
                                 <div class="form-check" title="<?= htmlspecialchars($keyLabel) ?>">
                                     <input class="form-check-input" type="checkbox" name="strip_keys[]"
@@ -907,8 +907,8 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                     </div>
 
                     <div id="rule-params-drop_media_kinds" class="mb-2" style="display:none;">
-                        <label class="form-label small d-block">Media kinds to drop</label>
-                        <div class="d-flex flex-wrap gap-3">
+                        <label class="form-label small d-block" id="rule-drop-kinds-label">Media kinds to drop</label>
+                        <div class="d-flex flex-wrap gap-3" role="group" aria-labelledby="rule-drop-kinds-label">
                             <?php foreach (GATING_DROPPABLE_MEDIA_KINDS as $kindId => $kindLbl): ?>
                                 <div class="form-check">
                                     <input class="form-check-input" type="checkbox" name="drop_kinds[]"
@@ -924,7 +924,7 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                         list above to turn it on once you've confirmed it's what you want.
                     </p>
                     <button type="submit" class="btn btn-amber-solid btn-sm">
-                        <i class="bi bi-plus me-1"></i>Create rule
+                        <i aria-hidden="true" class="bi bi-plus me-1"></i>Create rule
                     </button>
                 </form>
             <?php endif; ?>
@@ -958,21 +958,21 @@ $rulesActuallyLive   = $contentGatingOn && $featureRulesFlagOn;
                         <h5 class="modal-title" id="editCapModalLabel">
                             <i class="bi bi-pencil me-2" aria-hidden="true"></i>Edit capability — <code id="edit-cap-key"></code>
                         </h5>
-                        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
                         <div class="row g-2 mb-3">
                             <div class="col-sm-6">
-                                <label class="form-label small">Label</label>
+                                <label class="form-label small" for="edit-cap-label">Label</label>
                                 <input type="text" name="label" id="edit-cap-label" class="form-control form-control-sm" maxlength="30" required>
                             </div>
                             <div class="col-sm-3">
-                                <label class="form-label small">Sort order</label>
+                                <label class="form-label small" for="edit-cap-sort">Sort order</label>
                                 <input type="number" name="sort_order" id="edit-cap-sort" class="form-control form-control-sm" min="0" max="100000">
                             </div>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label small">Description</label>
+                            <label class="form-label small" for="edit-cap-description">Description</label>
                             <input type="text" name="description" id="edit-cap-description" class="form-control form-control-sm" maxlength="255">
                         </div>
                         <div class="d-flex flex-wrap gap-3">

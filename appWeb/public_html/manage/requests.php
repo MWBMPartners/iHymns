@@ -264,13 +264,13 @@ try {
             <table class="table table-sm table-hover mb-0 cp-sortable admin-table-responsive">
                 <thead>
                     <tr class="text-muted small">
-                        <th data-sort-key="id"         data-sort-type="number">#</th>
-                        <th data-sort-key="title"      data-sort-type="text">Title</th>
-                        <th data-sort-key="songbook"   data-sort-type="text">Songbook</th>
-                        <th data-sort-key="submitted"  data-sort-type="text">Submitted</th>
-                        <th data-sort-key="by"         data-sort-type="text">By</th>
-                        <th data-sort-key="status"     data-sort-type="text">Status</th>
-                        <th></th>
+                        <th scope="col" data-sort-key="id"         data-sort-type="number">#</th>
+                        <th scope="col" data-sort-key="title"      data-sort-type="text">Title</th>
+                        <th scope="col" data-sort-key="songbook"   data-sort-type="text">Songbook</th>
+                        <th scope="col" data-sort-key="submitted"  data-sort-type="text">Submitted</th>
+                        <th scope="col" data-sort-key="by"         data-sort-type="text">By</th>
+                        <th scope="col" data-sort-key="status"     data-sort-type="text">Status</th>
+                        <th scope="col"></th>
                     </tr>
                 </thead>
                 <tbody>
@@ -339,8 +339,8 @@ try {
                                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
                                 <input type="hidden" name="id" value="<?= (int)$r['Id'] ?>">
                                 <div class="col-md-3">
-                                    <label class="form-label small">Status</label>
-                                    <select name="new_status" class="form-select form-select-sm">
+                                    <label class="form-label small" for="req-status-<?= (int)$r['Id'] ?>">Status</label>
+                                    <select name="new_status" id="req-status-<?= (int)$r['Id'] ?>" class="form-select form-select-sm">
                                         <?php foreach ($statuses as $s): ?>
                                             <option value="<?= $s ?>" <?= $r['Status'] === $s ? 'selected' : '' ?>>
                                                 <?= htmlspecialchars(ucfirst($s)) ?>
@@ -349,7 +349,7 @@ try {
                                     </select>
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label small">Resolved SongId (optional)</label>
+                                    <label class="form-label small" for="req-resolved-song-name-<?= (int)$r['Id'] ?>">Resolved SongId (optional)</label>
                                     <!-- #1867 (epic #1863, rule #43) — search-select ONLY: this box is
                                          a live search over tblSongs (reusing the ?action=song_search
                                          handler above), wired via the shared window.iHymnsPlaceSearch
@@ -361,20 +361,21 @@ try {
                                          trusted here. No create arm: curators link an existing song,
                                          never mint one from the requests queue. -->
                                     <input type="text" class="form-control form-control-sm req-resolved-song-name"
+                                           id="req-resolved-song-name-<?= (int)$r['Id'] ?>"
                                            value="<?= htmlspecialchars((string)($r['ResolvedSongId'] ?? '')) ?>"
                                            placeholder="Search by title or song id…" autocomplete="off">
                                     <input type="hidden" name="resolved_song_id" class="req-resolved-song-id"
                                            value="<?= htmlspecialchars((string)($r['ResolvedSongId'] ?? '')) ?>">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label small">Admin notes</label>
-                                    <input type="text" name="admin_notes" class="form-control form-control-sm"
+                                    <label class="form-label small" for="req-admin-notes-<?= (int)$r['Id'] ?>">Admin notes</label>
+                                    <input type="text" name="admin_notes" id="req-admin-notes-<?= (int)$r['Id'] ?>" class="form-control form-control-sm"
                                            value="<?= htmlspecialchars($r['AdminNotes'] ?? '') ?>">
                                 </div>
                                 <div class="col-12 d-flex gap-2 mt-2">
                                     <button type="submit" class="btn btn-sm btn-amber-solid">Save</button>
                                     <a href="/manage/editor/" class="btn btn-sm btn-outline-primary">
-                                        <i class="bi bi-pencil-square me-1"></i>Open editor
+                                        <i aria-hidden="true" class="bi bi-pencil-square me-1"></i>Open editor
                                     </a>
                                 </div>
                             </form>

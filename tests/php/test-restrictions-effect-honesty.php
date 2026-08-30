@@ -59,11 +59,22 @@ if (strpos($ms, 'NeedleComment') !== false) { $mut[] = 'rehPhpCode FAILS-LOW: ke
 
 $restr = rehPhpCode((string)file_get_contents($pub . '/manage/restrictions.php'));
 $noop  = rehPhpCode((string)file_get_contents($pub . '/manage/gating-noop-verify.php'));
+/* #2006 (epic #2002) — the D10 normalisation moved from restrictions.php's
+   inline validation into the shared includes/restriction_admin.php core
+   (restrictionAdminValidate()), so restrictions.php AND api.php's
+   admin_restriction_create AND the content-gating wizard's row-seeding step
+   all normalise the SAME way (rule #22 — one validator, not one per
+   caller). Assertion (a) below therefore checks EITHER file — the line
+   must exist SOMEWHERE in the one place it's now allowed to live. */
+$restrAdminCore = rehPhpCode((string)file_get_contents($pub . '/includes/restriction_admin.php'));
 
 /* (a) server-side Effect normalisation for require_* (the load-bearing line). */
-if (!preg_match('/str_starts_with\(\$restrictionType,\s*\'require_\'\)/', $restr)
-    || !preg_match('/\$effect\s*=\s*\'deny\'/', $restr)) {
-    $failures[] = "restrictions.php does not normalise Effect to 'deny' for require_* types server-side (D10) — a require_* row could store a misleading Effect the engine ignores";
+$hasNormalisation = static function (string $src): bool {
+    return preg_match('/str_starts_with\(\$restrictionType,\s*\'require_\'\)/', $src) === 1
+        && preg_match('/\$effect\s*=\s*\'deny\'/', $src) === 1;
+};
+if (!$hasNormalisation($restr) && !$hasNormalisation($restrAdminCore)) {
+    $failures[] = "neither restrictions.php nor includes/restriction_admin.php normalises Effect to 'deny' for require_* types server-side (D10) — a require_* row could store a misleading Effect the engine ignores";
 }
 
 /* (b) the Effect control is hidden for require_* in the form JS. */

@@ -11,15 +11,25 @@
  * its public functions.
  *
  * SCOPE / WHAT THIS DOES NOT COVER (read this before assuming full coverage):
- * `.github/workflows/test.yml` runs NO MySQL service container — every test
- * step here is DB-free by construction. `secret_crypto_admin.php`'s
- * `\mysqli`-taking functions — `secretInventory()`, `secretSentinelStatus()`,
- * `secretEncryptInPlace()`, `secretRotateReencrypt()`, `secretKeyBeaconWrite()`,
- * `secretKeyBeacons()`, `secretRotationParity()` — read/write `tblAppSettings`
- * and therefore CANNOT be exercised in CI. Their behaviour is covered by
- * manual verification against the shared alpha/beta/production database (see
- * `.claude/secret-encryption-strategy.md` §7/§8/§10b), NOT by this test. What
- * IS asserted below, and CAN be checked without a database:
+ * this file's own checks are DB-free by construction — every assertion below
+ * runs with no `\mysqli` connection at all. (⚠️ this paragraph previously
+ * claimed "`.github/workflows/test.yml` runs NO MySQL service container" —
+ * that went stale at #1708: CI has provisioned a real `mariadb:11` service
+ * since then, see `test.yml`'s `lint`/`browser-smoke` jobs and
+ * `tests/php/test-schema-installs.php`'s LIVE half. This file simply never
+ * asked for it — see `tests/php/test-secret-crypto-rewrap.php` for the sibling
+ * guard that DOES exercise `_secretAdminRewrapTableSecrets()` against a live
+ * database when `IHYMNS_TEST_DSN` is set, and SKIPS LOUDLY otherwise, #1701.)
+ * `secret_crypto_admin.php`'s `\mysqli`-taking functions — `secretInventory()`,
+ * `secretSentinelStatus()`, `secretEncryptInPlace()`, `secretRotateReencrypt()`,
+ * `secretKeyBeaconWrite()`, `secretKeyBeacons()`, `secretRotationParity()`,
+ * `secretTableSecretInventory()`, `_secretAdminRewrapTableSecrets()`,
+ * `_secretAdminTableExists()` — read/write `tblAppSettings`/
+ * `tblWebhookSubscriptions` and are NOT exercised here; their behaviour is
+ * covered by manual verification against the shared alpha/beta/production
+ * database (see `.claude/secret-encryption-strategy.md` §7/§8/§10b) plus, for
+ * the #1989 table-secret rewrap specifically, `test-secret-crypto-rewrap.php`'s
+ * live-DB half. What IS asserted below, and CAN be checked without a database:
  *   - the six module constants keep their exact documented values (a typo'd
  *     literal would silently desync the admin panel / migration cards from
  *     the settings rows they read/write by name)
@@ -112,9 +122,27 @@ $expectedFunctions = [
     'secretKeyBeacons',
     'secretRotationParity',
     'secretDbFilePrivilegeStatus',
+    /* #1989 — table-held secret rewrap (tblWebhookSubscriptions.Secret/
+       SecretPrevious); the PURE decision + registry get their own exhaustive
+       truth table in test-secret-crypto-rewrap.php, this is just the
+       rename/removal tripwire the rest of this list already is. */
+    'secretTableSecretColumns',
+    'secretTableRewrapDecision',
+    'secretTableSecretInventory',
+    '_secretAdminRewrapTableSecrets',
+    '_secretAdminTableExists',
 ];
+/* Two of the #1989 additions are PURE (no \mysqli param at all) — their
+   behaviour IS exercised, exhaustively, by test-secret-crypto-rewrap.php's
+   truth table, so labelling them "DB-taking; behaviour untested" here would
+   overclaim. Everything else in the list above genuinely takes \mysqli and
+   is existence-checked only, as the label says. */
+$pureFunctions = ['secretTableSecretColumns', 'secretTableRewrapDecision'];
 foreach ($expectedFunctions as $fn) {
-    _scaAssert(function_exists($fn), "function {$fn}() is defined (DB-taking; behaviour untested here)");
+    $label = in_array($fn, $pureFunctions, true)
+        ? "function {$fn}() is defined (pure/DB-free — behaviour truth-tabled in test-secret-crypto-rewrap.php)"
+        : "function {$fn}() is defined (DB-taking; behaviour untested here)";
+    _scaAssert(function_exists($fn), $label);
 }
 
 /* ----------------------------------------------------------------------- */

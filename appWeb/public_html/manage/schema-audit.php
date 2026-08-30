@@ -174,25 +174,25 @@ if ($audit !== null) {
 
     <div class="container-admin py-4">
 
-        <h1 class="h4 mb-3"><i class="bi bi-clipboard2-data me-2"></i>Database Structure Check</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-clipboard2-data me-2"></i>Database Structure Check</h1>
         <p class="text-secondary small mb-4">
             Checks that the live database has the exact structure iHymns
             expects, and flags anything that is missing or extra. This page
             only looks — it never changes anything; if something is missing,
-            use <a href="/manage/setup-database" class="link-light">Database Setup</a>
+            use <a href="/manage/setup-database">Database Setup</a>
             to add it.
         </p>
 
         <?php if ($dbError !== null): ?>
             <div class="alert alert-danger py-2">
-                <i class="bi bi-exclamation-octagon me-1"></i>
+                <i aria-hidden="true" class="bi bi-exclamation-octagon me-1"></i>
                 <strong>Audit failed:</strong> <?= htmlspecialchars($dbError) ?>
             </div>
         <?php else: ?>
 
             <!-- Summary banner -->
             <div class="alert <?= $bannerClass ?> d-flex align-items-start gap-2 py-2">
-                <i class="bi <?= $bannerIcon ?> mt-1"></i>
+                <i aria-hidden="true" class="bi <?= $bannerIcon ?> mt-1"></i>
                 <div class="flex-grow-1">
                     <div><?= htmlspecialchars($bannerText) ?></div>
                     <?php if ($audit !== null): $s = $audit['summary']; ?>
@@ -229,7 +229,7 @@ if ($audit !== null) {
             <?php if ($uncoveredList || $missingList): ?>
                 <div class="card-admin p-3 mb-4 border-warning">
                     <h2 class="h6 mb-2">
-                        <i class="bi bi-list-check me-1"></i>
+                        <i aria-hidden="true" class="bi bi-list-check me-1"></i>
                         Action items
                     </h2>
                     <?php if ($uncoveredList): ?>
@@ -248,7 +248,7 @@ if ($audit !== null) {
                         <p class="small text-secondary mb-1">
                             <strong class="text-warning">Missing</strong> &mdash;
                             a migration covers each. Run via
-                            <a href="/manage/setup-database" class="link-light">Database Setup</a>:
+                            <a href="/manage/setup-database">Database Setup</a>:
                         </p>
                         <ul class="small mb-0">
                             <?php foreach ($missingList as $entry): ?>
@@ -266,7 +266,7 @@ if ($audit !== null) {
                 <div class="card-admin p-3 mb-3">
                     <div class="d-flex align-items-center justify-content-between mb-2">
                         <h2 class="h6 mb-0">
-                            <i class="bi bi-table me-1"></i>
+                            <i aria-hidden="true" class="bi bi-table me-1"></i>
                             <code><?= htmlspecialchars($tbl) ?></code>
                             <?php if (!$hasIssues): ?>
                                 <span class="badge bg-success ms-2">all OK</span>
@@ -279,9 +279,9 @@ if ($audit !== null) {
                     <table class="table table-sm align-middle mb-0 admin-table-fixed">
                         <thead>
                             <tr class="text-muted small">
-                                <th style="width: 200px;">Column</th>
-                                <th style="width: 120px;">Status</th>
-                                <th>Notes</th>
+                                <th scope="col" style="width: 200px;">Column</th>
+                                <th scope="col" style="width: 120px;">Status</th>
+                                <th scope="col">Notes</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -292,7 +292,7 @@ if ($audit !== null) {
                                     <td class="small text-secondary">
                                         <?php if ($r['status'] === 'missing'): ?>
                                             Add via <code><?= htmlspecialchars($r['migration']) ?></code>
-                                            on <a href="/manage/setup-database" class="link-light">Database Setup</a>.
+                                            on <a href="/manage/setup-database">Database Setup</a>.
                                         <?php elseif ($r['status'] === 'uncovered'): ?>
                                             In <code>schema.sql</code> but no migration adds it.
                                             Fresh installs get it; existing DBs need a new migration step. <strong>File a bug.</strong>

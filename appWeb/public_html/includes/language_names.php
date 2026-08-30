@@ -7,6 +7,19 @@ declare(strict_types=1);
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
+ * ELI5
+ * ----
+ * Songs and lyric lines are tagged with short language codes like `en` or
+ * `pt-BR` (the IETF's own standard for naming languages, "BCP 47") — good
+ * for a computer to compare, useless for a person to read on a badge. This
+ * file is the ONE place that turns a code like `pt-BR` into the words
+ * "Portuguese (Brazil)" a reader actually understands, and the same file
+ * also powers the little "type to search for a language/script/region"
+ * boxes in admin forms (BCP 47 covers more than just languages — scripts
+ * like "Cyrillic", regions like "Brazil", and variants too). Everything
+ * degrades gracefully: an install that hasn't run the language-table
+ * migration yet just shows the raw code in capitals instead of crashing.
+ *
  * PURPOSE:
  * Maps an IETF BCP 47 language tag (or its primary subtag) to a
  * human-readable display name from `tblLanguages`, so every PHP
@@ -41,6 +54,9 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 /**
  * Resolve a language code or BCP 47 tag to a display name.
  * Returns the original code uppercased on lookup miss / pre-migration.
+ *
+ * ELI5: "what is 'pt-BR' called, in English?" → "Portuguese (Brazil)".
+ * Don't know it? Just show the code back in capitals rather than nothing.
  *
  * @param string $code Language code or tag (e.g. 'en', 'pt-BR', 'AF').
  * @return string Display name (e.g. 'English', 'Afrikaans') or the
@@ -210,6 +226,12 @@ function bcp47ResolveTable(\mysqli $db, string $kind): string
  * shortest name, then alphabetic. An un-migrated table degrades to an
  * empty suggestion list + a `note`, matching every sibling schema-probed
  * endpoint in this codebase (never a 500).
+ *
+ * ELI5: the engine behind every "type a few letters, pick from a
+ * dropdown" language/script/region/variant box in this app. Whatever the
+ * curator types, it's matched against both the code ("es") and the
+ * friendly name ("Spanish"), with the closest / most obvious match
+ * listed first.
  *
  * @param \mysqli $db
  * @param string  $kind   One of IHYMNS_BCP47_SUBTAG_KINDS's keys.

@@ -195,6 +195,46 @@ ok('hasOtherDevices is false when only the current device is signed in',
 ok('hasOtherDevices is false for an empty list',
    devices.hasOtherDevices([]) === false);
 
+/* ---- #1975 rename helpers ------------------------------------------------
+ * cleanDeviceNameInput mirrors the server's apiTokenCleanDeviceName so a name
+ * accepted here survives the server's own trim/cap unchanged (rule #35). */
+ok('cleanDeviceNameInput trims',
+   devices.cleanDeviceNameInput('  Foyer TV  ') === 'Foyer TV');
+ok('cleanDeviceNameInput blank → "" (clear)',
+   devices.cleanDeviceNameInput('   ') === '');
+ok('cleanDeviceNameInput caps at 120 chars (server column width)',
+   devices.cleanDeviceNameInput('x'.repeat(200)).length === 120);
+ok('cleanDeviceNameInput tolerates a non-string',
+   devices.cleanDeviceNameInput(null) === '' && devices.cleanDeviceNameInput(undefined) === '');
+
+/* applyRename: a successful rename updates local state without a round trip;
+ * '' clears (deviceName → null); a NEW array is returned (never mutates). */
+const renamed = devices.applyRename(three, 'a', 'Kitchen iPad');
+ok('applyRename sets exactly the named row',
+   renamed[0].deviceName === 'Kitchen iPad' && renamed[1].deviceName === undefined);
+ok('applyRename with "" clears the custom name (→ null)',
+   devices.applyRename([{ id: 'a', deviceName: 'Old' }], 'a', '')[0].deviceName === null);
+ok('applyRename returns a NEW array and does not mutate the caller\'s',
+   renamed !== three && three[0].deviceName === undefined);
+ok('applyRename is a no-op for an unknown id',
+   JSON.stringify(devices.applyRename(three, 'zzz', 'X')) === JSON.stringify(three));
+ok('applyRename tolerates a non-array',
+   Array.isArray(devices.applyRename(null, 'a', 'X')) && devices.applyRename(null, 'a', 'X').length === 0);
+
+/* renameMessageForStatus: rule #35, branch on the NUMBER — and a 409
+ * (un-migrated) must read differently from a 404 (device gone). */
+ok('renameMessageForStatus 409 is the "not available here" case',
+   /not available/i.test(devices.renameMessageForStatus(409)) &&
+   devices.renameMessageForStatus(409) !== devices.renameMessageForStatus(404));
+ok('renameMessageForStatus 404 says the device is gone',
+   /no longer signed in/i.test(devices.renameMessageForStatus(404)));
+ok('renameMessageForStatus 403 is the cross-origin case, not "access denied"',
+   /cross-origin/i.test(devices.renameMessageForStatus(403)));
+ok('renameMessageForStatus falls back to the server prose on an unknown status',
+   devices.renameMessageForStatus(418, 'I am a teapot.') === 'I am a teapot.');
+ok('renameMessageForStatus always returns a string',
+   typeof devices.renameMessageForStatus(500, null) === 'string');
+
 console.log('\n#1671 F2 — my-song-requests.js\n');
 
 /* ---- statusPresentation: rule #20, the vocabulary can GROW --------------

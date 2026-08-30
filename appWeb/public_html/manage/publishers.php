@@ -331,7 +331,7 @@ if ($hasSchema) {
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
     <div class="container-admin py-4">
-        <h1 class="h4 mb-3"><i class="bi bi-building me-2"></i>Publishers</h1>
+        <h1 class="h4 mb-3"><i aria-hidden="true" class="bi bi-building me-2"></i>Publishers</h1>
         <p class="text-secondary small mb-4">
             A <strong>Publisher</strong> is the person or company that published a songbook. Keep
             publishers here — with imprints grouped under their parent company, an optional link to a
@@ -356,7 +356,7 @@ if ($hasSchema) {
                     The <code>tblPublishers</code> table hasn't been created on this database yet (#93).
                 </p>
                 <a href="/manage/setup-database" class="btn btn-amber btn-sm">
-                    <i class="bi bi-database-gear me-1"></i>Run /manage/setup-database
+                    <i aria-hidden="true" class="bi bi-database-gear me-1"></i>Run /manage/setup-database
                 </a>
             </div>
         <?php else: ?>
@@ -364,22 +364,22 @@ if ($hasSchema) {
         <!-- Publishers list -->
         <div class="card-admin p-3 mb-4">
             <div class="d-flex justify-content-between align-items-center mb-3">
-                <h2 class="h6 mb-0"><i class="bi bi-list-ul me-2"></i>Existing publishers</h2>
+                <h2 class="h6 mb-0"><i aria-hidden="true" class="bi bi-list-ul me-2"></i>Existing publishers</h2>
                 <button type="button" class="btn btn-outline-warning btn-sm" data-bs-toggle="modal" data-bs-target="#publisherMergeModal">
-                    <i class="bi bi-shuffle me-1"></i>Merge publishers
+                    <i aria-hidden="true" class="bi bi-shuffle me-1"></i>Merge publishers
                 </button>
             </div>
             <table class="table table-sm align-middle cp-sortable mb-0 admin-table-responsive">
                 <thead>
                     <tr class="text-muted small">
-                        <th data-col-priority="primary"   data-sort-key="name"      data-sort-type="text">Name</th>
-                        <th data-col-priority="secondary" data-sort-key="kind"      data-sort-type="text">Kind</th>
-                        <th data-col-priority="tertiary"  data-sort-key="parent"    data-sort-type="text">Parent</th>
-                        <th data-col-priority="tertiary"  data-sort-key="city"      data-sort-type="text">City</th>
-                        <th data-col-priority="primary"   data-sort-key="songbooks" data-sort-type="number" class="text-center">Songbooks</th>
-                        <th data-col-priority="tertiary"  data-sort-key="aliases"   data-sort-type="number" class="text-center">Aliases</th>
-                        <th data-col-priority="secondary" data-sort-key="active"    data-sort-type="text" class="text-center">Active</th>
-                        <th data-col-priority="primary"   class="text-end">Actions</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="name"      data-sort-type="text">Name</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="kind"      data-sort-type="text">Kind</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="parent"    data-sort-type="text">Parent</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="city"      data-sort-type="text">City</th>
+                        <th scope="col" data-col-priority="primary"   data-sort-key="songbooks" data-sort-type="number" class="text-center">Songbooks</th>
+                        <th scope="col" data-col-priority="tertiary"  data-sort-key="aliases"   data-sort-type="number" class="text-center">Aliases</th>
+                        <th scope="col" data-col-priority="secondary" data-sort-key="active"    data-sort-type="text" class="text-center">Active</th>
+                        <th scope="col" data-col-priority="primary"   class="text-end">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -434,21 +434,21 @@ if ($hasSchema) {
                             <td data-col-priority="tertiary" class="text-center"><?= (int)$r['AliasCount'] ?></td>
                             <td data-col-priority="secondary" class="text-center">
                                 <?php if ($r['IsActive']): ?>
-                                    <i class="bi bi-check-circle-fill text-success" title="Active"></i>
+                                    <i aria-hidden="true" class="bi bi-check-circle-fill text-success" title="Active"></i>
                                 <?php else: ?>
-                                    <i class="bi bi-slash-circle text-muted" title="Hidden from pickers"></i>
+                                    <i aria-hidden="true" class="bi bi-slash-circle text-muted" title="Hidden from pickers"></i>
                                 <?php endif; ?>
                             </td>
                             <td data-col-priority="primary" class="text-end text-nowrap">
                                 <button type="button" class="btn btn-sm btn-outline-info"
                                         onclick="openPublisherEditModal(<?= htmlspecialchars((string)$rowJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Edit publisher + aliases">
-                                    <i class="bi bi-pencil"></i>
+                                    <i aria-hidden="true" class="bi bi-pencil"></i>
                                 </button>
                                 <button type="button" class="btn btn-sm btn-outline-danger"
                                         onclick="openPublisherDeleteModal(<?= htmlspecialchars((string)$deleteJson, ENT_QUOTES, 'UTF-8') ?>)"
                                         title="Delete publisher (books keep their free-text Publisher)">
-                                    <i class="bi bi-trash"></i>
+                                    <i aria-hidden="true" class="bi bi-trash"></i>
                                 </button>
                             </td>
                         </tr>
@@ -464,11 +464,11 @@ if ($hasSchema) {
         <form method="POST" class="card-admin p-3 mb-4">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
             <input type="hidden" name="action" value="create">
-            <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a publisher</h2>
+            <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a publisher</h2>
             <div class="row g-2">
                 <div class="col-sm-5">
-                    <label class="form-label small">Name</label>
-                    <input type="text" name="name" class="form-control form-control-sm" maxlength="255" required placeholder="e.g. Praise Trust">
+                    <label class="form-label small" for="create-publisher-name">Name</label>
+                    <input type="text" name="name" id="create-publisher-name" class="form-control form-control-sm" maxlength="255" required placeholder="e.g. Praise Trust">
                 </div>
                 <div class="col-sm-3">
                     <?= ihymns_slug_advanced_field([
@@ -480,8 +480,8 @@ if ($hasSchema) {
                     ]) ?>
                 </div>
                 <div class="col-sm-4">
-                    <label class="form-label small">Kind</label>
-                    <select name="kind" class="form-select form-select-sm">
+                    <label class="form-label small" for="create-publisher-kind">Kind</label>
+                    <select name="kind" id="create-publisher-kind" class="form-select form-select-sm">
                         <?php foreach (IHYMNS_PUBLISHER_KINDS as $k => $label): ?>
                             <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($label) ?></option>
                         <?php endforeach; ?>
@@ -490,22 +490,22 @@ if ($hasSchema) {
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-6">
-                    <label class="form-label small">Subtitle <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="subtitle" class="form-control form-control-sm" maxlength="255">
+                    <label class="form-label small" for="create-publisher-subtitle">Subtitle <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="subtitle" id="create-publisher-subtitle" class="form-control form-control-sm" maxlength="255">
                 </div>
                 <div class="col-sm-6">
-                    <label class="form-label small">Disambiguation <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="disambiguation" class="form-control form-control-sm" maxlength="255" placeholder="Distinguish same-named publishers">
+                    <label class="form-label small" for="create-publisher-disambiguation">Disambiguation <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="disambiguation" id="create-publisher-disambiguation" class="form-control form-control-sm" maxlength="255" placeholder="Distinguish same-named publishers">
                 </div>
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-sm-3">
-                    <label class="form-label small">IPI <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="ipi" class="form-control form-control-sm" maxlength="20">
+                    <label class="form-label small" for="create-publisher-ipi">IPI <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="ipi" id="create-publisher-ipi" class="form-control form-control-sm" maxlength="20">
                 </div>
                 <div class="col-sm-3">
-                    <label class="form-label small">ISNI <small class="text-muted">(optional)</small></label>
-                    <input type="text" name="isni" class="form-control form-control-sm" maxlength="20">
+                    <label class="form-label small" for="create-publisher-isni">ISNI <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="isni" id="create-publisher-isni" class="form-control form-control-sm" maxlength="20">
                 </div>
                 <div class="col-sm-6 d-flex align-items-end">
                     <div class="form-check">
@@ -516,12 +516,12 @@ if ($hasSchema) {
             </div>
             <div class="row g-2 mt-2">
                 <div class="col-12">
-                    <label class="form-label small">Notes <small class="text-muted">(optional)</small></label>
-                    <textarea name="notes" class="form-control form-control-sm" rows="2" maxlength="2000"></textarea>
+                    <label class="form-label small" for="create-publisher-notes">Notes <small class="text-muted">(optional)</small></label>
+                    <textarea name="notes" id="create-publisher-notes" class="form-control form-control-sm" rows="2" maxlength="2000"></textarea>
                 </div>
             </div>
             <button type="submit" class="btn btn-amber btn-sm mt-3">
-                <i class="bi bi-plus me-1"></i>Create publisher
+                <i aria-hidden="true" class="bi bi-plus me-1"></i>Create publisher
             </button>
             <p class="form-text small mt-2 mb-0">
                 Link a person, set a parent/imprint, a city and aliases via the <em>Edit</em> button after creating.
@@ -529,7 +529,8 @@ if ($hasSchema) {
         </form>
 
         <!-- Edit Modal -->
-        <div class="modal fade" id="publisherEditModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30, M6 pattern): wire the modal-title heading to the dialog. -->
+        <div class="modal fade" id="publisherEditModal" tabindex="-1" aria-labelledby="publisherEditModal-label">
             <div class="modal-dialog modal-xl">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST" id="publisher-edit-form">
@@ -537,13 +538,13 @@ if ($hasSchema) {
                         <input type="hidden" name="action" value="update">
                         <input type="hidden" name="id" id="edit-publisher-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title"><i class="bi bi-pencil me-2"></i>Edit publisher — <span id="edit-publisher-name-label"></span></h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            <h5 class="modal-title" id="publisherEditModal-label"><i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit publisher — <span id="edit-publisher-name-label"></span></h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
                             <div class="row g-2 mb-3">
                                 <div class="col-md-5">
-                                    <label class="form-label">Name</label>
+                                    <label class="form-label" for="edit-publisher-name">Name</label>
                                     <input type="text" name="name" id="edit-publisher-name" class="form-control" maxlength="255" required>
                                 </div>
                                 <div class="col-md-3">
@@ -557,7 +558,7 @@ if ($hasSchema) {
                                     ]) ?>
                                 </div>
                                 <div class="col-md-4">
-                                    <label class="form-label">Kind</label>
+                                    <label class="form-label" for="edit-publisher-kind">Kind</label>
                                     <select name="kind" id="edit-publisher-kind" class="form-select">
                                         <?php foreach (IHYMNS_PUBLISHER_KINDS as $k => $label): ?>
                                             <option value="<?= htmlspecialchars($k) ?>"><?= htmlspecialchars($label) ?></option>
@@ -567,21 +568,21 @@ if ($hasSchema) {
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">Subtitle <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-subtitle">Subtitle <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="subtitle" id="edit-publisher-subtitle" class="form-control" maxlength="255">
                                 </div>
                                 <div class="col-md-6">
-                                    <label class="form-label">Disambiguation <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-disambiguation">Disambiguation <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="disambiguation" id="edit-publisher-disambiguation" class="form-control" maxlength="255">
                                 </div>
                             </div>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-3">
-                                    <label class="form-label">IPI <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-ipi">IPI <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="ipi" id="edit-publisher-ipi" class="form-control" maxlength="20">
                                 </div>
                                 <div class="col-md-3">
-                                    <label class="form-label">ISNI <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-isni">ISNI <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="isni" id="edit-publisher-isni" class="form-control" maxlength="20">
                                 </div>
                                 <div class="col-md-6 d-flex align-items-end">
@@ -595,7 +596,7 @@ if ($hasSchema) {
                             <div class="row g-2 mb-3">
                                 <?php if ($gates['hasMusicians']): ?>
                                 <div class="col-md-6">
-                                    <label class="form-label">Link to person <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-musician-name">Link to person <small class="text-muted">(opt.)</small></label>
                                     <input type="text" id="edit-publisher-musician-name" class="form-control"
                                            list="edit-publisher-musician-datalist" autocomplete="off"
                                            placeholder="Type a musician's name…">
@@ -605,7 +606,7 @@ if ($hasSchema) {
                                 </div>
                                 <?php endif; ?>
                                 <div class="col-md-6">
-                                    <label class="form-label">Parent publisher / imprint of <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-parent-name">Parent publisher / imprint of <small class="text-muted">(opt.)</small></label>
                                     <input type="text" id="edit-publisher-parent-name" class="form-control"
                                            list="edit-publisher-parent-datalist" autocomplete="off"
                                            placeholder="Type a parent publisher's name…">
@@ -618,7 +619,7 @@ if ($hasSchema) {
                             <?php if ($gates['hasPlaces']): ?>
                             <div class="row g-2 mb-3">
                                 <div class="col-md-6">
-                                    <label class="form-label">City <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-city">City <small class="text-muted">(opt.)</small></label>
                                     <input type="text" name="city_name" id="edit-publisher-city" class="form-control js-place-search" autocomplete="off" maxlength="255" placeholder="e.g. London">
                                     <input type="hidden" name="city_id" id="edit-publisher-city-id">
                                     <div class="form-text small">Place of publication.</div>
@@ -628,27 +629,27 @@ if ($hasSchema) {
 
                             <div class="row g-2 mb-3">
                                 <div class="col-12">
-                                    <label class="form-label">Notes <small class="text-muted">(opt.)</small></label>
+                                    <label class="form-label" for="edit-publisher-notes">Notes <small class="text-muted">(opt.)</small></label>
                                     <textarea name="notes" id="edit-publisher-notes" class="form-control" rows="2" maxlength="2000"></textarea>
                                 </div>
                             </div>
 
                             <?php if ($gates['hasAliases']): ?>
                             <hr>
-                            <h6 class="mb-2"><i class="bi bi-tags me-2"></i>Aliases</h6>
+                            <h6 class="mb-2"><i aria-hidden="true" class="bi bi-tags me-2"></i>Aliases</h6>
                             <p class="form-text small mt-0 mb-2">
                                 Former or alternate names this publisher is known by — each resolves
                                 <code>/publisher/&lt;alias-slug&gt;</code> to this same publisher.
                             </p>
                             <div id="edit-publisher-aliases-rows" class="vstack gap-2 mb-2"></div>
                             <button type="button" class="btn btn-outline-info btn-sm mb-3" id="edit-publisher-alias-add-btn">
-                                <i class="bi bi-plus-lg me-1"></i>Add alias
+                                <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add alias
                             </button>
                             <?php endif; ?>
                         </div>
                         <div class="modal-footer" style="border-color: var(--ih-border);">
                             <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-                            <button type="submit" class="btn btn-amber btn-sm"><i class="bi bi-check-lg me-1"></i>Save changes</button>
+                            <button type="submit" class="btn btn-amber btn-sm"><i aria-hidden="true" class="bi bi-check-lg me-1"></i>Save changes</button>
                         </div>
                     </form>
                 </div>
@@ -656,7 +657,8 @@ if ($hasSchema) {
         </div>
 
         <!-- Delete Modal -->
-        <div class="modal fade" id="publisherDeleteModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30) — see the publisherEditModal comment above. -->
+        <div class="modal fade" id="publisherDeleteModal" tabindex="-1" aria-labelledby="publisherDeleteModal-label">
             <div class="modal-dialog">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST">
@@ -664,8 +666,8 @@ if ($hasSchema) {
                         <input type="hidden" name="action" value="delete">
                         <input type="hidden" name="id" id="delete-publisher-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title text-danger"><i class="bi bi-exclamation-triangle me-2"></i>Delete publisher</h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            <h5 class="modal-title text-danger" id="publisherDeleteModal-label"><i aria-hidden="true" class="bi bi-exclamation-triangle me-2"></i>Delete publisher</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
                             <p>Delete <strong id="delete-publisher-name-label"></strong>?</p>
@@ -674,7 +676,7 @@ if ($hasSchema) {
                         </div>
                         <div class="modal-footer" style="border-color: var(--ih-border);">
                             <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-                            <button type="submit" class="btn btn-danger btn-sm"><i class="bi bi-trash me-1"></i>Delete</button>
+                            <button type="submit" class="btn btn-danger btn-sm"><i aria-hidden="true" class="bi bi-trash me-1"></i>Delete</button>
                         </div>
                     </form>
                 </div>
@@ -682,15 +684,16 @@ if ($hasSchema) {
         </div>
 
         <!-- Merge Modal -->
-        <div class="modal fade" id="publisherMergeModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30) — see the publisherEditModal comment above. -->
+        <div class="modal fade" id="publisherMergeModal" tabindex="-1" aria-labelledby="publisherMergeModal-label">
             <div class="modal-dialog">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST">
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                         <input type="hidden" name="action" value="merge">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title"><i class="bi bi-shuffle me-2"></i>Merge publishers</h5>
-                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            <h5 class="modal-title" id="publisherMergeModal-label"><i aria-hidden="true" class="bi bi-shuffle me-2"></i>Merge publishers</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
                             <p class="small text-muted">
@@ -699,7 +702,7 @@ if ($hasSchema) {
                                 target; the source is deleted. This cannot be undone.
                             </p>
                             <div class="mb-3">
-                                <label class="form-label small">Source (merged away)</label>
+                                <label class="form-label small" for="merge-source-id">Source (merged away)</label>
                                 <select name="source_id" id="merge-source-id" class="form-select form-select-sm" required>
                                     <option value="">— choose —</option>
                                     <?php foreach ($rows as $r): ?>
@@ -720,7 +723,7 @@ if ($hasSchema) {
                                  the merge continues through the EXISTING
                                  publisherAdminMerge() unchanged (below). -->
                             <div class="mb-3">
-                                <label class="form-label small">Target (survives)</label>
+                                <label class="form-label small" for="merge-target-name">Target (survives)</label>
                                 <input type="hidden" name="target_id" id="merge-target-id" value="">
                                 <input type="text" id="merge-target-name" class="form-control form-control-sm"
                                        placeholder="Search publishers by name…" autocomplete="off" required
@@ -730,7 +733,7 @@ if ($hasSchema) {
                         </div>
                         <div class="modal-footer" style="border-color: var(--ih-border);">
                             <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
-                            <button type="submit" class="btn btn-warning btn-sm"><i class="bi bi-shuffle me-1"></i>Merge</button>
+                            <button type="submit" class="btn btn-warning btn-sm"><i aria-hidden="true" class="bi bi-shuffle me-1"></i>Merge</button>
                         </div>
                     </form>
                 </div>
@@ -867,7 +870,7 @@ if ($hasSchema) {
             const rm = document.createElement('button');
             rm.type = 'button';
             rm.className = 'btn btn-outline-danger';
-            rm.innerHTML = '<i class="bi bi-x-lg"></i>';
+            rm.innerHTML = '<i aria-hidden="true" class="bi bi-x-lg"></i>';
             rm.addEventListener('click', () => row.remove());
             row.appendChild(input);
             row.appendChild(rm);

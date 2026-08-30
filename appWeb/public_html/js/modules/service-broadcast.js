@@ -216,9 +216,9 @@ export class ServiceBroadcaster {
         /* Controls: prev / next section + open the song picker. */
         const controls = document.createElement('div');
         controls.className = 'sb-controls d-flex flex-wrap gap-2 mt-2';
-        const prev = this._btn('btn-outline-secondary', '<i class="bi bi-chevron-left"></i> Prev', () => this.prevSection());
-        const next = this._btn('btn-outline-secondary', 'Next <i class="bi bi-chevron-right"></i>', () => this.nextSection());
-        const pick = this._btn('btn-amber-solid', '<i class="bi bi-search me-1"></i>Choose song', () => this._togglePicker());
+        const prev = this._btn('btn-outline-secondary', '<i class="bi bi-chevron-left" aria-hidden="true"></i> Prev', () => this.prevSection());
+        const next = this._btn('btn-outline-secondary', 'Next <i class="bi bi-chevron-right" aria-hidden="true"></i>', () => this.nextSection());
+        const pick = this._btn('btn-amber-solid', '<i class="bi bi-search me-1" aria-hidden="true"></i>Choose song', () => this._togglePicker());
         controls.appendChild(prev);
         controls.appendChild(next);
         controls.appendChild(pick);

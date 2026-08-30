@@ -80,6 +80,21 @@ if ($book === null) {
     return;
 }
 
+/* a11y audit m3 (2026-08-28) — $book['language'] is known here (a single
+   BCP-47 subtag) but was never attached to the rendered list, so a
+   single-language songbook's titles were announced with the page's own
+   (usually English) pronunciation rules rather than the book's actual
+   language. Only set when the songbook has exactly ONE language on record
+   (tag.php/musician.php group songs from several songbooks and can't make
+   the same single-value claim, so this fix is deliberately scoped to this
+   page). Deliberately `lang` only, not `dir`: a correct `dir` needs the
+   curated per-language TextDirection from tblLanguages (resolveLanguageMeta()
+   in language_names.php) — pulling that resolver in here would give this
+   page a NEW transitive dependency on db_mysql.php for a markup-only a11y
+   fix, which is out of proportion to a Minor finding on a catalogue that
+   is not, today, home to any RTL-language songbook. */
+$bookListLang = !empty($book['language']) ? (string)$book['language'] : '';
+
 /* #1037 — song list: SLIM projection instead of getSongs()'s full lyric +
    credit hydration. getSongs($bookId) used to assemble every song's
    verses/chorus lines (via the tblLyricLines mirror, includes/lyric_lines_read.php)
@@ -365,7 +380,7 @@ if (!empty($songs)) {
                                         <span class="text-muted small">— <?= htmlspecialchars($l['note']) ?></span>
                                     <?php endif; ?>
                                     <?php if (!empty($l['verified'])): ?>
-                                        <i class="fa-solid fa-circle-check text-success small" aria-label="Verified" title="Verified"></i>
+                                        <i class="fa-solid fa-circle-check text-success small" role="img" aria-label="Verified" title="Verified"></i>
                                     <?php endif; ?>
                                 </a>
                             <?php endforeach; ?>
@@ -394,7 +409,7 @@ if (!empty($songs)) {
     ?>
 
     <!-- Song list -->
-    <div class="list-group song-list" role="list" data-list-sort-list="songbook-songs">
+    <div class="list-group song-list" role="list" data-list-sort-list="songbook-songs"<?php if ($bookListLang !== ''): ?> lang="<?= htmlspecialchars($bookListLang) ?>"<?php endif; ?>>
         <?php foreach ($songs as $song): ?>
             <?php
                 /* #1786 sort-key attributes. A missing data-sort-number
@@ -413,21 +428,30 @@ if (!empty($songs)) {
                role="listitem"
                <?php if (isset($song['number']) && $song['number'] !== null && (int)$song['number'] > 0): ?>data-sort-number="<?= (int)$song['number'] ?>"<?php endif; ?>
                data-sort-title="<?= htmlspecialchars(ihymns_title_sort_key((string)$song['title'])) ?>"
-               <?php if ($songSortWriters !== ''): ?>data-sort-writers="<?= htmlspecialchars($songSortWriters) ?>"<?php endif; ?>
-               aria-label="<?= isset($song['number']) && $song['number'] !== null ? 'Song ' . (int)$song['number'] . ': ' : '' ?><?= htmlspecialchars(toTitleCase($song['title'])) ?>">
+               <?php if ($songSortWriters !== ''): ?>data-sort-writers="<?= htmlspecialchars($songSortWriters) ?>"<?php endif; ?>>
                 <!-- Song number badge — left empty when the song has no
                      songbook position (Number IS NULL, e.g. Misc or
                      unofficial-songbook songs). The CSS rule
                      `.song-number-badge:empty::before` then renders a
-                     book glyph as the fallback (#392). -->
+                     book glyph as the fallback (#392). aria-hidden because
+                     the number is announced via the sr-only prefix below
+                     instead (a11y audit M2, 2026-08-28): an aria-label on
+                     the row <a> used to replace ALL descendant content in
+                     the accessible name, so writers/verified/audio/sheet-
+                     music never reached screen readers — dropping it and
+                     announcing the number as visually-hidden text lets the
+                     rest of the row's real content flow through. -->
                 <span class="song-number-badge" data-songbook="<?= htmlspecialchars($bookId) ?>" aria-hidden="true"><?php
                     if (isset($song['number']) && $song['number'] !== null && (int)$song['number'] > 0) {
                         echo (int)$song['number'];
                     }
                 ?></span>
+                <?php if (isset($song['number']) && $song['number'] !== null && (int)$song['number'] > 0): ?>
+                    <span class="visually-hidden">Song <?= (int)$song['number'] ?>: </span>
+                <?php endif; ?>
                 <!-- Song info -->
                 <div class="song-info flex-grow-1">
-                    <span class="song-title"><?= htmlspecialchars(toTitleCase($song['title'])) ?><?php if (!empty($verifiedMap[$song['id']])): ?><span class="verified-badge" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></span>
+                    <span class="song-title"><?= htmlspecialchars(toTitleCase($song['title'])) ?><?php if (!empty($verifiedMap[$song['id']])): ?><span class="verified-badge" role="img" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></span>
                     <?php if (!empty($writersMap[$song['id']])): ?>
                         <small class="song-writers text-muted d-block">
                             <?= htmlspecialchars(implode(', ', $writersMap[$song['id']])) ?>
@@ -437,10 +461,10 @@ if (!empty($songs)) {
                 <!-- Indicators -->
                 <div class="song-indicators">
                     <?php if (!empty($song['hasAudio'])): ?>
-                        <i class="fa-solid fa-headphones text-muted" aria-label="Has audio" title="Audio available"></i>
+                        <i class="fa-solid fa-headphones text-muted" role="img" aria-label="Has audio" title="Audio available"></i>
                     <?php endif; ?>
                     <?php if (!empty($song['hasSheetMusic'])): ?>
-                        <i class="fa-solid fa-file-pdf text-muted" aria-label="Has sheet music" title="Sheet music available"></i>
+                        <i class="fa-solid fa-file-pdf text-muted" role="img" aria-label="Has sheet music" title="Sheet music available"></i>
                     <?php endif; ?>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
                 </div>

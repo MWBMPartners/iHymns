@@ -39,9 +39,9 @@ are those currently pinned in the web app (verify against the source on update).
 | **SortableJS** | 1.15.2 | MIT | Drag-and-drop card/list reorder |
 | **animate.css** | 4.1.1 | **Hippocratic License 2.1** | ⚠️ See note below |
 | **Swagger UI** (`swagger-ui-dist`) | 5.32.11 | Apache-2.0 | API documentation UI (`/manage/api-docs`) — pinned with SRI + local fallback (#1587) |
-| **qrcode-generator** | 2.0.4 | MIT — © Kazuhiko Arase | Congregant join QR on `/manage/service-projection` (#1339) — loaded via dynamic `import()`, local vendored fallback; SRI hash recorded for audit (browsers don't enforce `integrity` on module imports, #1587) |
 | **jQuery** | 3.7.1 | MIT | Limited legacy use |
-| **protobuf.js** (`protobufjs`) | ^8.5.0 | BSD-3-Clause | Dev dependency (ProPresenter import tooling) |
+| **protobuf.js** (`protobufjs`) | ^8.7.2 | BSD-3-Clause | Dev dependency (ProPresenter import/export tooling — the CSP-safe static protobuf encoder is generated from this at build time; never shipped to the browser at runtime) |
+| **ProPresenter 7 proto schema** (`greyshirtguy/propresenter7-proto`) | Proto 7.16 generation | MIT — © greyshirtguy | The `.proto` message definitions under `appWeb/public_html/manage/editor/protos/proto-7.16/` (118 files, `rv.data` package) are **vendored from** this reverse-engineered, auto-refreshed-from-real-binaries schema project — the source the ProPresenter import/export encoder is generated against (epic #1968). Attribution + companion reference sources recorded in `.claude/propresenter-reference-sources.md` |
 | **jsdom** | ^30.0.1 | MIT | Dev dependency (DOM-backed unit tests, #1594) — **never shipped**; test-time only |
 | **mPDF** (`mpdf/mpdf`) | 8.3.x | **GPL-2.0-only** | ⚠️ See note below. Server-side HTML→PDF engine (#1767 remainder P3) — vendored via Composer at `appWeb/private_html/lib/pdf/vendor/`, **outside every web docroot**, never loaded by a browser. Its own runtime dependencies (`setasign/fpdi`, `mpdf/psr-http-message-shim`, `mpdf/psr-log-aware-trait`, `myclabs/deep-copy`, `paragonie/random_compat`, `psr/http-message`, `psr/log`) are all separately MIT-licensed and ship in the same vendored tree |
 
@@ -66,10 +66,29 @@ are those currently pinned in the web app (verify against the source on update).
 > project's own CSS keyframes (the motion layer is already abstracted behind the
 > reduced-motion guards) — tracked as a licensing-review consideration.
 
+> **QR codes — no bundled library; a first-party server-side service.** QR
+> codes (the Service-Projection join code, print/PDF QR blocks) are generated
+> by **CueRCode** (`github.com/MWBMPartners/CueRCode`), a separate first-party
+> service by the same developer (MWBM Partners Ltd) called server-side via
+> `includes/cuercode_client.php` and served same-origin at `/qr.php` — it is
+> an internal service dependency, not a third-party open-source library, so it
+> carries no OSS licence entry here. The previously-vendored client-side
+> `qrcode-generator` (MIT) library was **removed** when this shipped (owner
+> directive 2026-08-05) — no QR code is ever generated in the browser.
+
 **Compliance practice.** CDN libraries are version-pinned (with Subresource
 Integrity where applicable). On any dependency add/update: record it here with
 its licence, confirm licence compatibility with proprietary distribution, and
 check the version against published CVEs.
+
+**Test fixtures (dev/test-only, never shipped to a user).** A handful of the
+ProPresenter import/export tests under `tests/fixtures/propresenter/` are
+genuine, public-domain-hymn or synthetic sample files drawn from other
+MIT-licensed open-source ProPresenter projects (`ChrisMBarr/propresenter-parser`,
+`bussnet/propresenter7-php-lib`) — used to cross-validate the decoder/encoder
+against real, independently-produced files rather than only iHymns's own
+round-trip. Full source list, licences, and the copyright-safety triage that
+kept every copyrighted sample out of the repo: `.claude/propresenter-reference-sources.md`.
 
 ### Apple app (`appApple/`)
 

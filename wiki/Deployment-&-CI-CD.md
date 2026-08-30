@@ -32,12 +32,12 @@ All branches deploy from `appWeb/public_html/` — the branch determines the rem
 
 | Workflow | File | Purpose |
 |---|---|---|
-| Deploy | `deploy.yml` | SFTP mirror to the environment matching the pushed branch (see pipeline below) |
-| Version Bump | `version-bump.yml` | Auto-bumps `infoAppVer.php`'s semver `Version.Number` via conventional commits on push to `alpha`/`beta`, keeps `api-docs.yaml`'s `info.version` in lockstep (a dedicated step + a CI guard), and rolls the CHANGELOG's `## [unreleased] — alpha` section into the new version heading |
+| Deploy | `deploy.yml` | SFTP mirror to the environment matching the pushed branch, **plus** the tag-free version-anchor bump (see Versioning below) |
 | Changelog | `changelog.yml` | Regenerates the four `CHANGELOG.md` files from conventional commit messages on push to `beta` |
-| Release | `release.yml` | Creates a GitHub Release with a tagged version |
+| Release | `release.yml` | ⚠️ **Dormant / manual-only** (#1965) — creates a GitHub Release for a `v*` tag, but nothing in the automated pipeline pushes a tag any more; it fires only if a human pushes one by hand or runs it via `workflow_dispatch` |
 | CI Lint & Validation | `test.yml` | Runs linting + the PHP/JS unit test suites |
 | Lint Workflows | `lint.yml` | Lints the workflow YAML files themselves on any change under `.github/workflows/` |
+| Language Registry Refresh | `language-registry-refresh.yml` | Scheduled monthly: refreshes the git-tracked BCP 47/IANA/CLDR snapshot files and re-pokes the keyed `/language-registry-refresh` endpoint to re-import them (dormant until an admin has run the registry's own setup card once) |
 | Apple CI | `apple.yml` | Builds + runs Swift tests on push to the Apple integration branch |
 | Apple Deploy | `apple-deploy.yml` | Signs and ships an Apple build on push to `alpha`/`beta`/`main` touching `appApple/**` |
 | Apple macOS DMG | `apple-dmg.yml` | Manual/tag-triggered: builds and attaches a signed macOS DMG to a release |
@@ -62,9 +62,27 @@ Triggered on push to `alpha`, `beta`, or `main`; SFTP mirroring via `lftp`. The 
 
 Other deploy behaviour:
 - `.env-channel` file injected by CI for server-side environment detection
-- **Build info injection** — alongside the pre-existing SHA/date injection, `Version.Build.Number` in `infoAppVer.php` is set to `git rev-list --count HEAD` — a monotonic per-commit build number, distinct from the semver `Version.Number` (which only changes on a bump). `NULL` in the source tree; only ever set on a deployed copy.
+- **Build info injection** — alongside the pre-existing SHA/date injection, `Version.Build.Number` in `infoAppVer.php` is set to `git rev-list --count HEAD` — a monotonic per-commit build number, distinct from the semver `Version.Number` (which only changes on a bump). `NULL` in the source tree; only ever set on a deployed copy. Shown as its own row in Settings → About (the commit-SHA row is separately labelled "Commit").
 - `[skip ci]` in commit message skips all workflows
 - Kill switch: `vars.SFTP_ENABLED` must be `true`
+
+### Versioning pipeline (tag-free, #1963 → #1965 → the 2026-08-30 marketing-version/build-number split)
+
+`deploy.yml` (not a separate `version-bump.yml`, which is retired) also owns the version bump, on every push to `alpha`. Two numbers travel separately and are never folded together:
+
+- **The marketing version** — the full `MAJOR.MINOR.PATCH` string committed as `Version.Number` in `includes/infoAppVer.php`. This is the human-facing "what release is this" number (e.g. `1.3.0`).
+- **The build number** — `git rev-list --count HEAD`, a monotonic count of every commit ever made. It only ever goes up, on every single deploy, whether or not the marketing version moved.
+
+The bump logic on `alpha`:
+
+1. It resolves the committed `MAJOR.MINOR.PATCH` anchor from `includes/infoAppVer.php`'s `Version.Number` line.
+2. `.github/workflows/scripts/classify-bump.sh` reads the commits since that line last changed and classifies them by Conventional-Commit prefix: `feat:` → **minor**, `feat!:`/`fix!:`/any `!`/a line-anchored `BREAKING CHANGE:` → **major**, an explicit whole-line `Release: patch` footer (case-insensitive) on the merge message → **patch** (a deliberate "this is a bug-fix release" signal — meaningful for the native app stores even though the web ships continuously), everything else (`fix`/`chore`/`docs`/`refactor`/`perf`/`ci`/an unlabelled subject with no `Release: patch` footer) → **build-only** (the safe default — a mislabelled commit under-bumps rather than over-bumps, and moves only the always-incrementing build number below).
+3. On a major/minor/patch signal, the workflow edits `Version.Number` in place and commits it back to the branch as a normal push (`[skip ci]`, worktree-isolated so the build-count arithmetic stays intact) — **never a git tag**.
+4. The build number (`git rev-list --count HEAD`) is injected on every deploy regardless of whether the marketing version moved.
+
+`beta`/`main` display their own committed anchor as content is promoted onto them — no tag reachability is needed. `release.yml` is dormant (see the workflow table above); it is **not** dispatched anywhere in this pipeline. CI guard: `tests/test-versioning-pipeline.js` (tag-free assertions + the classifier's producer/consumer format-string lockstep) and `tests/test-bump-classifier.js` (the classifier truth table, including the `Release: patch` footer).
+
+**Companion obligation:** every user-visible `feat:` push should also add a plain-language bullet to `WHATS-NEW.md` (the source for the in-app `/whats-new` page) — never internals, never file/table/endpoint names.
 
 ---
 
@@ -161,4 +179,28 @@ The CI pipeline injects a `.env-channel` file during deployment, allowing server
 | Beta | `beta` |
 | Production | `main` |
 
-Alpha builds display a commit date timestamp (yyyymmddhhmmss) in the footer for deploy tracking.
+The app footer shows both numbers together but never merged: `iHymns v<MAJOR.MINOR.PATCH> · build <commit-count>[ · Alpha|Beta]` (tapping the version text goes through to `/whats-new`). The admin footer under `/manage/*` renders the identical `· build <n>` suffix from the same `Version.Build.Number` field, and the per-commit build number is also shown as its own row in Settings → About.
+
+## Per-channel search-engine visibility (#2024/#2025)
+
+Each of the three channels can be told, independently, whether search engines are allowed to list it — a "Search engine visibility" card on `/manage/configuration` with a switch per channel (Production / Beta / Alpha-dev). It hangs off ONE `tblAppSettings` row (`search_visibility_channels`, a CSV of the VISIBLE channels — same storage shape as `webhooks_enabled_channels`/`intappsapi_enabled_channels`) and ONE helper, `includes/search_visibility.php`, so the sitemap gate, `robots.txt.php`, and every noindex header all read the same answer and can never disagree.
+
+**Defaults (no admin action, no database migration needed):**
+
+| Channel | Listed by default? |
+|---|---|
+| Production | Yes |
+| Beta | No |
+| Alpha (dev) | No |
+
+**Switching a channel OFF is a full search-engine hide, made of three pieces:**
+
+1. Every response on that channel carries `X-Robots-Tag: noindex` (`index.php` also renders the matching `<meta name="robots" content="noindex">` in `<head>`).
+2. That channel's `/sitemap.xml` (and every child, e.g. `/sitemap-songs-2.xml`) answers a plain 404.
+3. That channel's `robots.txt` (now generated by `robots.txt.php` — the static file was removed) drops its `Sitemap:` line.
+
+It deliberately does **not** add `Disallow: /` — a crawler that's told not to fetch a page can never see the `noindex` on it, so staying crawlable is what makes the noindex signal actually work. `robots.txt.php` is wrapped in a total `try/catch` so it can never answer a server error (a robots.txt that 5xxs can make Google pause crawling the whole host).
+
+A channel's own answer always comes from `ihymns_environment()` (the docroot it's actually running from), never the request's `Host:` header — so a forged header can never flip the decision, and each channel only ever advertises its own sitemap host (not the other two channels').
+
+A switch takes days to weeks to show up in search results — search engines only notice on their next crawl of a page, in either direction.

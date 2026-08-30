@@ -20,6 +20,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'environment.php'; // #1315 — ihymns_environment() for the per-env log default
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log_geo.php'; // #1969 API-coverage Batch 5 — shared with api.php's admin_ip_geolocate
 
 requireAuth();
 $currentUser = getCurrentUser();
@@ -48,19 +49,10 @@ $db = getDbMysqli();
 
 /* #1207 — do the observability columns (Environment / RequestPath / Referrer /
    Country) exist yet? Probed once; gates the env filter, the path search, the
-   SELECT tail, and the display so a pre-migration deploy still renders. */
-$hasObsCols = false;
-try {
-    $obsProbe = $db->prepare(
-        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME   = 'tblActivityLog'
-            AND COLUMN_NAME  = 'Environment' LIMIT 1"
-    );
-    $obsProbe->execute();
-    $hasObsCols = (bool)$obsProbe->get_result()->fetch_row();
-    $obsProbe->close();
-} catch (\Throwable $_e) { /* pre-migration deploy → stays false */ }
+   SELECT tail, and the display so a pre-migration deploy still renders.
+   #1969 API-coverage Batch 5 — the probe itself now lives in the shared core
+   (activityLogObsColumnsExist()), reused by api.php's admin_ip_geolocate. */
+$hasObsCols = activityLogObsColumnsExist($db);
 /* SELECT tail for the observability columns — empty on a pre-migration deploy
    so the query still compiles. Reused by the CSV export + the main SELECT. */
 $obsColsSql = $hasObsCols ? ', a.Environment, a.RequestPath, a.Referrer, a.Country' : '';
@@ -115,26 +107,11 @@ if ($hasObsCols && ($_GET['action'] ?? '') === 'geo') {
         echo json_encode(['ok' => false, 'error' => 'csrf']);
         exit;
     }
+    /* #1969 API-coverage Batch 5 — the resolve+snapshot loop now lives in
+       the ONE shared core (activityLogGeoResolveIps()), reused verbatim by
+       api.php's admin_ip_geolocate. */
     $ipsRaw = (string)($_POST['ips'] ?? '');
-    $ips = array_values(array_unique(array_filter(array_map('trim', explode(',', $ipsRaw)))));
-    $ips = array_slice($ips, 0, 25);   // cap external lookups per call (rate limits)
-    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ip_geolocation.php';
-    $countries = [];
-    foreach ($ips as $oneIp) {
-        $geo = ihymnsGeoLookup($oneIp, true);   // allow external providers here
-        if ($geo !== null && $geo['code'] !== '') {
-            $countries[$oneIp] = $geo['code'];
-            /* Snapshot onto rows from this IP that have no country yet, so the
-               next view needs no lookup at all (the owner's "save the country on
-               the row" point). Bound; best-effort. */
-            try {
-                $u = $db->prepare("UPDATE tblActivityLog SET Country = ? WHERE IpAddress = ? AND (Country IS NULL OR Country = '')");
-                $u->bind_param('ss', $countries[$oneIp], $oneIp);
-                $u->execute();
-                $u->close();
-            } catch (\Throwable $_e) { /* best-effort backfill */ }
-        }
-    }
+    $countries = activityLogGeoResolveIps($db, explode(',', $ipsRaw));
     echo json_encode(['ok' => true, 'countries' => $countries]);
     exit;
 }
@@ -742,10 +719,10 @@ try {
 
     <div class="container-admin py-4">
         <div class="d-flex align-items-center justify-content-between mb-3">
-            <h1 class="h4 mb-0"><i class="bi bi-activity me-2"></i>Activity Log</h1>
+            <h1 class="h4 mb-0"><i aria-hidden="true" class="bi bi-activity me-2"></i>Activity Log</h1>
             <a class="btn btn-sm btn-outline-secondary"
                href="?<?= htmlspecialchars($buildQuery(['export' => 'csv']), ENT_QUOTES, 'UTF-8') ?>">
-                <i class="bi bi-download me-1"></i>Export CSV
+                <i aria-hidden="true" class="bi bi-download me-1"></i>Export CSV
             </a>
         </div>
         <p class="text-secondary small mb-4">
@@ -757,7 +734,7 @@ try {
             usually call for a long history.
         </p>
         <p class="text-secondary small mb-4">
-            <i class="bi bi-info-circle me-1"></i>All three environments
+            <i aria-hidden="true" class="bi bi-info-circle me-1"></i>All three environments
             (alpha&nbsp;·&nbsp;beta&nbsp;·&nbsp;production) share one database, so this log
             spans them all — use the <strong>Env</strong> column / filter to tell them apart.
             The <strong>When</strong> column shows your <strong>local</strong> time
@@ -839,12 +816,12 @@ try {
             </div>
             <div class="col-md-2 d-flex align-items-end">
                 <button class="btn btn-amber btn-sm w-100" type="submit">
-                    <i class="bi bi-funnel me-1"></i>Apply
+                    <i aria-hidden="true" class="bi bi-funnel me-1"></i>Apply
                 </button>
             </div>
             <div class="col-md-2 d-flex align-items-end">
                 <a class="btn btn-outline-secondary btn-sm w-100" href="/manage/activity-log">
-                    <i class="bi bi-x-circle me-1"></i>Reset
+                    <i aria-hidden="true" class="bi bi-x-circle me-1"></i>Reset
                 </a>
             </div>
         </form>
@@ -883,15 +860,15 @@ try {
                                      If the script doesn't run (CSP block, ancient browser),
                                      the cells stay UTC and the header keeps its initial
                                      "(UTC)" suffix. (#723) */ ?>
-                            <th style="width: 11rem;" id="activity-when-header" data-sort-key="when"   data-sort-type="text">When (UTC)</th>
-                            <?php if ($hasObsCols): ?><th style="width: 5rem;" data-sort-key="env" data-sort-type="text">Env</th><?php endif; ?>
-                            <th style="width: 10rem;" data-sort-key="user"   data-sort-type="text">User</th>
-                            <th data-sort-key="action" data-sort-type="text">Action</th>
-                            <th data-sort-key="entity" data-sort-type="text">Entity</th>
-                            <?php if ($hasObsCols): ?><th data-sort-key="path" data-sort-type="text">Path</th><?php endif; ?>
-                            <th style="width: 5rem;"  data-sort-key="result" data-sort-type="text">Result</th>
-                            <th style="width: 9rem;"  data-sort-key="ip"     data-sort-type="text">IP</th>
-                            <th style="width: 5rem;"  data-sort-key="req"    data-sort-type="text">Req</th>
+                            <th scope="col" style="width: 11rem;" id="activity-when-header" data-sort-key="when"   data-sort-type="text">When (UTC)</th>
+                            <?php if ($hasObsCols): ?><th scope="col" style="width: 5rem;" data-sort-key="env" data-sort-type="text">Env</th><?php endif; ?>
+                            <th scope="col" style="width: 10rem;" data-sort-key="user"   data-sort-type="text">User</th>
+                            <th scope="col" data-sort-key="action" data-sort-type="text">Action</th>
+                            <th scope="col" data-sort-key="entity" data-sort-type="text">Entity</th>
+                            <?php if ($hasObsCols): ?><th scope="col" data-sort-key="path" data-sort-type="text">Path</th><?php endif; ?>
+                            <th scope="col" style="width: 5rem;"  data-sort-key="result" data-sort-type="text">Result</th>
+                            <th scope="col" style="width: 9rem;"  data-sort-key="ip"     data-sort-type="text">IP</th>
+                            <th scope="col" style="width: 5rem;"  data-sort-key="req"    data-sort-type="text">Req</th>
                         </tr>
                     </thead>
                     <tbody data-activity-rows>
@@ -931,7 +908,7 @@ try {
                      gesture an IntersectionObserver can't detect. */ ?>
             <div class="mt-2" data-activity-loadmore-wrap hidden>
                 <button type="button" class="btn btn-sm btn-outline-secondary" data-activity-loadmore>
-                    <i class="bi bi-arrow-down-circle me-1"></i>Load more
+                    <i aria-hidden="true" class="bi bi-arrow-down-circle me-1"></i>Load more
                 </button>
             </div>
             <div data-activity-sentinel aria-hidden="true"></div>

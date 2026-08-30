@@ -937,6 +937,232 @@ function listZipEntryNames(bytes) {
     });
 
     /* ---------------------------------------------------------------- */
+    /* #1968 P6 chord export — .claude/propresenter-chords-plan.md §1/§4/§6.
+     *
+     * ⚠️ THE PREMISE GUARD (the plan's headline finding, §1): PP7 does NOT
+     * store chords as inline `[G]` brackets in the slide's RTF — that is
+     * only ProPresenter's OWN editing metaphor. Chords are positioned
+     * protobuf `CustomAttribute{range,chord}` rows inside
+     * `element.text.attributes.custom_attributes[]`, over CLEAN plain
+     * text. Had this been built to the ORIGINAL (wrong) premise, the
+     * exporter would write literal `[G]` into `rtf_data` — which real
+     * ProPresenter would display TO THE AUDIENCE as lyric text. This is
+     * exactly the false-positive class the owner's #1 rule for this epic
+     * exists to prevent, so it is asserted explicitly below (not merely
+     * implied by the shape assertions), decoded via protobufjs
+     * REFLECTION — an INDEPENDENT decoder from the static encoder this
+     * exporter prefers, so a bug shared between the two encoders can't
+     * hide behind a self-consistent round-trip. */
+    console.log('\nChord export (#1968 P6):');
+
+    /* Chord attribute values verified by RUNNING _internal.linesChordAttributes()
+       directly during authoring (the owner's #1 rule — never hand-guessed):
+         Verse 1, line 0 "Amazing grace how sweet the sound" (33 UTF-16 units),
+           STRING cell "G        D" (its OWN whitespace is positional — G at
+           column 0, D at column 9, read directly off the cell, independent of
+           word boundaries): -> {start:0,end:9,chord:'G'}, {start:9,end:61,chord:'D'}
+           (end=61 = 33 + 1 (NEWLINE_UNITS) + 27 ("That saved a wretch like me"'s
+           own UTF-16 length) — the SLIDE's total UTF-16 length, tiled onto the
+           last chord since nothing follows it).
+         Chorus, line 0 "Praise the Lord" (15 UTF-16 units), ARRAY cell
+           ['C','F','G'] (word-start alignment): word starts are 0 ("Praise"),
+           7 ("the"), 11 ("Lord") -> {start:0,end:7,chord:'C'},
+           {start:7,end:11,chord:'F'}, {start:11,end:15,chord:'G'}. */
+    const CHORD_SAMPLE_SONG = {
+        id: 'CP-9999',
+        number: 99,
+        title: 'Chord Export Sample',
+        songbook: 'CP',
+        components: [
+            {
+                type: 'verse', number: 1,
+                lines: ['Amazing grace how sweet the sound', 'That saved a wretch like me'],
+                chords: ['G        D', null]
+            },
+            {
+                type: 'chorus',
+                lines: ['Praise the Lord'],
+                chords: [['C', 'F', 'G']]
+            },
+            {
+                type: 'verse', number: 2,
+                lines: ['No chords on this verse at all']
+                // no `chords` key at all — the chordless-component case.
+            }
+        ]
+    };
+
+    let chordEncoded;
+    await test('buildPresentation() encodes a chord-bearing song without throwing', async () => {
+        chordEncoded = await exporter.buildPresentation(CHORD_SAMPLE_SONG);
+        assert.ok(chordEncoded.byteLength > 0);
+    });
+
+    await test('the premise guard: rtf_data contains NO "[" for any emitted chord symbol (chords never enter the RTF)', () => {
+        const decoded = Presentation.decode(chordEncoded);
+        for (const cue of decoded.cues) {
+            for (const action of cue.actions) {
+                const element = action.slide.presentation.base_slide.elements[0].element;
+                const rtf = Buffer.from(element.text.rtf_data).toString('utf8');
+                assert.ok(!rtf.includes('['),
+                    `cue "${cue.name}": rtf_data must never contain "[" — got: ${rtf}`);
+            }
+        }
+    });
+
+    await test('Verse 1 (STRING cell) emits custom_attributes at the exact verified {start,end,chord} rows', () => {
+        const decoded = Presentation.decode(chordEncoded);
+        const verse1Element = decoded.cues[0].actions[0].slide.presentation.base_slide.elements[0].element;
+        const rows = verse1Element.text.attributes.custom_attributes.map((ca) => ({
+            start: ca.range.start, end: ca.range.end, chord: ca.chord
+        }));
+        assert.deepEqual(rows, [
+            { start: 0, end: 9, chord: 'G' },
+            { start: 9, end: 61, chord: 'D' }
+        ]);
+    });
+
+    await test('Chorus (ARRAY cell) emits custom_attributes at word-start columns', () => {
+        const decoded = Presentation.decode(chordEncoded);
+        const chorusElement = decoded.cues[1].actions[0].slide.presentation.base_slide.elements[0].element;
+        const rows = chorusElement.text.attributes.custom_attributes.map((ca) => ({
+            start: ca.range.start, end: ca.range.end, chord: ca.chord
+        }));
+        assert.deepEqual(rows, [
+            { start: 0, end: 7, chord: 'C' },
+            { start: 7, end: 11, chord: 'F' },
+            { start: 11, end: 15, chord: 'G' }
+        ]);
+    });
+
+    await test('a component with NO `chords` key at all emits NO custom_attributes and NO chord_pro', () => {
+        const decoded = Presentation.decode(chordEncoded);
+        const verse2Element = decoded.cues[2].actions[0].slide.presentation.base_slide.elements[0].element;
+        assert.ok(!verse2Element.text.attributes.custom_attributes
+            || verse2Element.text.attributes.custom_attributes.length === 0,
+            'a chordless component must carry no custom_attributes');
+        assert.equal(verse2Element.text.chord_pro, null, 'v1 export never writes chord_pro (plan §1.3)');
+    });
+
+    await test('v1 export writes NO chord_pro anywhere, even on a chord-bearing element (plan §1.3 scope decision)', () => {
+        const decoded = Presentation.decode(chordEncoded);
+        for (const cue of decoded.cues) {
+            for (const action of cue.actions) {
+                const element = action.slide.presentation.base_slide.elements[0].element;
+                assert.equal(element.text.chord_pro, null,
+                    `cue "${cue.name}": v1 export must never write chord_pro`);
+            }
+        }
+    });
+
+    await test('a fully CHORDLESS song (SAMPLE_SONG) emits NO custom_attributes on ANY slide — the #1080-style byte-safety property', () => {
+        const decoded = Presentation.decode(encoded); // `encoded` = SAMPLE_SONG, built earlier in this file, no `chords` anywhere
+        for (const cue of decoded.cues) {
+            for (const action of cue.actions) {
+                const element = action.slide.presentation.base_slide.elements[0].element;
+                assert.ok(!element.text.attributes.custom_attributes
+                    || element.text.attributes.custom_attributes.length === 0,
+                    `cue "${cue.name}": a chordless song must emit no custom_attributes`);
+                assert.equal(element.text.chord_pro, null);
+            }
+        }
+    });
+
+    await test('a chordless song\'s attributes object is EXACTLY defaultTextAttributes() — Object.assign() never runs for a chordless component (structural non-regression)', () => {
+        // SAMPLE_SONG carries no `chords` key anywhere. This proves makeLyricCue()'s
+        // `if (chordAttrs && chordAttrs.length)` branch never fires for it — the KEY SET of
+        // every slide's `text.attributes` is exactly what defaultTextAttributes() alone
+        // produces, byte-for-byte the pre-#1968-P6 shape (never `custom_attributes` merged in).
+        const payload = exporter._internal.buildPresentationPayload(SAMPLE_SONG);
+        const expectedKeys = Object.keys(exporter._internal.defaultTextAttributes()).sort();
+        for (const cue of payload.cues) {
+            for (const action of cue.actions) {
+                const element = action.slide.presentation.base_slide.elements[0].element;
+                assert.deepEqual(Array.from(Object.keys(element.text.attributes)).sort(), expectedKeys,
+                    `cue "${cue.name}": text.attributes key set must be exactly defaultTextAttributes()'s own`);
+            }
+        }
+    });
+
+    await test('preSlideOrder=title-blank: the Title/Blank pre-slides NEVER carry chords, even for a chord-bearing song', () => {
+        const payload = exporter._internal.buildPresentationPayload(CHORD_SAMPLE_SONG, {
+            preSlideOrder: 'title-blank'
+        });
+        const titleCueName = payload.cue_groups[0].group.name;
+        const blankCueName = payload.cue_groups[1].group.name;
+        assert.equal(titleCueName, 'Title');
+        assert.equal(blankCueName, 'Blank');
+        const titleCue = payload.cues.find((c) => c.name === 'Title');
+        const blankCue = payload.cues.find((c) => c.name === 'Blank');
+        const titleElement = titleCue.actions[0].slide.presentation.base_slide.elements[0].element;
+        const blankElement = blankCue.actions[0].slide.presentation.base_slide.elements[0].element;
+        assert.ok(!titleElement.text.attributes.custom_attributes
+            || titleElement.text.attributes.custom_attributes.length === 0,
+            'the Title pre-slide must never carry chords');
+        assert.ok(!blankElement.text.attributes.custom_attributes
+            || blankElement.text.attributes.custom_attributes.length === 0,
+            'the Blank pre-slide must never carry chords');
+    });
+
+    /* ---------------------------------------------------------------- */
+    console.log('\nChord position-mapping internals (#1968 P6):');
+
+    /* ELI5/Detail: every value under test in this block is built by CODE RUNNING INSIDE the vm
+       sandbox, a SEPARATE V8 realm from this outer test file — a `{}`/`[]` object literal
+       returned from a sandboxed function binds to THAT realm's own intrinsic Object/Array
+       prototypes, so `assert.strict`'s deepEqual (== deepStrictEqual) comparing it against an
+       OUTER-realm literal fails with "same structure but are not reference-equal" even though
+       every key/value matches. See the near-identical `reify` this file already defines further
+       down (§ Set-list .proplaylist export) for the fuller explanation — duplicated here as a
+       local const rather than hoisted, since JS `const` is block-scoped/not hoistable and this
+       section runs earlier in file order. */
+    const reifyChord = (v) => JSON.parse(JSON.stringify(v));
+
+    await test('chordCellPositions: a STRING cell reads columns off its OWN whitespace, clamped to the lyric line length', () => {
+        assert.deepEqual(
+            reifyChord(exporter._internal.chordCellPositions('Amazing grace', 'G     D')),
+            [{ cpOffset: 0, symbol: 'G' }, { cpOffset: 6, symbol: 'D' }]
+        );
+    });
+    await test('chordCellPositions: a STRING cell chord past the line end clamps to line length (never dropped)', () => {
+        assert.deepEqual(
+            reifyChord(exporter._internal.chordCellPositions('Hi', 'G          D')),
+            [{ cpOffset: 0, symbol: 'G' }, { cpOffset: 2, symbol: 'D' }]
+        );
+    });
+    await test('chordCellPositions: an ARRAY cell anchors at word starts; overflow anchors at line end', () => {
+        assert.deepEqual(
+            reifyChord(exporter._internal.chordCellPositions('one two', ['A', 'B', 'C'])),
+            [{ cpOffset: 0, symbol: 'A' }, { cpOffset: 4, symbol: 'B' }, { cpOffset: 7, symbol: 'C' }]
+        );
+    });
+    await test('chordCellPositions: null/empty cell -> []', () => {
+        assert.deepEqual(reifyChord(exporter._internal.chordCellPositions('anything', null)), []);
+        assert.deepEqual(reifyChord(exporter._internal.chordCellPositions('anything', [])), []);
+        assert.deepEqual(reifyChord(exporter._internal.chordCellPositions('anything', '   ')), []);
+    });
+    await test('utf16LengthOf: an astral-plane emoji counts as 2 UTF-16 units, not 1', () => {
+        assert.equal(exporter._internal.utf16LengthOf('a\u{1F600}b'), 4); // a(1) + emoji(2) + b(1)
+    });
+    await test('codePointColumnToUtf16Offset: correctly skips 2 units for a preceding emoji', () => {
+        // 'a' + emoji + 'b' — code-point column 2 ('b') must be UTF-16 offset 3 (1 + 2).
+        assert.equal(exporter._internal.codePointColumnToUtf16Offset('a\u{1F600}b', 2), 3);
+    });
+    await test('chunkParallel: slices `cells` with the exact same per-chunk sizes chunkLines() produced', () => {
+        const result = exporter._internal.chunkParallel(['a', 'b', 'c', 'd', 'e'], ['1', '2', '3', '4', '5'], 2);
+        assert.deepEqual(reifyChord(result.lineChunks), [['a', 'b'], ['c', 'd'], ['e']]);
+        assert.deepEqual(reifyChord(result.cellChunks), [['1', '2'], ['3', '4'], ['5']]);
+    });
+    await test('chunkParallel: a shorter `cells` array degrades to a shorter last chunk, never throws', () => {
+        const result = exporter._internal.chunkParallel(['a', 'b', 'c'], ['1'], 0);
+        assert.equal(result.lineChunks.length, 1);
+        assert.deepEqual(reifyChord(result.cellChunks[0]), ['1']);
+    });
+    await test('linesChordAttributes: a fully chordless cells array (all null) returns []', () => {
+        assert.deepEqual(reifyChord(exporter._internal.linesChordAttributes(['a', 'b'], [null, null])), []);
+    });
+
+    /* ---------------------------------------------------------------- */
     console.log('\nZIP writer:');
     await test('produces a valid PK ZIP signature', () => {
         const z = exporter._internal.buildZip([

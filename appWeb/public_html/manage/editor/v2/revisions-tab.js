@@ -243,6 +243,7 @@ export function mountRevisionsTab(container, opts) {
         ['Field', 'Before', 'After'].forEach((h) => {
             const th = document.createElement('th');
             th.textContent = h;
+            th.setAttribute('scope', 'col');
             hr.appendChild(th);
         });
         thead.appendChild(hr);
@@ -374,13 +375,13 @@ export function mountRevisionsTab(container, opts) {
             const changesBtn = document.createElement('button');
             changesBtn.type = 'button';
             changesBtn.className = 'btn btn-sm btn-outline-secondary';
-            changesBtn.innerHTML = '<i class="bi bi-file-diff me-1"></i>Changes';
+            changesBtn.innerHTML = '<i class="bi bi-file-diff me-1" aria-hidden="true"></i>Changes';
             changesBtn.addEventListener('click', () => toggleDiff(rev, diffPanel));
 
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'btn btn-sm btn-outline-secondary';
-            btn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1"></i>Restore';
+            btn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1" aria-hidden="true"></i>Restore';
             btn.addEventListener('click', () => restore(rev));
 
             actions.append(changesBtn, btn);
@@ -542,7 +543,7 @@ export function mountRevisionsTab(container, opts) {
             const showBtn = document.createElement('button');
             showBtn.type = 'button';
             showBtn.className = 'btn btn-sm btn-outline-secondary';
-            showBtn.innerHTML = '<i class="bi bi-file-diff me-1"></i>Show change';
+            showBtn.innerHTML = '<i class="bi bi-file-diff me-1" aria-hidden="true"></i>Show change';
             showBtn.addEventListener('click', () => toggleFieldDiff(entry, diffPanel));
             actions.appendChild(showBtn);
 
@@ -550,7 +551,7 @@ export function mountRevisionsTab(container, opts) {
                 const revertBtn = document.createElement('button');
                 revertBtn.type = 'button';
                 revertBtn.className = 'btn btn-sm btn-outline-secondary';
-                revertBtn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1"></i>Revert';
+                revertBtn.innerHTML = '<i class="bi bi-arrow-counterclockwise me-1" aria-hidden="true"></i>Revert';
                 revertBtn.addEventListener('click', () => revertField(entry));
                 actions.appendChild(revertBtn);
             }
