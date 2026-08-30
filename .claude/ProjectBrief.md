@@ -4,6 +4,27 @@
 
 ---
 
+## 📌 Current state — 2026-08-30 (v1.3.0; dormant-feature activation program COMPLETE)
+
+Branch `claude/dormant-features-settings-1sdw4t`, suite **252 PHP / 84 Node**, version **1.3.0**
+(marketing version now SEPARATE from the counting-up build number — footer `iHymns v1.3.0 · build <n> · Alpha`).
+The owner-requested **dormant-feature activation program** (epic **#2002**) landed in full on top of the first
+guided-wizard program (detailed below): **4 more wizards** on the shared `admin-wizard.js` stepper —
+Connect-a-service (registry-driven, 6 integrations, `includes/integration_registry.php` + one generic driver),
+first-run environment setup, content-gating safe turn-on (warn-but-allow), extend (Email/SIWA/Webhooks); the
+**version-number rework** (marketing-version-vs-build-number split + a deliberate `Release: patch` mechanism,
+rule #46); and a **whole-codebase security + accessibility audit** with EVERY finding fixed — security CLEAN
+(no Critical/High/Medium; 2 Low + a 3rd SSRF file all fixed via the new `includes/network_guard.php`
+`ihymnsHostResolvesPrivate()` core + the setup-runner CSRF gate); a11y 26 findings ALL AA-fixed across 3 batches,
+**#2000 closed**; new **rule #49** documents the wizard framework + integration registry + SSRF core. Docs
+(in-app help, wiki, repo .md, .claude/) all current. Model method: sequential Fable-5 planning → serialized
+Sonnet implementation → Opus review-before-commit. Open follow-ups (non-blocking): #1994, #1998, #2007; owner-
+pending: native build-number adoption, D4, #1985, #946↔#1769. **No PR** (same-branch per directive; open on
+request — at merge, DON'T title the squash `feat:` or the anchor double-bumps past 1.3.0). Full detail:
+`sessions/2026-08-29-HANDOFF.md`.
+
+---
+
 ## 📌 Continuation note — 2026-08-29 (guided-wizard program — shared admin-wizard.js + 5 wizards)
 
 Same branch, head **`8cb189e8`**, suite **245 PHP / 83 JS**. Owner asked for a
