@@ -17,7 +17,12 @@ theme; owner decisions D1 (Emphasise-Links mode now underlines — rule #18 + gu
 and D2 (v1 editor cheap fixes, drag-builder deferred to v1-sunset #2036/#2038). **Code-quality** — lint
 clean tree-wide, 11 highest-value files annotation-backfilled, coverage 45%→71% on tracked epic #1158.
 **Docs** — README/SECURITY/PROJECT_STATUS/DEV_NOTES/help/wiki-mirror refreshed against the code
-(#2047 copy fix `534af87f`). Version unchanged (`feat:`→1.4.0 on merge, from the search-visibility
+(#2047 copy fix `534af87f`). **VERSION OUTCOME: merged (PR #2048) + deployed to alpha as v1.3.0, NOT
+v1.4.0** — pre-merge alpha was at 1.1.0, and the squash-merge commit itself set Version.Number to the
+branch's committed 1.3.0, so the deploy classifier had no commit AFTER its own anchor to bump; owner
+accepted 1.3.0 (a clean 1.1.0→1.3.0 minor carrying all this work). WHATS-NEW/CHANGELOG/PROJECT_STATUS
+were relabelled 1.4.0→1.3.0 to match. (The note below still reads "1.4.0 on merge" — that was the
+pre-merge expectation; the mechanism above is what actually happened.) The search-visibility
 feature below); the three version mirrors move in lockstep via `deploy.yml`. Branch still HELD for
 owner review — NO PR. Real GitHub Wiki push still blocked (no write grant) — tracked follow-up.
 
