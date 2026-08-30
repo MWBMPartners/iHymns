@@ -43,14 +43,28 @@ declare(strict_types=1);
  *                                 `[data-ihymns-linkcue="on"]`, targeting
  *                                 exactly the two Section-2.5 consumers
  *                                 (the global `a` default and
- *                                 `.song-meta-link`) — and NEVER
- *                                 reintroducing the underline/border rule
- *                                 #18 deliberately removed.
+ *                                 `.song-meta-link`) — and NEVER letting
+ *                                 the OPT-IN mode's own cue leak onto the
+ *                                 base (attribute-absent) default.
+ *
+ * UPDATE (a11y audit M5, owner decision D1, 2026-08-30): the colour-only
+ * version above computed below WCAG 1.4.3's 4.5:1 text-contrast floor on
+ * card surfaces in BOTH themes (light 4.47:1, dark 3.27:1) — no single
+ * colour can satisfy both 1.4.3 (4.5:1 vs the surface) and G183 (≥3:1 vs
+ * adjacent body text) at once on these surfaces. The fix adds an
+ * UNDERLINE inside the opt-in mode ONLY (never the default — rule #18's
+ * "no underline at rest" stays true for everyone who hasn't opted in),
+ * which removes the G183 obligation and lets --link-emphasis-color be
+ * retuned to a colour that clears 4.5:1 outright (light #4f46e5 = 6.29:1
+ * on white; dark #818cf8 = 4.90:1 on the dark card). This guard was
+ * updated in the SAME commit (rule #35 lockstep) to check the new values
+ * and require the underline inside the opt-in rules while still proving
+ * the base defaults are untouched.
  *
  * Mutation-proven (rule #34): every assertion below was checked to go RED
  * by temporarily reverting each edit in turn (removing the toggle, the
  * import, the applyTheme() block, the admin mirror's attribute write, and
- * the CSS rule) and confirming this file failed, then restoring it.
+ * the CSS rule/underline) and confirming this file failed, then restoring it.
  *
  * Usage: php tests/php/test-link-emphasis-mode.php
  * Exit 0 = all pass, 1 = at least one failure.
@@ -225,15 +239,16 @@ lem((bool) preg_match('/try\s*\{[^}]*localStorage\.getItem\(\s*LINKCUE_KEY\s*\)/
 /* ---- 5. css/app.css — the ONE stylesheet with the rule -------------------- */
 
 /* 5.1 — a dedicated token exists (not every consumer hand-rolling its own
-   colour), and the dark-theme value is verified to differ from the raw
-   --accent-solid dark value it would otherwise fall back to (that raw
-   value is the one measured at 2.72:1 against dark --text-primary —
-   below the 3:1 WCAG 1.4.1 floor this feature exists to clear). */
-lem((bool) preg_match('/--link-emphasis-color\s*:\s*var\(--accent-solid\)/', $appCss),
-    '5.1 app.css defines --link-emphasis-color (light theme: var(--accent-solid))');
-lem((bool) preg_match('/\[data-bs-theme="dark"\][^}]*--link-emphasis-color\s*:\s*#6366f1/s', $appCss)
-        || (bool) preg_match('/--link-emphasis-color\s*:\s*#6366f1/', $appCss),
-    '5.2 app.css overrides --link-emphasis-color for the dark theme (not the raw dark --accent-solid)');
+   colour), retuned by D1 to clear the 4.5:1 TEXT-contrast floor outright
+   (light #4f46e5 = 6.29:1 on white / 5.65:1 on the page bg; dark #818cf8
+   = 4.90:1 on the dark card / 5.98:1 on the page bg) now that the
+   underline (5.6 below) removes the G183 3:1-vs-text-colour constraint
+   that forced the PRE-D1 values (var(--accent-solid) / #6366f1, which
+   measured 4.47:1 / 3.27:1 — short of 4.5:1 on the card in both themes). */
+lem((bool) preg_match('/--link-emphasis-color\s*:\s*#4f46e5/', $appCss),
+    '5.1 app.css defines --link-emphasis-color for the light theme as #4f46e5 (D1 — clears 4.5:1 on card + page bg)');
+lem((bool) preg_match('/--link-emphasis-color\s*:\s*#818cf8/', $appCss),
+    '5.2 app.css overrides --link-emphasis-color for the dark theme as #818cf8 (D1 — clears 4.5:1 on card + page bg)');
 
 /* 5.2 — the two consumer rules exist, keyed on the attribute, and read the
    token (never a hardcoded literal at the consumer site — the whole point
@@ -243,43 +258,67 @@ lem((bool) preg_match('/\[data-ihymns-linkcue="on"\]\s*\)\s*a\s*\{[^}]*var\(--li
 lem((bool) preg_match('/\[data-ihymns-linkcue="on"\]\s*\)\s*\.song-meta-link\s*\{[^}]*var\(--link-emphasis-color/s', $appCss),
     '5.4 app.css has a [data-ihymns-linkcue="on"] rule for .song-meta-link using --link-emphasis-color');
 
-/* 5.3 — rule #18 regression guard: the linkcue rule bodies must NEVER
-   reintroduce the underline/dotted-border cue the owner deliberately
-   removed app-wide. Extract just the two rule BODIES (not the whole file —
-   the doc-comment above them legitimately narrates underline history in
-   prose) and assert neither carries a live text-decoration:underline or
-   border-bottom declaration. */
+/* 5.3 — D1 (2026-08-30): the linkcue rule bodies must NOW carry an
+   underline — that is what lets the retuned colour above satisfy WCAG
+   1.4.3 without also needing G183's separate 3:1-vs-text-colour headroom.
+   Four bodies are expected: the base `a` + `.song-meta-link` colour rules
+   PLUS their `:hover` companions (added so the underline doesn't flicker
+   off on hover — see app.css Section 2.5's own comment). Every body must
+   set the underline; NONE may reintroduce the OTHER cue rule #18 removed
+   app-wide, a dotted/solid border-bottom (D1 chose underline, not
+   border — the two are not interchangeable and border-bottom must still
+   never come back). */
 $linkcueRuleBodies = [];
 if (preg_match_all('/\[data-ihymns-linkcue="on"\]\s*\)[^{]*\{([^}]*)\}/s', $appCss, $lm)) {
     $linkcueRuleBodies = $lm[1];
 }
-lem(count($linkcueRuleBodies) >= 2,
-    '5.5 exactly the expected [data-ihymns-linkcue="on"] rule bodies were found (' . count($linkcueRuleBodies) . ' found, need >= 2)');
-$reintroducesUnderline = false;
+lem(count($linkcueRuleBodies) >= 4,
+    '5.5 the expected [data-ihymns-linkcue="on"] rule bodies were found ('
+        . count($linkcueRuleBodies) . ' found, need >= 4 — base + :hover for both <a> and .song-meta-link)');
+$missingUnderline = false;
+$reintroducesBorder = false;
 foreach ($linkcueRuleBodies as $body) {
-    if (preg_match('/text-decoration\s*:\s*underline/i', $body)
-        || preg_match('/border-bottom\s*:\s*[^;]*(dotted|solid|\d)/i', $body)) {
-        $reintroducesUnderline = true;
+    if (!preg_match('/text-decoration\s*:\s*underline/i', $body)) {
+        $missingUnderline = true;
+    }
+    if (preg_match('/border-bottom\s*:\s*[^;]*(dotted|solid|\d)/i', $body)) {
+        $reintroducesBorder = true;
     }
 }
-lem(!$reintroducesUnderline,
-    '5.6 neither linkcue rule reintroduces an underline/border-bottom (rule #18 stays intact)');
+lem(!$missingUnderline,
+    '5.6 every [data-ihymns-linkcue="on"] rule body sets text-decoration: underline (D1 — the opt-in mode '
+        . 'reaches AA text contrast only WITH the underline; no single colour clears both WCAG rules at once '
+        . 'on these surfaces, per the M5 finding)');
+lem(!$reintroducesBorder,
+    '5.7 no [data-ihymns-linkcue="on"] rule reintroduces a border-bottom (D1 added an underline, not a border '
+        . '— the other cue rule #18 removed app-wide stays gone)');
 
 /* 5.4 — specificity guard: the attribute selector must be wrapped in
    :where(...) so it contributes ZERO specificity — otherwise it would
    outrank Bootstrap component classes (.btn/.nav-link/.dropdown-item/…)
    that Section 2.5's own doc-comment says must keep winning, and the
-   colour cue would leak onto chrome it was never meant to touch. */
+   colour cue would leak onto chrome it was never meant to touch. Checked
+   against BOTH the base and :hover selectors for each consumer, since D1
+   added the :hover companions as a second, equally-real place the
+   specificity contract must hold. */
 lem((bool) preg_match('/:where\(\[data-ihymns-linkcue="on"\]\)\s*a\b/', $appCss),
-    '5.7 the global-<a> rule uses :where() so it does not outrank .btn/.nav-link/etc');
+    '5.8 the global-<a> rule uses :where() so it does not outrank .btn/.nav-link/etc');
 lem((bool) preg_match('/:where\(\[data-ihymns-linkcue="on"\]\)\s*\.song-meta-link\b/', $appCss),
-    '5.8 the .song-meta-link rule uses :where() for the same reason');
+    '5.9 the .song-meta-link rule uses :where() for the same reason');
+lem((bool) preg_match('/:where\(\[data-ihymns-linkcue="on"\]\)\s*a:hover\b/', $appCss),
+    '5.10 the global-<a>:hover companion rule (D1) also uses :where()');
+lem((bool) preg_match('/:where\(\[data-ihymns-linkcue="on"\]\)\s*\.song-meta-link:hover\b/', $appCss),
+    '5.11 the .song-meta-link:hover companion rule (D1) also uses :where()');
 
-/* 5.5 — sanity: the base (attribute-absent) default is untouched. The bare
-   `a { color: inherit; text-decoration: none; }` rule from Section 2.5
-   must still exist verbatim — this feature must never touch the default. */
+/* 5.5 — sanity: the base (attribute-absent) default is untouched for BOTH
+   consumers. The bare `a { color: inherit; text-decoration: none; }` rule
+   from Section 2.5, and .song-meta-link's own equivalent, must still
+   exist verbatim — D1 is scoped to the opt-in attribute and must never
+   touch either default. */
 lem((bool) preg_match('/^a\s*\{\s*\n\s*color:\s*inherit;\s*\n\s*text-decoration:\s*none;/m', $appCssRaw),
-    '5.9 the base `a { color: inherit; text-decoration: none; }` default (Section 2.5) is untouched');
+    '5.12 the base `a { color: inherit; text-decoration: none; }` default (Section 2.5) is untouched');
+lem((bool) preg_match('/\.song-meta-link\s*\{\s*\n\s*color:\s*inherit;\s*\n\s*text-decoration:\s*none;/m', $appCssRaw),
+    '5.13 the base `.song-meta-link { color: inherit; text-decoration: none; }` default is untouched');
 
 /* ------------------------------------------------------------------------ */
 echo "\n{$passed} passed, {$failures} failed\n";

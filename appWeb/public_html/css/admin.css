@@ -788,8 +788,14 @@ body:has(.navbar-admin) {
     color: var(--text-primary);
     border-bottom-color: var(--card-border);
 }
+/* L5 (a11y audit 2026-08-30): the TEXT colour here was --accent-solid,
+   which measures 4.27:1 on this tab strip's --surface-bg (#f8fafc) — a
+   hair under the 4.5:1 text floor. --accent-text (css/app.css) is the
+   SAME token #2000's .btn-amber fix already introduced this exact darker
+   shade for; the border stays on --accent-solid since a border only
+   needs the 3:1 non-text floor (1.4.11), which it already clears. */
 .nav-tabs .nav-link.active {
-    color: var(--accent-solid);
+    color: var(--accent-text, var(--accent-solid));
     background-color: transparent;
     border-bottom: 2px solid var(--accent-solid);
 }
@@ -802,6 +808,17 @@ body:has(.navbar-admin) {
     color: var(--text-primary);
 }
 .form-control::placeholder { color: var(--text-muted); }
+/* L6 (a11y audit 2026-08-30): --text-muted in the DARK theme (#94a3b8)
+   measures 4.04:1 against this control's dark --surface-elevated
+   (#334155) — under the 4.5:1 text floor. A slightly lighter
+   dark-theme-ONLY placeholder colour clears it (#a3aec2 ≈ 4.6:1) without
+   touching --text-muted itself, which feeds ~11 other consumers the S2
+   pass already verified pass on THEIR surfaces (app.css:197's own
+   comment) — re-pointing the shared token would risk re-breaking those.
+   Declared after the base rule so it wins on source order + specificity
+   (attribute selector + class beats class alone).
+   @link https://www.w3.org/WAI/WCAG21/Understanding/contrast-minimum.html */
+[data-bs-theme="dark"] .form-control::placeholder { color: #a3aec2; }
 .form-control:focus,
 .form-select:focus {
     background-color: var(--surface-elevated);
@@ -964,10 +981,18 @@ body:has(.navbar-admin) {
 }
 .dynamic-list-row .form-control { flex: 1; }
 
+/* L9 (a11y audit 2026-08-30): the "×" glyph text-colour was #ef4444
+   (3.76:1 on white) — passes as an icon-glyph (1.4.11's 3:1 floor) but
+   fails if read as text (1.4.3's 4.5:1 floor). #dc2626 (Red 600, one
+   Tailwind step darker) measures ~4.5:1 on white and is used only here,
+   so it can't shift any other red in the app. Hover's filled state is
+   unchanged — it's a large, high-contrast white-on-red fill, not the
+   marginal at-rest case this fixes.
+   @link https://www.w3.org/WAI/WCAG21/Understanding/contrast-minimum.html */
 .btn-remove-row {
-    color: #ef4444;
+    color: #dc2626;
     background: transparent;
-    border: 1px solid #ef4444;
+    border: 1px solid #dc2626;
     border-radius: var(--radius-sm);
     padding: 0.25rem 0.5rem;
     font-size: 0.8rem;
@@ -1028,24 +1053,44 @@ body:has(.navbar-admin) {
    across both themes. Applied to every `.btn-info` admin button (Run
    User Migration, Run SongId Prefix Fixup, the catalogue inline-save
    buttons, etc.) without each site needing to switch variants.
+
+   H1 FIX (a11y audit 2026-08-30, owner decision D3-A): the ORIGINAL
+   at-rest background here, `#0aa6c4`, was never actually measured against
+   this rule's own white text — the doc-comment above claimed "WCAG-AA
+   contrast across both themes" but the real ratio is 2.89:1, well under
+   the 4.5:1 text floor (and even under the 3:1 large-text floor). Hover
+   (`#098fa8`) measured 3.81:1 — also failing. Every admin who reads this
+   button's label in EITHER theme was under-served (the colours are
+   hardcoded and theme-independent, so this affected both).
+
+   Fix: darken the AT-REST background to the shade this same rule set
+   already used for its `:active` state, `#098297` — no new colour enters
+   the palette. White-on-`#098297` measures 4.51:1 (WCAG 1.4.3 AA, just
+   clears 4.5). Hover darkens correspondingly to `#087888`, this rule's
+   former `:active`/border shade, which measures ~4.9:1. `:active` moves
+   one step further to `#076e7d` (~5.4:1) so the three states stay
+   visually ordered light→dark on press, and disabled reuses the same
+   at-rest colour (a disabled control is exempt from the contrast
+   requirement, but there's no reason to make it worse).
+   @link https://www.w3.org/WAI/WCAG21/Understanding/contrast-minimum.html
    ========================================================================== */
 .btn-info,
 .btn-info:focus-visible,
 .btn-info.disabled,
 .btn-info:disabled {
     --bs-btn-color:              #fff;
-    --bs-btn-bg:                 #0aa6c4;
-    --bs-btn-border-color:       #0aa6c4;
+    --bs-btn-bg:                 #098297;
+    --bs-btn-border-color:       #098297;
     --bs-btn-hover-color:        #fff;
-    --bs-btn-hover-bg:           #098fa8;
-    --bs-btn-hover-border-color: #098fa8;
-    --bs-btn-focus-shadow-rgb:   10, 166, 196;
+    --bs-btn-hover-bg:           #087888;
+    --bs-btn-hover-border-color: #087888;
+    --bs-btn-focus-shadow-rgb:   9, 130, 151;
     --bs-btn-active-color:       #fff;
-    --bs-btn-active-bg:          #098297;
-    --bs-btn-active-border-color:#087888;
+    --bs-btn-active-bg:          #076e7d;
+    --bs-btn-active-border-color:#076e7d;
     --bs-btn-disabled-color:     #fff;
-    --bs-btn-disabled-bg:        #0aa6c4;
-    --bs-btn-disabled-border-color:#0aa6c4;
+    --bs-btn-disabled-bg:        #098297;
+    --bs-btn-disabled-border-color:#098297;
 }
 
 /* ==========================================================================

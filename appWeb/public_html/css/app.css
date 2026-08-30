@@ -68,12 +68,40 @@
     --accent-end: #8b5cf6;      /* Violet 500 */
     --accent-solid: #6366f1;
 
-    /* Accessible-links opt-in colour cue (#1984, S1) — see the dark-theme
-       override below for why this is its OWN token rather than every
-       consumer just reusing --accent-solid directly. Light theme: plain
-       --accent-solid (#6366f1) already clears 3.28:1 against --text-primary
-       (#1e293b), so no divergence is needed here. */
-    --link-emphasis-color: var(--accent-solid);
+    /* Accessible-links opt-in colour cue (#1984, S1; underlined for AA —
+       a11y audit M5/D1, 2026-08-30). Within the opt-in
+       [data-ihymns-linkcue="on"] mode ONLY, prose links now get BOTH an
+       accent colour AND an underline (see Section 2.5 below) — adding the
+       underline is what lets a colour choice satisfy WCAG 1.4.3's 4.5:1
+       TEXT-contrast floor, not just G183's weaker 3:1 non-text floor
+       #1984 originally verified (colour alone can satisfy G183's 3:1-vs-
+       adjacent-text rule on SOME surfaces here, but no single colour
+       clears 4.5:1 on every surface AND stays ≥3:1 against body text at
+       the same time — the underline sidesteps that impossible maths by
+       giving the mode a non-colour indicator, so only the plain 4.5:1
+       text-contrast rule needs satisfying now). #4f46e5 (Indigo 600 — one
+       step darker than the plain --accent-solid, #2000's .btn-amber fix
+       already uses this exact shade) measures 6.29:1 on the light card
+       background (#ffffff) and 5.65:1 on the page background (#f8fafc) —
+       comfortably over 4.5:1 on both surfaces a naked <a> or
+       .song-meta-link can sit on. Plain --accent-solid (#6366f1) measured
+       4.47:1 / 4.27:1 there — a hair under the floor in both places.
+       @link https://www.w3.org/WAI/WCAG21/Understanding/contrast-minimum.html (1.4.3)
+       @link https://www.w3.org/WAI/WCAG21/Understanding/use-of-color.html (1.4.1) */
+    --link-emphasis-color: #4f46e5;
+
+    /* --accent-text (L5, a11y audit 2026-08-30) — a TEXT-safe sibling of
+       --accent-solid for the handful of consumers that paint --accent-solid
+       as literal small text rather than a border/background/focus-ring.
+       Plain --accent-solid (#6366f1) measures 4.27–4.47:1 against this
+       theme's near-white surfaces — under the 4.5:1 text floor by a hair.
+       #4f46e5 (Indigo 600, the SAME shade #2000's .btn-amber fix and the
+       --link-emphasis-color token above both already use) clears it.
+       Deliberately NOT a re-point of --accent-solid itself: that token
+       also drives ~50 other rules (borders, focus outlines, gradients)
+       that already pass at the 3:1 non-text floor those uses need — only
+       the consumers that render it as readable TEXT switch to this one. */
+    --accent-text: #4f46e5;
 
     /* Surfaces */
     --surface-bg: #f8fafc;          /* Slate 50 */
@@ -166,20 +194,33 @@
     --accent-end: #a78bfa;
     --accent-solid: #818cf8;
 
-    /* Accessible-links opt-in colour cue (#1984, S1) — deliberately NOT
-       var(--accent-solid) here. --accent-solid in THIS theme (#818cf8,
-       Indigo 400 — brightened on purpose for legibility against the dark
-       surface) only clears 2.72:1 against --text-primary (#f1f5f9), below
-       the 3:1 floor WCAG 1.4.1's "use of colour" technique (G183) requires
-       when colour is the ONLY differentiator (rule #18: no underline/border
-       at rest). The LIGHT theme's more saturated Indigo 500 (#6366f1)
-       clears 4.08:1 against the SAME near-white text while still reading
-       clearly as an accent against dark surfaces (3.28–4.00:1 vs
-       --surface-card / --surface-bg) — verified via WCAG relative-luminance
-       maths, not eyeballed. Literal hex (not var(--accent-solid)) is
-       intentional: this token exists precisely because the two must differ.
+    /* Accessible-links opt-in colour cue (#1984, S1; underlined for AA —
+       a11y audit M5/D1, 2026-08-30). PRE-D1 this was a literal #6366f1,
+       chosen only to clear G183's weaker 3:1-vs-adjacent-text floor
+       (2.72:1 was --accent-solid's own dark value here, Indigo 400,
+       brightened for legibility against the dark surface but too close to
+       --text-primary to read as a distinct colour on its own). Now that
+       the opt-in mode also underlines (Section 2.5 below), the governing
+       rule is WCAG 1.4.3's 4.5:1 TEXT-contrast floor instead — and
+       #6366f1 only measured 3.27:1 on the dark card (#1e293b) / 4.00:1 on
+       the page background (#0f172a), short of 4.5:1 on the card. #818cf8
+       — the SAME value as this theme's own --accent-solid — measures
+       4.90:1 on the card / 5.98:1 on the page background, clearing 4.5:1
+       on both. Kept as its own literal (not var(--accent-solid)) so a
+       future change to --accent-solid can't silently move this token
+       without its contrast being re-checked against these two specific
+       surfaces.
+       @link https://www.w3.org/WAI/WCAG21/Understanding/contrast-minimum.html
        See css/app.css Section 2.5 + .song-meta-link for the consumers. */
-    --link-emphasis-color: #6366f1;
+    --link-emphasis-color: #818cf8;
+
+    /* --accent-text (L5, a11y audit 2026-08-30) — dark theme's own
+       --accent-solid (#818cf8) already measures 4.90:1 against
+       --surface-card (a11y audit #2000 verified this), clearing the
+       4.5:1 text floor with no divergence needed — unlike the light
+       theme's --accent-text above, this can simply mirror the shared
+       token rather than needing its own darker literal. */
+    --accent-text: var(--accent-solid);
 
     /* Surfaces */
     --surface-bg: #0f172a;          /* Slate 900 */
@@ -237,13 +278,20 @@
     --songbook-SDAH-solid: #fbbf24;
     --songbook-CH-solid: #f87171;
     --songbook-Misc-solid: #a78bfa;
-    /* Badge text colours — brighter dark-mode backgrounds need dark text */
-    --songbook-CP-text: #ffffff;
-    --songbook-JP-text: #ffffff;
+    /* Badge text colours — brighter dark-mode backgrounds need dark text.
+       CP/JP/CH/Misc CHANGED white -> #1a1a1a here (a11y audit follow-up,
+       2026-08-30, found while building the G4 contrast-registry guard):
+       white measured only 1.81-2.98:1 against these gradients' stops —
+       badges are aria-hidden decorative (the number is duplicated in the
+       row's accessible name, so this was a 1.4.3 "visual polish" gap, not
+       a live WCAG blocker) but #1a1a1a clears 4.5:1 against EVERY dark-
+       theme songbook gradient's both stops, same as MP/SDAH already did. */
+    --songbook-CP-text: #1a1a1a;
+    --songbook-JP-text: #1a1a1a;
     --songbook-MP-text: #1a1a1a;
     --songbook-SDAH-text: #1a1a1a;
-    --songbook-CH-text: #ffffff;
-    --songbook-Misc-text: #ffffff;
+    --songbook-CH-text: #1a1a1a;
+    --songbook-Misc-text: #1a1a1a;
 }
 
 /* ---------------------------------------------------------------------------
@@ -494,20 +542,30 @@ a.link-bare:hover {
 }
 
 /* -----------------------------------------------------------------------
-   ACCESSIBLE LINKS — opt-in at-rest colour cue (#1984, S1)
+   ACCESSIBLE LINKS — opt-in at-rest colour + underline cue (#1984, S1;
+   underline added by a11y audit M5, owner decision D1, 2026-08-30)
 
    OFF by default (attribute absent): the understated no-at-rest-cue
-   default above is untouched, exactly as rule #18 requires. When the user
-   opts in via Settings → Appearance → "Emphasise Links" (settings.js sets
+   default above is untouched — rule #18's DEFAULT treatment (no underline
+   for everyone who hasn't opted in) is unchanged. When the user opts in
+   via Settings → Appearance → "Emphasise Links" (settings.js sets
    `<html data-ihymns-linkcue="on">`, mirroring the CVD mode attribute — see
    js/constants.js STORAGE_LINK_EMPHASIS + manage/includes/admin-theme-
-   init.php), naked `<a>` tags gain an at-rest ACCENT COLOUR — still NO
-   underline/border — satisfying WCAG 1.4.1 "Use of Colour" (technique
-   G183: ≥3:1 contrast against adjacent body text when colour is the only
-   differentiator). --link-emphasis-color is verified ≥3:1 against
-   --text-primary in BOTH themes (light 3.28:1, dark 4.08:1 — see the two
-   theme blocks above for the maths); it is NOT simply --accent-solid
-   because that token's dark-theme value fails this specific check.
+   init.php), naked `<a>` tags now gain BOTH an at-rest ACCENT COLOUR AND
+   an UNDERLINE.
+
+   WHY THE UNDERLINE WAS ADDED (M5): the colour-only version (#1984)
+   satisfied WCAG 1.4.1 "Use of Colour" (technique G183: ≥3:1 against
+   adjacent body text) but was never checked against 1.4.3's separate
+   4.5:1 TEXT-contrast floor — and on the card surfaces this mode actually
+   renders on, NO single colour can satisfy both at once (the luminance
+   window that would clear 4.5:1 against the card and stay ≤ the ceiling
+   G183 needs against the text colour is empty in both themes — see #1907
+   git history / the audit for the maths). Adding a non-colour indicator
+   (the underline) removes the G183 obligation entirely, leaving only the
+   plain 4.5:1 text-contrast rule to satisfy — which the retuned
+   --link-emphasis-color values above do (light 6.29:1, dark 4.90:1,
+   against their card surfaces).
 
    :where() wraps the attribute selector so it contributes ZERO
    specificity, keeping this rule at the exact same (0,0,1) specificity as
@@ -520,9 +578,25 @@ a.link-bare:hover {
    (a different property, and that mode already provides its own colour
    cue via its own --accent-solid) — the two opt-ins layer harmlessly if
    both happen to be on at once.
+   @link https://www.w3.org/WAI/WCAG21/Understanding/contrast-minimum.html
+   @link https://www.w3.org/WAI/WCAG21/Understanding/use-of-color.html
    ----------------------------------------------------------------------- */
 :where([data-ihymns-linkcue="on"]) a {
     color: var(--link-emphasis-color, var(--accent-solid));
+    text-decoration: underline;
+}
+
+/* Keep the underline through :hover too. `a:hover` (Section 2.5 above)
+   sets `text-decoration: none` at (0,1,1) specificity — a PLAIN
+   `:where([data-ihymns-linkcue="on"]) a` rule sits at (0,0,1) and would
+   lose that tie-break, so the underline would flicker off on hover and
+   back on when the pointer leaves: an odd, non-obvious behaviour for the
+   very users who opted into a PERSISTENT visual cue. Repeating the
+   `:hover` pseudo-class here raises this rule to the SAME (0,1,1)
+   specificity as the base `a:hover` rule, so source order decides — this
+   rule is declared after it and wins. */
+:where([data-ihymns-linkcue="on"]) a:hover {
+    text-decoration: underline;
 }
 
 /* ==========================================================================
@@ -1138,7 +1212,12 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
 }
 
 .footer-nav-item.active {
-    color: var(--accent-solid);
+    /* L5 (a11y audit 2026-08-30): this 0.6rem active-tab label is real
+       TEXT, not a border/background — --accent-solid measured 4.47:1 on
+       the footer's near-white glass background, under the 4.5:1 floor.
+       --accent-text is the same darker shade #2000's .btn-amber fix
+       already introduced for this exact class of consumer. */
+    color: var(--accent-text, var(--accent-solid));
     background: linear-gradient(135deg, rgba(99, 102, 241, 0.12), rgba(139, 92, 246, 0.08));
 }
 
@@ -3243,14 +3322,24 @@ body.reduce-motion .related-songs-chevron {
     border-radius: 2px;
 }
 
-/* Accessible links opt-in (#1984, S1) — see Section 2.5's full doc-comment
-   for the mechanism + contrast maths; this is the SAME at-rest cue applied
+/* Accessible links opt-in (#1984, S1; underlined for AA — M5/D1,
+   2026-08-30) — see Section 2.5's full doc-comment for the mechanism +
+   contrast maths; this is the SAME at-rest colour+underline cue applied
    to catalogue prose links tagged with the explicit class instead of a
    naked <a>. :where() keeps this at .song-meta-link's own (0,1,0)
    specificity, matching the base rule above (source order — this comes
-   after it — decides the tie), so :hover/:focus-visible above still win. */
+   after it — decides the tie), so :focus-visible above still wins. */
 :where([data-ihymns-linkcue="on"]) .song-meta-link {
     color: var(--link-emphasis-color, var(--accent-solid));
+    text-decoration: underline;
+}
+
+/* Keep the underline through :hover too — same reasoning as the naked <a>
+   companion rule in Section 2.5 above (.song-meta-link:hover sets
+   text-decoration: none at a matching specificity; repeating :hover here
+   ties it and source order — declared after — wins). */
+:where([data-ihymns-linkcue="on"]) .song-meta-link:hover {
+    text-decoration: underline;
 }
 
 /* =========================================================================
@@ -3558,12 +3647,17 @@ body.reduce-motion .related-songs-chevron {
 }
 /* Active-state accents — applied via aria-pressed / data-state so the
    base colour stays neutral. */
+/* L5 (a11y audit 2026-08-30): these pressed/cached-state labels render
+   real TEXT next to the icon — --accent-text (a darker, text-safe
+   sibling of --accent-solid) replaces it for the `color`, while
+   `border-color` stays on --accent-solid (a border only needs the 3:1
+   non-text floor, which it already clears in both themes). */
 .song-toolbar-btn.btn-favourite[aria-pressed="true"] {
-    color: var(--accent-solid);
+    color: var(--accent-text, var(--accent-solid));
     border-color: var(--accent-solid);
 }
 .song-toolbar-btn[data-song-download][data-state="cached"] {
-    color: var(--accent-solid);
+    color: var(--accent-text, var(--accent-solid));
     border-color: var(--accent-solid);
 }
 
@@ -3583,8 +3677,10 @@ body.reduce-motion .related-songs-chevron {
     opacity: 0.55;
     cursor: not-allowed;
 }
+/* L5 (a11y audit 2026-08-30) — same text/border split as the song-toolbar
+   cached state above. */
 .songbook-download-btn[data-state="cached"] {
-    color: var(--accent-solid);
+    color: var(--accent-text, var(--accent-solid));
     border-color: var(--accent-solid);
 }
 
