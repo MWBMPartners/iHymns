@@ -167,7 +167,7 @@ See [[User Accounts & Roles]] for full details.
 
 ### SEO
 - **Canonical URLs** — prevents duplicate content
-- **Dynamic XML sitemap** — auto-generated from song database (`sitemap.xml.php`)
+- **Dynamic XML sitemap** — `/sitemap.xml` is a sitemap INDEX, auto-generated from the live database (`sitemap.xml.php`); its children (`?section=…&page=…`, served as `/sitemap-<section>[-<page>].xml`) cover songbooks, songs (paginated at 10,000/page), musicians, themes, works, publishers and tunes, each with an honest `<lastmod>` sourced from that row's own last-updated timestamp (never a placeholder "today"). Supports conditional GET (ETag / Last-Modified / 304) so a repeat crawler hit costs almost nothing when nothing changed, and degrades to a still-valid, DB-free body + `503 Retry-After` on a database outage rather than a broken response (2026-08-30 hardening, #2023).
 - **Flexible permalinks** — `MP-1` normalises to `MP-0001`
 
 ---
