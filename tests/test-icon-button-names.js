@@ -30,15 +30,19 @@
  * tests/test-component-label-sites.js (rule #34 — a hand-typed file list
  * only ever proves the files someone remembered to type).
  *
- * SCOPE (deliberate, mirrors the PHP M8 doc-comment's own "manage/*.php is
- * a separate, larger, tracked sweep" carve-out): appWeb/public_html/js/**
- * only — js/modules, js/utils and the two top-level js/*.js files. NOT
- * manage/**\/*.js (the editor + admin JS tree) — that is a bigger surface
- * this pass never audited, and pointing this guard at it would either
- * report on unverified pre-existing admin-only findings (drowning today's
- * real regression signal) or force scoping games to dodge them. A future
- * pass can widen SCAN_ROOT the same way #1990's M2/M8 PHP sweep grew a
- * second, wider target list instead of stretching the first one.
+ * SCOPE (a11y audit G1, 2026-08-30 — WIDENED from the original js/**-only
+ * carve-out): appWeb/public_html/js/** AND appWeb/public_html/manage/**
+ * (the editor + admin JS tree). The original scope note here said the
+ * admin JS tree was "a bigger surface this pass never audited" and left
+ * widening to "a future pass, the same way #1990's M2/M8 PHP sweep grew a
+ * second, wider target list instead of stretching the first one" — the
+ * 2026-08-30 a11y audit WAS that future pass: it ran this exact scanner
+ * over the 26 manage-tree JS files by hand and found zero unnamed
+ * icon-only buttons, so widening SCAN_ROOTS below is free of scoping
+ * games (this guard starts green over the wider tree, same as every
+ * other guard rule #34 requires). Mirrors the PHP M2/M8 scanner's own
+ * $m2m8Targets, which already covers manage/, manage/includes/,
+ * manage/editor/, etc.
  *
  * WHAT COUNTS AS "ICON-ONLY, NAME REQUIRED" (mirrors a11yIconAccessibility()
  * rule (b) in test-a11y-static-checks.php, JS-flavoured):
@@ -87,7 +91,9 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.join(__dirname, '..');
 const PUB = path.join(REPO, 'appWeb', 'public_html');
-const SCAN_ROOT = path.join(PUB, 'js'); // deliberately js/** only — see SCOPE above
+/* a11y audit G1 (2026-08-30) — widened from js/** only to ALSO include
+ * manage/** (the editor + admin JS tree). See the SCOPE note above. */
+const SCAN_ROOTS = [path.join(PUB, 'js'), path.join(PUB, 'manage')];
 
 let passed = 0;
 let failed = 0;
@@ -303,14 +309,48 @@ if (favoritesRaw !== '') {
 }
 
 /* ------------------------------------------------------------------------
- * Assertion 2 — the real scan across js/** (tree-derived, rule #34).
+ * Assertion 1b — G1 (2026-08-30) LIVE mutation proof that the WIDENED
+ * scan roots actually reach manage/** file CONTENT. Unlike favorites.js's
+ * A13 regression, no manage-tree file currently builds an icon-only
+ * button as literal `<button>…</button>` markup this text-scanner can
+ * see — the one manage-tree helper built for exactly that purpose
+ * (js/modules... no — manage/editor/v2/ui-helpers.js's iconBtn()) builds
+ * its button via DOM API calls (createElement/setAttribute/innerHTML on
+ * the icon fragment alone), not one HTML literal a regex can match. So
+ * this proof INJECTS the known-bad pattern into a REAL manage-tree
+ * file's real content (nothing is ever written back) — proving the
+ * widened walk genuinely reads and scans manage/** source, not just
+ * that the scanner function itself works (Assertion 0 already proved
+ * that on hand-typed fixtures).
  * ---------------------------------------------------------------------- */
-console.log('\nAssertion 2 — real scan across appWeb/public_html/js/**:');
+console.log('\nAssertion 1b — G1 live proof that manage/** is actually scanned:');
 
-const allFiles = walkJs(SCAN_ROOT);
+const reflowModalPath = path.join(PUB, 'manage', 'editor', 'v2', 'reflow-modal.js');
+const reflowModalRaw = fs.existsSync(reflowModalPath) ? fs.readFileSync(reflowModalPath, 'utf8') : '';
+check('manage/editor/v2/reflow-modal.js exists', reflowModalRaw !== '');
+
+if (reflowModalRaw !== '') {
+    const reflowStripped = stripComments(reflowModalRaw);
+    check('the scanner does NOT flag manage/editor/v2/reflow-modal.js AS-IS (its real buttons all carry '
+        + 'visible text)', findUnnamedIconButtons(reflowStripped).length === 0);
+
+    const injected = reflowStripped
+        + "\nconst _g1ProofFixture = '<button type=\"button\"><i class=\"bi bi-x-lg\" aria-hidden=\"true\"></i></button>';\n";
+    check('the scanner GOES RED once an unnamed icon-only button is present in a REAL manage-tree file\'s '
+        + 'content (proves SCAN_ROOTS genuinely reaches manage/**, not just js/**)',
+        findUnnamedIconButtons(injected).length === 1);
+}
+
+/* ------------------------------------------------------------------------
+ * Assertion 2 — the real scan across js/** AND manage/** (tree-derived,
+ * rule #34; widened by G1 — see SCOPE above).
+ * ---------------------------------------------------------------------- */
+console.log('\nAssertion 2 — real scan across appWeb/public_html/js/** and manage/**:');
+
+const allFiles = SCAN_ROOTS.flatMap((root) => walkJs(root));
 
 check(`scanned a plausible number of files (parser sanity, ${allFiles.length} walked)`,
-    allFiles.length >= 70, `only ${allFiles.length} .js files walked under appWeb/public_html/js — the tree walk under-read`);
+    allFiles.length >= 90, `only ${allFiles.length} .js files walked under js/** + manage/** — the tree walk under-read`);
 
 let totalUnnamed = 0;
 for (const file of allFiles) {
@@ -329,7 +369,7 @@ for (const file of allFiles) {
 }
 if (totalUnnamed === 0) {
     passed++;
-    console.log(`  PASS  every icon-only <button> under js/** (${allFiles.length} file(s)) carries an accessible name`);
+    console.log(`  PASS  every icon-only <button> under js/** and manage/** (${allFiles.length} file(s)) carries an accessible name`);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -340,4 +380,4 @@ if (failed > 0) {
     for (const f of failures) console.error(`  - ${f}`);
     process.exit(1);
 }
-console.log('\nAll icon-only <button> naming checks passed for appWeb/public_html/js/**.');
+console.log('\nAll icon-only <button> naming checks passed for appWeb/public_html/js/** and manage/**.');

@@ -638,7 +638,8 @@ if ($hasSchema) {
         </form>
 
         <!-- Edit Modal -->
-        <div class="modal fade" id="tuneEditModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30, M6 pattern): wire the modal-title heading to the dialog. -->
+        <div class="modal fade" id="tuneEditModal" tabindex="-1" aria-labelledby="tuneEditModal-label">
             <div class="modal-dialog modal-xl">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST" id="tune-edit-form">
@@ -646,7 +647,7 @@ if ($hasSchema) {
                         <input type="hidden" name="action" value="update">
                         <input type="hidden" name="id" id="edit-tune-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title">
+                            <h5 class="modal-title" id="tuneEditModal-label">
                                 <i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit tune — <span id="edit-tune-name-label"></span>
                             </h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -758,7 +759,8 @@ if ($hasSchema) {
         </div>
 
         <!-- Delete Modal -->
-        <div class="modal fade" id="tuneDeleteModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30) — see the tuneEditModal comment above. -->
+        <div class="modal fade" id="tuneDeleteModal" tabindex="-1" aria-labelledby="tuneDeleteModal-label">
             <div class="modal-dialog">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST">
@@ -766,7 +768,7 @@ if ($hasSchema) {
                         <input type="hidden" name="action" value="delete">
                         <input type="hidden" name="id" id="delete-tune-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title">
+                            <h5 class="modal-title" id="tuneDeleteModal-label">
                                 <i aria-hidden="true" class="bi bi-trash me-2"></i>Delete tune — <span id="delete-tune-name-label"></span>
                             </h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -789,14 +791,15 @@ if ($hasSchema) {
         </div>
 
         <!-- Merge Modal (tags.php:216/:630 shape) -->
-        <div class="modal fade" id="tuneMergeModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30) — see the tuneEditModal comment above. -->
+        <div class="modal fade" id="tuneMergeModal" tabindex="-1" aria-labelledby="tuneMergeModal-label">
             <div class="modal-dialog modal-dialog-centered">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST">
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                         <input type="hidden" name="action" value="merge">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title">Merge tunes</h5>
+                            <h5 class="modal-title" id="tuneMergeModal-label">Merge tunes</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">

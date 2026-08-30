@@ -222,6 +222,16 @@ $pdSuggestForJs = [
     <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
 <body class="p-0">
+    <!-- a11y audit L8 (WCAG 2.4.1 Bypass Blocks, 2026-08-30): this shell
+         already had an <h1> (below) but no skip link — same standalone-
+         shell reasoning as manage/editor/index.php's own copy (this page
+         deliberately doesn't include admin-nav.php, see the comment
+         below). -->
+    <a href="#v2-main"
+       class="visually-hidden-focusable position-absolute top-0 start-0 p-3 bg-primary text-white z-3"
+       id="skip-nav">
+        Skip to main content
+    </a>
     <?php
     /* Slim editor navbar (Issue A, #1856) — adapted from the legacy editor's
        (manage/editor/index.php:170-269) minus its Save/Revisions/Import
@@ -280,7 +290,7 @@ $pdSuggestForJs = [
         </aside>
         <div id="v2-grip" class="border-end border-start d-none d-lg-block" title="Drag to resize"></div>
 
-        <main class="flex-grow-1 overflow-auto p-3" style="min-width: 0;">
+        <main class="flex-grow-1 overflow-auto p-3" style="min-width: 0;" id="v2-main" tabindex="-1">
             <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
                 <?php /* #1845 — below lg the song list is the offcanvas drawer above,
                          not in-flow content; this is its only way in. Bootstrap's own
@@ -366,11 +376,15 @@ $pdSuggestForJs = [
     </div>
 
     <!-- New song modal -->
-    <div class="modal fade" id="v2-new-modal" tabindex="-1" aria-hidden="true">
+    <!-- a11y audit M6 (WCAG 4.1.2/2.4.6, 2026-08-30): this modal had a
+         .modal-title heading but no id on it and no aria-labelledby on the
+         dialog — a screen reader entering it announced only "dialog" with
+         no name. Same fix as the three other plain modals below. -->
+    <div class="modal fade" id="v2-new-modal" tabindex="-1" aria-hidden="true" aria-labelledby="v2-new-modal-label">
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2 class="modal-title h6"><i aria-hidden="true" class="bi bi-plus-lg me-1"></i>New song</h2>
+                    <h2 class="modal-title h6" id="v2-new-modal-label"><i aria-hidden="true" class="bi bi-plus-lg me-1"></i>New song</h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -492,11 +506,12 @@ $pdSuggestForJs = [
     </div>
 
     <!-- Bulk move modal (#1628 item 3) -->
-    <div class="modal fade" id="v2-bulk-move-modal" tabindex="-1" aria-hidden="true">
+    <!-- a11y audit M6 — see the #v2-new-modal comment above. -->
+    <div class="modal fade" id="v2-bulk-move-modal" tabindex="-1" aria-hidden="true" aria-labelledby="v2-bulk-move-modal-label">
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2 class="modal-title h6"><i aria-hidden="true" class="bi bi-arrow-left-right me-1"></i>Move songs to a different songbook</h2>
+                    <h2 class="modal-title h6" id="v2-bulk-move-modal-label"><i aria-hidden="true" class="bi bi-arrow-left-right me-1"></i>Move songs to a different songbook</h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -520,11 +535,12 @@ $pdSuggestForJs = [
     </div>
 
     <!-- Bulk export modal (#1628 item 3) -->
-    <div class="modal fade" id="v2-bulk-export-modal" tabindex="-1" aria-hidden="true">
+    <!-- a11y audit M6 — see the #v2-new-modal comment above. -->
+    <div class="modal fade" id="v2-bulk-export-modal" tabindex="-1" aria-hidden="true" aria-labelledby="v2-bulk-export-modal-label">
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2 class="modal-title h6"><i aria-hidden="true" class="bi bi-download me-1"></i>Export selected songs</h2>
+                    <h2 class="modal-title h6" id="v2-bulk-export-modal-label"><i aria-hidden="true" class="bi bi-download me-1"></i>Export selected songs</h2>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
@@ -548,7 +564,10 @@ $pdSuggestForJs = [
          Export (#1628 item 3). One modal rather than three near-identical
          ones: the failure SHAPE ({id,error,status}) is the same across all
          three actions. -->
-    <div class="modal fade" id="v2-bulk-result-modal" tabindex="-1" aria-hidden="true">
+    <!-- a11y audit M6 — the heading id already existed (v2-bulk-result-
+         title, filled in by JS per action); it just wasn't wired to the
+         dialog itself via aria-labelledby. -->
+    <div class="modal fade" id="v2-bulk-result-modal" tabindex="-1" aria-hidden="true" aria-labelledby="v2-bulk-result-title">
         <div class="modal-dialog">
             <div class="modal-content">
                 <div class="modal-header">

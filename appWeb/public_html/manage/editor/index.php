@@ -159,6 +159,17 @@ try {
 </head>
 <body>
 
+    <!-- a11y audit L8 (WCAG 2.4.1 Bypass Blocks, 2026-08-30): this editor
+         shell never had a skip link (unlike every other admin page, which
+         gets one from manage/includes/admin-nav.php — this legacy editor
+         doesn't include that partial, hence the standalone copy here,
+         same classes/target-id convention). -->
+    <a href="#editorMain"
+       class="visually-hidden-focusable position-absolute top-0 start-0 p-3 bg-primary text-white z-3"
+       id="skip-nav">
+        Skip to main content
+    </a>
+
     <!-- =================================================================
          TOP NAVBAR
          Editor branding + primary action buttons: Save, Revisions,
@@ -310,8 +321,19 @@ try {
                 </div>
 
                 <!-- Search input — live text search across song titles -->
+                <!-- a11y audit L10 (2026-08-30): every var(--ih-*) reference
+                     in this file (--ih-bg-input/--ih-border/--ih-text-muted/
+                     --ih-bg-card/--ih-amber) pointed at custom properties
+                     defined NOWHERE in the tree — the declarations silently
+                     no-opped (colour fell back to inherit, background to
+                     transparent), so the intended styling never actually
+                     rendered. Re-pointed at the real theme tokens
+                     (--surface-elevated/--card-border/--text-muted/
+                     --surface-card) and Bootstrap's own --bs-warning for the
+                     one decorative amber accent, which has no iHymns
+                     equivalent token. -->
                 <div class="input-group input-group-sm mb-2">
-                    <span class="input-group-text" style="background-color: var(--ih-bg-input); border-color: var(--ih-border); color: var(--ih-text-muted);">
+                    <span class="input-group-text" style="background-color: var(--surface-elevated); border-color: var(--card-border); color: var(--text-muted);">
                         <i aria-hidden="true" class="bi bi-search"></i>
                     </span>
                     <input
@@ -491,7 +513,13 @@ try {
                3. Credits   — Writers, Composers, Copyright notice
                4. Preview   — Read-only rendered preview of the song
              ============================================================= -->
-        <main class="editor-main" id="editorMain">
+        <main class="editor-main" id="editorMain" tabindex="-1">
+
+            <!-- a11y audit L8 (WCAG 2.4.1/2.4.6, 2026-08-30): this shell had
+                 no <h1> at all — the brand in the navbar is a link, not a
+                 heading. Visually hidden since the tabbed panel above
+                 already carries the visible "which song" context. -->
+            <h1 class="visually-hidden">iHymns Song Editor</h1>
 
             <!-- Empty state — shown when no song is selected for editing -->
             <div class="empty-state h-100" id="editorEmpty">
@@ -709,7 +737,7 @@ try {
                                     id="edit-tune-name"
                                     placeholder="e.g. HYFRYDOL, OLD HUNDREDTH"
                                 >
-                                <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                <div class="form-text" style="color: var(--text-muted); font-size: 0.75rem;">
                                     Traditional tune name, if known. Uppercase by convention.
                                 </div>
                             </div>
@@ -723,7 +751,7 @@ try {
                                     id="edit-iswc"
                                     placeholder="e.g. T-034.524.680-C"
                                 >
-                                <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                <div class="form-text" style="color: var(--text-muted); font-size: 0.75rem;">
                                     International Standard Musical Work Code.
                                 </div>
                             </div>
@@ -750,7 +778,7 @@ try {
                                     autocomplete="off"
                                 >
                                 <input type="hidden" id="edit-origin-city-id">
-                                <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                <div class="form-text" style="color: var(--text-muted); font-size: 0.75rem;">
                                     Where the composition originated or was first performed.
                                     Picks from the live geocoder so two curators picking
                                     &ldquo;Cardiff&rdquo; resolve to one canonical place.
@@ -779,7 +807,7 @@ try {
                         ?>
 
                         <!-- Status & Copyright Flags (#222, #225) -->
-                        <hr style="border-color: var(--ih-border);">
+                        <hr style="border-color: var(--card-border);">
                         <div class="mb-3" role="group" aria-labelledby="edit-status-copyright-label">
                             <label class="form-label d-block" id="edit-status-copyright-label">
                                 <i aria-hidden="true" class="bi bi-flag me-1"></i>Status &amp; Copyright
@@ -793,7 +821,7 @@ try {
                                     id="edit-verified"
                                 >
                                 <label class="form-check-label" for="edit-verified">
-                                    <i aria-hidden="true" class="bi bi-patch-check me-1" style="color: var(--ih-amber);"></i>
+                                    <i aria-hidden="true" class="bi bi-patch-check me-1" style="color: var(--bs-warning, #f59e0b);"></i>
                                     Verified — lyrics confirmed complete and accurate
                                 </label>
                             </div>
@@ -806,7 +834,7 @@ try {
                                     id="edit-lyricsPublicDomain"
                                 >
                                 <label class="form-check-label" for="edit-lyricsPublicDomain">
-                                    <i aria-hidden="true" class="bi bi-unlock me-1" style="color: var(--ih-amber);"></i>
+                                    <i aria-hidden="true" class="bi bi-unlock me-1" style="color: var(--bs-warning, #f59e0b);"></i>
                                     Lyrics — Public Domain
                                 </label>
                             </div>
@@ -819,12 +847,12 @@ try {
                                     id="edit-musicPublicDomain"
                                 >
                                 <label class="form-check-label" for="edit-musicPublicDomain">
-                                    <i aria-hidden="true" class="bi bi-unlock me-1" style="color: var(--ih-amber);"></i>
+                                    <i aria-hidden="true" class="bi bi-unlock me-1" style="color: var(--bs-warning, #f59e0b);"></i>
                                     Music — Public Domain
                                 </label>
                             </div>
 
-                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                            <div class="form-text" style="color: var(--text-muted); font-size: 0.75rem;">
                                 Only tick Public Domain if the work is explicitly in the public domain.
                                 An unknown or missing copyright does not imply public domain.
                             </div>
@@ -906,7 +934,7 @@ try {
                         </div>
 
                         <!-- Legend explaining the available component types -->
-                        <div class="mt-3 p-2 rounded" style="background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);">
+                        <div class="mt-3 p-2 rounded" style="background-color: var(--surface-card); border: 1px solid var(--card-border);">
                             <small class="text-muted">
                                 <strong>Component types:</strong>
                                 Verse, Chorus, Refrain, Bridge, Pre-Chorus, Tag, Coda, Intro, Outro, Interlude
@@ -936,7 +964,7 @@ try {
                             </span>
                             <div id="arrangement-pool"
                                  class="d-flex flex-wrap gap-1 p-2 rounded"
-                                 style="min-height: 44px; background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);"
+                                 style="min-height: 44px; background-color: var(--surface-card); border: 1px solid var(--card-border);"
                                  aria-label="Component pool">
                             </div>
                         </div>
@@ -947,7 +975,7 @@ try {
                             </span>
                             <div id="arrangement-strip"
                                  class="d-flex flex-wrap gap-1 p-2 rounded"
-                                 style="min-height: 44px; background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);"
+                                 style="min-height: 44px; background-color: var(--surface-card); border: 1px solid var(--card-border);"
                                  aria-label="Arrangement sequence">
                             </div>
                         </div>
@@ -1050,7 +1078,7 @@ try {
                             </div>
                         </details>
 
-                        <div class="p-2 rounded" style="background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);">
+                        <div class="p-2 rounded" style="background-color: var(--surface-card); border: 1px solid var(--card-border);">
                             <small class="text-muted">
                                 <strong>Arrangement:</strong>
                                 Type component labels separated by commas. Use the name and number
@@ -1155,7 +1183,7 @@ try {
                             <label class="form-label" id="credit-translations-label">
                                 <i aria-hidden="true" class="bi bi-translate me-1"></i>Translations
                             </label>
-                            <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                            <div class="form-text mb-2" style="color: var(--text-muted); font-size: 0.75rem;">
                                 Link this song to its translations in other languages. Linked songs appear on each other's page.
                             </div>
 
@@ -1183,7 +1211,7 @@ try {
                             <label class="form-label" id="credit-crossbook-label">
                                 <i aria-hidden="true" class="bi bi-link-45deg me-1"></i>Cross-book counterparts
                             </label>
-                            <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                            <div class="form-text mb-2" style="color: var(--text-muted); font-size: 0.75rem;">
                                 Link this song to its appearances in other songbooks (same hymn,
                                 different number). Use Translations for other-language versions.
                             </div>
@@ -1206,7 +1234,7 @@ try {
                             <!-- Suggested counterparts (#808) — top similar-titled candidates.
                                  Hidden until at least one suggestion exists for the open song. -->
                             <div id="song-link-suggestions" class="mt-3" style="display:none;">
-                                <div class="form-text mb-2" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                                <div class="form-text mb-2" style="color: var(--text-muted); font-size: 0.75rem;">
                                     <i aria-hidden="true" class="bi bi-lightbulb me-1"></i>
                                     Suggested counterparts — similar titles in other songbooks:
                                 </div>
@@ -1227,7 +1255,7 @@ try {
                                 rows="2"
                                 placeholder="e.g. Copyright 2024 Hillsong Music Publishing"
                             ></textarea>
-                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                            <div class="form-text" style="color: var(--text-muted); font-size: 0.75rem;">
                                 Full copyright text as it should appear in the application.
                             </div>
                         </div>
@@ -1279,7 +1307,7 @@ try {
                                     . DIRECTORY_SEPARATOR . 'external-links-section.php';
                             ?>
 
-                            <div class="form-text small mt-3" style="color: var(--ih-text-muted);">
+                            <div class="form-text small mt-3" style="color: var(--text-muted);">
                                 Save the song to persist link changes.
                                 Existing links are loaded automatically on song open.
                             </div>
@@ -1318,7 +1346,7 @@ try {
                             <div id="song-tags-container"
                                  role="group" aria-labelledby="song-tags-label"
                                  class="d-flex flex-wrap gap-1 p-2 rounded mb-3"
-                                 style="min-height: 44px; background-color: var(--ih-bg-card); border: 1px solid var(--ih-border);">
+                                 style="min-height: 44px; background-color: var(--surface-card); border: 1px solid var(--card-border);">
                                 <span class="text-muted small">Loading…</span>
                             </div>
 
@@ -1337,7 +1365,7 @@ try {
                                      style="z-index: 1050; max-height: 240px; overflow-y: auto;">
                                 </div>
                             </div>
-                            <div class="form-text" style="color: var(--ih-text-muted); font-size: 0.75rem;">
+                            <div class="form-text" style="color: var(--text-muted); font-size: 0.75rem;">
                                 Select an existing tag from the dropdown, or type a new name
                                 and press Enter to create it.
                             </div>
@@ -1449,8 +1477,13 @@ try {
         <div class="me-auto d-flex align-items-center">
             <!-- Coloured dot indicator — class toggled by editor.js -->
             <span class="status-indicator saved" id="status-indicator"></span>
-            <!-- Status text (e.g., "All changes saved" or "Unsaved changes") -->
-            <span id="status-text">Ready</span>
+            <!-- Status text (e.g., "All changes saved" or "Unsaved changes").
+                 a11y audit M8/D2 (WCAG 4.1.3, 2026-08-30): role="status" makes
+                 this an announced live region — was previously silent to a
+                 screen reader (editor.js's updateSaveUiState() now also skips
+                 re-writing the SAME text on every keystroke, so this doesn't
+                 turn chatty while typing; see that function's own comment). -->
+            <span id="status-text" role="status">Ready</span>
             <!-- Unsaved changes warning badge -->
             <span id="status-unsaved-warning" class="badge bg-warning text-dark ms-2" style="display: none;">
                 <span id="status-modified">0</span> unsaved

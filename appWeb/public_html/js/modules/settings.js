@@ -122,10 +122,22 @@ export class Settings {
         /** @type {string} localStorage key prefix */
         this.storagePrefix = 'ihymns_';
 
-        /** Default settings — reduce motion is OFF by default (animations enabled) */
+        /** Default settings — reduce motion is OFF by default (animations
+         *  enabled), UNLESS the OS/browser already asks for reduced motion. */
         this.defaults = {
             theme: 'system',
-            reduceMotion: false,      /* Animations enabled by default */
+            /* a11y audit L7 (2026-08-30): was hardcoded `false` regardless of
+               the OS-level prefers-reduced-motion setting — a user who had
+               that OS preference on but had never opened this app's Settings
+               page still got every animated transition. Seeded from
+               matchMedia() so the FIRST-EVER default respects it; get()
+               (below) still returns an explicitly stored 'true'/'false' over
+               this default, so nothing changes for anyone who has already
+               used the in-app toggle either way.
+               @link https://developer.mozilla.org/en-US/docs/Web/CSS/@media/prefers-reduced-motion */
+            reduceMotion: (typeof window !== 'undefined' && typeof window.matchMedia === 'function')
+                ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+                : false,
             reduceTransparency: false,
             fontSize: 18,
             keyboardShortcuts: true,  /* '?' opens help, '/' focuses search, etc. (#406) */

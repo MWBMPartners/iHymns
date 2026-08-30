@@ -462,12 +462,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 </main>
 
 <!-- Mint-key modal -->
-<div class="modal fade" id="keyModal" tabindex="-1" aria-hidden="true">
+<!-- a11y audit G2 follow-up (2026-08-30, same M6 pattern as editor2.php): wire the modal-title heading to the dialog via aria-labelledby. -->
+<div class="modal fade" id="keyModal" tabindex="-1" aria-hidden="true" aria-labelledby="keyModal-label">
   <div class="modal-dialog">
     <div class="modal-content">
       <form id="keyForm">
         <div class="modal-header">
-          <h5 class="modal-title"><i aria-hidden="true" class="bi bi-key me-2"></i>Mint API key</h5>
+          <h5 class="modal-title" id="keyModal-label"><i aria-hidden="true" class="bi bi-key me-2"></i>Mint API key</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
@@ -510,12 +511,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 </div>
 
 <!-- Edit rate-limits modal -->
-<div class="modal fade" id="limitsModal" tabindex="-1" aria-hidden="true">
+<!-- a11y audit G2 follow-up (2026-08-30) — see the keyModal comment above. -->
+<div class="modal fade" id="limitsModal" tabindex="-1" aria-hidden="true" aria-labelledby="limitsModal-label">
   <div class="modal-dialog">
     <div class="modal-content">
       <form id="limitsForm">
         <div class="modal-header">
-          <h5 class="modal-title"><i aria-hidden="true" class="bi bi-speedometer2 me-2"></i>Rate limits &mdash; <span id="limitsLabel"></span></h5>
+          <h5 class="modal-title" id="limitsModal-label"><i aria-hidden="true" class="bi bi-speedometer2 me-2"></i>Rate limits &mdash; <span id="limitsLabel"></span></h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
@@ -542,12 +544,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 </div>
 
 <!-- Request-key modal (self-serve, Phase D) -->
-<div class="modal fade" id="requestModal" tabindex="-1" aria-hidden="true">
+<!-- a11y audit G2 follow-up (2026-08-30) — see the keyModal comment above. -->
+<div class="modal fade" id="requestModal" tabindex="-1" aria-hidden="true" aria-labelledby="requestModal-label">
   <div class="modal-dialog">
     <div class="modal-content">
       <form id="requestForm">
         <div class="modal-header">
-          <h5 class="modal-title"><i aria-hidden="true" class="bi bi-send me-2"></i>Request an API key</h5>
+          <h5 class="modal-title" id="requestModal-label"><i aria-hidden="true" class="bi bi-send me-2"></i>Request an API key</h5>
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">

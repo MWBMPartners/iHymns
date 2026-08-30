@@ -28,6 +28,17 @@ import { STORAGE_SEARCH_LYRICS, songbookLabel, songbookIsOfficial } from '../con
    on every same-origin request and dispatches EVT_FETCH_FAILED/SUCCEEDED
    itself, replacing the old global fetch monkey-patch. */
 import { apiFetch } from '../utils/api-client.js';
+/* a11y audit L3 (2026-08-30): the offline search fallback below injects
+   its "you're offline" / "N matches" role="status" text ALREADY FILLED
+   IN — the exact insertion shape announce.js's own doc-comment warns is
+   often not announced (a live region only reports MUTATIONS it observes;
+   text present at insertion is frequently missed). announce() gives it
+   the guaranteed clear-then-fill-next-frame path instead of trying to
+   restructure this container's innerHTML into a scaffold-then-fill
+   dance (which would risk a visible flash of empty content — there's no
+   natural await boundary at the point this fills, unlike the online
+   path's M10 fix). */
+import { announce } from '../utils/announce.js';
 /* #1786 Option B — search is a SERVER-SORT surface: results are paginated
    ("Load more"), so re-ordering only the currently-loaded page client-side
    would silently sort a slice and lie about the rest. getListSort() reads
@@ -945,6 +956,9 @@ export class Search {
             </div>
             <p class="text-muted small mb-2" role="status">${results.length} match${results.length !== 1 ? 'es' : ''} in the offline index</p>
             <div class="list-group">${this._renderResultItems(results)}</div>`;
+
+        /* a11y audit L3 (WCAG 4.1.3) — see the import comment above. */
+        announce(`Offline — ${results.length} match${results.length !== 1 ? 'es' : ''} in the cached index`);
         return true;
     }
 

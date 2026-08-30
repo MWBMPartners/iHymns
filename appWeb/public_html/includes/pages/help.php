@@ -1200,10 +1200,17 @@ declare(strict_types=1);
          ============================================================ -->
     <div class="card mb-3 mt-4">
         <div class="card-body">
-            <h5>
+            <?php /* a11y audit L4 (WCAG 1.3.1, 2026-08-30): was a literal <h5>
+                     — a heading-level skip (the preceding context was h3,
+                     inside the last accordion item's subsections). This card
+                     is a SIBLING of the accordion (not nested inside it), so
+                     <h2> — matching the accordion items' own level — is the
+                     correct next level; the `h5` CLASS keeps the same small
+                     visual size. */ ?>
+            <h2 class="h5">
                 <i class="fa-solid fa-paper-plane me-2" aria-hidden="true"></i>
                 Suggest a Missing Song
-            </h5>
+            </h2>
             <p class="text-muted small mb-3">
                 Can't find a song? Let us know and we'll try to add it.
                 You can also reach this from the &ldquo;Report a missing

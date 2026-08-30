@@ -414,6 +414,26 @@ function a11yHasSkipLinkAndMainLandmark(string $src): bool
  */
 function a11yFindWizardModals(string $src): array
 {
+    return array_values(array_filter(
+        a11yFindAllModalTags($src),
+        static fn(array $modal): bool => str_contains($modal['window'], 'data-wiz-progress')
+    ));
+}
+
+/**
+ * @return array{offset:int,line:int,tag:string,window:string}[] EVERY
+ * `<div class="modal fade" …>` in `$src` (already comment-stripped),
+ * regardless of whether it's a guided-wizard modal — the shared base
+ * a11yFindWizardModals() above now filters (a11y audit G2, M6,
+ * 2026-08-30). Same offset/window-bounding rules as that function always
+ * had (window = from the modal's own opening tag up to the START of the
+ * NEXT such modal, or 6000 chars, whichever is smaller); extracted here
+ * so a SECOND check (a11yModalsMissingAccessibleName() below) can reuse
+ * the exact same "which modal is this, and what's inside it" logic
+ * without a second, divergent copy (rule #22).
+ */
+function a11yFindAllModalTags(string $src): array
+{
     $out = [];
     if (preg_match_all('~<div\s+class="modal fade"[^>]*>~', $src, $m, PREG_OFFSET_CAPTURE) === false) {
         return $out;
@@ -425,9 +445,6 @@ function a11yFindWizardModals(string $src): array
         $start = $offsets[$i];
         $cap   = $i + 1 < $n ? min($offsets[$i + 1], $start + 6000) : min($start + 6000, strlen($src));
         $window = substr($src, $start, max(0, $cap - $start));
-        if (!str_contains($window, 'data-wiz-progress')) {
-            continue; // an ordinary modal, not one built on the shared stepper
-        }
         $out[] = [
             'offset' => $start,
             'line'   => substr_count(substr($src, 0, $start), "\n") + 1,
@@ -436,6 +453,41 @@ function a11yFindWizardModals(string $src): array
         ];
     }
     return $out;
+}
+
+/**
+ * @return int[] 1-based line numbers of every modal (a11yFindAllModalTags())
+ * with no accessible name (a11y audit M6/G2, 2026-08-30) — WCAG 4.1.2 /
+ * 2.4.6. Passes when the modal's own opening tag carries `aria-label="…"`
+ * directly, OR its `aria-labelledby="…"` value matches the `id="…"` of a
+ * heading that also carries the `modal-title` class somewhere in the
+ * modal's own window — the SAME matching rule
+ * a11yWizardModalsMissingLabelledby() already uses for wizard modals,
+ * just applied to EVERY modal rather than only ones built on the shared
+ * stepper (which is the exact gap that let editor2.php's four plain
+ * modals — #v2-new-modal, #v2-bulk-move-modal, #v2-bulk-export-modal,
+ * #v2-bulk-result-modal — ship with no name at all).
+ */
+function a11yModalsMissingAccessibleName(string $src): array
+{
+    $lines = [];
+    foreach (a11yFindAllModalTags($src) as $modal) {
+        if (preg_match('~\baria-label="[^"]+"~', $modal['tag']) === 1) {
+            continue; // named directly — no heading id needed
+        }
+        if (!preg_match('~\baria-labelledby="([^"]+)"~', $modal['tag'], $lm)) {
+            $lines[] = $modal['line'];
+            continue;
+        }
+        $idNeedle = preg_quote($lm[1], '~');
+        $hasHeadingId =
+            preg_match('~<h[1-6]\b[^>]*\bclass="[^"]*\bmodal-title\b[^"]*"[^>]*\bid="' . $idNeedle . '"~', $modal['window']) === 1
+            || preg_match('~<h[1-6]\b[^>]*\bid="' . $idNeedle . '"[^>]*\bclass="[^"]*\bmodal-title\b[^"]*"~', $modal['window']) === 1;
+        if (!$hasHeadingId) {
+            $lines[] = $modal['line'];
+        }
+    }
+    return $lines;
 }
 
 /**
@@ -748,6 +800,35 @@ if (count($wizCommentLeakModals) !== 1 || $wizCommentLeakModals[0]['tag'] !== '<
         . 'happens to mention data-wiz-progress about — got ' . count($wizCommentLeakModals) . ' match(es).';
 }
 
+// M6 (a11y audit 2026-08-30) — a11yModalsMissingAccessibleName() must flag
+// a plain (non-wizard) modal with no name at all, accept one with a direct
+// aria-label, accept one whose aria-labelledby correctly matches its
+// modal-title id, and flag one whose aria-labelledby points at an id
+// nothing on the heading actually carries.
+$m6NoNameFixture = '<div class="modal fade" id="plainModal"><div class="modal-header">'
+    . '<h2 class="modal-title h6">New song</h2></div></div>';
+if (a11yModalsMissingAccessibleName($m6NoNameFixture) !== [1]) {
+    $selfTestFailures[] = 'a11yModalsMissingAccessibleName() did not flag a plain modal with no '
+        . 'aria-label/aria-labelledby at all.';
+}
+$m6AriaLabelFixture = '<div class="modal fade" id="plainModal" aria-label="New song"><div class="modal-header">'
+    . '<h2 class="modal-title h6">New song</h2></div></div>';
+if (a11yModalsMissingAccessibleName($m6AriaLabelFixture) !== []) {
+    $selfTestFailures[] = 'a11yModalsMissingAccessibleName() false-flagged a modal with a direct aria-label.';
+}
+$m6LabelledbyFixture = '<div class="modal fade" id="plainModal" aria-labelledby="plainModalLabel">'
+    . '<div class="modal-header"><h2 class="modal-title h6" id="plainModalLabel">New song</h2></div></div>';
+if (a11yModalsMissingAccessibleName($m6LabelledbyFixture) !== []) {
+    $selfTestFailures[] = 'a11yModalsMissingAccessibleName() false-flagged a modal whose aria-labelledby '
+        . 'correctly matches its modal-title id.';
+}
+$m6MismatchFixture = '<div class="modal fade" id="plainModal" aria-labelledby="wrongId">'
+    . '<div class="modal-header"><h2 class="modal-title h6" id="plainModalLabel">New song</h2></div></div>';
+if (a11yModalsMissingAccessibleName($m6MismatchFixture) !== [1]) {
+    $selfTestFailures[] = 'a11yModalsMissingAccessibleName() did not flag a modal whose aria-labelledby does '
+        . 'not match any real id on its heading.';
+}
+
 /* -----------------------------------------------------------------------
  * LIVE MUTATION PROOF (rule #34) — the fixture strings above prove the
  * scanners CAN fail, but only against hand-typed text. Take two REAL,
@@ -803,6 +884,35 @@ if (!is_file($groupsPath)) {
             $selfTestFailures[] = 'a11yIconAccessibility() did NOT go red when a real aria-label was deleted from '
                 . 'manage/groups.php\'s "Add selected user" button IN MEMORY — the guard cannot be trusted '
                 . 'against the real tree.';
+        }
+    }
+}
+
+// M6/G2 (a11y audit 2026-08-30) — live mutation proof against the real,
+// now-fixed manage/editor/editor2.php: confirm a11yModalsMissingAccessibleName()
+// stays clean on the actual file, then confirm it goes RED when the
+// aria-labelledby this M6 fix added to #v2-new-modal is stripped IN
+// MEMORY ONLY — proving this guard would have caught the M6 regression.
+$editor2Path = $a11yLiveRoot . '/manage/editor/editor2.php';
+if (!is_file($editor2Path)) {
+    $selfTestFailures[] = 'live-mutation proof: manage/editor/editor2.php not found.';
+} else {
+    $editor2Src = a11yStripComments((string) file_get_contents($editor2Path));
+    $labelledbyAnchor = 'aria-labelledby="v2-new-modal-label"';
+    if (!str_contains($editor2Src, $labelledbyAnchor)) {
+        $selfTestFailures[] = 'live-mutation proof: the expected aria-labelledby anchor is no longer present in '
+            . 'manage/editor/editor2.php ("' . $labelledbyAnchor . '") — the file changed shape and this proof '
+            . 'needs a new anchor.';
+    } else {
+        if (a11yModalsMissingAccessibleName($editor2Src) !== []) {
+            $selfTestFailures[] = 'a11yModalsMissingAccessibleName() flagged manage/editor/editor2.php AS-IS '
+                . '(unmutated) — false positive on real, already-correct source.';
+        }
+        $editor2Mutated = str_replace($labelledbyAnchor, '', $editor2Src);
+        if (a11yModalsMissingAccessibleName($editor2Mutated) === []) {
+            $selfTestFailures[] = 'a11yModalsMissingAccessibleName() did NOT go red when #v2-new-modal\'s '
+                . 'aria-labelledby was deleted from manage/editor/editor2.php IN MEMORY — the guard would not '
+                . 'have caught the M6 regression.';
         }
     }
 }
@@ -1078,9 +1188,35 @@ foreach ($m2m8Targets as $file) {
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * Assertion 9 (M6, a11y audit 2026-08-30, guard G2) — EVERY modal (not
+ * just guided-wizard ones) across the SAME $m2m8Targets tree carries an
+ * accessible name. Widens Assertion 8's wizard-only check to
+ * a11yFindAllModalTags()'s full set — caught editor2.php's four plain
+ * modals (#v2-new-modal, #v2-bulk-move-modal, #v2-bulk-export-modal,
+ * #v2-bulk-result-modal) before the M6 fix; $m2m8Targets already includes
+ * manage/editor (see its own comment above), so no NEW target-list
+ * widening was needed here — only the wider modal-finder function was.
+ * ------------------------------------------------------------------------- */
+foreach ($m2m8Targets as $file) {
+    $rel = substr($file, strlen($public) + 1);
+    $src = a11yStripComments((string) file_get_contents($file));
+
+    foreach (a11yModalsMissingAccessibleName($src) as $line) {
+        $failures[] = sprintf(
+            '%s:%d — a modal (class="modal fade") has no accessible name: no aria-label on the modal itself, '
+            . 'and no aria-labelledby resolving to a real id="…" on its .modal-title heading (M6, a11y audit '
+            . '2026-08-30). A screen reader entering this dialog announces only "dialog".',
+            $rel,
+            $line
+        );
+    }
+}
+
 /* ------------------------------------------------------------------------- */
 if ($failures) {
-    fwrite(STDERR, "FAIL: static WCAG 2.1/2.2 AA checks (#1150/#1151, a11y audit 2026-08-28 M1/M7/M8, #1990 M2/M8):\n\n");
+    fwrite(STDERR, "FAIL: static WCAG 2.1/2.2 AA checks (#1150/#1151, a11y audit 2026-08-28 M1/M7/M8, #1990 M2/M8, "
+        . "2026-08-30 M6):\n\n");
     foreach ($failures as $f) { fwrite(STDERR, "  - {$f}\n"); }
     exit(1);
 }
@@ -1088,7 +1224,8 @@ if ($failures) {
 printf(
     "PASS: %d template(s) scanned under includes/pages, includes/partials and manage/ (ids/alt/heading-"
     . "role-button), %d public-surface file(s) scanned for bare aria-label (M8), %d file(s) scanned for <th> "
-    . "scope + icon accessibility (M2/M8, #1990), admin skip-link + <main> landmark wired (M7), home.php's "
+    . "scope + icon accessibility (M2/M8, #1990), guided-wizard modal naming (F4/F5) AND every other modal's "
+    . "accessible name (M6, 2026-08-30), admin skip-link + <main> landmark wired (M7), home.php's "
     . "card-layout-handle stays perceivable.\n",
     count($targets),
     count($publicScanTargets),

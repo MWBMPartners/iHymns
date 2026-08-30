@@ -665,7 +665,8 @@ function canManage(array $target, array $actor): bool {
          ================================================================ -->
 
     <!-- Edit Profile Modal -->
-    <div class="modal fade" id="editModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30, M6 pattern): wire the modal-title heading to the dialog. -->
+    <div class="modal fade" id="editModal" tabindex="-1" aria-labelledby="editModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -673,7 +674,7 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="action" value="update_profile">
                     <input type="hidden" name="user_id" id="edit-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title"><i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit Profile</h5>
+                        <h5 class="modal-title" id="editModal-label"><i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit Profile</h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
@@ -696,7 +697,8 @@ function canManage(array $target, array $actor): bool {
     </div>
 
     <!-- Change Role Modal -->
-    <div class="modal fade" id="roleModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30) — see the editModal comment above. -->
+    <div class="modal fade" id="roleModal" tabindex="-1" aria-labelledby="roleModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -704,7 +706,7 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="action" value="change_role">
                     <input type="hidden" name="user_id" id="role-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title"><i aria-hidden="true" class="bi bi-shield me-2"></i>Change Role — <span id="role-username"></span></h5>
+                        <h5 class="modal-title" id="roleModal-label"><i aria-hidden="true" class="bi bi-shield me-2"></i>Change Role — <span id="role-username"></span></h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
@@ -730,7 +732,8 @@ function canManage(array $target, array $actor): bool {
     </div>
 
     <!-- Rename User Modal -->
-    <div class="modal fade" id="renameModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30) — see the editModal comment above. -->
+    <div class="modal fade" id="renameModal" tabindex="-1" aria-labelledby="renameModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -738,7 +741,7 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="action" value="rename_user">
                     <input type="hidden" name="user_id" id="rename-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title"><i aria-hidden="true" class="bi bi-at me-2"></i>Rename — <span id="rename-current-username"></span></h5>
+                        <h5 class="modal-title" id="renameModal-label"><i aria-hidden="true" class="bi bi-at me-2"></i>Rename — <span id="rename-current-username"></span></h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
@@ -809,7 +812,8 @@ function canManage(array $target, array $actor): bool {
     <?php endif; ?>
 
     <!-- Reset Password Modal -->
-    <div class="modal fade" id="passwordModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30) — see the editModal comment above. -->
+    <div class="modal fade" id="passwordModal" tabindex="-1" aria-labelledby="passwordModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -817,7 +821,7 @@ function canManage(array $target, array $actor): bool {
                     <input type="hidden" name="action" value="reset_password">
                     <input type="hidden" name="user_id" id="pw-user-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title"><i aria-hidden="true" class="bi bi-key me-2"></i>Reset Password — <span id="pw-username"></span></h5>
+                        <h5 class="modal-title" id="passwordModal-label"><i aria-hidden="true" class="bi bi-key me-2"></i>Reset Password — <span id="pw-username"></span></h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">

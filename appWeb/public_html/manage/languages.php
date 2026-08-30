@@ -756,7 +756,8 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 </main>
 
 <!-- Add / Edit modal — one form, mode-switched on open via data-mode. -->
-<div class="modal fade" id="languageModal" tabindex="-1" aria-hidden="true">
+<!-- a11y audit G2 follow-up (2026-08-30, M6 pattern): the heading already had an id — it just wasn't wired to the dialog. -->
+<div class="modal fade" id="languageModal" tabindex="-1" aria-hidden="true" aria-labelledby="languageModalTitle">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
             <form id="languageForm">
@@ -829,11 +830,12 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
 <!-- Delete confirmation modal — supports the "row is in use" → "force"
      two-step. -->
-<div class="modal fade" id="languageDeleteModal" tabindex="-1" aria-hidden="true">
+<!-- a11y audit G2 follow-up (2026-08-30) — see the languageModal comment above. -->
+<div class="modal fade" id="languageDeleteModal" tabindex="-1" aria-hidden="true" aria-labelledby="languageDeleteModal-label">
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title">Delete language</h5>
+                <h5 class="modal-title" id="languageDeleteModal-label">Delete language</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">

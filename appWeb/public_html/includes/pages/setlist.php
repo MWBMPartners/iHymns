@@ -80,12 +80,18 @@ declare(strict_types=1);
     <!-- Set list schedule (#300) -->
     <div class="card mb-3" id="setlist-schedule-card" style="display:none">
         <div class="card-body">
-            <h6><i class="fa-solid fa-calendar-days me-2" aria-hidden="true"></i>Schedule This Set List</h6>
+            <?php /* a11y audit L4 (WCAG 1.3.1, 2026-08-30): was a literal <h6>
+                     directly under this page's <h1> — a heading-level skip
+                     (h1 -> h6 with nothing between). <h2> is the correct next
+                     level; the `h6` CLASS keeps the same small visual size
+                     (Bootstrap's heading classes only set font-size, they
+                     don't change semantic level). */ ?>
+            <h2 class="h6"><i class="fa-solid fa-calendar-days me-2" aria-hidden="true"></i>Schedule This Set List</h2>
             <div class="input-group input-group-sm">
                 <?php /* a11y audit M6 (2026-08-28): neither input had an accessible name —
                          #schedule-date had none at all, and #schedule-notes' placeholder
                          disappears the moment the user types, so it isn't a name a screen
-                         reader can rely on. The <h6> above gives sighted-only context. */ ?>
+                         reader can rely on. The <h2> above gives sighted-only context. */ ?>
                 <input type="date" class="form-control" id="schedule-date" aria-label="Service date">
                 <input type="text" class="form-control" id="schedule-notes" placeholder="Notes (optional)" aria-label="Notes (optional)">
                 <button class="btn btn-primary" id="btn-schedule-save" type="button">Schedule</button>

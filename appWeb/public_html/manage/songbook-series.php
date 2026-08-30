@@ -676,7 +676,8 @@ if ($hasSchema) {
         </form>
 
         <!-- Edit Modal -->
-        <div class="modal fade" id="seriesEditModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30, M6 pattern): wire the modal-title heading to the dialog. -->
+        <div class="modal fade" id="seriesEditModal" tabindex="-1" aria-labelledby="seriesEditModal-label">
             <div class="modal-dialog modal-lg">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST">
@@ -684,7 +685,7 @@ if ($hasSchema) {
                         <input type="hidden" name="action" value="update">
                         <input type="hidden" name="id" id="edit-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title">
+                            <h5 class="modal-title" id="seriesEditModal-label">
                                 <i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit series — <span id="edit-title-label"></span>
                             </h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
@@ -791,7 +792,8 @@ if ($hasSchema) {
         </div>
 
         <!-- Delete Modal -->
-        <div class="modal fade" id="seriesDeleteModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30) — see the seriesEditModal comment above. -->
+        <div class="modal fade" id="seriesDeleteModal" tabindex="-1" aria-labelledby="seriesDeleteModal-label">
             <div class="modal-dialog">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST">
@@ -799,7 +801,7 @@ if ($hasSchema) {
                         <input type="hidden" name="action" value="delete">
                         <input type="hidden" name="id" id="delete-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title">
+                            <h5 class="modal-title" id="seriesDeleteModal-label">
                                 <i aria-hidden="true" class="bi bi-trash me-2"></i>Delete series — <span id="delete-name-label"></span>
                             </h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>

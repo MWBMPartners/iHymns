@@ -42,6 +42,7 @@
  */
 
 import { EVT_LIST_SORT_CHANGED } from '../constants.js';
+import { prefersReducedMotion } from '../utils/motion.js';
 
 export class SongbookIndex {
     /**
@@ -158,7 +159,9 @@ export class SongbookIndex {
                 freshBtn.classList.remove('disabled');
                 freshBtn.removeAttribute('aria-disabled');
                 freshBtn.addEventListener('click', () => {
-                    target.scrollIntoView({ behavior: document.body.classList.contains('reduce-motion') ? 'auto' : 'smooth', block: 'start' });
+                    /* a11y audit L7 (2026-08-30): now also honours the OS-level
+                       prefers-reduced-motion media query. @see js/utils/motion.js */
+                    target.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
                     /* Brief highlight */
                     target.classList.add('alphabet-highlight');
                     setTimeout(() => target.classList.remove('alphabet-highlight'), 1500);

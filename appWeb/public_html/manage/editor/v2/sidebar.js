@@ -57,6 +57,11 @@ export function mountSidebar(container, opts) {
     search.type = 'search';
     search.className = 'form-control form-control-sm';
     search.placeholder = 'Search songs…';
+    /* a11y audit L2 (WCAG 3.3.2, 2026-08-30): the sibling selects above/
+       below both already carry aria-label — this control was the one that
+       deviated, relying on the placeholder alone (which a screen reader
+       does not treat as a persistent accessible name). */
+    search.setAttribute('aria-label', 'Search songs');
 
     const sortSel = document.createElement('select');
     sortSel.className = 'form-select form-select-sm mt-1';
@@ -290,7 +295,14 @@ export function mountSidebar(container, opts) {
                 /* #1850 — single-line flex row: number+title left (title
                    truncates), songbook stub right (justify-content-between). */
                 item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center gap-2 py-1 px-2';
-                if (s.id === activeId) { item.classList.add('active'); }
+                if (s.id === activeId) {
+                    item.classList.add('active');
+                    /* a11y audit L2 (WCAG 4.1.2, 2026-08-30): the active row
+                       was marked only by Bootstrap's .active background —
+                       a screen reader had no way to report which song is
+                       currently open in the editor. */
+                    item.setAttribute('aria-current', 'true');
+                }
                 item.dataset.id = s.id;
                 item.append(songRowLabel(s), songRowAbbr(s));
                 item.addEventListener('click', () => onSelect(s.id));

@@ -529,7 +529,8 @@ if ($hasSchema) {
         </form>
 
         <!-- Edit Modal -->
-        <div class="modal fade" id="publisherEditModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30, M6 pattern): wire the modal-title heading to the dialog. -->
+        <div class="modal fade" id="publisherEditModal" tabindex="-1" aria-labelledby="publisherEditModal-label">
             <div class="modal-dialog modal-xl">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST" id="publisher-edit-form">
@@ -537,7 +538,7 @@ if ($hasSchema) {
                         <input type="hidden" name="action" value="update">
                         <input type="hidden" name="id" id="edit-publisher-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title"><i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit publisher — <span id="edit-publisher-name-label"></span></h5>
+                            <h5 class="modal-title" id="publisherEditModal-label"><i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit publisher — <span id="edit-publisher-name-label"></span></h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
@@ -656,7 +657,8 @@ if ($hasSchema) {
         </div>
 
         <!-- Delete Modal -->
-        <div class="modal fade" id="publisherDeleteModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30) — see the publisherEditModal comment above. -->
+        <div class="modal fade" id="publisherDeleteModal" tabindex="-1" aria-labelledby="publisherDeleteModal-label">
             <div class="modal-dialog">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST">
@@ -664,7 +666,7 @@ if ($hasSchema) {
                         <input type="hidden" name="action" value="delete">
                         <input type="hidden" name="id" id="delete-publisher-id">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title text-danger"><i aria-hidden="true" class="bi bi-exclamation-triangle me-2"></i>Delete publisher</h5>
+                            <h5 class="modal-title text-danger" id="publisherDeleteModal-label"><i aria-hidden="true" class="bi bi-exclamation-triangle me-2"></i>Delete publisher</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">
@@ -682,14 +684,15 @@ if ($hasSchema) {
         </div>
 
         <!-- Merge Modal -->
-        <div class="modal fade" id="publisherMergeModal" tabindex="-1">
+        <!-- a11y audit G2 follow-up (2026-08-30) — see the publisherEditModal comment above. -->
+        <div class="modal fade" id="publisherMergeModal" tabindex="-1" aria-labelledby="publisherMergeModal-label">
             <div class="modal-dialog">
                 <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                     <form method="POST">
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                         <input type="hidden" name="action" value="merge">
                         <div class="modal-header" style="border-color: var(--ih-border);">
-                            <h5 class="modal-title"><i aria-hidden="true" class="bi bi-shuffle me-2"></i>Merge publishers</h5>
+                            <h5 class="modal-title" id="publisherMergeModal-label"><i aria-hidden="true" class="bi bi-shuffle me-2"></i>Merge publishers</h5>
                             <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                         </div>
                         <div class="modal-body">

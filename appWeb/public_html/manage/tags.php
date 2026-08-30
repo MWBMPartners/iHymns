@@ -488,7 +488,8 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 </main>
 
 <!-- Add / Edit modal -->
-<div class="modal fade" id="tagModal" tabindex="-1" aria-hidden="true">
+<!-- a11y audit G2 follow-up (2026-08-30, M6 pattern): the heading already had an id — it just wasn't wired to the dialog. -->
+<div class="modal fade" id="tagModal" tabindex="-1" aria-hidden="true" aria-labelledby="tagModalTitle">
     <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
         <form id="tagForm">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
@@ -518,13 +519,14 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 </div>
 
 <!-- Merge modal -->
-<div class="modal fade" id="mergeModal" tabindex="-1" aria-hidden="true">
+<!-- a11y audit G2 follow-up (2026-08-30) — see the tagModal comment above. -->
+<div class="modal fade" id="mergeModal" tabindex="-1" aria-hidden="true" aria-labelledby="mergeModal-label">
     <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
         <form id="mergeForm">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
             <input type="hidden" name="action" value="merge">
             <div class="modal-header">
-                <h5 class="modal-title">Merge tags</h5>
+                <h5 class="modal-title" id="mergeModal-label">Merge tags</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">

@@ -4041,7 +4041,8 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
     </script>
 
     <!-- Edit Modal -->
-    <div class="modal fade" id="editModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30, M6 pattern): wire the modal-title heading to the dialog. -->
+    <div class="modal fade" id="editModal" tabindex="-1" aria-labelledby="editModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -4049,7 +4050,7 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
                     <input type="hidden" name="action" value="update">
                     <input type="hidden" name="id" id="edit-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title">
+                        <h5 class="modal-title" id="editModal-label">
                             <i aria-hidden="true" class="bi bi-pencil me-2"></i>Edit songbook — <code id="edit-abbr-label"></code>
                             <!-- Feature 1 (#1765) — read-only reflection of the current
                                  disable state (populated by openEditModal()); the
@@ -4463,7 +4464,8 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
     </div>
 
     <!-- Delete Modal -->
-    <div class="modal fade" id="deleteModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30) — see the editModal comment above. -->
+    <div class="modal fade" id="deleteModal" tabindex="-1" aria-labelledby="deleteModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST">
@@ -4471,7 +4473,7 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
                     <input type="hidden" name="action" value="delete">
                     <input type="hidden" name="id" id="delete-id">
                     <div class="modal-header" style="border-color: var(--ih-border);">
-                        <h5 class="modal-title"><i aria-hidden="true" class="bi bi-trash me-2"></i>Delete — <code id="delete-abbr-label"></code></h5>
+                        <h5 class="modal-title" id="deleteModal-label"><i aria-hidden="true" class="bi bi-trash me-2"></i>Delete — <code id="delete-abbr-label"></code></h5>
                         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
                     </div>
                     <div class="modal-body">
@@ -4491,7 +4493,8 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
          red text, (2) types the songbook abbreviation back into a field
          that gates the Delete button. The submit button stays disabled
          until window.cascadeDeleteAbbr === the typed value. -->
-    <div class="modal fade" id="cascadeDeleteModal" tabindex="-1">
+    <!-- a11y audit G2 follow-up (2026-08-30) — see the editModal comment above. -->
+    <div class="modal fade" id="cascadeDeleteModal" tabindex="-1" aria-labelledby="cascadeDeleteModal-label">
         <div class="modal-dialog">
             <div class="modal-content" style="background: var(--ih-surface); color: var(--ih-text); border-color: var(--ih-border);">
                 <form method="POST" id="cascadeDeleteForm">
@@ -4499,7 +4502,7 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
                     <input type="hidden" name="action" value="delete_cascade">
                     <input type="hidden" name="id" id="cascade-delete-id">
                     <div class="modal-header" style="border-color: var(--ih-border); background: rgba(220,53,69,0.15);">
-                        <h5 class="modal-title">
+                        <h5 class="modal-title" id="cascadeDeleteModal-label">
                             <i aria-hidden="true" class="bi bi-exclamation-triangle-fill me-2 text-danger"></i>
                             Cascade delete — <code id="cascade-delete-abbr-label"></code>
                         </h5>

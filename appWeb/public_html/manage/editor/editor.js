@@ -373,6 +373,11 @@ function buildSongListRow(song) {
         var cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.className = 'form-check-input me-2 flex-shrink-0';
+        /* a11y audit M8 (WCAG 4.1.2, 2026-08-30): unlabelled — nested
+           inside an <a> row with no <label for>, so a screen reader
+           announced only "checkbox, not checked" with no indication of
+           which song it selects. */
+        cb.setAttribute('aria-label', 'Select ' + song.title);
         cb.dataset.songId = song.id;
         cb.checked = window._selectedIds && window._selectedIds.has(song.id);
         cb.addEventListener('click', function (e) { e.stopPropagation(); });
@@ -995,6 +1000,9 @@ function renderComponents(song) {
         var typeSelect = document.createElement('select');
         typeSelect.className = 'form-select form-select-sm';
         typeSelect.style.width = '160px';
+        /* a11y audit M8 (WCAG 4.1.2, 2026-08-30): no label, no title, no
+           aria-label at all — a screen reader announced only "combo box". */
+        typeSelect.setAttribute('aria-label', 'Section type');
         COMPONENT_TYPES.forEach(function (t) {
             var opt = document.createElement('option');
             opt.value = t;
@@ -1017,6 +1025,10 @@ function renderComponents(song) {
         numInput.className = 'form-control form-control-sm';
         numInput.style.width = '110px';
         numInput.placeholder = '(optional)';
+        /* a11y audit M8 (WCAG 4.1.2, 2026-08-30): a placeholder is not an
+           accessible name — a screen reader announced only "spin button,
+           blank" with nothing to say what number this even is. */
+        numInput.setAttribute('aria-label', 'Section number (optional)');
         numInput.min = '0';
         numInput.value = (comp.number != null && comp.number > 0) ? comp.number : '';
         /* Live-bind number changes. */
@@ -1170,6 +1182,13 @@ function renderComponents(song) {
         textarea.className = 'form-control component-lyrics';
         textarea.rows = 1;  /* Seed at minimum; autoResizeTextarea grows it to content (#490). */
         textarea.placeholder = 'Enter lyrics here...';
+        /* a11y audit M8 (WCAG 4.1.2, 2026-08-30): the placeholder is
+           IDENTICAL across every component ("Enter lyrics here..."), so a
+           screen-reader user could not tell Verse 1's box apart from the
+           Chorus's — getComponentLabel() is the SAME "Type Number" label
+           already shown in this card's header (#491), reused here rather
+           than a second, divergent copy (rule #22). */
+        textarea.setAttribute('aria-label', getComponentLabel(comp) + ' lyrics');
         /* Convert lines array to newline-separated string for editing (#244). */
         textarea.value = Array.isArray(comp.lines) ? comp.lines.join('\n') : '';
         /* Live-bind lyrics changes — split back into lines array on every edit. */
@@ -2083,6 +2102,20 @@ function renderArrangementPool(song, pool, strip) {
 /**
  * Render the sequence strip. Each chip has a remove × and the whole
  * strip is SortableJS-reorderable. Lazy-loads SortableJS on first use.
+ *
+ * a11y audit M7 (WCAG 2.1.1, 2026-08-30, owner decision D2): this pool
+ * (below) and this strip are both MOUSE-ONLY — pool chips are plain
+ * `<span>`s with a click listener (not focusable, no role, no keyboard
+ * activation) and reordering here is SortableJS drag-only, the exact
+ * `<span>`-chip pattern #1644 fixed in the public setlist editor and
+ * #1991 fixed in v2's arrangement editor. The function IS keyboard-
+ * achievable via the "advanced text-mode" input, which mirrors this
+ * arrangement and accepts typed labels — but only through undiscoverable
+ * expert syntax. Owner decision D2 (cheap-fixes-only for the legacy v1
+ * editor, since v2 is the a11y-complete surface) chose NOT to rebuild
+ * this into real `<button>`s + move-left/right controls now; tracked so
+ * this gap retires with v1 rather than being silently forgotten or
+ * rebuilt later — see the v1-editor-sunset tracking issue.
  */
 function renderArrangementStrip(song, strip) {
     /* Resolve the effective arrangement: explicit or sequential fallback. */
@@ -2139,6 +2172,12 @@ function renderArrangementStrip(song, strip) {
 /**
  * Build a coloured chip DOM node for a component. Optionally includes
  * a ×-remove button in the right corner.
+ *
+ * a11y audit M7 (WCAG 2.1.1, owner decision D2, 2026-08-30): this chip is
+ * a plain <span> with only a click listener — not focusable, no role, no
+ * keyboard activation. See renderArrangementStrip()'s doc-comment above
+ * for the full finding and why this stays as-is (v1-editor-sunset
+ * tracking issue) rather than being rebuilt now.
  */
 function makeArrangementChip(comp, includeRemove) {
     var chip = document.createElement('span');
@@ -4979,8 +5018,21 @@ function updateSaveUiState() {
     }
     var statusEl = document.getElementById('status-text');
     if (statusEl) {
-        statusEl.textContent = saving ? 'Auto-saving…'
-                             : (dirty ? 'Unsaved changes' : 'All changes saved');
+        var nextStatusText = saving ? 'Auto-saving…'
+                            : (dirty ? 'Unsaved changes' : 'All changes saved');
+        /* a11y audit M8/D2 (WCAG 4.1.3, 2026-08-30): #status-text is now
+           role="status" (index.php) so a screen reader announces it — but
+           markModified() calls this on EVERY keystroke while dirty, and
+           re-assigning the SAME string to .textContent still replaces the
+           text node, which a live region treats as a fresh mutation to
+           announce. Skip the write when nothing actually changed so a
+           screen-reader user typing lyrics doesn't hear "Unsaved changes"
+           on every keypress — only on the transitions that matter (saved
+           -> dirty -> saving -> saved again).
+           @link https://www.w3.org/WAI/WCAG21/Understanding/status-messages.html */
+        if (statusEl.textContent !== nextStatusText) {
+            statusEl.textContent = nextStatusText;
+        }
     }
 }
 

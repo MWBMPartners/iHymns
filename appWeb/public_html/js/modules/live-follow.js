@@ -37,6 +37,7 @@ import { deviceId, setPresenceCookie, clearPresenceCookie } from '../utils/prese
    in/out, Tab trap, Escape-to-close) extracted from present-mode.js's
    already-correct recipe. See dialog-a11y.js's doc-block for the "why". */
 import { openModalDialog } from '../utils/dialog-a11y.js';
+import { prefersReducedMotion } from '../utils/motion.js';
 
 const LF_POLL_MS      = 2500;   // follower poll cadence
 const LF_HEARTBEAT_MS = 30000;  // host keepalive — comfortably inside the 180 s join/poll freshness window (api.php)
@@ -499,7 +500,15 @@ export class LiveFollow {
         const comps = document.querySelectorAll('.page-song .lyric-component');
         const el = comps && comps.length > index ? comps[index] : null;
         if (el && typeof el.scrollIntoView === 'function') {
-            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            /* a11y audit L7 (2026-08-30): this passed 'smooth' unconditionally
+               — the one call site that checked NEITHER the in-app toggle nor
+               the OS preference, deviating from its own sibling
+               (service-follow.js's identical method, which already checked
+               the in-app toggle). This is remotely-triggered scrolling (a
+               HOST advances the slide), so a congregant with a vestibular
+               disorder who set either preference got animated scrolling
+               they did not initiate and had opted out of. */
+            el.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
         }
     }
 
