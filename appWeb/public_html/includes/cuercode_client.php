@@ -155,7 +155,16 @@ function _cuercodeResolveUrl(string $baseUrl, string $path, bool $allowLoopback)
     }
     $scheme = strtolower((string)$parts['scheme']);
     $host   = strtolower((string)$parts['host']);
-    $isLoopback = in_array($host, ['127.0.0.1', '::1', 'localhost'], true);
+    /* F-1 (2026-08-30 correctness review): parse_url() returns an IPv6
+       literal host WITH its brackets (`[::1]`), but both checks below
+       compare/classify the BARE address — without this, a bracketed
+       loopback or private literal (`[::1]`, `[fd00:ec2::254]`) matched
+       neither the carve-out below NOR the SSRF guard and slipped through
+       as "not private". $host itself stays bracket-intact (it's what
+       builds the dialled URL for curl below); only this classification
+       copy is normalised. */
+    $hostForCheck = ihymnsNormalizeHostLiteral($host);
+    $isLoopback = in_array($hostForCheck, ['127.0.0.1', '::1', 'localhost'], true);
     if ($scheme === 'https') {
         /* always allowed */
     } elseif ($scheme === 'http' && $allowLoopback && $isLoopback) {
@@ -168,7 +177,7 @@ function _cuercodeResolveUrl(string $baseUrl, string $path, bool $allowLoopback)
        function's own doc-block for why). An unresolvable host (a typo) is
        not refused HERE — that's not this check's job; it simply never
        matches "private" either way. */
-    if (!$allowLoopback && ihymnsHostResolvesPrivate($host)) {
+    if (!$allowLoopback && ihymnsHostResolvesPrivate($hostForCheck)) {
         return null;
     }
     $port = isset($parts['port']) ? ':' . (int)$parts['port'] : '';

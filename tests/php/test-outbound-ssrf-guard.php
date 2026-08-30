@@ -148,6 +148,86 @@ osgWithMutatedSiblingFile($mutatedGuardInverted, $guardFile, function (string $t
 });
 
 /* =========================================================================
+ * (a-F1) FUNCTIONAL truth table — CORRECTNESS-REVIEW FINDING F-1 (2026-08-30).
+ * parse_url() hands back an IPv6 literal host WITH its brackets attached
+ * (`[::1]`), which `filter_var(..., FILTER_VALIDATE_IP)` rejects outright —
+ * before the fix, that meant the guard's own "unresolvable host = not
+ * private" fallback (see (a8) above) silently swallowed EVERY bracketed
+ * private/reserved IPv6 literal. A numeric IPv4 literal (`0x7f000001`,
+ * `2130706433` — both mean 127.0.0.1) hit the identical gap: `filter_var()`
+ * only recognises the dotted-quad shape. See network_guard.php's own F-1
+ * doc-block (top of file) for the full mechanism.
+ * ========================================================================= */
+ok('(a10) bracketed IPv6 loopback [::1] is private (was the confirmed bypass)',
+    ihymnsHostResolvesPrivate('[::1]'));
+ok('(a11) bare IPv6 loopback ::1 is private (unchanged — sanity twin of a10)',
+    ihymnsHostResolvesPrivate('::1'));
+ok('(a12) bracketed unique-local [fd00::1] is private',
+    ihymnsHostResolvesPrivate('[fd00::1]'));
+ok('(a13) bracketed unique-local [fd00:ec2::254] (an IPv6-metadata-shaped address) is private',
+    ihymnsHostResolvesPrivate('[fd00:ec2::254]'));
+ok('(a14) bracketed IPv4-mapped IPv6 loopback [::ffff:127.0.0.1] is private',
+    ihymnsHostResolvesPrivate('[::ffff:127.0.0.1]'));
+ok('(a15) hex numeric IPv4 loopback literal 0x7f000001 is private',
+    ihymnsHostResolvesPrivate('0x7f000001'));
+ok('(a16) decimal numeric IPv4 loopback literal 2130706433 is private',
+    ihymnsHostResolvesPrivate('2130706433'));
+ok('(a17) a genuine public IPv6 literal, bracketed, is NOT private ([2001:4860:4860::8888])',
+    !ihymnsHostResolvesPrivate('[2001:4860:4860::8888]'));
+ok('(a18) a genuine public IPv4 literal is NOT private (93.184.216.34)',
+    !ihymnsHostResolvesPrivate('93.184.216.34'));
+
+/* (a19)-(a20) test the internal decode helper DIRECTLY, not end-to-end
+ * through ihymnsHostResolvesPrivate() — because for these two specific
+ * inputs the OS's own resolver (glibc's gethostbynamel(), reached by
+ * ihymnsHostResolvesPrivate()'s DNS-fallback branch once this helper
+ * declines) may ITSELF apply a BSD inet_aton-style parse to a leading-zero
+ * or oversized numeric string (verified during this fix: on this Linux/
+ * glibc test host, gethostbynamel('0177') resolves it as octal to
+ * 0.0.0.127, which happens to also be reserved, and gethostbynamel(
+ * '4294967296') correctly fails). That OS-level behaviour is a platform
+ * quirk this file has no control over and must not assert on; what THIS
+ * file's fix owns is only that _ihymnsNumericIpv4ToDotted() itself declines
+ * to guess at either shape rather than silently misclassifying — see that
+ * function's own doc-block for why. */
+ok('(a19) _ihymnsNumericIpv4ToDotted() declines an ambiguous leading-zero decimal string (0177 — traditionally octal)',
+    _ihymnsNumericIpv4ToDotted('0177') === null);
+ok('(a20) _ihymnsNumericIpv4ToDotted() declines a decimal literal past the 32-bit IPv4 range (4294967296)',
+    _ihymnsNumericIpv4ToDotted('4294967296') === null);
+
+/* MUTATION (F-1a): remove the bracket-strip call from a mutated copy of
+ * network_guard.php -> the bracketed-loopback case (a10) must flip back to
+ * NOT private (the exact pre-fix bypass), proving the assertion actually
+ * depends on the fix rather than passing for an unrelated reason. */
+$mutatedNoBracketStrip = str_replace(
+    "\$host = ihymnsNormalizeHostLiteral(\$host);        /* F-1: [::1] -> ::1 before any classification */\n",
+    '/* MUTATED: bracket-strip call removed */' . "\n",
+    $guardSrc
+);
+ok('MUTATION setup sanity (a-F1a): the bracket-strip call removal actually matched real source',
+    $mutatedNoBracketStrip !== $guardSrc);
+osgWithMutatedSiblingFile($mutatedNoBracketStrip, $guardFile, function (string $tmp) use ($phpBin) {
+    $result = osgRunIsolated($phpBin, $tmp, "var_export(ihymnsHostResolvesPrivate('[::1]'));");
+    ok('MUTATION PROOF (a-F1a): removing the bracket-strip reproduces the exact F-1 bypass ([::1] reads as NOT private)',
+        $result['code'] === 0 && trim($result['stdout']) === 'false');
+});
+
+/* MUTATION (F-1b): remove the numeric-IPv4 decode branch from a mutated copy
+ * -> the hex-literal case (a15) must flip back to NOT private. */
+$mutatedNoNumericIpv4 = str_replace(
+    "elseif ((\$numericIp = _ihymnsNumericIpv4ToDotted(\$host)) !== null) {\n        \$ips[] = \$numericIp;                          /* F-1 SD-1: 0x7f000001 / 2130706433 -> 127.0.0.1 */\n    } else {",
+    'elseif (false) { /* MUTATED: numeric-IPv4 decode removed */' . "\n    } else {",
+    $guardSrc
+);
+ok('MUTATION setup sanity (a-F1b): the numeric-IPv4 decode removal actually matched real source',
+    $mutatedNoNumericIpv4 !== $guardSrc);
+osgWithMutatedSiblingFile($mutatedNoNumericIpv4, $guardFile, function (string $tmp) use ($phpBin) {
+    $result = osgRunIsolated($phpBin, $tmp, "var_export(ihymnsHostResolvesPrivate('0x7f000001'));");
+    ok('MUTATION PROOF (a-F1b): removing the numeric-IPv4 decode makes 0x7f000001 read as NOT private',
+        $result['code'] === 0 && trim($result['stdout']) === 'false');
+});
+
+/* =========================================================================
  * (b) FUNCTIONAL — both resolvers actually refuse a private host, and both
  * skip the check when their OWN loopback-allow flag is on (the documented
  * escape hatch, never widened to "any private host" — only the SAME carve-
@@ -189,6 +269,29 @@ ok('(b13) _intappsResolveUrl() still allows http://127.0.0.1 when the knob is on
     _intappsResolveUrl('http://127.0.0.1:8124', '/v1/status', true) !== null);
 
 /* =========================================================================
+ * (b-F1) FUNCTIONAL — CORRECTNESS-REVIEW FINDING F-1: end-to-end, all three
+ * resolvers now refuse a BRACKETED IPv6-literal host too (the confirmed
+ * bypass — see (a10)-(a16) above for the classifier-level proof). Also
+ * proves the bracket-strip doesn't break the ALLOWED case: an IPv6 loopback
+ * with the knob on must still resolve to a curl-dialable, bracket-correct
+ * URL (curl requires the brackets to disambiguate the literal's colons from
+ * the `:port` separator) — a fix that stripped brackets from the DIALLED
+ * URL, not just the classification copy, would build a malformed
+ * `https://::1:8080/...` and this assertion would catch that too.
+ * ========================================================================= */
+require $iaFile;
+
+ok('(b14) _cuercodeResolveUrl() refuses a bracketed IPv6 loopback [::1] (F-1 confirmed bypass)',
+    _cuercodeResolveUrl('https://[::1]/', '/api/v1/generate', false) === null);
+ok('(b15) _intappsResolveUrl() refuses a bracketed IPv6 metadata-shaped host [fd00:ec2::254] (F-1)',
+    _intappsResolveUrl('https://[fd00:ec2::254]/', '/v1/status', false) === null);
+ok('(b16) _iaResolveUrl() refuses a bracketed IPv6 loopback [::1] (F-1)',
+    _iaResolveUrl('https://[::1]/', '/metadata/x', false) === null);
+$b17 = _cuercodeResolveUrl('http://[::1]:8080/', CUERCODE_GENERATE_PATH, true);
+ok('(b17) an ALLOWED bracketed IPv6 loopback still resolves to a bracket-correct, curl-dialable URL',
+    is_array($b17) && str_contains((string)$b17[0], '[::1]:8080') && !str_contains((string)$b17[0], '://::1'));
+
+/* =========================================================================
  * (c) STRUCTURAL — both resolvers call the SHARED core (never a fresh,
  * third hand-copied private-range check), and the call is gated behind
  * `!$allowLoopback` (never unconditional — that would defeat the local-test
@@ -205,11 +308,11 @@ ok('intapps_client.php requires includes/network_guard.php',
 ok('ia_client.php requires includes/network_guard.php',
     str_contains($iaSrc, "'network_guard.php'"));
 ok('_cuercodeResolveUrl() calls the SHARED ihymnsHostResolvesPrivate(), never a re-forked check',
-    (bool)preg_match('/if\s*\(\s*!\$allowLoopback\s*&&\s*ihymnsHostResolvesPrivate\(\$host\)\s*\)\s*\{\s*return\s+null;/', $cuercodeSrc));
+    (bool)preg_match('/if\s*\(\s*!\$allowLoopback\s*&&\s*ihymnsHostResolvesPrivate\(\$hostForCheck\)\s*\)\s*\{\s*return\s+null;/', $cuercodeSrc));
 ok('_intappsResolveUrl() calls the SHARED ihymnsHostResolvesPrivate(), never a re-forked check',
-    (bool)preg_match('/if\s*\(\s*!\$allowLoopback\s*&&\s*ihymnsHostResolvesPrivate\(\$host\)\s*\)\s*\{\s*return\s+null;/', $intappsSrc));
+    (bool)preg_match('/if\s*\(\s*!\$allowLoopback\s*&&\s*ihymnsHostResolvesPrivate\(\$hostForCheck\)\s*\)\s*\{\s*return\s+null;/', $intappsSrc));
 ok('_iaResolveUrl() calls the SHARED ihymnsHostResolvesPrivate(), never a re-forked check',
-    (bool)preg_match('/if\s*\(\s*!\$allowLoopback\s*&&\s*ihymnsHostResolvesPrivate\(\$host\)\s*\)\s*\{\s*return\s+null;/', $iaSrc));
+    (bool)preg_match('/if\s*\(\s*!\$allowLoopback\s*&&\s*ihymnsHostResolvesPrivate\(\$hostForCheck\)\s*\)\s*\{\s*return\s+null;/', $iaSrc));
 
 /* No re-forked FILTER_FLAG_NO_PRIV_RANGE check anywhere in any client —
  * proves no file grew its OWN copy of the range-check logic instead of
@@ -221,21 +324,37 @@ ok('intapps_client.php has NO local FILTER_FLAG_NO_PRIV_RANGE (delegates, does n
 ok('ia_client.php has NO local FILTER_FLAG_NO_PRIV_RANGE (delegates, does not re-fork)',
     !str_contains($iaSrc, 'FILTER_FLAG_NO_PRIV_RANGE'));
 
+/* =========================================================================
+ * (c-F1) STRUCTURAL — CORRECTNESS-REVIEW FINDING F-1: all three resolvers
+ * derive their loopback-carve-out/guard-call host from the SHARED
+ * ihymnsNormalizeHostLiteral() (never a re-forked bracket-strip regex per
+ * file — rule #22), and none of them classify the RAW (possibly still-
+ * bracketed) `$host` directly.
+ * ========================================================================= */
+ok('_cuercodeResolveUrl() derives $hostForCheck via the SHARED ihymnsNormalizeHostLiteral()',
+    (bool)preg_match('/\$hostForCheck\s*=\s*ihymnsNormalizeHostLiteral\(\$host\)/', $cuercodeSrc));
+ok('_intappsResolveUrl() derives $hostForCheck via the SHARED ihymnsNormalizeHostLiteral()',
+    (bool)preg_match('/\$hostForCheck\s*=\s*ihymnsNormalizeHostLiteral\(\$host\)/', $intappsSrc));
+ok('_iaResolveUrl() derives $hostForCheck via the SHARED ihymnsNormalizeHostLiteral()',
+    (bool)preg_match('/\$hostForCheck\s*=\s*ihymnsNormalizeHostLiteral\(\$host\)/', $iaSrc));
+ok('the guard file itself declares ihymnsNormalizeHostLiteral() (not merely referenced elsewhere)',
+    (bool)preg_match('/function\s+ihymnsNormalizeHostLiteral\s*\(/', $guardSrc));
+
 /* MUTATION: remove the `!$allowLoopback &&` guard in a mutated copy of
  * cuercode_client.php's resolver -> the structural "gated behind
  * !$allowLoopback" assertion must go red, AND the functional behaviour
  * would widen to "always block private hosts, even with the knob on" (a
  * real behaviour change this mutation proves the guard would catch). */
 $mutatedCuercodeUnconditional = str_replace(
-    'if (!$allowLoopback && ihymnsHostResolvesPrivate($host)) {',
-    'if (ihymnsHostResolvesPrivate($host)) { // MUTATED: unconditional, loopback-allow no longer skips it',
+    'if (!$allowLoopback && ihymnsHostResolvesPrivate($hostForCheck)) {',
+    'if (ihymnsHostResolvesPrivate($hostForCheck)) { // MUTATED: unconditional, loopback-allow no longer skips it',
     (string)file_get_contents($cuercodeFile)
 );
 ok('MUTATION setup sanity (c1): the !$allowLoopback guard removal actually matched real source',
     $mutatedCuercodeUnconditional !== (string)file_get_contents($cuercodeFile));
 $mutatedStripped = osgStripComments($mutatedCuercodeUnconditional);
 ok('MUTATION PROOF (c1): removing the !$allowLoopback gate is detected by the structural pattern',
-    !(bool)preg_match('/if\s*\(\s*!\$allowLoopback\s*&&\s*ihymnsHostResolvesPrivate\(\$host\)\s*\)\s*\{\s*return\s+null;/', $mutatedStripped));
+    !(bool)preg_match('/if\s*\(\s*!\$allowLoopback\s*&&\s*ihymnsHostResolvesPrivate\(\$hostForCheck\)\s*\)\s*\{\s*return\s+null;/', $mutatedStripped));
 osgWithMutatedSiblingFile($mutatedCuercodeUnconditional, $cuercodeFile, function (string $tmp) use ($phpBin) {
     $result = osgRunIsolated($phpBin, $tmp,
         "var_export(_cuercodeResolveUrl('https://169.254.169.254/', '/api/v1/generate', true) === null);");
