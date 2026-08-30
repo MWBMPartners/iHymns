@@ -25,6 +25,38 @@ request — at merge, DON'T title the squash `feat:` or the anchor double-bumps 
 
 ---
 
+## 📌 Continuation note — 2026-08-30 (sitemap hardening — index + honest lastmod + conditional GET, #2023)
+
+Same branch, head **`52e7d6eb`**, suite **256 PHP / 89 Node**. A separate, smaller task on top of the
+2026-08-29 "queue complete" state above (not a supersession of it): hardened `sitemap.xml.php` (#151),
+which told crawlers every URL "changed today" and was missing `/work/`/`/publisher/`/`/tune/`/`/whats-new`/
+`/request` while still advertising the per-user `/favorites`/`/settings`. Rewritten IN PLACE as a sitemap
+INDEX at the same `/sitemap.xml` URL, children served via `?section=&page=` (`static`/`songbooks`/
+`songs`[paginated 10k]/`musicians`/`themes`/`works`/`publishers`[active-only]/`tunes`), every `<lastmod>`
+real (from `UpdatedAt`, omitted when unknown — never invented), conditional GET (ETag/Last-Modified/304)
+off cheap per-table aggregates, the old per-songbook bulk-record read replaced with a slim `SongId +
+UpdatedAt` query, host resolution now via the shared `appCanonicalHost()`. New
+`includes/sitemap_helpers.php` (two pure functions only, extracted so a CI guard can call them without
+executing the request-handling file's `exit;`-ending flow); `includes/theme_index.php` gained an additive
+`lastTouched` column + `themeIndexMembershipCount()`. `.htaccess` routes the new child URLs + compresses/
+caches the sitemap; `robots.txt`'s `alpha.ihymns.app` → `dev.ihymns.app` (the real hostname). New
+tree-derived, mutation-proven `tests/php/test-sitemap-coverage.php` (10 real mutations run against the
+tree, every one RED-then-byte-identical-restore-then-GREEN — see the tracking issue for the full list).
+Three PRE-EXISTING guards (`test-song-visibility-guard.php`, `test-songbook-visibility-guard.php`,
+`test-theme-index.php`) briefly went red on the first draft — their per-FUNCTION static scan couldn't see
+through a shared WHERE-builder helper I'd introduced; fixed by inlining the visibility-predicate calls
+directly into each SQL-building function instead (documented in both places) and delegating the
+`tblSongTagMap` fingerprint count to a new `theme_index.php` function rather than a second inline query —
+**if you touch `sitemap.xml.php` again, read those three guards' failure output carefully, they're doing
+their job.** Tracking: **#2023** (main), **#2024** (for-consideration: should dev/beta be `noindex`'d
+entirely? — deliberately NOT decided here). **Wiki**: the in-repo `wiki/PWA-Features.md` mirror is
+updated and committed; the REAL GitHub Wiki push failed (this session has read-only access to
+`MWBMPartners/iHymns.wiki` — `add_repo` refused it) — a matching commit is staged locally at
+`/tmp/wiki-clone` (commit `8213d0c`) for a future session with push access to apply. Full detail:
+`sessions/2026-08-30-HANDOFF.md`.
+
+---
+
 ## 📌 Continuation note — 2026-08-29 (guided-wizard program — shared admin-wizard.js + 5 wizards)
 
 Same branch, head **`8cb189e8`**, suite **245 PHP / 83 JS**. Owner asked for a
