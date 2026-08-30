@@ -365,8 +365,23 @@ export class Favorites {
             const input = modal.querySelector('#tag-custom-input');
             const tag = input.value.trim();
             if (!tag) return;
-            /* Check if already exists */
-            const existing = modal.querySelector(`.tag-checkbox[value="${escapeHtml(tag)}"]`);
+            /* Check if already exists.
+               F-3 fix (2026-08-30 correctness review): this used to splice
+               `escapeHtml(tag)` into a CSS attribute-selector string —
+               `escapeHtml` turns a `"` into the HTML entity `&quot;`, which
+               is the RIGHT escaping for putting text inside markup but the
+               WRONG escaping for putting text inside a CSS selector (which
+               instead wants a `"` backslash-escaped as `\"`). So a custom
+               tag containing a literal `"` never matched the pill already
+               rendered for it and silently got re-added as a visible
+               duplicate. Comparing the raw `.value` DOM property directly
+               (over the live NodeList) sidesteps the mismatch entirely —
+               a property read is never re-parsed as markup OR as selector
+               syntax, so there is no escaping rule to get wrong. Mirrors
+               this same file's existing preference for DOM-API construction
+               over selector string-building (see the comment a few lines
+               below, at the custom-tag <input> creation). */
+            const existing = [...modal.querySelectorAll('.tag-checkbox')].find(cb => cb.value === tag);
             if (existing) {
                 existing.checked = true;
                 const existingLbl = modal.querySelector(`label[for="${existing.id}"]`);
