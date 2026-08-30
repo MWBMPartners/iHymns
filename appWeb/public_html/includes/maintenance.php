@@ -5,6 +5,22 @@ declare(strict_types=1);
 /**
  * iHymns — Maintenance mode + app-settings read helpers (WS-K #1021)
  *
+ * ELI5
+ * ----
+ * This file does two jobs that turn out to be the same job underneath.
+ * Job one: iHymns keeps a big table of small on/off switches and text
+ * settings (`tblAppSettings`) — "is maintenance mode on?", "what message
+ * should the 503 page show?", "how many seconds before it auto-refreshes?"
+ * — and `getAppSetting()` / `setAppSetting()` are the ONE read/write pair
+ * every other file uses to touch that table, so a setting can never be read
+ * one way in one file and a slightly different way in another. Job two:
+ * this file uses those settings to actually show the "iHymns is undergoing
+ * maintenance" page when an admin has switched it on — building the whole
+ * self-contained HTML page (countdown timer, padlock sign-in link, dark/
+ * light theme support) without needing anything else to still be working,
+ * because if the database is having a bad day, this page might be the ONLY
+ * thing standing between a visitor and a blank white screen.
+ *
  * Central, DB-SAFE place to read tblAppSettings flags and to enforce
  * system maintenance mode at the two PUBLIC entry points (index.php and
  * api.php). The settings read returns its default on ANY DB error, so the
@@ -17,6 +33,8 @@ declare(strict_types=1);
  * per-request admin check is needed here — the exemption is structural.
  *
  * Requires getDbMysqli() (includes/db_mysql.php) to be loaded first.
+ * @see appWeb/public_html/includes/db_mysql.php   getDbMysqli(), this file's one hard dependency
+ * @see appWeb/public_html/includes/error_page.php renderErrorPage(), which the maintenance page is built on
  */
 
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
@@ -52,6 +70,12 @@ function maintenanceSettingKey(string $base): string
 /**
  * Read a tblAppSettings value, memoized per request. Returns $default on ANY
  * DB error so a maintenance/flag check never throws on a DB outage.
+ *
+ * ELI5: look up one named setting ("what does the database say maintenance_
+ * message_alpha is set to?"). If the database can't be reached, or the row
+ * doesn't exist, just hand back whatever default the caller asked for
+ * instead — never an error. Asked for the same key twice in one page load?
+ * The second call is free (answered from memory, not a second query).
  *
  * @param string      $key
  * @param string|null $default
@@ -409,6 +433,12 @@ function maintenancePageExtraBodyAfter(int $refreshSeconds): string
  * Public-site maintenance gate (index.php). If maintenance is on, render the
  * landing page and exit. No-op otherwise, and a no-op on a DB error (leaving
  * index.php's bootstrap handler to surface a DB-down 503).
+ *
+ * ELI5: the very first thing index.php does — "should this visitor see the
+ * real site, or the maintenance page?" A regular visitor during maintenance
+ * gets the maintenance page and the request stops right here (`exit`); an
+ * admin who's allowed to bypass it, or anyone when maintenance is off,
+ * carries on to the real page as normal.
  */
 function enforceMaintenanceForPublicSite(): void
 {
