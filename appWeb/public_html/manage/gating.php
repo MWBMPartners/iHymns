@@ -625,7 +625,14 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                 <?php foreach ($gatingFamily as [$label, $route, $ent, $icon, $blurb]): ?>
                     <?php $canSee = userHasEntitlement($ent, $currentUser['role'] ?? null); ?>
                     <div class="col-md-6">
-                        <div class="border border-secondary rounded p-2 h-100 <?= $canSee ? '' : 'opacity-50' ?>">
+                        <?php /* a11y audit A22 (2026-08-30) — opacity-50 on the WHOLE card
+                                 (title, blurb, badge included) pushed the blurb's already-muted
+                                 text-secondary down near 2.1:1 contrast in light theme. These are
+                                 informational cards, not disabled controls, and the "no access"
+                                 badge already carries the state in plain text — dropping the
+                                 opacity loses nothing a sighted user needs to tell the two states
+                                 apart, and fixes the contrast for everyone. */ ?>
+                        <div class="border border-secondary rounded p-2 h-100">
                             <div class="d-flex align-items-center gap-2">
                                 <i aria-hidden="true" class="bi <?= htmlspecialchars($icon, ENT_QUOTES, 'UTF-8') ?>"></i>
                                 <?php if ($canSee): ?>
@@ -696,7 +703,11 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                         <button type="button" class="btn btn-outline-info btn-sm mb-3" data-gwiz-refresh-status>
                             <i aria-hidden="true" class="bi bi-arrow-clockwise me-1"></i>Refresh
                         </button>
-                        <div id="gwiz-preview-body">
+                        <?php /* a11y audit A8 (2026-08-30) — Refresh mutates this
+                                 silently otherwise; role="status" announces the
+                                 new preview text without moving focus off the
+                                 button the admin just clicked. */ ?>
+                        <div id="gwiz-preview-body" role="status">
                             <p class="text-muted small">Loading…</p>
                         </div>
                     </section>
@@ -711,7 +722,19 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                             want certain songs to always require a CCLI licence, no matter what membership level the
                             visitor has.
                         </p>
-                        <div class="mb-3">
+                        <?php /* a11y audit A16 (2026-08-30) — three well-labelled radios
+                                 with no group name: a screen-reader user landing on the
+                                 SECOND or THIRD radio never hears what question they're
+                                 answering, only its own option text. A real <fieldset>/
+                                 <legend> is the native HTML way to name a radio group (the
+                                 songbook picker just below already uses the ARIA-attribute
+                                 equivalent, role="group"+aria-labelledby, for the SAME
+                                 reason). The legend is visually-hidden because the step's
+                                 own visible heading + intro paragraph already say what this
+                                 choice is for — the legend exists for the accessibility
+                                 tree, not to duplicate visible copy. */ ?>
+                        <fieldset class="mb-3">
+                            <legend class="visually-hidden">Extra CCLI rules — who does this apply to?</legend>
                             <div class="form-check">
                                 <input class="form-check-input" type="radio" name="gwiz-seed-scope" id="gwiz-scope-none" value="none" checked>
                                 <label class="form-check-label" for="gwiz-scope-none">
@@ -730,7 +753,7 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                                     Require a CCLI licence for every copyrighted song on the site
                                 </label>
                             </div>
-                        </div>
+                        </fieldset>
                         <div id="gwiz-songbook-picker" class="mb-3" hidden>
                             <label class="form-label small mb-1" id="gwiz-songbook-picker-label">Which songbooks?</label>
                             <div class="d-flex flex-wrap gap-2" role="group" aria-labelledby="gwiz-songbook-picker-label" style="max-height:180px; overflow-y:auto;">
@@ -757,7 +780,9 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                         <div class="d-flex gap-2 align-items-center">
                             <button type="button" class="btn btn-outline-secondary btn-sm" data-gwiz-preview-seed>Preview how many rows this would add</button>
                             <button type="button" class="btn btn-amber-solid btn-sm" data-gwiz-add-rules <?= $canEditRestrictions ? '' : 'disabled' ?>>Add the rules</button>
-                            <span class="small text-muted" id="gwiz-seed-readback"></span>
+                            <?php /* a11y audit A8 — the ONLY feedback for either button above; without
+                                     role="status" the result was silent. */ ?>
+                            <span class="small text-muted" id="gwiz-seed-readback" role="status"></span>
                         </div>
                     </section>
 
@@ -769,7 +794,8 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                             A CCLI licence lets a church legally show copyrighted song words on a screen. This checks
                             whether anyone on this site currently has one on file.
                         </p>
-                        <div id="gwiz-licence-body">
+                        <?php /* a11y audit A8 — same reasoning as gwiz-preview-body above. */ ?>
+                        <div id="gwiz-licence-body" role="status">
                             <p class="text-muted small">Loading…</p>
                         </div>
                         <button type="button" class="btn btn-outline-info btn-sm mt-2" data-gwiz-refresh-status>
@@ -821,7 +847,7 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                                 <i aria-hidden="true" class="bi bi-toggle-on me-1"></i>Enable content locking
                             </button>
                         </div>
-                        <div id="gwiz-enabled-readback" hidden>
+                        <div id="gwiz-enabled-readback" tabindex="-1" role="status" hidden>
                             <p class="text-success"><i aria-hidden="true" class="bi bi-check-circle-fill me-1"></i>Content locking is ON.</p>
                             <button type="button" class="btn btn-outline-warning btn-sm" data-gwiz-rollback-inline>
                                 <i aria-hidden="true" class="bi bi-arrow-counterclockwise me-1"></i>Undo — switch it back off
@@ -843,9 +869,23 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                                 <input type="text" class="form-control form-control-sm" id="gwiz-song-search" autocomplete="off" placeholder="Type a song title or number…">
                                 <div class="list-group position-absolute w-100 shadow d-none" id="gwiz-song-results" style="z-index:1060; max-height:220px; overflow-y:auto;"></div>
                             </div>
+                            <?php /* a11y audit A1 (2026-08-30) — combobox/listbox roles + arrow-key
+                                     handling are applied by JS via the shared window.iHymnsComboboxA11y
+                                     helper (rule #43); this visually-hidden region is the one thing that
+                                     helper deliberately doesn't own (module doc-block) — a polite
+                                     announcement of how many results just appeared, since the results
+                                     list itself isn't the kind of content a screen reader should hear
+                                     read out in full on every keystroke. */ ?>
+                            <div class="visually-hidden" role="status" id="gwiz-song-results-status"></div>
                             <input type="hidden" id="gwiz-song-id">
                         </div>
                         <button type="button" class="btn btn-outline-info btn-sm mb-3" data-gwiz-run-test>Run test</button>
+                        <?php /* a11y audit A8 — the results are a whole TABLE; live-
+                                 announcing the entire table on every re-run would be
+                                 noisy and hard to follow. Instead the JS below prepends
+                                 a one-line role="status" summary sentence INSIDE this
+                                 div (built in the runTestBtn handler) — see the
+                                 gwiz-test-results-summary paragraph it emits. */ ?>
                         <div id="gwiz-test-results"></div>
                     </section>
 
@@ -853,7 +893,8 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                     <section data-wiz-step data-wiz-label="Finish" hidden>
                         <h3 data-wiz-heading class="h6 mb-3">7. Done</h3>
                         <div role="alert" data-wiz-alert class="alert alert-danger py-2" hidden></div>
-                        <div id="gwiz-finish-summary">
+                        <?php /* a11y audit A8 — announces the finish/rollback summary. */ ?>
+                        <div id="gwiz-finish-summary" role="status">
                             <p class="text-muted small">Nothing was changed yet — go back to step 5 whenever you're ready.</p>
                         </div>
                         <p class="small">
@@ -1007,6 +1048,19 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
             const wrap = document.getElementById('gwiz-dynamic-warnings');
             if (!wrap) { return; }
             const s = state.status;
+            /* a11y audit A23 (2026-08-30) — this function wipes + rebuilds the
+               acknowledgement checkbox on EVERY status refresh (entering
+               steps 2/4/5, any Refresh click), which used to silently
+               UN-TICK it even though nothing the admin did changed. Read the
+               PRIOR checkbox's checked state + which warning code it was
+               ticked for BEFORE clearing, so a re-render for the SAME
+               warning preserves the tick — but a re-render for a DIFFERENT
+               warning (or no warning at all) correctly starts unticked: an
+               acknowledgement of warning A must never silently carry over
+               as an acknowledgement of a DIFFERENT warning B. */
+            const prevInput = document.getElementById('gwiz-ack-warning');
+            const prevChecked = !!(prevInput && prevInput.checked);
+            const prevCode = prevInput ? prevInput.getAttribute('data-gwiz-warning-code') : null;
             wrap.innerHTML = '';
             if (!s) { return; }
             const holders = s.holders || { orgs: [], personalCount: 0 };
@@ -1030,6 +1084,11 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                 div.innerHTML = '<input class="form-check-input" type="checkbox" id="gwiz-ack-warning" data-gwiz-warning-code="' + code + '">'
                     + '<label class="form-check-label small text-warning" for="gwiz-ack-warning">' + escapeHtml(message) + '</label>';
                 wrap.appendChild(div);
+                if (prevChecked && prevCode === code) {
+                    /* Same warning as before this refresh — restore the tick
+                       rather than silently discarding it (A23). */
+                    wrap.querySelector('#gwiz-ack-warning').checked = true;
+                }
             }
         }
 
@@ -1148,10 +1207,21 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                     if (result.data && result.data.ok) {
                         state.flipped = true;
                         document.getElementById('gwiz-enable-body').hidden = true;
-                        document.getElementById('gwiz-enabled-readback').hidden = false;
+                        const enabledReadback = document.getElementById('gwiz-enabled-readback');
+                        enabledReadback.hidden = false;
                         document.getElementById('gwiz-switch-state-text').innerHTML =
                             'The master switch is now <strong>ON</strong> — enforcement is live.';
                         renderFinishSummary(true);
+                        /* a11y audit A9 — the just-clicked "Enable content
+                           locking" button's own container is hidden right
+                           above, so without this, focus silently falls to
+                           <body> after the single biggest state change this
+                           app makes. Move it onto the readback region
+                           (role="status", tabindex="-1") so a keyboard/
+                           screen-reader user is told the flip happened and
+                           lands somewhere sensible — right next to the Undo
+                           button A0 just made reachable. */
+                        enabledReadback.focus();
                         return;
                     }
                     if (result.status === 409 && result.data) {
@@ -1168,7 +1238,18 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                 });
             });
         }
-        const rollbackInlineBtn = document.getElementById('gwiz-rollback-inline');
+        /* a11y audit A0 — CRITICAL (2026-08-30). The button below is
+           rendered with `data-gwiz-rollback-inline` and NO `id` (see the
+           markup at "gwiz-enabled-readback"), so
+           `getElementById('gwiz-rollback-inline')` always returned null and
+           this listener was never attached — a named, focusable,
+           completely dead control (rule #30's "silent no-op" class) for
+           every admin who used the wizard's in-modal Undo instead of the
+           page-level rollback form. Fixed by looking it up the same way
+           every other wizard control on this page already is: a
+           `[data-*]` attribute selector via `querySelector()`, scoped to
+           this modal. Wiring is proven by tests/php/test-gating-wizard.php. */
+        const rollbackInlineBtn = modalEl.querySelector('[data-gwiz-rollback-inline]');
         if (rollbackInlineBtn) {
             rollbackInlineBtn.addEventListener('click', function () {
                 postJson({ action: 'wizard_rollback_gating', remove_seeded: state.removedRowsAvailable ? '1' : '' }).then(function (result) {
@@ -1200,20 +1281,76 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
         /* ---- step 6 song test ------------------------------------------- */
         const songSearchInput = document.getElementById('gwiz-song-search');
         const songResultsEl = document.getElementById('gwiz-song-results');
+        const songResultsStatusEl = document.getElementById('gwiz-song-results-status');
         const songIdInput = document.getElementById('gwiz-song-id');
         let songSearchTimer = null;
+        /* a11y audit A1 (2026-08-30) — this hand-rolled typeahead had no
+           combobox semantics: no role="combobox"/aria-expanded/aria-controls,
+           no result-count announcement, no arrow-key support (Tab+Enter DID
+           work — the results are real <button>s in DOM order — but discovery
+           of "results appeared" was sighted-only). Rule #43 says reuse the
+           shared picker rather than hand-roll a second one:
+           window.iHymnsComboboxA11y (js/modules/combobox-a11y.js, already
+           loaded globally for every /manage/* page via head-libs.php) owns
+           the ARIA bookkeeping + arrow/Home/End/Enter/Tab/Escape keys; this
+           file keeps its own fetch/debounce/render exactly as before (that
+           split is the module's own documented contract). */
+        let songActiveIndex = -1;
+        let songResultItems = [];
+
+        function songResultsRender() {
+            if (window.iHymnsComboboxA11y) {
+                window.iHymnsComboboxA11y.applyComboboxAria({
+                    input: songSearchInput,
+                    panel: songResultsEl,
+                    items: songResultItems,
+                    activeIndex: songActiveIndex,
+                    idPrefix: 'gwiz-song-result',
+                });
+            }
+            songResultItems.forEach(function (el, i) {
+                el.classList.toggle('active', i === songActiveIndex);
+            });
+        }
+
+        function songResultsClose() {
+            songResultsEl.classList.add('d-none');
+            songResultsEl.innerHTML = '';
+            songResultItems = [];
+            songActiveIndex = -1;
+            if (window.iHymnsComboboxA11y) {
+                window.iHymnsComboboxA11y.applyComboboxAria({
+                    input: songSearchInput, panel: songResultsEl, items: [], activeIndex: -1, idPrefix: 'gwiz-song-result',
+                });
+            }
+        }
+
+        function songPick(el) {
+            songIdInput.value = el.getAttribute('data-song-id');
+            songSearchInput.value = el.getAttribute('data-song-title');
+            songResultsClose();
+        }
+
         if (songSearchInput) {
             songSearchInput.addEventListener('input', function () {
                 window.clearTimeout(songSearchTimer);
                 const q = songSearchInput.value.trim();
                 songIdInput.value = '';
-                if (q.length < 2) { songResultsEl.classList.add('d-none'); songResultsEl.innerHTML = ''; return; }
+                if (q.length < 2) {
+                    songResultsClose();
+                    if (songResultsStatusEl) { songResultsStatusEl.textContent = ''; }
+                    return;
+                }
                 songSearchTimer = window.setTimeout(function () {
                     fetch('/api?action=search&q=' + encodeURIComponent(q) + '&limit=10', {
                         headers: { 'X-Requested-With': 'XMLHttpRequest' },
                     }).then((r) => r.json()).then(function (data) {
                         const results = (data && data.results) || [];
-                        if (!results.length) { songResultsEl.classList.add('d-none'); songResultsEl.innerHTML = ''; return; }
+                        if (!results.length) {
+                            songResultsClose();
+                            if (songResultsStatusEl) { songResultsStatusEl.textContent = 'No results.'; }
+                            return;
+                        }
                         songResultsEl.innerHTML = results.map(function (s) {
                             return '<button type="button" class="list-group-item list-group-item-action" data-song-id="'
                                 + escapeHtml(s.id) + '" data-song-title="' + escapeHtml(s.title || s.id) + '">'
@@ -1221,16 +1358,31 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                                 + '</button>';
                         }).join('');
                         songResultsEl.classList.remove('d-none');
+                        songResultItems = Array.from(songResultsEl.querySelectorAll('[data-song-id]'));
+                        songActiveIndex = -1;
+                        songResultsRender();
+                        if (songResultsStatusEl) {
+                            songResultsStatusEl.textContent = results.length + (results.length === 1 ? ' result.' : ' results.');
+                        }
                     }).catch(function () { /* silent — the run-test button just won't have an id yet */ });
                 }, 250);
+            });
+            songSearchInput.addEventListener('keydown', function (ev) {
+                if (!window.iHymnsComboboxA11y) { return; }
+                window.iHymnsComboboxA11y.handleComboboxKeydown(ev, {
+                    isOpen: function () { return !songResultsEl.classList.contains('d-none'); },
+                    getItems: function () { return songResultItems; },
+                    getActiveIndex: function () { return songActiveIndex; },
+                    setActiveIndex: function (i) { songActiveIndex = i; },
+                    render: songResultsRender,
+                    onCommit: function (i, el) { songPick(el); },
+                    onClose: songResultsClose,
+                });
             });
             songResultsEl.addEventListener('click', function (ev) {
                 const btn = ev.target.closest('[data-song-id]');
                 if (!btn) { return; }
-                songIdInput.value = btn.getAttribute('data-song-id');
-                songSearchInput.value = btn.getAttribute('data-song-title');
-                songResultsEl.classList.add('d-none');
-                songResultsEl.innerHTML = '';
+                songPick(btn);
             });
         }
 
@@ -1264,8 +1416,15 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                         return;
                     }
                     const d = result.data;
-                    let html = '<p class="small">Testing <strong>' + escapeHtml(d.title || d.songId) + '</strong> — '
-                        + (d.live ? '<span class="badge bg-warning text-dark">live</span>' : '<span class="badge bg-secondary">simulated (switch still off)</span>') + '</p>';
+                    /* a11y audit A8 — a data TABLE is what follows, and live-
+                       announcing the whole thing on every re-run would be
+                       noisy and hard to follow (WCAG 4.1.3, but a considerate
+                       one). role="status" on just this ONE summary line
+                       announces "test complete for <title>" without the
+                       table's contents being read out cell by cell. */
+                    let html = '<p class="small" role="status">Testing <strong>' + escapeHtml(d.title || d.songId) + '</strong> — '
+                        + (d.live ? '<span class="badge bg-warning text-dark">live</span>' : '<span class="badge bg-secondary">simulated (switch still off)</span>')
+                        + ' — table updated below.</p>';
                     html += '<p class="small mb-1">Entity rule check: '
                         + (d.entity && d.entity.allowed ? '<span class="text-success">allowed</span>' : '<span class="text-danger">blocked' + (d.entity && d.entity.reason ? ' — ' + escapeHtml(d.entity.reason) : '') + '</span>')
                         + '</p>';

@@ -48,6 +48,13 @@ with none of the behind-the-scenes technical detail.
   screens were hard to read against a light background — pale yellow or
   pale blue text, and links that all but disappeared. They're now easier to
   read in Light mode, without changing how anything looks in Dark mode.
+- **The guided setup screens are clearer for keyboard and screen-reader
+  users, and safer** — In the step-by-step guides for turning on content
+  locking and setting up the database, a few buttons now clearly announce
+  what just happened instead of staying silent, a broken "undo" button in
+  one of the guides now actually works, and the database setup page's
+  buttons are better protected against being triggered from outside the
+  app.
 
 ## 1.1.0 — 28 August 2026
 

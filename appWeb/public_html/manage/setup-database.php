@@ -56,7 +56,7 @@ if (!$isInitialSetup) {
        virgin install there is no user table to have a role in yet. */
     if (!$currentUser || !userHasEntitlement('run_db_install', $currentUser['role'] ?? null)) {
         http_response_code(403);
-        echo '<!DOCTYPE html><html><body><h1>403 — the run_db_install entitlement is required</h1></body></html>';
+        echo '<!DOCTYPE html><html lang="en"><body><h1>403 — the run_db_install entitlement is required</h1></body></html>';
         exit;
     }
 }
@@ -1168,6 +1168,97 @@ register_shutdown_function(function () use (&$pageRenderedCleanly): void {
 });
 
 /* =========================================================================
+ * CSRF GUARD — ?action= GET dispatch (security-audit finding L-1, 2026-08-30)
+ * ============================================================================
+ * ELI5: every button on this page that actually DOES something — installs
+ * tables, runs a migration, makes a backup, restores one, drops legacy
+ * tables, resets the opcache — is a plain link (`<a href="?action=backup">`).
+ * A plain link is just a GET request, and a browser attaches cookies to a
+ * GET request automatically, from ANYWHERE — including a page loaded on a
+ * completely different website. Without a check here, a malicious page
+ * could embed `<img src="https://yoursite/manage/setup-database?action=backup">`
+ * and, if a global admin merely had this site open in another browser tab,
+ * silently trigger a real backup (or a migration, or worse) using THEIR
+ * session. That's exactly what a CSRF (Cross-Site Request Forgery) token
+ * exists to stop.
+ *
+ * DETAILED / WHY
+ * --------------
+ * This page's session cookie is already `SameSite=Strict`
+ * (`manage/includes/auth.php`), which is a real and adequate mitigation on
+ * modern browsers — a cross-site request never carries the cookie at all,
+ * so a forged link degrades to a login redirect. But relying on ONE cookie
+ * attribute as the ENTIRE CSRF defence for a battery of state-changing
+ * actions (install / migrate / backup / restore / drop-legacy /
+ * opcache-reset / the lyrics-cutover sentinel write) is thin defence-in-
+ * depth, especially for the destructive ones — and every OTHER
+ * state-changing endpoint on this very file already gates on
+ * `validateCsrfRequest()` (the `secret_*` AJAX dispatcher above,
+ * `delete-backup` / `download-backup` / `save-credentials` / `upload-backup`
+ * below): this `?action=` dispatch was the one outlier.
+ *
+ * `validateCsrfRequest()` (`manage/includes/auth.php`) accepts EITHER a
+ * valid `csrf_token` (query or POST field) OR a genuine same-origin AJAX
+ * request (the `X-Requested-With` header — a browser cannot set it
+ * cross-origin without a CORS preflight this server never grants). The JS
+ * per-migration runner (`js/modules/setup-bulk-runner.js`'s `runOne()`,
+ * which the guided setup wizard's `setup-wizard.js` also calls) ALREADY
+ * sends that header on every request, so it passes this gate automatically
+ * with NO client change needed.
+ *
+ * NO-JS FALLBACK (kept working, not broken): every plain `<a href="?action=…">`
+ * link and GET `<form>` on this page that triggers a state-changing action
+ * now carries `csrf_token=<?= csrfToken() ?>` — either appended to the href
+ * or as a hidden form field — so a curator with JavaScript OFF keeps
+ * working exactly as before; the token just rides along on the same link
+ * or form submit they'd already use. Every such link/form on this page was
+ * traced and updated (rule #33 discipline applied to a token, not just a
+ * URL param): the pending-migration "Run & show output" + "Dry-run" links,
+ * "Apply all", the six top-level action-card links (Install/Users/Cleanup/
+ * Backup/Opcache-reset/Drop-legacy incl. its confirm=1 variant), the
+ * per-migration card's run + dry-run links, the five lyrics-cutover-gate
+ * phase links, and the Restore form's GET submit (a hidden `csrf_token`
+ * field, since a GET `<form>` cannot carry a query string literal).
+ * `?action=deploy-forensics` is the ONE action that is genuinely read-only
+ * ("writes nothing — no reset, no DB mutation", per its own card copy) and
+ * is exempt — a bookmark to it needs no token.
+ *
+ * ONE CHOKE POINT, same reasoning as the entitlement gate immediately
+ * below (and the SAME "why one choke point" applies): dispatched from
+ * three places (the `format=text` fast path, the bulk `apply-all-migrations`
+ * runner, the HTML single-action path) — checked ONCE, here, BEFORE any of
+ * them can run, so a fourth dispatcher added later can't bypass it either.
+ *
+ * `$isInitialSetup` is deliberately NOT exempt here (unlike the entitlement
+ * gate just below it): there is no user/role to check yet on a virgin
+ * install, but a PHP session — and therefore a CSRF token — already exists
+ * the moment this page first renders (`csrfToken()` calls `initSession()`
+ * itself), so the Install link on a fresh install can carry a valid token
+ * from its very first render, the same as every other link on this page.
+ *
+ * @see manage/includes/auth.php::validateCsrfRequest()
+ * @see tests/php/test-setup-database-csrf.php   the standing guard for this block
+ * ========================================================================= */
+if ($action !== '' && $action !== 'deploy-forensics') {
+    $csrfSuppliedForAction = (string)($_GET['csrf_token'] ?? $_POST['csrf_token'] ?? '');
+    if (!validateCsrfRequest($csrfSuppliedForAction)) {
+        http_response_code(403);
+        if ((string)($_GET['format'] ?? '') === 'text') {
+            header('Content-Type: text/plain; charset=UTF-8');
+            header('X-Content-Type-Options: nosniff');
+            echo "STATUS: error\n";
+            echo "ACTION: {$action}\n";
+            echo "ERROR: CSRF check failed — reload the page and try again.\n";
+        } else {
+            header('Content-Type: text/html; charset=UTF-8');
+            echo '<!DOCTYPE html><html lang="en"><body><h1>403 — CSRF check failed. Reload the page and try again.</h1></body></html>';
+        }
+        $pageRenderedCleanly = true;   /* suppress the shutdown chrome-closer */
+        exit;
+    }
+}
+
+/* =========================================================================
  * PER-ACTION ENTITLEMENTS (#1590, entitlement truth-up E1)
  *
  * ELI5: /manage/entitlements has three checkboxes — "Run database migrations",
@@ -1232,7 +1323,7 @@ if ($action !== '' && !$isInitialSetup) {
             echo "ERROR: The {$actionEntitlement} entitlement is required.\n";
         } else {
             header('Content-Type: text/html; charset=UTF-8');
-            echo '<!DOCTYPE html><html><body><h1>403 — the '
+            echo '<!DOCTYPE html><html lang="en"><body><h1>403 — the '
                . htmlspecialchars($actionEntitlement, ENT_QUOTES, 'UTF-8')
                . ' entitlement is required</h1></body></html>';
         }
@@ -2672,7 +2763,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                     static fn(string $slug): bool => isset($migrationCards[$slug]) && empty($migrationManual[$slug])
                 ));
             ?>
-            <a href="?action=apply-all-migrations"
+            <a href="?action=apply-all-migrations&amp;csrf_token=<?= urlencode(csrfToken()) ?>"
                class="btn btn-primary btn-lg flex-shrink-0 <?= $hasCredentials ? '' : 'disabled' ?>"
                data-bulk-runner-trigger
                data-pending-migrations="<?= htmlspecialchars(implode(',', $bulkRunnerPending), ENT_QUOTES, 'UTF-8') ?>">
@@ -2732,7 +2823,11 @@ if ($hasCredentials && defined('DB_HOST')) {
                                    distinct report-only run link (below) without &confirm=1. */
                                 $_paManual  = !empty($migrationManual[$_pa]);
                                 $_paDryRun  = !empty($migrationDryRunnable[$_pa]);
-                                $_paHref    = '?action=' . htmlspecialchars($_pa) . ($_paManual ? '&amp;confirm=1' : '');
+                                /* L-1 security-audit finding — every state-changing ?action= link
+                                   on this page now carries its own CSRF token (see the CSRF GUARD
+                                   doc-block near the top of this file for the full "why"). */
+                                $_paCsrf    = '&amp;csrf_token=' . urlencode(csrfToken());
+                                $_paHref    = '?action=' . htmlspecialchars($_pa) . ($_paManual ? '&amp;confirm=1' : '') . $_paCsrf;
                                 $_paOnclick = $_paManual
                                     ? ($_paDryRun
                                         ? ' onclick="return confirm(\'This APPLIES the data rewrite immediately (it mutates the database). Use the Dry-run link first to preview. Continue?\');"'
@@ -2744,7 +2839,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             ?>
                             <span class="d-flex gap-2 flex-shrink-0">
                                 <?php if ($_paManual && $_paDryRun): ?>
-                                    <a href="?action=<?= htmlspecialchars($_pa) ?>"
+                                    <a href="?action=<?= htmlspecialchars($_pa) ?><?= $_paCsrf ?>"
                                        class="btn btn-sm btn-outline-info <?= $hasCredentials ? '' : 'disabled' ?>">
                                         Dry-run (report only)
                                     </a>
@@ -2777,7 +2872,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             Create all database tables from <code>schema.sql</code>.
                             Safe to re-run — existing tables are skipped.
                         </p>
-                        <a href="?action=install" class="btn btn-primary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                        <a href="?action=install&amp;csrf_token=<?= urlencode(csrfToken()) ?>" class="btn btn-primary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Install
                         </a>
                     </div>
@@ -2801,7 +2896,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             Import users and setlists from the legacy SQLite database
                             and shared setlist JSON files. Skips existing users.
                         </p>
-                        <a href="?action=users" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                        <a href="?action=users&amp;csrf_token=<?= urlencode(csrfToken()) ?>" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run User Migration
                         </a>
                     </div>
@@ -2836,21 +2931,25 @@ if ($hasCredentials && defined('DB_HOST')) {
                             trailer, the request was cut short (a shared-host timeout) — nothing was armed;
                             just run it again. Use <em>Smoke test</em> first to confirm the path in seconds.
                         </p>
+                        <?php /* L-1 security-audit finding — one shared token for all five
+                                 verify-cutover links below (same reasoning as the CSRF GUARD
+                                 doc-block near the top of this file). */
+                              $_vcCsrf = '&amp;csrf_token=' . urlencode(csrfToken()); ?>
                         <div class="d-flex flex-wrap gap-2">
-                            <a href="?action=verify-cutover&amp;phase=pre&amp;limit=50" class="btn btn-outline-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            <a href="?action=verify-cutover&amp;phase=pre&amp;limit=50<?= $_vcCsrf ?>" class="btn btn-outline-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Smoke test <span class="small ms-1">(first 50 songs — no sentinel)</span>
                             </a>
-                            <a href="?action=verify-cutover&amp;phase=pre" class="btn btn-success btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            <a href="?action=verify-cutover&amp;phase=pre<?= $_vcCsrf ?>" class="btn btn-success btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Run <code>--phase=pre</code> <span class="small ms-1">(baseline + sentinel)</span>
                             </a>
-                            <a href="?action=verify-cutover&amp;phase=soak" class="btn btn-outline-success btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            <a href="?action=verify-cutover&amp;phase=soak<?= $_vcCsrf ?>" class="btn btn-outline-success btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Run <code>--phase=soak</code>
                             </a>
-                            <a href="?action=verify-cutover&amp;phase=pre-drop" class="btn btn-outline-warning btn-action <?= $hasCredentials ? '' : 'disabled' ?>"
+                            <a href="?action=verify-cutover&amp;phase=pre-drop<?= $_vcCsrf ?>" class="btn btn-outline-warning btn-action <?= $hasCredentials ? '' : 'disabled' ?>"
                                onclick="return confirm('pre-drop writes the sentinel that ARMS the irreversible JSON-column drop. Only run this inside the maintenance freeze, immediately before the drop. Continue?');">
                                 Run <code>--phase=pre-drop</code>
                             </a>
-                            <a href="?action=verify-cutover&amp;phase=post-drop" class="btn btn-outline-secondary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                            <a href="?action=verify-cutover&amp;phase=post-drop<?= $_vcCsrf ?>" class="btn btn-outline-secondary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Run <code>--phase=post-drop</code>
                             </a>
                         </div>
@@ -2899,7 +2998,14 @@ if ($hasCredentials && defined('DB_HOST')) {
                        link WITHOUT &confirm=1 (and without the type-to-confirm), and we tailor the
                        confirm() / badge wording away from the destructive-DROP defaults (which talk
                        about a "pre-drop verification gate" that doesn't apply here). */
-                    $href    = '?action=' . htmlspecialchars($migAction) . ($isManual ? '&amp;confirm=1' : '');
+                    /* L-1 security-audit finding — a static closure has no
+                       access to an outer-scope variable without `use()`, but
+                       csrfToken() is a plain global function (declared in
+                       manage/includes/auth.php, already `require_once`d at
+                       the top of this file), so calling it directly here
+                       needs no `use()` at all. */
+                    $csrfQs   = '&amp;csrf_token=' . urlencode(csrfToken());
+                    $href    = '?action=' . htmlspecialchars($migAction) . ($isManual ? '&amp;confirm=1' : '') . $csrfQs;
                     $btnClass = $isManual ? 'btn-danger' : 'btn-info';
                     $onclick = $isManual
                         ? ($isDryRunnable
@@ -2914,7 +3020,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                     /* #1380 FIX 4 — the report-only run link: same action, NO &confirm=1 → the
                        script stays in dry-run and only reports. No type-to-confirm / native
                        confirm() (a read-only report needs no speed-bump). */
-                    $dryRunHref = '?action=' . htmlspecialchars($migAction);
+                    $dryRunHref = '?action=' . htmlspecialchars($migAction) . $csrfQs;
                     ?>
                     <div class="col-md-6">
                         <div class="card bg-body-tertiary <?= $isManual ? 'border-danger' : 'border-secondary' ?> h-100">
@@ -2999,7 +3105,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             Delete expired API tokens, email login codes, password reset
                             tokens, and old login attempts (30+ days).
                         </p>
-                        <a href="?action=cleanup" class="btn btn-outline-secondary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                        <a href="?action=cleanup&amp;csrf_token=<?= urlencode(csrfToken()) ?>" class="btn btn-outline-secondary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Cleanup
                         </a>
                     </div>
@@ -3021,7 +3127,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             column already dropped). Reports the OPcache status — incl.
                             <code>validate_timestamps</code> — before resetting. No DB needed.
                         </p>
-                        <a href="?action=opcache-reset" class="btn btn-outline-warning btn-action">
+                        <a href="?action=opcache-reset&amp;csrf_token=<?= urlencode(csrfToken()) ?>" class="btn btn-outline-warning btn-action">
                             Reset OPcache
                         </a>
                     </div>
@@ -3061,7 +3167,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             Create a compressed SQL dump of all tables and data.
                             Keeps the last 7 backups; older ones are auto-deleted.
                         </p>
-                        <a href="?action=backup" class="btn btn-outline-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                        <a href="?action=backup&amp;csrf_token=<?= urlencode(csrfToken()) ?>" class="btn btn-outline-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Backup
                         </a>
                     </div>
@@ -3210,8 +3316,13 @@ if ($hasCredentials && defined('DB_HOST')) {
                             <label class="form-label small text-secondary mb-1" for="backup-restore-file">
                                 <i aria-hidden="true" class="bi bi-arrow-counterclockwise me-1"></i>Restore the database from a backup:
                             </label>
+                            <?php /* L-1 security-audit finding — the ONE GET <form> on this page
+                                     that triggers a state-changing action: a hidden field is how a
+                                     GET form carries a token in its query string (there's no href to
+                                     append one to). */ ?>
                             <form action="" method="get" class="d-flex gap-2 flex-wrap mb-2">
                                 <input type="hidden" name="action" value="restore">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken(), ENT_QUOTES, 'UTF-8') ?>">
                                 <select name="file" id="backup-restore-file" class="form-select form-select-sm" style="flex:1 1 200px">
                                     <?php foreach ($backupFiles as $f): ?>
                                         <option value="<?= htmlspecialchars($f) ?>"><?= htmlspecialchars($f) ?></option>
@@ -3295,11 +3406,12 @@ if ($hasCredentials && defined('DB_HOST')) {
                             importing an existing MySQL database that still holds tables
                             from a previous iHymns incarnation.
                         </p>
+                        <?php $_dropLegacyCsrf = '&amp;csrf_token=' . urlencode(csrfToken()); ?>
                         <div class="d-flex gap-2 flex-wrap">
-                            <a href="?action=drop-legacy" class="btn btn-outline-warning btn-sm <?= $hasCredentials ? '' : 'disabled' ?>">
+                            <a href="?action=drop-legacy<?= $_dropLegacyCsrf ?>" class="btn btn-outline-warning btn-sm <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Preview
                             </a>
-                            <a href="?action=drop-legacy&amp;confirm=1" class="btn btn-danger btn-sm <?= $hasCredentials ? '' : 'disabled' ?>"
+                            <a href="?action=drop-legacy&amp;confirm=1<?= $_dropLegacyCsrf ?>" class="btn btn-danger btn-sm <?= $hasCredentials ? '' : 'disabled' ?>"
                                data-type-to-confirm="drop-legacy"
                                onclick="return confirm('This will DROP all tables in the database that are not defined in schema.sql.\n\nThis cannot be undone. Run a Backup first.\n\nContinue?')">
                                 Drop Them

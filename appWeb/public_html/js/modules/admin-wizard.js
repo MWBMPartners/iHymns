@@ -152,6 +152,13 @@ export function createWizard(rootEl, opts = {}) {
     let current = 0;
     let destroyed = false;
     let overlayClose = null;
+    /* a11y audit A21 (2026-08-30) — which form control (if any) is currently
+       marked aria-invalid because of a validateStep() failure, keyed by its
+       PANE so clearStepError() (called for that same pane on the next
+       successful move) knows exactly what to undo. A WeakMap rather than a
+       DOM attribute on the pane itself — nothing here needs to survive a
+       page reload or be visible to anyone but this module. */
+    const invalidTargets = new WeakMap();
 
     /* One-time per-pane setup: role/aria wiring + heading tabindex. Doing
        this once at construction (rather than on every render()) keeps
@@ -243,12 +250,39 @@ export function createWizard(rootEl, opts = {}) {
         renderNav();
     }
 
+    /* a11y audit A21 — is `el` a real form control? Only these ever get
+       aria-invalid/aria-describedby: marking the alert itself "invalid"
+       would be meaningless (it isn't a form control), and a link/button
+       focus target (e.g. ICW's "choose a provider" <select> IS a control,
+       but a plain informational focus target wouldn't be) has no invalid
+       STATE to carry. */
+    function isFormControl(el) {
+        return !!el && ['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName);
+    }
+
+    /* Undo whatever showStepError() last marked invalid for THIS pane, if
+       anything — shared by clearStepError() (the normal "error resolved"
+       path) and by showStepError() itself (so marking a NEW target first
+       un-marks a stale one, rather than leaving two controls both flagged
+       invalid). */
+    function clearInvalidMarking(pane) {
+        const prevTarget = invalidTargets.get(pane);
+        if (!prevTarget) { return; }
+        prevTarget.removeAttribute('aria-invalid');
+        const alertEl = pane.querySelector('[data-wiz-alert]');
+        if (alertEl && prevTarget.getAttribute('aria-describedby') === alertEl.id) {
+            prevTarget.removeAttribute('aria-describedby');
+        }
+        invalidTargets.delete(pane);
+    }
+
     function clearStepError(pane) {
         const alertEl = pane.querySelector('[data-wiz-alert]');
         if (alertEl) {
             alertEl.hidden = true;
             alertEl.textContent = '';
         }
+        clearInvalidMarking(pane);
     }
 
     function showStepError(pane, message, focusTarget) {
@@ -262,6 +296,22 @@ export function createWizard(rootEl, opts = {}) {
             target = (typeof focusTarget === 'string') ? pane.querySelector(focusTarget) : focusTarget;
         }
         if (!target) { target = alertEl; }
+
+        /* a11y audit A21 (2026-08-30) — when the failure names a REAL form
+           control (not just the generic alert), tie it to the alert's text
+           via aria-invalid + aria-describedby, so a screen-reader user who
+           tabs back to that control hears WHY it's flagged, not just that
+           it is. https://www.w3.org/WAI/ARIA/apg/practices/form-hints/ */
+        clearInvalidMarking(pane);
+        if (target && target !== alertEl && isFormControl(target)) {
+            target.setAttribute('aria-invalid', 'true');
+            if (alertEl) {
+                if (!alertEl.id) { alertEl.id = `wiz-alert-${++_wizHeadingIdSeq}`; }
+                target.setAttribute('aria-describedby', alertEl.id);
+            }
+            invalidTargets.set(pane, target);
+        }
+
         if (target && typeof target.focus === 'function') {
             target.focus();
         }

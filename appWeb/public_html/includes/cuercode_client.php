@@ -42,6 +42,7 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';    /* getAppSetting() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'secret_crypto.php';  /* transparent decrypt of cuercode_api_key inside getAppSetting() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'qr_cache.php';       /* #1920 C3 — qrCacheFetch()/qrCacheStore(), side-effect-free to require */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'network_guard.php';  /* L-2 security-audit finding — ihymnsHostResolvesPrivate() */
 
 /* -------------------------------------------------------------------------
  * SETTINGS KEYS — defined ONCE here so /manage/configuration.php and any
@@ -126,6 +127,24 @@ function _cuercodeAllowLoopback(): bool
  * scheme/host/port + the fixed `$path`, never the raw base string re-concatenated
  * with anything, so the request is host-bound to the configured host.
  *
+ * SECURITY AUDIT L-2 FIX (2026-08-30) — "https:// always allowed" is about
+ * the WIRE PROTOCOL, not about WHERE the wire actually goes: an admin could
+ * still point this at an internal address — the cloud metadata endpoint
+ * (169.254.169.254), a loopback admin panel, an internal 10.x host — over a
+ * perfectly valid `https://` URL, and the pre-existing http-only loopback
+ * carve-out just above never caught that (it only special-cases the three
+ * literal loopback spellings, and only inside the `http://` branch). Mirrors
+ * `manage/configuration.php`'s own `$smtpHostIsPrivate()` (#1304) via the
+ * shared `ihymnsHostResolvesPrivate()` (`includes/network_guard.php`,
+ * rule #22 — one core, not a third hand-copied check): resolve the host to
+ * its IP(s) and refuse if ANY resolves into a private/reserved range
+ * (which also covers the 169.254.0.0/16 link-local block the cloud-metadata
+ * address sits in). The SAME `$allowLoopback` knob that unlocks the
+ * http+loopback carve-out above ALSO skips this new check — it exists
+ * precisely for a local/test install talking to a CueRCode stub on an
+ * internal address, and forcing that install to defeat this check some
+ * OTHER way would just relocate the escape hatch, not remove it.
+ *
  * @return array{0:string,1:string}|null [$fullUrl, $host] or null if refused.
  */
 function _cuercodeResolveUrl(string $baseUrl, string $path, bool $allowLoopback): ?array
@@ -142,6 +161,14 @@ function _cuercodeResolveUrl(string $baseUrl, string $path, bool $allowLoopback)
     } elseif ($scheme === 'http' && $allowLoopback && $isLoopback) {
         /* local/test carve-out */
     } else {
+        return null;
+    }
+    /* L-2 — destination-restriction check, skipped only by the SAME knob
+       that already unlocks the http+loopback carve-out above (see this
+       function's own doc-block for why). An unresolvable host (a typo) is
+       not refused HERE — that's not this check's job; it simply never
+       matches "private" either way. */
+    if (!$allowLoopback && ihymnsHostResolvesPrivate($host)) {
         return null;
     }
     $port = isset($parts['port']) ? ':' . (int)$parts['port'] : '';

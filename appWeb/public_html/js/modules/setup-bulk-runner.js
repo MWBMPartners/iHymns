@@ -123,7 +123,13 @@ async function runSequence(scope, triggerBtn, pending) {
 
         try {
             const result = await runOne(action);
-            const ms = result.elapsedMs > 0 ? `${result.elapsedMs} ms` : '';
+            /* a11y audit A14 (2026-08-30) — the ○/⟳/✓/✗ icon above is
+               aria-hidden, so this meta text is the ONLY textual state a
+               screen-reader user gets — and it used to go BLANK on success
+               whenever elapsedMs was 0 (a near-instant migration), leaving a
+               successful row indistinguishable from an untouched one except
+               by colour. Always say "Done", timing as an optional extra. */
+            const ms = result.elapsedMs > 0 ? `Done · ${result.elapsedMs} ms` : 'Done';
             if (result.ok) {
                 icon.textContent = '✓';
                 icon.classList.remove('text-warning');
@@ -135,7 +141,7 @@ async function runSequence(scope, triggerBtn, pending) {
                 icon.textContent = '✗';
                 icon.classList.remove('text-warning');
                 icon.classList.add('text-danger');
-                meta.textContent = result.error || 'Failed';
+                meta.textContent = 'Failed — ' + (result.error || 'unknown error');
                 appendLog(panel, action, result.output, false, result.error);
                 failed = true;
                 break;
@@ -144,7 +150,7 @@ async function runSequence(scope, triggerBtn, pending) {
             icon.textContent = '✗';
             icon.classList.remove('text-warning');
             icon.classList.add('text-danger');
-            meta.textContent = err.message || 'Network error';
+            meta.textContent = 'Failed — ' + (err.message || 'network error');
             appendLog(panel, action, '', false, err.message || String(err));
             failed = true;
             break;
@@ -268,6 +274,17 @@ export function parseEnvelope(text, httpOk) {
 
 /**
  * Lazily create the inline progress panel + return it.
+ *
+ * a11y audit A10/A11 (2026-08-30): `data-bulk-status` now carries
+ * `aria-live="polite"` — it's the running "N / M" progress + final verdict
+ * text, and without it a screen-reader user gets no announcement at all as
+ * the run proceeds (the NEW setup wizard's sibling status paragraph,
+ * `data-setup-wiz-run-status`, already had this). `data-bulk-log`'s `<pre>`
+ * is a fixed-height, `overflow:auto` scroll region with no button/link
+ * inside it — WCAG 2.1.1's standard "scrollable region with no focusable
+ * content" trap, since a mouse-only `overflow:auto` box can't be scrolled
+ * from the keyboard at all. `tabindex="0" role="region" aria-label="…"`
+ * makes it a reachable, named, keyboard-scrollable landmark.
  */
 function ensurePanel(scope) {
     let panel = scope.querySelector('[data-bulk-runner-panel]');
@@ -285,7 +302,7 @@ function ensurePanel(scope) {
                 <span>Apply All Pending Migrations</span>
                 <span class="badge bg-warning text-dark" data-bulk-status-badge>Running</span>
             </h4>
-            <p class="text-muted small mb-3" data-bulk-status>Preparing…</p>
+            <p class="text-muted small mb-3" data-bulk-status aria-live="polite">Preparing…</p>
             <div data-bulk-list class="mb-3"></div>
             <details>
                 <summary class="text-muted small" style="cursor:pointer;">
@@ -293,6 +310,7 @@ function ensurePanel(scope) {
                 </summary>
                 <pre class="bg-black text-light small p-3 mt-2 mb-0"
                      data-bulk-log
+                     tabindex="0" role="region" aria-label="Migration output log"
                      style="max-height:400px;overflow:auto;"></pre>
             </details>
         </div>

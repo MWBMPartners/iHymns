@@ -721,6 +721,121 @@ gwWithMutatedFile($mutatedGetWithWrite, function (string $tmp) {
 });
 
 /* =========================================================================
+ * (m) A0 (CRITICAL, a11y audit 2026-08-30) — the in-modal "Undo — switch it
+ * back off" button is actually wired. Before this fix, the button was
+ * rendered with `data-gwiz-rollback-inline` and NO `id`, but the JS looked
+ * it up with `document.getElementById('gwiz-rollback-inline')`, which
+ * always returned null — a named, focusable, completely DEAD control for
+ * every admin who used the wizard's in-modal Undo instead of the
+ * page-level rollback form (rule #30's "silent no-op" class). The fix is
+ * `modalEl.querySelector('[data-gwiz-rollback-inline]')` — this asserts
+ * that fix is actually in the source, that the markup attribute it
+ * depends on is still present, and that the old broken lookup is GONE
+ * (not just supplemented).
+ * ========================================================================= */
+
+ok('the rollback-inline button markup carries data-gwiz-rollback-inline',
+    str_contains($pageSrcStripped, 'data-gwiz-rollback-inline'));
+ok('the JS wires it via modalEl.querySelector(\'[data-gwiz-rollback-inline]\') — the actual fix',
+    str_contains($pageSrcStripped, "modalEl.querySelector('[data-gwiz-rollback-inline]')"));
+ok('the OLD broken getElementById(\'gwiz-rollback-inline\') lookup is GONE, not just supplemented',
+    !str_contains($pageSrcStripped, "getElementById('gwiz-rollback-inline')"));
+
+/* MUTATION: revert the fix back to the broken getElementById() lookup in a
+ * mutated copy -> both the "wired via querySelector" and "old lookup gone"
+ * assertions must flip. */
+$mutatedA0Reverted = str_replace(
+    "modalEl.querySelector('[data-gwiz-rollback-inline]')",
+    "document.getElementById('gwiz-rollback-inline')",
+    $pageSrc
+);
+ok('MUTATION setup sanity (m): the A0 revert actually matched real source',
+    $mutatedA0Reverted !== $pageSrc);
+gwWithMutatedFile($mutatedA0Reverted, function (string $tmp) {
+    $srcNow = gwStripComments((string)file_get_contents($tmp));
+    ok('MUTATION PROOF (m1): reverting to querySelector-removed / getElementById is detected (querySelector gone)',
+        !str_contains($srcNow, "modalEl.querySelector('[data-gwiz-rollback-inline]')"));
+    ok('MUTATION PROOF (m2): reverting to querySelector-removed / getElementById is detected (broken lookup back)',
+        str_contains($srcNow, "getElementById('gwiz-rollback-inline')"));
+});
+
+/* =========================================================================
+ * (n) A25.2 (a11y audit 2026-08-30) — the wizard's async result regions
+ * (A8) carry role="status" so a screen-reader user is told when Refresh /
+ * Re-check / Preview / Add-rules mutate them, without moving focus off the
+ * button that was clicked. Anchored on the SPECIFIC ids A8's fix targets
+ * (the audit's own "or the specific ids" allowance) — every one of these
+ * ids is unique to gating.php, so this can never accidentally pass because
+ * of an unrelated element elsewhere on the page.
+ * ========================================================================= */
+
+$a8StatusIds = [
+    'gwiz-preview-body',
+    'gwiz-licence-body',
+    'gwiz-seed-readback',
+    'gwiz-enabled-readback',
+    'gwiz-finish-summary',
+];
+foreach ($a8StatusIds as $a8Id) {
+    $idPos = strpos($pageSrcStripped, 'id="' . $a8Id . '"');
+    ok("#{$a8Id} exists in the markup (sanity)", $idPos !== false);
+    if ($idPos === false) { continue; }
+    /* role="status" must sit in the SAME opening tag — look back to the
+       nearest '<' before the id, forward to the nearest '>' after it. */
+    $tagStart = strrpos(substr($pageSrcStripped, 0, $idPos), '<');
+    $tagEnd   = strpos($pageSrcStripped, '>', $idPos);
+    $tag      = ($tagStart !== false && $tagEnd !== false)
+        ? substr($pageSrcStripped, $tagStart, $tagEnd - $tagStart + 1)
+        : '';
+    ok("#{$a8Id}'s own opening tag carries role=\"status\"",
+        str_contains($tag, 'role="status"'));
+}
+
+/* The test-results table isn't itself role="status" (a whole TABLE should
+   never be live-announced wholesale) — instead the JS that builds its
+   content prepends a one-line role="status" summary. Scoped to the
+   runTestBtn click handler specifically, not the whole file, so this can't
+   be satisfied by an unrelated role="status" elsewhere. */
+$runTestHandlerBody = gwBlockBodyAfterAnchor($pageSrcStripped, "runTestBtn.addEventListener('click', function () {");
+ok('the test-results summary line the runTestBtn handler builds carries role="status"',
+    $runTestHandlerBody !== '' && str_contains($runTestHandlerBody, 'role="status"'));
+
+/* MUTATION: strip role="status" from gwiz-preview-body's tag in a mutated
+ * copy -> the per-id assertion must go red. */
+$mutatedNoStatusRole = str_replace(
+    '<div id="gwiz-preview-body" role="status">',
+    '<div id="gwiz-preview-body">',
+    $pageSrc
+);
+ok('MUTATION setup sanity (n1): the gwiz-preview-body role="status" removal actually matched real source',
+    $mutatedNoStatusRole !== $pageSrc);
+gwWithMutatedFile($mutatedNoStatusRole, function (string $tmp) {
+    $srcNow = gwStripComments((string)file_get_contents($tmp));
+    $idPos = strpos($srcNow, 'id="gwiz-preview-body"');
+    $tagStart = $idPos !== false ? strrpos(substr($srcNow, 0, $idPos), '<') : false;
+    $tagEnd   = $idPos !== false ? strpos($srcNow, '>', $idPos) : false;
+    $tag = ($tagStart !== false && $tagEnd !== false) ? substr($srcNow, $tagStart, $tagEnd - $tagStart + 1) : '';
+    ok('MUTATION PROOF (n1): stripping role="status" from #gwiz-preview-body\'s tag is detected',
+        !str_contains($tag, 'role="status"'));
+});
+
+/* MUTATION: strip role="status" from the test-results summary line in a
+ * mutated copy -> the runTestBtn-scoped assertion must go red. */
+$mutatedNoResultsStatus = str_replace(
+    '<p class="small" role="status">Testing',
+    '<p class="small">Testing',
+    $pageSrc
+);
+ok('MUTATION setup sanity (n2): the test-results role="status" removal actually matched real source',
+    $mutatedNoResultsStatus !== $pageSrc);
+gwWithMutatedFile($mutatedNoResultsStatus, function (string $tmp) {
+    $srcNow = gwStripComments((string)file_get_contents($tmp));
+    $body = gwBlockBodyAfterAnchor($srcNow, "runTestBtn.addEventListener('click', function () {");
+    ok('MUTATION PROOF (n2): stripping role="status" from the test-results summary line is detected',
+        $body !== '' && !str_contains($body, 'role="status"'));
+});
+
+/* =========================================================================
  * REPORT
  * ========================================================================= */
 
@@ -733,6 +848,8 @@ echo "\n\nThe guided content-gating activation wizard stays safe: the raw switch
    . "Configuration still dispatches, exactly two functions write content_gating_enabled, "
    . "the precondition check runs before every flip and can never be bypassed by rollback, "
    . "the owner's warn-but-allow override behaves exactly as specified, the row planner "
-   . "never emits a wildcard, the song-test endpoint never leaks lyric text, and every "
-   . "restriction write funnels through the ONE shared core.\n";
+   . "never emits a wildcard, the song-test endpoint never leaks lyric text, every "
+   . "restriction write funnels through the ONE shared core, the in-modal Undo button is "
+   . "actually wired (A0), and every async result region announces itself to a screen "
+   . "reader (A25.2).\n";
 exit(0);

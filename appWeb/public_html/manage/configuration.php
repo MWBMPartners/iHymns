@@ -56,7 +56,7 @@ if (!isAuthenticated()) {
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_configuration', $currentUser['role'] ?? null)) {
     http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_configuration required</h1></body></html>';
+    echo '<!DOCTYPE html><html lang="en"><body><h1>403 — manage_configuration required</h1></body></html>';
     exit;
 }
 $activePage = 'configuration';
@@ -829,6 +829,25 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                         . ' until every field is set. This is not an error; it is the documented'
                         . ' fail-open default.';
                 }
+
+                /* L-2 security-audit finding (2026-08-30) — SSRF heads-up on
+                   save (never blocks), mirroring save_email's own
+                   $smtpHostIsPrivate() warning above. The resolver
+                   (_intappsResolveUrl(), just tightened by this same audit
+                   pass) now REFUSES to actually dial a base URL that
+                   resolves to a private/reserved address, so surfacing WHY
+                   here — at save time — turns a later, confusing "Test
+                   connection failed" into an immediate, explained heads-up
+                   instead. Appended to (not replacing) the credential-
+                   completeness warning above — both can be true at once. */
+                $intappsHostVal = (string)(parse_url($baseUrlVal, PHP_URL_HOST) ?? '');
+                if ($intappsHostVal !== '' && ihymnsHostResolvesPrivate($intappsHostVal)) {
+                    $intappsPrivateHostWarning = 'Heads-up: the IntAppsAPI base URL host "' . $intappsHostVal . '" resolves'
+                        . ' to a private/reserved network address, so this server will refuse to actually call it'
+                        . ' (the connectivity test below will report it as unconfigured). If this is not a deliberate'
+                        . ' internal test target, double-check it.';
+                    $saveWarning = $saveWarning !== '' ? ($saveWarning . ' ' . $intappsPrivateHostWarning) : $intappsPrivateHostWarning;
+                }
             } catch (\Throwable $e) {
                 error_log('[manage configuration save_intappsapi] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
@@ -861,6 +880,22 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                         ['keys' => $changedKeys], 'success'); /* key NAMES only — the secret VALUE is never logged */
                 }
                 $saveSuccess = 'CueRCode QR settings saved.';
+
+                /* L-2 security-audit finding (2026-08-30) — SSRF heads-up on
+                   save (never blocks), same shape as save_intappsapi's own
+                   heads-up just above and save_email's $smtpHostIsPrivate()
+                   warning. _cuercodeResolveUrl() (tightened by this same
+                   audit pass) now REFUSES to actually dial a base URL that
+                   resolves to a private/reserved address — surfacing WHY
+                   here turns a later, confusing "Test connection failed"
+                   into an immediate, explained heads-up instead. */
+                $cuercodeHostVal = (string)(parse_url($cuercodeBaseUrlIn, PHP_URL_HOST) ?? '');
+                if ($cuercodeHostVal !== '' && ihymnsHostResolvesPrivate($cuercodeHostVal)) {
+                    $saveWarning = 'Heads-up: the CueRCode base URL host "' . $cuercodeHostVal . '" resolves to a'
+                        . ' private/reserved network address, so this server will refuse to actually call it (QR'
+                        . ' generation will fall back to plain URL/code text). If this is not a deliberate internal'
+                        . ' test target, double-check it.';
+                }
             } catch (\Throwable $e) {
                 error_log('[manage configuration save_cuercode] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();

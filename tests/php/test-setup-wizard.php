@@ -451,7 +451,17 @@ ok('(c) MUTATION PROOF: injecting a real fetch( call flips the "never calls fetc
 /* ---- (d) EXISTING RUNNER PATH INTACT ---- */
 ok('(d) the page still emits data-bulk-runner-trigger', str_contains($pageSrc, 'data-bulk-runner-trigger'));
 ok('(d) the page still emits data-pending-migrations', str_contains($pageSrc, 'data-pending-migrations'));
-ok('(d) the page still emits the no-JS href="?action=apply-all-migrations"', str_contains($pageSrc, 'href="?action=apply-all-migrations"'));
+/* Security-audit finding L-1 (2026-08-30) HONEST CONSEQUENCE: setup-database.php's
+   ?action= GET dispatch is now CSRF-gated (tests/php/test-setup-database-csrf.php),
+   so every no-JS action link — this one included — now carries its own
+   &csrf_token=… query param appended after the action name. The assertion's
+   actual INTENT (a plain href-based no-JS fallback pointing at
+   ?action=apply-all-migrations still exists) is unchanged and still true; only
+   the exact-closing-quote match needed relaxing to a prefix match, and the
+   token's own presence is now asserted explicitly alongside it — this is a
+   narrowing/correction, never a weakening of what's being proven. */
+ok('(d) the page still emits the no-JS href="?action=apply-all-migrations…" (now CSRF-token-bearing, L-1)',
+    str_contains($pageSrc, 'href="?action=apply-all-migrations&amp;csrf_token='));
 ok('(d) the page still imports+boots bootSetupBulkRunner', str_contains($pageSrc, 'import { bootSetupBulkRunner }') && str_contains($pageSrc, 'bootSetupBulkRunner();'));
 
 $bulkPendingAnchor = '$bulkRunnerPending = array_values(array_filter(';

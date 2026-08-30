@@ -70,6 +70,7 @@ declare(strict_types=1);
  */
 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php'; /* getAppSetting() */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'network_guard.php'; /* L-2 security-audit follow-up — ihymnsHostResolvesPrivate() */
 
 /* -------------------------------------------------------------------------
  * SETTINGS KEYS + CONSTANTS — defined ONCE here so no other file re-types a
@@ -180,6 +181,18 @@ function _iaResolveUrl(string $baseUrl, string $path, bool $allowLoopback): ?arr
     } elseif ($scheme === 'http' && $allowLoopback && $isLoopbackHost) {
         /* the local/test-only carve-out */
     } else {
+        return null;
+    }
+
+    /* L-2 (2026-08-30 security-audit follow-up) — destination-restriction
+       check, identical in shape to _cuercodeResolveUrl()/_intappsResolveUrl():
+       refuse a private/reserved resolved host (including the
+       169.254.169.254 cloud-metadata address) so a mistaken or hostile
+       ia_base_url can't turn this outbound client into an SSRF probe of the
+       internal network. Skipped ONLY by the same ia_allow_loopback knob that
+       already unlocks the http+loopback local-test carve-out above. Shared
+       core: ihymnsHostResolvesPrivate() in includes/network_guard.php. */
+    if (!$allowLoopback && ihymnsHostResolvesPrivate($host)) {
         return null;
     }
 

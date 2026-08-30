@@ -180,11 +180,21 @@ function renderField(entry, field) {
     if (field.type === 'checkbox-group') {
         const legend = document.createElement('div');
         legend.className = 'form-label mb-1';
+        legend.id = id + '-legend';
         legend.textContent = field.label;
         wrap.appendChild(legend);
 
         const grid = document.createElement('div');
         grid.className = 'row g-2';
+        /* a11y audit A15 (2026-08-30) — the visible "legend" above is a
+           plain <div>, so nothing tied it to the checkboxes below it
+           programmatically; a screen-reader user tabbing into the first
+           checkbox heard only its own option label, never the group's
+           overall question. role="group" + aria-labelledby is the ARIA
+           equivalent of a real <fieldset>/<legend> pair (gating.php's own
+           songbook picker, :736, already uses this exact shape). */
+        grid.setAttribute('role', 'group');
+        grid.setAttribute('aria-labelledby', legend.id);
         const formMeta = entry.formMeta || {};
         const ticked = new Set(field.values || []);
         Object.keys(formMeta).forEach((formKey) => {
@@ -699,6 +709,14 @@ function buildPanes(entry, panesEl) {
     const testPane = pane('save', 'Save & test');
     const statusEl = document.createElement('div');
     statusEl.setAttribute('data-icw-test-status', '');
+    /* a11y audit A7 (2026-08-30) — "Saving and testing…" -> a verdict is an
+       async content swap with no page navigation; role="status" (implicit
+       aria-live="polite" + aria-atomic="true") means a screen-reader user
+       hears each new state without having to keep re-checking the pane.
+       tabIndex is set so runSaveAndTest() below can move focus HERE when
+       disabling the button the user just clicked (see setBusy()). */
+    statusEl.setAttribute('role', 'status');
+    statusEl.tabIndex = -1;
     testPane.appendChild(statusEl);
     refs.statusEl = statusEl;
 
@@ -879,6 +897,17 @@ function openWizard(entry, csrfToken, dom) {
     let inFlight = false;
 
     function setBusy(busy) {
+        /* a11y audit A7 (2026-08-30) — clicking "Retry test" (dom.nextBtn on
+           the last step) disables the very button that just had focus;
+           disabling a focused element silently drops focus to <body> with
+           no announcement of what happened next. Move focus into the
+           (role="status", tabIndex=-1) verdict area FIRST, so a keyboard/
+           screen-reader user keeps a sensible focus position and hears the
+           "Saving and testing…" update land, matching the DONE pane's own
+           already-correct focus-to-heading convention. */
+        if (busy && dom.nextBtn && document.activeElement === dom.nextBtn && refs.statusEl) {
+            refs.statusEl.focus();
+        }
         if (dom.nextBtn) { dom.nextBtn.disabled = busy; }
         if (dom.backBtn) { dom.backBtn.disabled = busy; }
     }

@@ -159,12 +159,19 @@ export function bootSetupWizard(root) {
                 icon.textContent = '✓';
                 icon.classList.remove('text-warning');
                 icon.classList.add('text-success');
-                meta.textContent = result.elapsedMs > 0 ? result.elapsedMs + ' ms' : '';
+                /* a11y audit A14 (2026-08-30) — the glyph swap above is
+                   aria-hidden (see makeRunRow()), so the meta text is the
+                   ONLY thing carrying success/failure for a screen-reader
+                   user — and it used to go BLANK on a fast step
+                   (elapsedMs <= 0), leaving a "done" row with no textual
+                   state at all. Always say "Done", with the timing as an
+                   optional extra. */
+                meta.textContent = result.elapsedMs > 0 ? ('Done · ' + result.elapsedMs + ' ms') : 'Done';
             } else {
                 icon.textContent = '✗';
                 icon.classList.remove('text-warning');
                 icon.classList.add('text-danger');
-                meta.textContent = result.error || 'Failed';
+                meta.textContent = 'Failed — ' + (result.error || 'unknown error');
             }
             appendRunLog(label, result.output, result.ok, result.error);
             return result;
@@ -173,7 +180,7 @@ export function bootSetupWizard(root) {
             icon.classList.remove('text-warning');
             icon.classList.add('text-danger');
             const msg = err && err.message ? err.message : String(err);
-            meta.textContent = msg;
+            meta.textContent = 'Failed — ' + msg;
             appendRunLog(label, '', false, msg);
             return { ok: false, output: '', elapsedMs: 0, error: msg };
         });

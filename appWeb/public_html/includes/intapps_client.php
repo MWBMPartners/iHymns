@@ -105,6 +105,7 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'environment.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';   /* getAppSetting()/setAppSetting() */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'secret_crypto.php'; /* secretSettingKeys() registration + transparent decrypt inside getAppSetting() */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'network_guard.php'; /* L-2 security-audit finding — ihymnsHostResolvesPrivate() */
 
 /* -------------------------------------------------------------------------
  * SETTINGS KEYS — defined ONCE here so /manage/configuration.php and
@@ -290,6 +291,24 @@ function intappsSign(string $rawBody, int $unixTimestamp, string $hmacSecret): s
  * the auth headers "host-bound" in `intappsRequest()`: the URL actually
  * dialled can only ever be the configured host, on the configured scheme.
  *
+ * SECURITY AUDIT L-2 FIX (2026-08-30) — "https:// always allowed" is about
+ * the WIRE PROTOCOL, not about WHERE the wire actually goes: an admin could
+ * still point this at an internal address — the cloud metadata endpoint
+ * (169.254.169.254), a loopback admin panel, an internal 10.x host — over a
+ * perfectly valid `https://` URL, and the pre-existing http-only loopback
+ * carve-out below never caught that (it only special-cases the three
+ * literal loopback spellings, and only inside the `http://` branch). Mirrors
+ * `manage/configuration.php`'s own `$smtpHostIsPrivate()` (#1304) via the
+ * shared `ihymnsHostResolvesPrivate()` (`includes/network_guard.php`,
+ * rule #22 — one core, shared with `_cuercodeResolveUrl()`'s identical
+ * fix, not a third hand-copied check): resolve the host to its IP(s) and
+ * refuse if ANY resolves into a private/reserved range (which also covers
+ * the 169.254.0.0/16 link-local block the cloud-metadata address sits in).
+ * The SAME `$allowLoopback` knob that unlocks the http+loopback carve-out
+ * below ALSO skips this new check — it exists precisely for the local
+ * stub-gateway fixture, and forcing that fixture to defeat this check some
+ * OTHER way would just relocate the escape hatch, not remove it.
+ *
  * @return array{0:string,1:string}|null [$fullUrl, $host] or null if refused.
  */
 function _intappsResolveUrl(string $baseUrl, string $path, bool $allowLoopback): ?array
@@ -307,6 +326,15 @@ function _intappsResolveUrl(string $baseUrl, string $path, bool $allowLoopback):
     } elseif ($scheme === 'http' && $allowLoopback && $isLoopbackHost) {
         /* the local/test-only carve-out */
     } else {
+        return null;
+    }
+
+    /* L-2 — destination-restriction check, skipped only by the SAME knob
+       that already unlocks the http+loopback carve-out above (see this
+       function's own doc-block for why). An unresolvable host (a typo) is
+       not refused HERE — that's not this check's job; it simply never
+       matches "private" either way. */
+    if (!$allowLoopback && ihymnsHostResolvesPrivate($host)) {
         return null;
     }
 

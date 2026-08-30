@@ -235,9 +235,17 @@ $_wizManualPending = array_values(array_filter(
 
     <div data-setup-wiz-run-rows class="mb-2"></div>
 
+    <?php /* a11y audit A11 (2026-08-30) — a fixed-height, overflow:auto <pre>
+             with no focusable content inside it cannot be scrolled from the
+             keyboard at all (WCAG 2.1.1's standard "scrollable region"
+             trap). tabindex="0" + role="region" + aria-label makes it a
+             reachable, named, keyboard-scrollable landmark — mirrors the
+             identical fix on setup-bulk-runner.js's own log <pre>. */ ?>
     <details class="mt-2" data-setup-wiz-run-log-wrap hidden>
         <summary class="text-muted small" style="cursor:pointer;">Show what each step printed</summary>
-        <pre class="bg-black text-light small p-3 mt-2 mb-0" data-setup-wiz-run-log style="max-height:280px;overflow:auto;"></pre>
+        <pre class="bg-black text-light small p-3 mt-2 mb-0" data-setup-wiz-run-log
+             tabindex="0" role="region" aria-label="Migration output log"
+             style="max-height:280px;overflow:auto;"></pre>
     </details>
 
     <p class="text-muted small mt-3 mb-0">
