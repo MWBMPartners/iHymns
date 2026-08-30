@@ -333,11 +333,12 @@ function renderSongList(filter) {
         renderSidebarBatch();
     }
 
-    /* Update the song-count badge in the sidebar header (full match count). */
-    var countEl = document.getElementById('song-count');
-    if (countEl) {
-        countEl.textContent = _sidebarVisible.length + ' / ' + songData.songs.length;
-    }
+    /* The song-count badge (#song-count) this used to update was removed from
+       the markup by #1180 — the sidebar header now shows the count a
+       different way — so this update is dead code left behind on purpose
+       ("editor.js still updates #song-count if present (guarded)", see the
+       #1180 comment in index.php). Deleted by the silent-wiring sweep; git
+       history has the old block if #song-count is ever reintroduced. */
 }
 
 /* Sidebar incremental-render state (#1180-B1). */

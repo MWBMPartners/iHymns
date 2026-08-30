@@ -378,8 +378,10 @@ try {
                 <!-- #1180 — the redundant "N / total" song-count was removed from
                      here: the total already shows in the page footer ("N songs
                      loaded"), and on the same flex row it crowded + mis-aligned
-                     the action buttons. editor.js still updates #song-count if
-                     present (guarded), so this is markup-only. -->
+                     the action buttons. The matching guarded #song-count update
+                     in editor.js was dead code ever since (nothing emits the id)
+                     and was deleted by the silent-wiring sweep — see
+                     tests/test-dom-target-integrity.js. -->
                 <span class="d-flex gap-1 flex-wrap">
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-select-mode"
                             title="Multi-select mode (#399)" aria-pressed="false">
@@ -1850,15 +1852,20 @@ try {
             notify('Exported ' + result.count + ' song' + (result.count === 1 ? '' : 's') + ' → ' + result.filename, 'success');
         }
 
-        /* Load the protobuf descriptor up-front; enable the dropdown only
-           once the schema parses (so a broken bundle disables export rather
-           than failing mid-click). */
+        /* Load the protobuf descriptor up-front, so it is warm by the time the
+           user actually clicks Export rather than fetching + parsing on the
+           critical path of that first click. The unified Export dropdown
+           (#1166, `#btn-export-all` above) stays always-enabled regardless of
+           whether this succeeds — a broken bundle surfaces as an error toast
+           on click, not a disabled control (see the comment on
+           #btn-export-all). This used to also flip a per-format
+           `#btn-pp-export` button's `disabled` flag, but that button was
+           removed by the #1166 dropdown consolidation and the id has not
+           existed since; the dead lookup was deleted by the silent-wiring
+           sweep (tests/test-dom-target-integrity.js). */
         function eagerInit() {
             if (!window.iHymnsProPresenter || !window.iHymnsProPresenter.init) return;
-            window.iHymnsProPresenter.init().then(function () {
-                var btn = document.getElementById('btn-pp-export');
-                if (btn) btn.disabled = false;
-            }).catch(function (err) {
+            window.iHymnsProPresenter.init().catch(function (err) {
                 console.warn('[ProPresenter] schema init failed; export disabled:', err);
             });
         }
@@ -1951,7 +1958,15 @@ try {
             }));
             notify('Exported ' + r.count + ' song' + (r.count === 1 ? '' : 's') + ' → ' + r.filename, 'success');
         }
-        function bindFormat(formatKey, label, btnId, songItemId, bookItemId) {
+        /* `btnId` used to be a fourth argument here, looking up a per-format
+           toggle button (e.g. `btn-os-export`) to flip its `disabled` flag —
+           those buttons were replaced by the single `#btn-export-all`
+           dropdown in the #1166 consolidation and the ids have not existed
+           since. The dead lookups (one per call site below) were deleted by
+           the silent-wiring sweep (tests/test-dom-target-integrity.js); see
+           the comment on `#btn-export-all` for why the dropdown stays
+           always-enabled instead. */
+        function bindFormat(formatKey, label, songItemId, bookItemId) {
             var s = document.getElementById(songItemId);
             var b = document.getElementById(bookItemId);
             if (s) s.addEventListener('click', function (e) {
@@ -1962,8 +1977,6 @@ try {
                 e.preventDefault();
                 exportSongbook(formatKey, label).catch(function (err) { notify('Export failed: ' + ((err && err.message) || err), 'danger'); });
             });
-            var btn = document.getElementById(btnId);
-            if (btn && window.iHymnsFormatExport && window.iHymnsFormatExport[formatKey]) { btn.disabled = false; }
         }
         document.addEventListener('DOMContentLoaded', function () {
             /* #1065 — hydrate the lines-per-slide input from the saved default
@@ -1979,12 +1992,12 @@ try {
                     try { window.localStorage.setItem(LINES_PER_SLIDE_KEY, String(v)); } catch (_e) {}
                 });
             }
-            bindFormat('openSong',   'OpenSong',   'btn-os-export', 'os-export-song', 'os-export-songbook');
-            bindFormat('videoPsalm', 'VideoPsalm', 'btn-vp-export', 'vp-export-song', 'vp-export-songbook');
-            bindFormat('freeShow',   'FreeShow',   'btn-fs-export', 'fs-export-song', 'fs-export-songbook');
-            bindFormat('openLyrics',    'OpenLP',       'btn-ol-export', 'ol-export-song', 'ol-export-songbook');
-            bindFormat('proclaim',      'Proclaim',     'btn-pc-export', 'pc-export-song', 'pc-export-songbook');
-            bindFormat('proPresenter6', 'ProPresenter 6', 'btn-p6-export', 'p6-export-song', 'p6-export-songbook');
+            bindFormat('openSong',   'OpenSong',   'os-export-song', 'os-export-songbook');
+            bindFormat('videoPsalm', 'VideoPsalm', 'vp-export-song', 'vp-export-songbook');
+            bindFormat('freeShow',   'FreeShow',   'fs-export-song', 'fs-export-songbook');
+            bindFormat('openLyrics',    'OpenLP',       'ol-export-song', 'ol-export-songbook');
+            bindFormat('proclaim',      'Proclaim',     'pc-export-song', 'pc-export-songbook');
+            bindFormat('proPresenter6', 'ProPresenter 6', 'p6-export-song', 'p6-export-songbook');
 
             /* EasyWorship export (#1059) — server-side endpoint, so it can't go
                through bindFormat()/format-export.js. The dropdown items trigger
@@ -2000,10 +2013,8 @@ try {
                 a.click();
                 document.body.removeChild(a);
             }
-            var ewBtn  = document.getElementById('btn-ew-export');
             var ewSong = document.getElementById('ew-export-song');
             var ewBook = document.getElementById('ew-export-songbook');
-            if (ewBtn) { ewBtn.disabled = false; }
             if (ewSong) ewSong.addEventListener('click', function (e) {
                 e.preventDefault();
                 if (!currentSongId) { notify('Open a song first, then export it.', 'warning'); return; }
