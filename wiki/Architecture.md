@@ -149,7 +149,7 @@ A new manage-page action that lands without a mapping entry fails the guard outr
 
 `js/modules/admin-wizard.js` (`createWizard(rootEl, opts)`) is the **one reusable multi-step "wizard" stepper** for `/manage/*` admin pages — the same shape every "set up a new thing in N small screens, Next/Back, a progress trail" flow needs, built once instead of per-feature. It knows how to show one step at a time, move focus correctly when the step changes (WCAG 2.4.3), block advancing until the current step validates, and render the progress trail; it carries **zero domain knowledge** of any one wizard. Steps are **derived from the DOM** (`[data-wiz-step]` elements, in document order), never a JS-side list that the markup could drift out of sync with (rule #35 — the same drift class #1581's event-name bug was). A host supplies field markup, its own `validateStep`/save logic, and a modal to put it in — `opts.host` is either `'bootstrap-modal'` (the host page's own Bootstrap Modal instance supplies the focus trap; every current consumer uses this) or `'overlay'` (the module lazily pulls in `js/utils/dialog-a11y.js`'s `openModalDialog()` for pages with no Bootstrap modal already on screen).
 
-Five guided wizards consume this ONE engine, each additive with the page's pre-existing manual path left fully intact:
+Eight guided wizards consume this ONE engine, each additive with the page's pre-existing manual path left fully intact — the first five (#1992/#1993/#1995/#1996/#1997) shipped first; the last three (#2003/#2004/#2005/#2006, epic #2002) completed the program:
 
 | Wizard | Page | Steps |
 | --- | --- | --- |
@@ -158,8 +158,15 @@ Five guided wizards consume this ONE engine, each additive with the page's pre-e
 | Live Service setup (guided) | `manage/venues.php` | Live-session mode (Quick Live Follow vs. Service Mode) → venue → service time → optional presentation-app key → review |
 | New organisation (guided) | `manage/organisations.php` | Organisation details → licences (optional, finer-gated) → members (optional) → review |
 | Guided (New Song) | Editor2 (`manage/editor/editor2.php`) | Songbook → number (live availability) → title + alt-titles → seed verse/chorus → create + open |
+| Connect a service (guided) | `manage/configuration.php` | Intro → what you'll need (+ provider-portal link) → provider choice (CAPTCHA only) → paste credentials → save → live connectivity test → confirm dependent surfaces are live — one shared modal covering IntAppsAPI, CueRCode, CAPTCHA, Email, Sign in with Apple and Partner webhooks |
+| Guided environment setup | `manage/setup-database.php` | Environment (connection/tables) → Apply migrations (with an auto-backup-first step) → Baseline data → Connect services (links out to the wizard above) → Verify |
+| Turn on content locking (guided) | `manage/gating.php` | Understand → Preview (impact counts) → Rules (optional) → Licence check → Enable → Test a song → Finish, with a one-click rollback |
 
 Each wizard is pure client orchestration over the page's **existing** write actions (rule #22) — no wizard introduces a parallel save path; the External Link, Songbook and Organisation wizards each gained one new `admin_*_create` API twin so the guided flow and a native caller reach the identical validate/create core the page's own manual form already used (see [[API Reference]]). The four list pages (External Link Types, Songbooks, Venues, Organisations) additionally render a shared **"Get started" empty-state launcher** (`manage/includes/wizard-empty-state.php`) in place of a bare empty list — an icon, one line of explanation, and a button that opens the exact same wizard modal the page's header button opens (same `data-bs-target`, so it's a second trigger on one modal, never a second implementation). `tests/php/test-wizard-empty-state.php` and the per-wizard PHP guards (`test-songbook-wizard.php`, `test-service-setup-wizard.php`, …) keep the markup contract and modal wiring honest.
+
+**Connect a service (#2003/#2004) is registry-driven, not six copies.** `includes/integration_registry.php` is the ONE source of truth — `integrationRegistry()` (pure/static: label, icon, intro copy, "what you'll need" list, provider-portal link, field list, save action, test function, dependent surfaces) and `integrationClientProjection(callable $getSetting, …)` build the secret-free JSON the client reads. A `secret:true` field's setting value is used only inside a `!== ''` boolean comparison and never assigned into the output array, so a secret cannot structurally reach the browser regardless of what the reader returns. The one generic client driver, `js/modules/integration-connect-wizard.js`, renders whatever the registry describes — field type, validation, POST body — with no per-integration literal anywhere in the file. Each integration still saves through its page's **existing** classic save action (`save_intappsapi`/`save_cuercode`/`save_captcha`/`save_email`/`save_apple`/`save_webhooks`) — the wizard is a guided front end onto the same write path, never a parallel one. CueRCode's connectivity test (`cuercodeProbe()`) bypasses the response cache deliberately, so a cache hit can never make the test pass without the live service actually answering.
+
+**The gating activation wizard (#2006) is the safety-sensitive one.** `includes/gating_wizard.php` is a read-only census + a pure precondition evaluator + a dry-run song simulator, sitting entirely in front of the ONE existing `content_gating_enabled` flag (rule #28) — it never touches the enforcement chain (`content_gating.php`/`access_context.php`/`access_resolver.php`/`ccli_validator.php`/`licences.php`) itself. Its precondition table is deliberately **warn-but-allow, never a hard block**, except the one genuine technical prerequisite (an un-migrated gating schema) — every licensing risk surfaces as a loud, must-acknowledge warning plus a typed `ENFORCE` confirmation, not a wall the admin can't get past (an explicit owner correction during design). Rollback is unconditional and reachable with the wizard closed, and removes only the restriction rows the wizard itself seeded (tracked via a sentinel), never a curator's own rows.
 
 ### Data Flow
 
@@ -326,7 +333,28 @@ enforces that separation on every commit).
 
 Admin surfaces: the credentials + enablement card on `/manage/configuration`,
 and the read-only snapshot/diagnostic viewer at `/manage/intapps-status`
-(both gated `manage_configuration`).
+(both gated `manage_configuration`). A **"Set up with a guide"** button on
+this card (and on CueRCode/CAPTCHA/Email/Sign in with Apple/Partner-webhooks
+alongside it) opens the shared **"Connect a service"** guided wizard — see
+[Guided-wizard framework](#guided-wizard-framework-1992-family) above — which
+saves through this same card's existing action and adds a live connectivity
+test on top.
+
+### Outbound-request SSRF guard (`includes/network_guard.php`)
+
+Every server-side client that dials an admin-configured base URL — CueRCode
+(`cuercode_client.php`), IntAppsAPI (`intapps_client.php`), and the Internet
+Archive reconciliation client (`ia_client.php`) — resolves the host first and
+refuses to proceed if it lands on a private (RFC 1918/4193) or reserved
+(loopback, link-local — including the `169.254.169.254` cloud-metadata
+address) range, via the one shared `ihymnsHostResolvesPrivate()` function.
+Added as part of the 2026-08-30 security audit (finding L-2): previously each
+client trusted an `https://` scheme as sufficient proof a URL was safe,
+regardless of where it actually resolved, so an admin typo or a compromised
+admin account could point an outbound call back at the server's own internal
+network. The function mirrors a pre-existing SMTP-host check on
+`manage/configuration.php` (#1304) rather than forking a third copy. See
+[[Security]] for the full write-up.
 
 ---
 
@@ -339,5 +367,6 @@ and the read-only snapshot/diagnostic viewer at `/manage/intapps-status`
 - Friendly, theme-aware error pages for every status the app actually emits — `errorPageMap()` / `errorPageStatuses()` in `includes/error_page.php` is the one status→copy registry (400/401/403/404/405/410/429/500/503), and `error.php` (the Apache `ErrorDocument` target for 403/405/500/503) derives its render whitelist from it rather than a second hand-typed list (#1704). 405 and 410 are recent additions — 410 is what a soft-deleted or merged-with-no-replacement song now returns instead of a generic 404.
 - Defensive hardening pass (#1906, no user-visible behaviour change): the `/manage` admin area and the social-card `og-image.php` endpoint gained their own security headers / CSP; registration + email-code brute-force protections now actually engage (a dead registration throttle revived; the email-code check gained a per-email bucket on top of per-IP); a cross-surface admin sign-in session-fixation gap was closed with `session_regenerate_id`; copyrighted lyrics no longer leak through the share-image endpoint when content-locking is on; several heavy public endpoints (og-image, random, song-of-the-day, media) gained rate limits; and error responses now carry the security headers (`Header always set`). `X-Powered-By` advertises our own `iHymns/<version>` identity while the PHP runtime version is suppressed at source (`expose_php=Off`). An owner/host-gated remainder (`Options -Indexes`, `ServerSignature Off`) is still pending an alpha check.
 - **Redo audit of the API-coverage program (2026-08-29).** Once the ~90 new `admin_*`/`org_admin_*` actions and the editor-API Bearer seam above landed, the new surface was re-audited end-to-end (Bearer seam, secrets handling, uploads, injection) before being called done. It found one genuine issue: a **cross-tenant IDOR** in `org_admin_schedule_save` (Batch 3) — the action authorised an org-admin's write against the org derived from the *posted* `venue_id` but never re-checked the *existing* schedule row's own owning org, so an admin of org A could re-parent org B's service schedule onto their own venue via a crafted `schedule_id`. Fixed by mirroring `org_admin_venue_save`'s existing-row double-check (load the row, require `userCanActOnOrg()` against its *current* `OrgId`, before the write); guarded by `tests/php/test-security-schedule-idor.php` (mutation-proven — dropping the re-check goes red). Two Low/hardening-grade findings closed alongside it: `manage/print-pdf.php`'s `copies` value is now clamped at the endpoint before it reaches the CCLI usage log (defence-in-depth — `printUsageLog()` already clamped it, so this was never externally exploitable), and a handful of the new `admin_*` actions were moved off a bare role check onto the matching `userHasEntitlement()` call the page itself already uses (behaviour-neutral today — every admitted role already held the entitlement — but a future entitlement revocation now reaches the API too, not just the page). Everything else the redo pass checked — the Bearer resolver, the show-once secret discipline on the new API-key/webhook endpoints, file uploads, injection — came back clean.
+- **2026-08-30 whole-codebase security + accessibility audit.** Two Low-severity security findings, both closed: the Database Setup dashboard's `?action=` links gained a `validateCsrfRequest()` gate (L-1 — previously `SameSite=Strict` was the only defence against a forged cross-site request); the CueRCode/IntApps/Internet-Archive outbound clients gained the shared `network_guard.php` private-address refusal described above (L-2). Alongside it, a batch of keyboard/screen-reader fixes landed across the favourites tag editor, the shared external-link chip-list editor, the compare tool, the musicians page, and every guided-wizard modal (a dead "Undo" button in the gating wizard was actually unreachable since it shipped; several live-status regions and focus-management gaps were fixed). A coordinated light-theme colour-contrast pass fixed five failures — `.link-light`, bare `.text-warning`/`.text-info`, two outline-button variants, and 35 `.btn-close-white` dismiss buttons — all scoped to `[data-bs-theme="light"]` so dark theme is untouched (closes #2000).
 
 See [[Security]] for full details.

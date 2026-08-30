@@ -657,25 +657,29 @@ rate-limited) — never a raw `UPDATE tblApiTokens` from a page.
 
 ### Version Numbering
 
-**Tag-free, Conventional-Commit-driven scheme (#1963 → #1965, superseding the earlier tag-derived #1899 scheme).** iHymns deploys **direct via SFTP** and cuts **NO git tags and NO GitHub Releases**. The version anchor is the **committed `Version.Number`** (`MAJOR.MINOR`, e.g. `1.1`) in `appWeb/public_html/includes/infoAppVer.php`:
-- **MAJOR.MINOR** — the authoritative anchor, committed straight in the file (also the Apple major-parity anchor, so it must stay three plain integers `X.Y.Z` — the patch digit is a placeholder the build count overwrites at deploy).
-- **BUILD** (the patch digit at deploy time) — `git rev-list --count HEAD`, a monotonic per-commit id. `deploy.yml` injects `MAJOR.MINOR.<build count>` for display on **every** deploy, no gate — the build number is surfaced in the public footer, Settings → About, and the admin footer.
-- **The bump level is decided by Conventional-Commit prefixes on the squash-merge subject**, via `.github/workflows/scripts/classify-bump.sh` (truth-tabled by `tests/test-bump-classifier.js`): `feat:` → **minor**, `feat!:` / `fix!:` / any `!` / a line-anchored `BREAKING CHANGE:` → **major**, everything else (`fix:`/`chore:`/`docs:`/`refactor:`/`perf:`/`style:`/`test:`/`ci:`/unrecognised) → **build-only** (the safe default — a mislabelled push under-bumps, never over-bumps).
-- On `alpha`, when the classifier finds a minor/major among the commits since the last change to the committed `Version.Number` line, `deploy.yml` edits that line and commits it back with `[skip ci]` — a normal branch push, **never a tag**. beta/main simply display whatever `MAJOR.MINOR` travels with the promoted commits (no tag reachability needed — a squash-merged promotion PR carries the file bytes regardless of how it was merged).
-- **`release.yml` is now DORMANT** — it only fires on a human-pushed `v*` tag (which nothing in the pipeline does any more) or `workflow_dispatch`; `promotion-deploy-bridge.yml` reverted to being purely the #1007 beta/main SFTP-deploy bridge (it no longer mints a tag or dispatches `release.yml`).
-- The load-bearing convention this depends on: **title every PR / squash-merge with a Conventional-Commit prefix.** A feature merged without `feat:` simply won't bump the minor (safe, but a miss); title non-features `fix:`/`chore:`/`refactor:`/`ci:`/`docs:` so they never wrongly bump it.
-- `api-docs.yaml`'s `info.version` stays in lockstep with the committed semver via a CI guard (`test-openapi-actions-exist.php`). CI guard for the whole pipeline: `tests/test-versioning-pipeline.js` (tree-derived, mutation-proven) asserts no `git tag`/`refs/tags`/release dispatch survives.
-- **Companion obligation:** every user-visible `feat:` push should also add a plain-language bullet to `WHATS-NEW.md` under the current `## <MAJOR.MINOR> — <date>` heading (house style `.claude/whats-new-style.md`) — that file, not `CHANGELOG.md`, feeds the in-app `/whats-new` page.
+**Tag-free, Conventional-Commit-driven scheme (#1963 → #1965 → the 2026-08-30 marketing-version/build-number split, superseding the earlier tag-derived #1899 scheme).** iHymns deploys **direct via SFTP** and cuts **NO git tags and NO GitHub Releases**. Two numbers travel separately and are never folded into one string:
 
-**Build Number.** Alongside the human-facing semver, `infoAppVer.php`'s
+- **The marketing version** — the full `MAJOR.MINOR.PATCH` semver committed as `Version.Number` in `appWeb/public_html/includes/infoAppVer.php` (currently `1.3.0`). This is the authoritative, human-facing "what release is this" anchor (also the Apple major-parity anchor, so it must stay three plain integers `X.Y.Z`). Unlike the pre-split scheme, the patch digit is now a **real, deliberate release level** — see below — not a placeholder the build count overwrites.
+- **The build number** — `git rev-list --count HEAD`, a monotonic per-commit id, held in the separate `Version.Build.Number` field. `deploy.yml` injects it for display on **every** deploy, no gate, regardless of whether the marketing version moved. It is surfaced alongside (never merged into) the marketing version — public footer `iHymns v1.3.0 · build <n> · Alpha`, the admin footer, and its own row in Settings → About.
+- **The bump level is decided by Conventional-Commit prefixes on the squash-merge subject**, via `.github/workflows/scripts/classify-bump.sh` (truth-tabled by `tests/test-bump-classifier.js`): `feat:` → **minor**, `feat!:` / `fix!:` / any `!` / a line-anchored `BREAKING CHANGE:` → **major**, an explicit whole-line, case-insensitive `Release: patch` footer on the merge message → **patch** (a deliberate "this is a bug-fix release" signal — meaningful for the native app stores even though the web ships continuously), everything else (`fix:`/`chore:`/`docs:`/`refactor:`/`perf:`/`style:`/`test:`/`ci:`/unrecognised, with no `Release: patch` footer) → **build-only** (the safe default — a mislabelled push under-bumps, never over-bumps, and only the always-incrementing build number moves). Precedence across a classified commit range is major > minor > patch > none.
+- On `alpha`, when the classifier finds a major/minor/patch signal among the commits since the last change to the committed `Version.Number` line, `deploy.yml` edits that line and commits it back with `[skip ci]` — a normal branch push, **never a tag**. beta/main simply display whatever `Version.Number` travels with the promoted commits (no tag reachability needed — a squash-merged promotion PR carries the file bytes regardless of how it was merged).
+- **`release.yml` is now DORMANT** — it only fires on a human-pushed `v*` tag (which nothing in the pipeline does any more) or `workflow_dispatch`; `promotion-deploy-bridge.yml` reverted to being purely the #1007 beta/main SFTP-deploy bridge (it no longer mints a tag or dispatches `release.yml`).
+- The load-bearing convention this depends on: **title every PR / squash-merge with a Conventional-Commit prefix.** A feature merged without `feat:` simply won't bump the minor (safe, but a miss); title non-features `fix:`/`chore:`/`refactor:`/`ci:`/`docs:` so they never wrongly bump it. Add a whole-line `Release: patch` footer to the merge body when a fix genuinely warrants a discrete bug-fix release number.
+- `api-docs.yaml`'s `info.version` and the `X-Powered-By` header carry the marketing version only, never the build number, kept in lockstep via a CI guard (`test-openapi-actions-exist.php`). CI guard for the whole pipeline: `tests/test-versioning-pipeline.js` (tree-derived, mutation-proven) asserts no `git tag`/`refs/tags`/release dispatch survives, plus a "separation invariant" check that the marketing-version sed never sees the build-number shell variable. `tests/test-bump-classifier.js` carries the full patch-footer truth table (detection, near-misses, precedence).
+- **Cache-buster note:** because the marketing version now usually stays put across routine deploys (where the old scheme changed it every single deploy via the folded-in commit count), `index.php`'s CSS/JS `?v=` cache-busters fold in the build number too (`Version.Number . '-' . Build.Number`) so a build-only deploy still gets fresh asset URLs rather than serving stale CSS/JS under `.htaccess`'s max-age.
+- **Native apps are NOT on this scheme yet** — Apple/Android store build numbers are already higher than the web's commit count, so adopting the shared build-number scheme now would go backwards and be store-rejected; a follow-up is needed before either platform adopts it.
+- **Companion obligation:** every user-visible `feat:` push should also add a plain-language bullet to `WHATS-NEW.md` under the current `## <MAJOR.MINOR.PATCH> — <date>` heading (house style `.claude/whats-new-style.md`) — that file, not `CHANGELOG.md`, feeds the in-app `/whats-new` page.
+
+**Build Number.** Alongside the human-facing marketing version, `infoAppVer.php`'s
 `Application.Version.Build.Number` carries a **monotonic per-commit build id** —
 `git rev-list --count HEAD`, injected by `deploy.yml`'s "Inject build info into infoAppVer.php" step
 using the same sed-injection mechanism as the SHA/date. It is `NULL` on any checkout that hasn't been
-through a deploy (local dev, CI). Where semver answers "which release is this" (and can repeat across
-many commits between bumps), the build number answers "which commit, precisely" — monotonically
-increasing, one per commit, never reset. `api-docs.yaml`'s `info.version` is kept in lockstep with the
-semver number by the same workflow (a dedicated step + a CI guard, `test-openapi-actions-exist.php`) —
-the build number is NOT part of that lockstep, since it has no equivalent field in the OpenAPI spec.
+through a deploy (local dev, CI). Where the marketing version answers "which release is this" (and can
+repeat across many commits between bumps), the build number answers "which commit, precisely" —
+monotonically increasing, one per commit, never reset, and never touched by a `Release: patch` bump —
+the two move independently. `api-docs.yaml`'s `info.version` is kept in lockstep with the marketing
+version by the same workflow (a dedicated step + a CI guard, `test-openapi-actions-exist.php`) — the
+build number is NOT part of that lockstep, since it has no equivalent field in the OpenAPI spec.
 
 ### Application IDs (per-platform)
 
@@ -691,7 +695,7 @@ the build number is NOT part of that lockstep, since it has no equivalent field 
 
 | Workflow | Purpose |
 | --- | --- |
-| `deploy.yml` | SFTP deploy on push to `alpha` / `beta` / `main`, incl. the What's New extraction (#1583), media excludes (#1584), build-info injection, and — since #1963/#1965 — the tag-free version classify-and-bump step on `alpha` |
+| `deploy.yml` | SFTP deploy on push to `alpha` / `beta` / `main`, incl. the What's New extraction (#1583), media excludes (#1584), build-info injection, and — since #1963/#1965, extended by the marketing-version/build-number split — the tag-free version classify-and-bump step on `alpha` (major/minor/patch/build-only) |
 | `changelog.yml` | Regenerates the four `CHANGELOG.md` files from conventional commits on push to `main`/`beta` |
 | `release.yml` | **Dormant** since #1965 — only fires on a human-pushed `v*` tag or manual `workflow_dispatch`; nothing in the automated pipeline pushes a tag any more |
 | `test.yml` | ESLint, PHP syntax (`php -l`), JSON validation, and HTMLHint on JS/CSS/PHP/HTML changes |

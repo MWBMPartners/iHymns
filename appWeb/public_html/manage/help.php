@@ -1457,8 +1457,16 @@ foreach ($sections as $s) {
                     <p>
                         One page that answers &ldquo;what is locked, for whom, and is it safe to turn on?&rdquo; without visiting every separate content-access page. It gathers the family — <a href="#restrictions">Content Restrictions</a>, <a href="#tiers">Membership Tiers</a>, <a href="#licence-types">Licence Types</a>, Feature Access (below), <a href="#entitlements">Role Permissions</a> — behind a <strong>readiness checklist</strong> and shows whether the master switch is on or off. Available to global admins.
                     </p>
-                    <p class="small">
-                        A <strong>Guided setup&hellip;</strong> button on this page walks you through turning the switch on safely: it previews exactly what would change first (how many songs, how much audio and sheet music), checks that a licence is actually on file, lets you optionally add extra rules, and lets you try the result on one real song before you commit — then gives you a one-click way to undo it. This is the recommended way to switch it on. The plain switch still lives on <a href="/manage/configuration#feature-gating">Settings &rarr; Feature Access</a> too, for a quick manual flip or an emergency rollback — both doors save the same setting, so nothing can drift between them.
+                    <?php /* ELI5: this is the write-up of the friendly "wizard" that walks
+                             an admin through turning content locking on safely.
+                             DETAILED (#2006): reshaped from an unheaded <p class="small"> into
+                             the same h3+p wizard-subsection shape every other guided wizard on
+                             this page uses (see "Guided songbook creation" etc.), rather than a
+                             new <section> — keeps tests/php/test-admin-help-coverage.php green,
+                             which only requires each existing section stay documented. */ ?>
+                    <h3 class="h6">Turning on content locking (guided)</h3>
+                    <p>
+                        The <strong>Guided setup&hellip;</strong> button on this page walks you through turning the switch on safely: it previews exactly what would change first (how many songs, how much audio and sheet music), checks that a licence is actually on file, lets you optionally add extra rules, and lets you try the result on one real song before you commit &mdash; then gives you a one-click way to undo it. This is the recommended way to switch it on. Prefer the plain switch? It still lives on <a href="/manage/configuration#feature-gating">Settings &rarr; Feature Access</a> too, for a quick manual flip or an emergency rollback &mdash; both doors save the same setting, so nothing can drift between them.
                     </p>
 
                     <h3 class="h6 mt-3">Feature Access <span class="text-muted small fw-normal">(<code>/manage/feature-gating</code>)</span></h3>
@@ -1900,6 +1908,16 @@ foreach ($sections as $s) {
                     <p>
                         The most powerful page in the admin area. Configures the database connection, installs the schema, runs migrations, takes backups, restores from backup. Treat with respect.
                     </p>
+                    <?php /* ELI5: this is the plain-language write-up of the "Guided setup"
+                             button at the top of this help page's own subject page.
+                             DETAILED (#2005): matches the established wizard-subsection shape
+                             (h3 + p) used elsewhere in this file for the other guided wizards.
+                             No mention of the modal id or the shared stepper module by name —
+                             that's for developers, not this audience. */ ?>
+                    <h3 class="h6">Guided environment setup</h3>
+                    <p>
+                        The <strong>Guided setup</strong> button at the top of this page &mdash; also offered as a &ldquo;Get started&rdquo; card when the site isn't configured yet &mdash; opens a step-by-step walkthrough of the very same workflow described below: connecting the database, bringing the schema up to date, and telling you what's left to do, one step at a time in a sensible order. It presses the same buttons you'd otherwise click by hand, so nothing about the manual steps changes if you'd rather work through them yourself.
+                    </p>
                     <h3 class="h6">Setup workflow on a new install</h3>
                     <ol>
                         <li><strong>Credentials</strong> &mdash; fill in host, port, database name, username, password, table prefix. Click <strong>Test connection</strong>; only save once it goes green.</li>
@@ -1959,13 +1977,18 @@ foreach ($sections as $s) {
                         Appstore (Fire OS). It's just an address book entry: it doesn't publish anything, it only
                         tells the site what to link to once an app <em>is</em> published.
                     </p>
-                    <p class="small text-secondary">
-                        <?php /* #2003 — one-sentence pointer to the new guided setup helper; the full
-                                 walkthrough lives in the wizard itself, not here. */ ?>
-                        Three cards further down this same <a href="/manage/configuration">Settings</a> page
-                        &mdash; IntAppsAPI Gateway, CueRCode QR codes, and CAPTCHA &mdash; also offer a
-                        &ldquo;Set up with a guide&rdquo; button that walks you through what you need, saves your
-                        details, and checks the connection before you're done.
+                    <?php /* ELI5: this bit tells you about the friendly "wizard" button that
+                             sits on several of the setup cards further down this same page.
+                             DETAILED (#2003/#2004): reshaped from a one-line pointer into a
+                             proper <h3> wizard subsection so it matches the shape every other
+                             guided-wizard callout on this page already uses (see "Guided
+                             songbook creation", "Adding a new provider", "Guided live-session
+                             setup" elsewhere in this file) — CLAUDE.md rule #48's API/guided-UX
+                             coverage program. Deliberately silent on the modal id / registry
+                             file behind it; that's implementation detail, not user help. */ ?>
+                    <h3 class="h6">Connect a service (guided)</h3>
+                    <p>
+                        Several of the integration cards further down this same <a href="/manage/configuration">Settings</a> page &mdash; IntAppsAPI Gateway, CueRCode QR codes, CAPTCHA, Email, Sign in with Apple, and Partner webhooks &mdash; offer a <strong>&ldquo;Set up with a guide&rdquo;</strong> button. It walks you through what that particular service needs, one question at a time, saves what you enter, and tests the connection live before you finish &mdash; so you know it's actually working before you move on. Prefer filling in the fields yourself? Each card's own fields are still right there, unchanged.
                     </p>
                     <h3 class="h6">What to paste in each field</h3>
                     <ul>

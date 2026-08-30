@@ -2,7 +2,7 @@
 
 > **A multiplatform Christian lyrics application for worship enhancement**
 
-[![Version: 1.1.0 Alpha](https://img.shields.io/badge/Version-1.1.0%20Alpha-orange.svg)](#environments)
+[![Version: 1.3.0 Alpha](https://img.shields.io/badge/Version-1.3.0%20Alpha-orange.svg)](#environments)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSING.md)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-brightgreen.svg)](SECURITY.md)
 [![Platform: Web](https://img.shields.io/badge/Platform-Web%20PWA-blue.svg)](#platforms)
@@ -23,7 +23,7 @@
 
 | Platform | Technology | Status |
 | --- | --- | --- |
-| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v1.1.0) |
+| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v1.3.0) |
 | Apple Universal (iOS / iPadOS / macOS / tvOS / watchOS / visionOS) | Swift 6.3, SwiftUI, one SwiftPM package (`iHymnsKit`) shared across four thin app shells | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
 | Android / Fire OS | Kotlin, Jetpack Compose | Scaffold / in progress |
 
@@ -136,6 +136,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Content access tiers** — public, free, CCLI, premium, pro with organisation licensing (#640). An organisation can hold **several licences side by side** (e.g. CCLI for the lyrics, an MRL for the music), each with its own number, expiry and active flag, managed at `/manage/my-organisations` (member self-service) or `/manage/organisations` (global admin) through one shared core (#1969).
 - **Extensible content gating** — server-side enforcement strips gated fields (lyric body, media) from the API by the requester's tier cap (#1353); the capability set is an extensible registry (`TIER_CAPS`, #1352) — a new gateable feature is **one line plus a migration card**, no schema change. Entirely dormant (a verified no-op) until `content_gating_enabled='1'`.
 - **Songs and song-media respect `checkContentAccess()`** — the gated `/song-media/<id>` endpoint enforces the same restriction rules as the public song page, and (#1388) additionally applies a tier-cap gate to the media bytes themselves — not just the affordance — mirrored across `/song-media/<id>`, the offline `bulk_audio` manifest, and `songbook_export`. Still entirely dormant until `content_gating_enabled='1'`.
+- **2026-08-30 security & accessibility audit** — a whole-codebase pass closed two Low-severity findings (the Database Setup dashboard's action links gained a CSRF check; the outbound clients for CueRCode, IntApps and Internet Archive now refuse to contact a private/internal address even if an admin-typed URL points at one) and a batch of keyboard/screen-reader fixes across the favourites, link-editor, compare and guided-wizard surfaces, plus a light-theme text/button contrast pass across the admin area. See [Security](SECURITY.md) for the summary.
 
 ### Community
 
@@ -144,6 +145,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 
 ### Administration
 
+- **Guided setup wizards** — eight step-by-step wizards, all built on one shared stepper framework, walk an admin through the setup screens that most benefit from a bit of hand-holding instead of a bare form: adding a new external-link provider, songbook, live-service venue, organisation or song; connecting an external service (IntAppsAPI, CueRCode, CAPTCHA, email, Sign in with Apple, outbound webhooks) from the **Settings** page; getting a brand-new install running end to end from **Database Setup**; and safely turning content locking on from the **Gating Hub**. Every wizard is purely additive — the classic manual form or switch it walks through is always still there, unchanged — and each one finishes with a live connection test, a real preview, or a plain summary of what it just did before anything changes.
 - **The backend is fully API-covered** — the Web/PWA and both native apps (Apple, Android/FireOS) reach every admin/curator capability, not just consumer reads, through `api.php` and the editor API (`manage/editor/api2.php`) exclusively; there is no `/manage/*.php` write reachable only from a browser session. The 2026-08-28/29 API-coverage program added roughly 90 new `admin_*`/`org_admin_*` registry-CRUD and org-self-service actions and gave the editor API `Authorization: Bearer` support (alongside the existing session cookie) so a native curator app can authenticate the same way `api.php` already does. A standing, mutation-tested guard (`tests/php/test-manage-action-api-coverage.php`) derives the full action list from the source tree on every run and fails if a new admin page ever grows an action without API coverage or an explicit web-only reason — see the [Architecture](iHymns.wiki/Architecture.md) wiki page.
 - **Song Editor** — the granular per-edit **v2 editor** (#1601) is the default at `/manage/editor/` (redirects there automatically; the previous whole-song editor remains available via `?legacy=1` while the migration completes); every change auto-saves as you make it. Multi-select bulk actions — **verify**, **tag** (add or remove), **move**, **delete** and **export** — now run directly in the v2 editor's bulk toolbar (#1628). Eight tabs: Metadata, Structure (lyrics, a chords box, the Arrangement running-order editor, per-component language overrides #858, per-line translations/annotations #1088, section types sourced from a live `tblSongPartTypes` registry #1869), Credits, Links, Tags, **Media** (#853), Preview, Revisions.
 - **Metadata that fills itself in** (#1862, epic #1863) — the Metadata tab derives the copyright display line live from Copyright Year(s)/Holder (a free-text override remains for a genuinely custom statement), suggests Public Domain from a credited contributor's death date or an admin-configurable publication-year fallback (never auto-ticked), and shows Audio/Sheet-music availability as a read-only line derived from the Media tab — the old manual checkboxes are gone. Across the app, every field that references a registry (Tune Name, Copyright Holder, Publisher, group members, song/songbook pickers, …) is now a find-or-create search-select rather than free text (#1863, #1864–#1869).
@@ -296,7 +298,7 @@ For shared hosting:
 
 Deployment is automated via GitHub Actions (SFTP). See `DEV_NOTES.md` for full deployment architecture.
 
-Versioning is **tag-free and Conventional-Commit-driven** (#1963 → #1965 — supersedes the earlier tag-derived scheme): the version anchor is the **committed `MAJOR.MINOR`** in `infoAppVer.php`'s `Version.Number` (currently `1.1`), and `deploy.yml` injects `MAJOR.MINOR.<git rev-list --count HEAD>` for display on every deploy — no git tags, no GitHub Releases. On `alpha`, a Conventional-Commit prefix on the squash-merge subject decides the bump: `feat:` → minor, `feat!:`/`fix!:`/any `!`/a line-anchored `BREAKING CHANGE:` → major, everything else → build-number-only; `deploy.yml` then commits the bumped `MAJOR.MINOR` straight back (`[skip ci]`, a normal branch push, never a tag). See `DEV_NOTES.md` for the full pipeline.
+Versioning is **tag-free and Conventional-Commit-driven** (#1963 → #1965 → the marketing-version/build-number split — supersedes the earlier tag-derived scheme): the version anchor is the **committed `MAJOR.MINOR.PATCH`** in `infoAppVer.php`'s `Version.Number` (currently `1.3.0`) — a real semver string, never the commit count folded into the patch digit. A second, separate number — the build number (`git rev-list --count HEAD`) — climbs on every single deploy and is shown alongside the version, never merged into it (`iHymns v1.3.0 · build <n>`). No git tags, no GitHub Releases. On `alpha`, a Conventional-Commit prefix on the squash-merge subject decides the bump: `feat:` → minor, `feat!:`/`fix!:`/any `!`/a line-anchored `BREAKING CHANGE:` → major, an explicit whole-line `Release: patch` footer on the merge message → patch (a deliberate "this is a bug-fix release" signal), everything else → build-number-only; `deploy.yml` then commits the bumped `Version.Number` straight back (`[skip ci]`, a normal branch push, never a tag). See `DEV_NOTES.md` for the full pipeline.
 
 ---
 

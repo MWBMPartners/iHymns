@@ -66,16 +66,21 @@ Other deploy behaviour:
 - `[skip ci]` in commit message skips all workflows
 - Kill switch: `vars.SFTP_ENABLED` must be `true`
 
-### Versioning pipeline (tag-free, #1963 → #1965)
+### Versioning pipeline (tag-free, #1963 → #1965 → the 2026-08-30 marketing-version/build-number split)
 
-`deploy.yml` (not a separate `version-bump.yml`, which is retired) also owns the version bump, on every push to `alpha`:
+`deploy.yml` (not a separate `version-bump.yml`, which is retired) also owns the version bump, on every push to `alpha`. Two numbers travel separately and are never folded together:
 
-1. It resolves the committed `MAJOR.MINOR` anchor from `includes/infoAppVer.php`'s `Version.Number` line.
-2. `.github/workflows/scripts/classify-bump.sh` reads the commits since that line last changed and classifies them by Conventional-Commit prefix: `feat:` → **minor**, `feat!:`/`fix!:`/any `!`/a line-anchored `BREAKING CHANGE:` → **major**, everything else (`fix`/`chore`/`docs`/`refactor`/`perf`/`ci`/an unlabelled subject) → **build-only** (the safe default — a mislabelled commit under-bumps rather than over-bumps).
-3. On a minor/major signal, the workflow edits `Version.Number` in place and commits it back to the branch as a normal push (`[skip ci]`, worktree-isolated so the build-count arithmetic stays intact) — **never a git tag**.
-4. The build number (`git rev-list --count HEAD`) is injected on every deploy regardless of whether the anchor moved.
+- **The marketing version** — the full `MAJOR.MINOR.PATCH` string committed as `Version.Number` in `includes/infoAppVer.php`. This is the human-facing "what release is this" number (e.g. `1.3.0`).
+- **The build number** — `git rev-list --count HEAD`, a monotonic count of every commit ever made. It only ever goes up, on every single deploy, whether or not the marketing version moved.
 
-`beta`/`main` display their own committed anchor as content is promoted onto them — no tag reachability is needed. `release.yml` is dormant (see the workflow table above); it is **not** dispatched anywhere in this pipeline. CI guard: `tests/test-versioning-pipeline.js` (tag-free assertions + the classifier's producer/consumer format-string lockstep) and `tests/test-bump-classifier.js` (the classifier truth table).
+The bump logic on `alpha`:
+
+1. It resolves the committed `MAJOR.MINOR.PATCH` anchor from `includes/infoAppVer.php`'s `Version.Number` line.
+2. `.github/workflows/scripts/classify-bump.sh` reads the commits since that line last changed and classifies them by Conventional-Commit prefix: `feat:` → **minor**, `feat!:`/`fix!:`/any `!`/a line-anchored `BREAKING CHANGE:` → **major**, an explicit whole-line `Release: patch` footer (case-insensitive) on the merge message → **patch** (a deliberate "this is a bug-fix release" signal — meaningful for the native app stores even though the web ships continuously), everything else (`fix`/`chore`/`docs`/`refactor`/`perf`/`ci`/an unlabelled subject with no `Release: patch` footer) → **build-only** (the safe default — a mislabelled commit under-bumps rather than over-bumps, and moves only the always-incrementing build number below).
+3. On a major/minor/patch signal, the workflow edits `Version.Number` in place and commits it back to the branch as a normal push (`[skip ci]`, worktree-isolated so the build-count arithmetic stays intact) — **never a git tag**.
+4. The build number (`git rev-list --count HEAD`) is injected on every deploy regardless of whether the marketing version moved.
+
+`beta`/`main` display their own committed anchor as content is promoted onto them — no tag reachability is needed. `release.yml` is dormant (see the workflow table above); it is **not** dispatched anywhere in this pipeline. CI guard: `tests/test-versioning-pipeline.js` (tag-free assertions + the classifier's producer/consumer format-string lockstep) and `tests/test-bump-classifier.js` (the classifier truth table, including the `Release: patch` footer).
 
 **Companion obligation:** every user-visible `feat:` push should also add a plain-language bullet to `WHATS-NEW.md` (the source for the in-app `/whats-new` page) — never internals, never file/table/endpoint names.
 
@@ -174,4 +179,4 @@ The CI pipeline injects a `.env-channel` file during deployment, allowing server
 | Beta | `beta` |
 | Production | `main` |
 
-The app footer shows the current semver (`v<MAJOR.MINOR.BUILD>`, tapping through to `/whats-new`); the per-commit build number (`git rev-list --count HEAD`) is shown separately in Settings → About, not in the footer.
+The app footer shows both numbers together but never merged: `iHymns v<MAJOR.MINOR.PATCH> · build <commit-count>[ · Alpha|Beta]` (tapping the version text goes through to `/whats-new`). The admin footer under `/manage/*` renders the identical `· build <n>` suffix from the same `Version.Build.Number` field, and the per-commit build number is also shown as its own row in Settings → About.

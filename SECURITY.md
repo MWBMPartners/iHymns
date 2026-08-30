@@ -171,8 +171,12 @@ These are enforced conventions; new code must follow them (see
   cross-origin door shut. It gates duplicate-songs merge/delete, places-api,
   musician-duplicates merge/dismiss (#1785), publishers CRUD (#93), licence-types
   CRUD and the tiers/restrictions/entitlements gating pages (#1769), the set-list
-  share-link mint/update/revoke (#1791), `live_follow_extend` (#1798), and a
-  single top-level POST guard over all legacy `/manage/editor/api.php` writes.
+  share-link mint/update/revoke (#1791), `live_follow_extend` (#1798), a
+  single top-level POST guard over all legacy `/manage/editor/api.php` writes,
+  and (2026-08-30 audit finding L-1) the Database Setup dashboard's `?action=`
+  links (Install, Apply-all-migrations, Backup, Restore, and every
+  per-migration card) — previously the only defence against a forged
+  cross-site GET there was the session cookie's `SameSite=Strict` attribute.
 - **Custom print layouts are sanitised** (#1767) — uploaded full-page HTML
   layouts (`tblPrintTemplateCustomLayout`) pass through the allowlist HTML/CSS
   sanitiser (`includes/html_sanitizer.php`) on save AND on the server-PDF render
@@ -193,6 +197,17 @@ These are enforced conventions; new code must follow them (see
   host-bound to archive.org, size-capped with an aborting write-callback, follows
   no redirects, and keeps SSL verification on (the same house pattern as
   `intapps_client.php` / `cuercode_client.php`).
+- **Outbound admin-configured service URLs are checked against private/internal
+  addresses** (2026-08-30 audit finding L-2) — an admin-typed base URL for
+  CueRCode, IntApps or the Internet Archive client used to be treated as safe
+  purely for being `https://`, regardless of where it actually resolved. A new
+  shared core, `includes/network_guard.php`, resolves the host first and
+  refuses one that lands on a private (RFC 1918), loopback, or link-local/
+  cloud-metadata address (`169.254.169.254`) — closing the gap where a typo or
+  a compromised admin account could point an outbound call back at the server's
+  own internal network. All three outbound clients call the one shared check;
+  the admin-facing save handlers surface a heads-up immediately if a saved URL
+  will now be refused.
 - **Organisation-logo SVG uploads are sanitised by a dedicated, stricter module**
   (#1830) — `includes/svg_sanitizer.php`, separate from and stricter than the
   print-layout sanitiser above (which correctly keeps blocking `<svg>` outright).
@@ -316,7 +331,13 @@ These are enforced conventions; new code must follow them (see
   dependencies, logging).
 - Periodic **adversarial multi-agent security audits** sweep the codebase and
   verify each finding before a fix lands (e.g. the 2026-06 audit fixed a critical
-  SQL-injection in the EasyWorship importer and a `.mxl` path-traversal).
+  SQL-injection in the EasyWorship importer and a `.mxl` path-traversal). The
+  **2026-08-30 audit** covered the whole codebase and closed two Low-severity
+  findings (the CSRF gate and the outbound SSRF guard described above) plus a
+  batch of accessibility fixes across the favourites, link-editor, compare and
+  guided-wizard surfaces, and a coordinated colour-contrast pass that fixed
+  five failures affecting admin-area text and buttons in Light/System-light
+  mode (dark theme was already unaffected).
 
 ## Dependencies
 
