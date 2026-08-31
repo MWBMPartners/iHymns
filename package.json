@@ -40,9 +40,9 @@
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
-    "eslint": "^10.9.0",
+    "eslint": "^10.9.1",
     "jsdom": "^30.0.1",
-    "protobufjs": "^8.7.2",
-    "protobufjs-cli": "^2.6.2"
+    "protobufjs": "^8.8.0",
+    "protobufjs-cli": "^2.7.0"
   }
 }
