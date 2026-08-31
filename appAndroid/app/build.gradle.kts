@@ -220,7 +220,7 @@ dependencies {
     // used to navigate between screens (home, songbook, song detail, search,
     // favourites, help).
     // =========================================================================
-    implementation("androidx.navigation:navigation-compose:2.8.5")
+    implementation("androidx.navigation:navigation-compose:2.10.0")
 
     // =========================================================================
     // ANDROIDX CORE LIBRARIES
