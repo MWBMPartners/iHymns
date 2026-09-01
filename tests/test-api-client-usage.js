@@ -1,6 +1,10 @@
 /**
  * iHymns — Shared API-Client Usage Guard (#1624)
  *
+ * (#1925 — 2026-09-01: fixed a template-literal NESTING bug in the
+ * scanner itself; see the "TEMPLATE NESTING" paragraph below and the
+ * `stripCommentsAndStrings()` doc-comment.)
+ *
  * ELI5: this test walks every JS file under `js/` and makes sure
  * nobody calls the bare browser `fetch()`
  * any more — everybody goes through `apiFetch()` in
@@ -41,6 +45,27 @@
  *      the 'code' state, so a gap in the (necessarily heuristic) regex
  *      detection can produce a loud false failure but never another
  *      silent under-report.
+ *
+ *      The scanner also understands NESTED TEMPLATE LITERALS (#1925). It
+ *      did not until then: a template's `${…}` interpolation body was
+ *      treated as opaque string content, so the FIRST backtick reached
+ *      while inside one — the OPENING backtick of a nested template, e.g.
+ *      `${canEdit ? \`…\` : ''}` — was read as the CLOSING backtick of the
+ *      OUTER template instead, and every character lexed after it for the
+ *      rest of the file was wrongly re-interpreted as ordinary code. That
+ *      could go either way depending on what happened to follow: a real
+ *      `fetch(` sitting in what should have been inert template TEXT could
+ *      leak through as a FALSE violation, or — the more dangerous
+ *      direction — a genuine `fetch(` written as real interpolation CODE
+ *      could be swallowed as a false NEGATIVE, silently, with the scan
+ *      still ending in a clean 'code' state (so Assertion 3's derailment
+ *      check, which exists for exactly this class of defect, did not
+ *      catch it either — see `stripCommentsAndStrings()`'s doc-comment for
+ *      why a flat scalar `state` cannot represent nesting and how the
+ *      stack-based fix does). `js/modules/setlist.js`'s
+ *      `sharedSetlistRowsHtml()` (~L87) has exactly this shape, which is
+ *      why #1802 worked around it by rewording a comment rather than
+ *      fixing the scanner itself.
  *
  *   2. COUNT-EXACT SELF-CLEANING ALLOWLIST — a handful of files are
  *      DELIBERATE, documented exceptions (see ALLOWLIST below) and are
@@ -166,11 +191,13 @@ function check(name, ok, detail) {
  * — newlines are preserved so line numbers in any future diagnostic
  * stay meaningful.
  *
- * Known, accepted limitation: content inside a template literal's
- * `${...}` interpolation is treated as opaque string content, same as
- * the rest of the template. Nothing in this codebase embeds a literal
- * `fetch(` call inside a template interpolation, so this cannot hide a
- * real violation in practice — see the file header's design note.
+ * Template literals are handled with a NESTING STACK, not a flat scalar
+ * state (#1925 — see `stripCommentsAndStrings()`'s own doc-comment for
+ * why a flat state cannot represent this and the file header for the
+ * false-positive/false-negative failure modes it produced). A template's
+ * `${...}` interpolation body is real, executable JS — it stays fully
+ * visible to the `fetch(` scan, including any further nested template it
+ * contains, to any depth.
  * ==================================================================== */
 /**
  * Could a `/` at this point begin a REGEX LITERAL rather than a division?
@@ -214,7 +241,9 @@ function regexCanStartHere(out) {
  *   ENDED in. Anything other than 'code' means the scan derailed and the
  *   stripped output cannot be trusted — see the derailment check at the call
  *   site. Returning it rather than swallowing it is the load-bearing half of
- *   the #1701 fix.
+ *   the #1701 fix. As of #1925, an unterminated TEMPLATE or an unterminated
+ *   `${…}` INTERPOLATION also counts as derailed even though the scalar
+ *   `state` variable reads 'code' at EOF in that case — see `tplStack` below.
  */
 function stripCommentsAndStrings(src) {
     let out = '';
@@ -222,6 +251,49 @@ function stripCommentsAndStrings(src) {
     const n = src.length;
     /** @type {'code'|'block'|'line'|'sq'|'dq'|'tpl'|'re'|'recls'} */
     let state = 'code';
+
+    /**
+     * Template-literal / interpolation NESTING STACK (#1925).
+     *
+     * ELI5: a pile of notes, one per backtick or `${` we're currently inside
+     * of — the top note is where we are RIGHT NOW; finishing one just means
+     * taking its note off the pile and looking at whatever's underneath.
+     *
+     * WHY A FLAT STATE CANNOT DO THIS: `${…}` can hold arbitrary JS,
+     * including a further template literal that itself holds a further
+     * `${…}`, to any depth. Before #1925 this scanner tracked template
+     * literals the exact same way as a plain `'…'`/`"…"` string — a single
+     * `state === 'tpl'` flag with ONE closing character to look for — which
+     * silently assumes a template's body never contains another backtick.
+     * The first backtick reached inside an interpolation (the OPENING
+     * backtick of a nested template, e.g. `${canEdit ? \`…\` : ''}` in
+     * js/modules/setlist.js's `sharedSetlistRowsHtml()`) was read as the
+     * CLOSING backtick of the OUTER template instead, and every character
+     * lexed after it for the rest of the file was wrongly treated as
+     * ordinary top-level code — see the file header for the false-positive/
+     * false-negative failure modes that produced, and #1701's derailment
+     * check above for why "ends in a clean state" alone isn't proof enough
+     * (this defect could end cleanly in 'code' regardless, which is why the
+     * fix below is a second, independent piece of bookkeeping, not just
+     * another entry in `closers`).
+     *
+     * Frames alternate as nesting goes deeper — a template's `${` always
+     * opens an interpolation, and an interpolation's own backtick always
+     * opens a new template, never the other way round:
+     *   { type: 'template' }             lexing raw template TEXT — looking
+     *                                     for an escape, a `${` that opens
+     *                                     an interpolation, or the backtick
+     *                                     that closes THIS frame.
+     *   { type: 'interp', depth: N }     lexing ordinary CODE inside the
+     *                                     `${…}` that opened this frame;
+     *                                     `depth` counts un-matched `{` seen
+     *                                     since, so an object literal or a
+     *                                     block INSIDE the interpolation
+     *                                     isn't mistaken for the
+     *                                     interpolation's own closing `}`.
+     * @type {Array<{type: 'template'} | {type: 'interp', depth: number}>}
+     */
+    const tplStack = [];
 
     while (i < n) {
         const c  = src[i];
@@ -238,7 +310,42 @@ function stripCommentsAndStrings(src) {
             if (c === '/' && regexCanStartHere(out)) { state = 're'; out += ' '; i += 1; continue; }
             if (c === "'")  { state = 'sq';  out += ' '; i += 1; continue; }
             if (c === '"')  { state = 'dq';  out += ' '; i += 1; continue; }
-            if (c === '`')  { state = 'tpl'; out += ' '; i += 1; continue; }
+            /* Opening a template is unconditional here — whether this `code`
+               is top-level or itself the CODE of an outer interpolation
+               (`tplStack` non-empty with an 'interp' frame on top), a
+               backtick always starts a NEW, more deeply nested template
+               (#1925). */
+            if (c === '`')  { tplStack.push({ type: 'template' }); state = 'tpl'; out += ' '; i += 1; continue; }
+
+            /* Only relevant while lexing CODE INSIDE an interpolation (top of
+               `tplStack` is an 'interp' frame, #1925): its OWN closing brace
+               must drop back to the enclosing template's TEXT state rather
+               than fall through and be treated as a plain code character.
+               Any OTHER `{`/`}` here is real JS (an object literal, a block)
+               and only adjusts `depth`, so the interpolation's real closer is
+               still found correctly regardless of how deep it's nested — the
+               character itself still lands in `out` exactly like any other
+               code, because interpolation content is EXECUTABLE: a `fetch(`
+               written directly inside `${…}` is a real violation, unlike a
+               `fetch(` that only appears as ordinary template TEXT. */
+            const top = tplStack[tplStack.length - 1];
+            if (top && top.type === 'interp') {
+                if (c === '{') { top.depth += 1; out += c; i += 1; continue; }
+                if (c === '}') {
+                    if (top.depth === 0) {
+                        tplStack.pop();
+                        state = 'tpl';
+                        out += ' ';
+                        i += 1;
+                        continue;
+                    }
+                    top.depth -= 1;
+                    out += c;
+                    i += 1;
+                    continue;
+                }
+            }
+
             out += c;
             i += 1;
             continue;
@@ -283,10 +390,33 @@ function stripCommentsAndStrings(src) {
             continue;
         }
 
-        /* sq / dq / tpl — quoted content. Escaped chars (\x) are
-           consumed as a pair so an escaped quote can never look like
-           the closing delimiter. */
-        const closers = { sq: "'", dq: '"', tpl: '`' };
+        /* Template-literal TEXT (#1925 — now its own branch rather than a
+           third entry in the sq/dq closers map below: unlike a plain quoted
+           string it must also recognise a `${` that opens an interpolation,
+           and — because an interpolation can itself contain a further
+           template — it can never assume the very next backtick closes THIS
+           frame purely by being a backtick; it closes whichever frame is on
+           top of `tplStack`, which is always this call's own frame while
+           `state === 'tpl'`, so popping unconditionally here is correct. */
+        if (state === 'tpl') {
+            if (c === '\\') { out += '  '; i += 2; continue; } /* \` \$ \\ … */
+            if (c === '`')  { tplStack.pop(); state = 'code'; out += ' '; i += 1; continue; }
+            if (c === '$' && c2 === '{') {
+                tplStack.push({ type: 'interp', depth: 0 });
+                state = 'code';
+                out += '  ';
+                i += 2;
+                continue;
+            }
+            out += (c === '\n') ? '\n' : ' ';
+            i += 1;
+            continue;
+        }
+
+        /* sq / dq — plain quoted strings. No nesting, no interpolation:
+           escaped chars (\x) are consumed as a pair so an escaped quote can
+           never look like the closing delimiter. */
+        const closers = { sq: "'", dq: '"' };
         const closer = closers[state];
         if (c === '\\') {
             out += '  ';
@@ -298,7 +428,16 @@ function stripCommentsAndStrings(src) {
         i += 1;
     }
 
-    return { code: out, state };
+    /* A healthy end-of-file must be 'code' state WITH `tplStack` EMPTY. An
+       unterminated template or an unterminated `${…}` interpolation both
+       leave the walk "inside" something even when the scalar `state`
+       variable happens to read 'code' at EOF (interpolation CODE and
+       top-level code share that same state) — so `state` alone is not
+       sufficient to detect this derailment class; surface it exactly like
+       every other unterminated construct instead of letting it report a
+       false-clean end state to the caller (#1925). */
+    const endState = tplStack.length > 0 ? 'tpl' : state;
+    return { code: out, state: endState };
 }
 
 /* ======================================================================
@@ -496,6 +635,42 @@ const selfTestCases = [
       src: 'const v = arr[0] / 2; fetch(u);',                                                                              expect: 1 },
     { label: 'a regex after `return` IS recognised (keyword, not operand)',
       src: 'function f() { return /x"y/.test(s); } fetch(u);',                                                             expect: 1 },
+
+    /* ---- NESTED TEMPLATE LITERALS (#1925) -----------------------------------
+       The first two cases ARE the defect (a flat, stack-less template state):
+       a nested template's OPENING backtick was read as the CLOSING backtick of
+       the OUTER template, so everything lexed after it for the rest of the
+       source was wrongly treated as ordinary code. Depending on what followed
+       that could go either direction — a FALSE POSITIVE (case 1: inert
+       template TEXT that merely LOOKS like a call gets exposed as code) or a
+       FALSE NEGATIVE (case 2: a genuine call written as real interpolation
+       CODE gets swallowed instead) — both are wrong, and case 2 is the more
+       dangerous one because it hides a real violation. This is exactly the
+       shape `js/modules/setlist.js`'s `sharedSetlistRowsHtml()` uses
+       (`${canEdit ? \`…\` : ''}`), which is why #1802 had to reword a comment
+       as a workaround rather than fix the scanner.
+
+       MUTATION-PROVEN (rule #34), verified locally, both restored afterward:
+       (1) reverting `stripCommentsAndStrings()` to the ORIGINAL flat,
+           stack-less template state (a single `state === 'tpl'` closed by the
+           next literal backtick, no `${` handling) turns exactly the first
+           case red — the false positive returns — plus the unterminated-
+           interpolation derailment case below; the false-negative case (2)
+           ALSO goes red under that same mutation, for the same reason.
+       (2) separately, renaming `RAW_FETCH_RE`'s `fetch\\(` to a name nothing
+           calls turns case 2 red on its own, confirming that self-test is
+           the one actually pinning "a real call inside `${…}` gets caught",
+           not the lexer coincidentally producing 1 for some other reason. */
+    { label: 'template TEXT inside a NESTED template is not mistaken for code (regression #1925 — false positive)',
+      src: "const h = `${canEdit ? `fetch(x)` : ''}`;",                                                                    expect: 0 },
+    { label: 'a genuine fetch( written directly as INTERPOLATION CODE is still caught (regression #1925 — false negative)',
+      src: "const h = `${canEdit ? fetch(url) : ''}`;",                                                                    expect: 1 },
+    { label: 'code after a nested template keeps lexing correctly, including a later real call (setlist.js shape)',
+      src: "const h = `${canEdit ? `<button></button>` : ''}`;\nfetch(u);",                                                expect: 1 },
+    { label: 'templates nested to arbitrary depth, interpolation braces, and an escaped backtick all lex correctly',
+      src: "const t = `${`${x}`}`; const esc = `a \\` b`; fetch(u);",                                                       expect: 1 },
+    { label: 'an object literal inside an interpolation is not mistaken for the interpolation\'s own closing brace',
+      src: "const h = `${ {a: 1, b: 2}.a }`; fetch(u);",                                                                   expect: 1 },
 ];
 
 for (const t of selfTestCases) {
@@ -519,6 +694,22 @@ const derailCases = [
     { label: 'ordinary well-formed source does NOT derail',   src: 'const a = "ok"; fetch(u);',        clean: true  },
     { label: 'a regex-heavy but well-formed file does NOT derail',
       src: 'const t = s.replace(/"/g, "x").split(/[/]/); fetch(u);',                                   clean: true  },
+
+    /* ---- NESTED TEMPLATES / INTERPOLATIONS (#1925) --------------------------
+       An unterminated INTERPOLATION (a `${` whose matching `}` never comes)
+       must derail just as loudly as an unterminated string — before the
+       #1925 fix there was no bookkeeping for this at all, so this shape
+       could reach EOF still reporting a clean 'code' state (the scalar
+       `state` variable is 'code' for both top-level code AND interpolation
+       code — see `tplStack` in stripCommentsAndStrings()). A well-formed
+       nested template, conversely, must NOT derail merely for containing
+       more than one backtick. */
+    { label: 'an unterminated interpolation (`${` with no matching `}`) derails',
+      src: 'const a = `${fetch(u)`;\nmore();',                                                          clean: false },
+    { label: 'an unterminated NESTED template (inner backtick never closes) derails',
+      src: 'const a = `${cond ? `oops : \'\'}`;\nfetch(u);',                                             clean: false },
+    { label: 'a well-formed nested template does NOT derail',
+      src: "const a = `${cond ? `x` : ''}`; fetch(u);",                                                 clean: true  },
 ];
 
 for (const t of derailCases) {
