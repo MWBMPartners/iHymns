@@ -692,7 +692,8 @@ foreach ($sections as $s) {
                     <h3 class="h6">The eight tabs</h3>
                     <dl class="actions">
                         <dt>Metadata</dt>
-                        <dd>Title, song number, songbook, CCLI number, Tune Name (e.g. <em>HYFRYDOL</em> — a find-or-create picker into the <a href="#tunes">Tunes</a> registry, so typing a new tune name creates its registry row automatically), ISWC, language, region.
+                        <dd>Title, Subtitle, Disambiguation, song number, songbook, CCLI number, Tune Name (e.g. <em>HYFRYDOL</em> — a find-or-create picker into the <a href="#tunes">Tunes</a> registry, so typing a new tune name creates its registry row automatically), ISWC, ISRC, language, region, First-published year (used by the Copyright &amp; public domain hint below).
+                            <p class="mt-2 mb-0"><strong>Recording &amp; external IDs</strong> — beneath the core fields, a small card-list panel lets you record per-recording identifiers for this song (Spotify, ISRC, MusicBrainz, and so on). The provider dropdown is drawn from a central registry, so a new ID type a curator needs shows up without a code change. Add and delete rows freely; the panel's own ISRC row stays in sync two ways with the ISRC field above it — editing either one updates the other.</p>
                             <p class="mt-2 mb-0"><strong>Musical key</strong> — the original key,
                             tempo in BPM and time signature. These show as a badge on the public song
                             page and give Transpose its starting point, so a musician can see what a

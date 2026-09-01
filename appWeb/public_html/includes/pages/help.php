@@ -1112,10 +1112,14 @@ declare(strict_types=1);
                         <em>Unofficial</em> badge beside their abbreviation so you can tell them apart.
                     </p>
 
-                    <h3 class="h6 mt-3">Tune, ISWC, and person pages</h3>
+                    <h3 class="h6 mt-3">Tune, identifier, and musician pages</h3>
                     <ul class="mb-0">
                         <li><strong>Tune pages</strong> (<code>/tune/&lt;slug&gt;</code>) list every hymn that shares a particular tune, so you can find different texts sung to the same melody.</li>
                         <li><strong>ISWC pages</strong> (<code>/iswc/&lt;code&gt;</code>) gather all entries that share an International Standard Musical Work Code — the same underlying composition across songbooks.</li>
+                        <li><strong>CCLI pages</strong> (<code>/ccli/&lt;number&gt;</code>) resolve a CCLI song number the same way, gathering every entry that carries it.</li>
+                        <li><strong>ISRC pages</strong> (<code>/isrc/&lt;code&gt;</code>) resolve an International Standard Recording Code. A recording can be shared across songbooks, so — like ISWC and CCLI — this can list multiple songs, grouped by songbook.</li>
+                        <li><strong>BOWI pages</strong> (<code>/bowi/&lt;id&gt;</code>) resolve a Best Open Work Identifier to its single Work record — unlike the identifiers above, there's no song list here.</li>
+                        <li><strong>IPI pages</strong> (<code>/ipi/&lt;number&gt;</code>) and <strong>ISNI pages</strong> (<code>/isni/&lt;id&gt;</code>) resolve to the musician they belong to, rather than to a song or work.</li>
                         <li><strong>Person pages</strong> show a writer's or composer's biography and every song they wrote, composed, translated, or arranged. Tap a credited name on any song to open their page.</li>
                     </ul>
                 </div>
