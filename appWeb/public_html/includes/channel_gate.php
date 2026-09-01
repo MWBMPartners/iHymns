@@ -142,7 +142,7 @@ function _renderChannelGate(): void
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'bootstrap_assets.php';
     echo ihymns_bootstrap_css_links(false);
     ?>
-    <link rel="stylesheet" href="/css/app.css">
+    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__) . "/css/app.css") ?>">
     <style>
         body { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; }
         .gate-card {
