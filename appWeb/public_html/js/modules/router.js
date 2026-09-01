@@ -815,6 +815,27 @@ export class Router {
            `renderSongNavigation()` immediately above. */
         this.app.liveFollow?.renderHostBar();
 
+        /* #1266 Phase 2 — the per-line/song markup "add or edit" popover is
+           `position:fixed` and appended straight to `<body>` (never nested
+           inside `.page-song`), for the SAME reason reading-progress-bar and
+           the #1533/#1770 fixed bars above live there: `#page-content` carries
+           a CSS transform for the page-transition animation, and a transformed
+           ancestor breaks `position:fixed` for any descendant (app.css, the
+           `.reading-progress-bar` comment). A body-level fixed element does
+           NOT get swept away by the router's `content.innerHTML = html` swap
+           (rule #32), so — exactly like `renderSongNavigation()` /
+           `renderHostBar()` immediately above — its teardown runs
+           UNCONDITIONALLY on EVERY navigation, not only when leaving a song
+           page, and as the very first thing this call does (before any early
+           return inside the module). Dynamic-imported here (not statically,
+           unlike the two `this.app.*` calls above) because song-markup.js is
+           not part of the `iHymnsApp` singleton — same "import once, cache
+           forever" cost as the unconditional `offline-ui.js` import at the
+           top of this function; a module with nothing open just returns. */
+        import('./song-markup.js')
+            .then(m => m.teardownSongMarkup())
+            .catch(() => {});
+
         /* #1741 P4a-3 — a legacy /writer/<name-slug> (or a name-slug /musician/
            credit link, or a /person|/people alias path) whose fragment resolved to
            a registry musician carries the canonical path on .page-musician.
@@ -912,6 +933,16 @@ export class Router {
             import('./song-translations.js')
                 .then(m => m.initLineTranslations())
                 .catch(err => console.error('[Router] song-translations init failed:', err));
+            /* #1266 Phase 2 — per-user song highlights & notes. DOM-first
+               (rule #33): the module reads SongId from `.page-song[data-song-id]`
+               and lines from `[data-line-id]` itself rather than taking them as
+               arguments, so no params are passed here (mirrors
+               initLineTranslations() above, not the exportSongId-taking calls
+               below). Signed-in-only: the module itself checks
+               window.iHymnsApp.userAuth.getUser() and no-ops for a guest. */
+            import('./song-markup.js')
+                .then(m => m.initSongMarkup())
+                .catch(err => console.error('[Router] song-markup init failed:', err));
             /* Musical key / tempo / time signature (#298, wired #1671 F3).
                Runs AFTER this.app.transpose.initSongPage() above deliberately:
                transpose.js reads `dataset.key` once at init, and `data-key` has

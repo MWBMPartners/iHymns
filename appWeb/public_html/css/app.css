@@ -1609,6 +1609,254 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
     margin-bottom: 0.15rem;
 }
 
+/* ==========================================================================
+   PER-USER SONG MARKUP — highlights + notes (#1266 Phase 2)
+
+   ELI5: your own private highlighter + sticky notes on a song, visible only
+   to you. Nothing here is baked into the shared-cache song fragment (rule #6
+   in .claude/CLAUDE.md) — includes/pages/song.php never renders a highlight
+   or a note body; js/modules/song-markup.js applies these classes/elements
+   client-side once it has fetched the signed-in user's own rows.
+
+   Colour tokens (.markup-hl-<token>) are named to match
+   includes/user_markup.php's USER_MARKUP_COLOURS EXACTLY (rule #35) — that
+   PHP array is the one place the colour vocabulary is decided; this file
+   only supplies each token's rendering, mirrored via the JS config bridge
+   (index.php's $iHymnsConfig → window.iHymnsConfig.markupColours) rather
+   than a second hand-typed list. Bootstrap 5.3 ships ready-made theme-aware
+   "-bg-subtle"/"-border-subtle" pairs for warning (yellow), success (green)
+   and info (blue) — reused here rather than reinvented, same convention as
+   .songbook-unofficial-badge below. Pink and orange have no Bootstrap
+   THEME-colour family (only the raw --bs-pink/--bs-orange hue variables), so
+   those two get a small hand-rolled light/dark rgba pair instead.
+   ========================================================================== */
+
+/* Markup ("add/edit") mode — toggled by #btn-my-markup. Every anchorable
+   line becomes a clickable/keyboard-operable target (song-markup.js adds
+   role="button" + tabindex="0" while this class is present) that opens the
+   line's highlight+note popover. */
+.song-lyrics.markup-mode-active .lyric-line[data-line-id] {
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: background-color var(--transition-fast);
+}
+.song-lyrics.markup-mode-active .lyric-line[data-line-id]:hover {
+    background-color: var(--surface-elevated);
+}
+.song-lyrics.markup-mode-active .lyric-line[data-line-id]:focus-visible {
+    outline: 2px solid var(--accent-solid);
+    outline-offset: 2px;
+}
+
+/* A whole-LINE highlight (v1 scope — no sub-line offsets; StartOffset/
+   EndOffset stay dormant per includes/user_markup.php's doc-block). The
+   negative margin lets the tint bleed slightly past the text so it reads as
+   a highlighter stroke rather than a tight text-selection box; box-shadow
+   (not border) draws the left accent stripe so it never shifts line height. */
+.lyric-line.markup-highlighted {
+    padding: 0.1rem 0.4rem;
+    margin-left: -0.4rem;
+    margin-right: -0.4rem;
+    border-radius: var(--radius-sm);
+}
+.markup-hl-yellow {
+    background-color: var(--bs-warning-bg-subtle, #fff3cd);
+    box-shadow: inset 3px 0 0 var(--bs-warning-border-subtle, #ffe69c);
+}
+.markup-hl-green {
+    background-color: var(--bs-success-bg-subtle, #d1e7dd);
+    box-shadow: inset 3px 0 0 var(--bs-success-border-subtle, #a3cfbb);
+}
+.markup-hl-blue {
+    background-color: var(--bs-info-bg-subtle, #cff4fc);
+    box-shadow: inset 3px 0 0 var(--bs-info-border-subtle, #9eeaf9);
+}
+.markup-hl-pink {
+    background-color: rgba(214, 51, 132, 0.16);
+    box-shadow: inset 3px 0 0 rgba(214, 51, 132, 0.55);
+}
+.markup-hl-orange {
+    background-color: rgba(253, 126, 20, 0.18);
+    box-shadow: inset 3px 0 0 rgba(253, 126, 20, 0.6);
+}
+[data-bs-theme="dark"] .markup-hl-pink   { background-color: rgba(214, 51, 132, 0.30); }
+[data-bs-theme="dark"] .markup-hl-orange { background-color: rgba(253, 126, 20, 0.32); }
+
+/* Per-line note — a collapsible <details> sibling of .lyric-line-translation
+   (song-markup.js inserts it immediately after any translation rows for the
+   same line, so reading order stays lyric → translation → note). Keeps the
+   browser's native disclosure triangle — already keyboard-operable with no
+   extra ARIA needed. */
+.lyric-line-note {
+    font-size: 0.85em;
+    margin: 0.15rem 0 0.5rem;
+}
+.lyric-line-note-summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+}
+.lyric-line-note-summary:hover,
+.lyric-line-note-summary:focus-visible {
+    color: var(--accent-text, var(--accent-solid));
+}
+.lyric-line-note-body {
+    white-space: pre-wrap;
+    color: var(--text-secondary);
+    background: var(--surface-elevated);
+    border-left: 3px solid var(--accent-solid);
+    padding: 0.35rem 0.6rem;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    margin-top: 0.2rem;
+}
+
+/* Song-level note(s) — rendered as a small panel immediately above
+   .song-lyrics (song-markup.js inserts it via insertAdjacentElement, no
+   server markup for it — this is entirely per-user data). */
+.song-markup-note-panel {
+    margin-bottom: 1rem;
+}
+.song-markup-note-item {
+    background: var(--surface-elevated);
+    border: 1px solid var(--card-border);
+    border-left: 4px solid var(--accent-solid);
+    border-radius: var(--radius-sm);
+    padding: 0.6rem 0.9rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
+}
+.song-markup-note-item > summary {
+    cursor: pointer;
+    font-weight: 600;
+}
+.song-markup-note-body {
+    white-space: pre-wrap;
+    margin-top: 0.4rem;
+    color: var(--text-secondary);
+}
+.song-markup-edit-song-note {
+    margin-top: 0.35rem;
+}
+
+/* Toolbar toggle — same "pressed accent" convention as the other
+   .song-toolbar-btn states above (favourite / cached-download, #3676). */
+.song-toolbar-btn#btn-my-markup[aria-pressed="true"] {
+    color: var(--accent-text, var(--accent-solid));
+    border-color: var(--accent-solid);
+}
+
+/* ---------------------------------------------------------------------------
+   Markup popover — a small modal dialog (js/utils/dialog-a11y.js's
+   openModalDialog(), the shared focus-trap/inert/Escape recipe, modularity
+   rule #6) anchored near the clicked line. `position: fixed` + appended
+   straight to <body>, never nested inside .page-song — #page-content carries
+   a CSS transform for the page-transition animation (see the
+   .reading-progress-bar comment further below), and a transformed ancestor
+   breaks position:fixed for any descendant. Because it lives outside the
+   SPA's swapped page content, router.js tears it down on EVERY navigation
+   (rule #32), the same shape as the reading-progress bar / set-list bar /
+   Live-Follow host bar.
+   --------------------------------------------------------------------------- */
+.song-markup-popover {
+    position: fixed;
+    inset: 0;
+    z-index: 1070; /* Bootstrap 5.3's own --bs-popover-zindex */
+}
+.song-markup-popover-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.35);
+}
+[data-bs-theme="dark"] .song-markup-popover-backdrop {
+    background: rgba(0, 0, 0, 0.55);
+}
+.song-markup-popover-box {
+    position: absolute;
+    width: 320px;
+    max-width: calc(100vw - 1rem);
+    max-height: min(420px, calc(100vh - 1rem));
+    overflow-y: auto;
+    background: var(--surface-card);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--glass-shadow, 0 4px 24px rgba(0, 0, 0, 0.08));
+    padding: 0.85rem;
+}
+/* Narrow viewports: ignore the JS-computed near-the-line position and just
+   centre the box — there is rarely enough room to anchor it sensibly next
+   to a line on a phone-width screen. */
+@media (max-width: 576px) {
+    .song-markup-popover-box {
+        top: 50% !important;
+        left: 50% !important;
+        width: min(340px, calc(100vw - 1.5rem)) !important;
+        transform: translate(-50%, -50%);
+    }
+}
+.song-markup-popover-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+}
+.song-markup-popover-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+}
+.song-markup-popover-close {
+    background: none;
+    border: none;
+    font-size: 1.25rem;
+    line-height: 1;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 0 0.25rem;
+}
+.song-markup-popover-close:hover,
+.song-markup-popover-close:focus-visible {
+    color: var(--text-primary);
+}
+.song-markup-popover-label {
+    display: block;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    margin-bottom: 0.3rem;
+}
+.song-markup-colours-section {
+    margin-bottom: 0.75rem;
+}
+.song-markup-swatches {
+    display: flex;
+    gap: 0.4rem;
+}
+.song-markup-swatch {
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 50%;
+    border: 2px solid var(--card-border);
+    cursor: pointer;
+    padding: 0;
+}
+.song-markup-swatch[aria-pressed="true"] {
+    border-color: var(--accent-solid);
+    box-shadow: 0 0 0 2px var(--surface-card), 0 0 0 4px var(--accent-solid);
+}
+.song-markup-swatch:focus-visible {
+    outline: 2px solid var(--accent-solid);
+    outline-offset: 2px;
+}
+.song-markup-popover-section {
+    margin-bottom: 0.75rem;
+}
+.song-markup-popover-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.4rem;
+    margin-bottom: 0.4rem;
+}
+
 /* Inline chord charts (#299). The chord row sits above its lyric line and is
    HIDDEN by default — the #btn-toggle-chords button (wired in transpose.js)
    adds `.chords-visible` to `.page-song` to reveal it. Monospace + `pre` so the

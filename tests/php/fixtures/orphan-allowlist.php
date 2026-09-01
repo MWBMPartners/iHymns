@@ -729,21 +729,13 @@ return [
         'fcm_register'   => 'deliberate API-first surface, API-coverage plan 2026-08-28 C1/X2; consumer = the Android/FireOS native client, which has no push-registration code in this repo yet — same posture as auth_device_code_request/_poll (§1c) ahead of the tvOS client',
         'fcm_unregister' => 'deliberate API-first surface, API-coverage plan 2026-08-28 C1/X2; consumer = the Android/FireOS native client, which has no push-registration code in this repo yet — same posture as auth_device_code_request/_poll (§1c) ahead of the tvOS client',
 
-        /* ---------------------------------------------------------------
-         * 1j. #1266 Phase 1 — per-user song markup / notes: DORMANT backend
-         * groundwork. Same "schema + validators + endpoints ship ahead of
-         * the client" shape as 1c (auth_device_code_*) and 1i (fcm_*): this
-         * commit is explicitly Phase 1 (backend only, no UI) — Phase 2, a
-         * SEPARATE later commit, wires js/modules/* to call these. Until
-         * then no web JS, admin JS/PHP, service worker, appApple or
-         * appAndroid code has any reason to reference them.
-         * Self-cleaning, same as 1c/1g/1h/1i: once Phase 2 lands a caller,
-         * this entry goes stale and the guard demands its removal in that
-         * same commit.
-         * --------------------------------------------------------------- */
-        'user_markup_list'   => 'deliberate backend-first surface, #1266 Phase 1 (dormant, no UI); consumer = the Phase 2 client, a SEPARATE later commit — same posture as fcm_register/_unregister (§1i)',
-        'user_markup_upsert' => 'deliberate backend-first surface, #1266 Phase 1 (dormant, no UI); consumer = the Phase 2 client, a SEPARATE later commit — same posture as fcm_register/_unregister (§1i)',
-        'user_markup_delete' => 'deliberate backend-first surface, #1266 Phase 1 (dormant, no UI); consumer = the Phase 2 client, a SEPARATE later commit — same posture as fcm_register/_unregister (§1i)',
+        /* 1j's #1266 Phase 1 trio — 'user_markup_list' / '_upsert' / '_delete'
+           — was HERE and has been removed (#1266 Phase 2): self-cleaning, as
+           designed. js/modules/song-markup.js now calls all three (the
+           per-line/song highlight+note popover, wired from router.js's
+           afterPageLoad() song branch), so they are no longer orphans. Same
+           F5/F6/1g/1h/1i self-cleaning pattern this file's history already
+           proves out. */
     ],
 
     /* =====================================================================

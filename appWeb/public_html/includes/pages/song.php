@@ -1141,6 +1141,23 @@ foreach ($components as $_c) {
                     Edit
                 </a>
 
+                <!-- My notes & highlights (#1266 Phase 2). Hidden by default — same
+                     `d-none` + JS-reveal pattern as #btn-edit-song above, but the
+                     reveal condition here is simply "signed in" (every signed-in
+                     user gets a PRIVATE margin-note layer; there is no entitlement
+                     to check, unlike Edit). `aria-pressed` reflects whether markup
+                     (add/edit) mode is currently ON — wired by js/modules/
+                     song-markup.js, imported from router.js's afterPageLoad() song
+                     branch (rule #30: this fragment carries no inline script). -->
+                <button type="button" class="btn btn-sm btn-outline-secondary song-toolbar-btn d-none"
+                        id="btn-my-markup"
+                        aria-pressed="false"
+                        aria-label="My notes &amp; highlights"
+                        title="My notes &amp; highlights">
+                    <i class="fa-solid fa-highlighter me-1" aria-hidden="true"></i>
+                    My notes
+                </button>
+
                 <!-- Practice / memorisation mode (#402). Cycles through
                      Full → Dimmed → Hidden; tap an individual hidden line
                      to reveal it as a hint. -->
@@ -1320,7 +1337,20 @@ foreach ($components as $_c) {
                             $chordHtml = $songHasChords ? ihymns_render_chord_line_html($compChords[$lineIdx] ?? '') : '';
                         ?>
                         <?php if ($chordHtml !== ''): ?><div class="lyric-chords" aria-hidden="true"><?= $chordHtml ?></div><?php endif; ?>
-                        <p class="lyric-line mb-1"><?= htmlspecialchars($line) ?></p>
+                        <?php /* #1266 Phase 2 — data-line-id anchors the per-user markup
+                                 (highlight/note) layer to this line's stable tblLyricLines.Id.
+                                 SONG-LEVEL FACT (the id is the same for every visitor of this
+                                 song), so it is safe on this shared-cache fragment (rule #6) —
+                                 what's PER-USER (which lines are highlighted, whose notes say
+                                 what) is fetched + rendered client-side by song-markup.js, never
+                                 baked in here. Omitted (no attribute at all, not data-line-id="0")
+                                 when $lineId is 0 — an un-migrated install or a line the
+                                 tblLyricLines mirror has no stable Id for — so js/modules/
+                                 song-markup.js's `[data-line-id]` selector only ever sees real,
+                                 anchorable lines (same "absent means unavailable, never a dead
+                                 control" shape as $hasLineTranslations gating the translation
+                                 toggle above). */ ?>
+                        <p class="lyric-line mb-1"<?php if ($lineId > 0): ?> data-line-id="<?= (int)$lineId ?>"<?php endif; ?>><?= htmlspecialchars($line) ?></p>
                         <?php foreach ($lineTr as $lt): ?>
                             <p class="lyric-line-translation small text-muted fst-italic mb-1 d-none"
                                data-line-translation-for="<?= $lineId ?>"

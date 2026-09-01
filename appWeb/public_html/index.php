@@ -113,6 +113,13 @@ ihymns_emit_powered_by_header($app);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* #1266 Phase 2 — pulls in USER_MARKUP_KINDS / USER_MARKUP_COLOURS, the ONE
+   server-side allow-lists for the per-user song markup vocabulary, so the
+   $iHymnsConfig block below can hand the SAME arrays to the client (rule
+   #35 — one registry, never a second hand-typed JS copy). Lazy/cheap: like
+   db_mysql.php above, requiring this opens no connection and defines no
+   output. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_markup.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog so
    curators reading /manage/activity-log see every public-site error
    alongside admin events. Chains to the 503-emitting bootstrap
@@ -2075,6 +2082,13 @@ if (!empty($breadcrumbItems)) {
                 'hasClarity'   => !empty(APP_CONFIG['analytics']['clarity_id']),
                 'hasPlausible' => !empty(APP_CONFIG['analytics']['plausible_domain']),
             ],
+            /* #1266 Phase 2 — the per-user song markup vocabulary, straight
+               from includes/user_markup.php's USER_MARKUP_KINDS / _COLOURS
+               constants (rule #35: ONE registry — js/modules/song-markup.js
+               reads these rather than carrying its own hand-typed colour
+               list that could silently drift from the server's allow-list). */
+            'markupKinds'     => USER_MARKUP_KINDS,
+            'markupColours'   => USER_MARKUP_COLOURS,
         ];
 
         /* Encode once. If encoding itself fails (e.g. invalid UTF-8 in a
