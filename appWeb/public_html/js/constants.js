@@ -132,6 +132,13 @@ export const STORAGE_OFFLINE_INCLUDE_AUDIO_LEGACY = 'ihymns_includeAudioOffline'
 /* Dynamic key prefix (appended with song ID) */
 export const STORAGE_TRANSPOSE_PREFIX   = 'ihymns_transpose_';
 
+/* #1270 — two-column chord-chart layout toggle. Deliberately a single GLOBAL
+   flag (not per-song like STORAGE_TRANSPOSE_PREFIX above): a guitarist who
+   prefers reading chord charts in two columns wants that on every song, not
+   re-toggled per page. Value '1' | absent (mirrors STORAGE_OFFLINE_INCLUDE_AUDIO's
+   canonical-key shape above — presence, not a stringly 'true'/'false'). */
+export const STORAGE_CHORD_COLUMNS      = 'ihymns_chord_columns';
+
 /* #1770 §4.7 — Live Follow leader-idle timeout, the USER layer of the
    three-layer precedence chain (app default → org override → user
    preference; includes/service_mode.php's serviceMode_resolveIdleTimeoutMins()).

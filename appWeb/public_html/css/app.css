@@ -1634,6 +1634,27 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
     display: inline;
 }
 
+/* Two-column chord-chart layout (#1270). Opt-in via the `#btn-chord-columns`
+   toggle (transpose.js), which adds `.chord-columns` to `.page-song`. Scoped
+   to `.song-lyrics` ONLY — the header card, meta row and credits footer stay
+   full-width — and gated on `.chords-visible` so the layout never reflows
+   into two columns for a lyrics-only read (that would just be an odd,
+   unexplained column split with nothing chord-related to justify it).
+   `min-width: 992px` (Bootstrap `lg`) matches the toggle button's own
+   `d-none d-lg-inline-block` gate in song.php — the control never offers a
+   layout the viewport is too narrow to render sensibly. `break-inside: avoid`
+   on `.lyric-component` stops a verse/chorus block splitting mid-way across
+   the column gap. https://developer.mozilla.org/docs/Web/CSS/break-inside */
+@media (min-width: 992px) {
+    .page-song.chords-visible.chord-columns .song-lyrics {
+        column-count: 2;
+        column-gap: 3rem;
+    }
+    .page-song.chords-visible.chord-columns .lyric-component {
+        break-inside: avoid;
+    }
+}
+
 /* Verse styling — neutral border so it reads as the "default" block. */
 .lyric-verse {
     border-left-color: var(--card-border);

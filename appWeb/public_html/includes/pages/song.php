@@ -1094,6 +1094,21 @@ foreach ($components as $_c) {
                 </button>
                 <?php endif; ?>
 
+                <!-- Two-column chord-chart layout toggle (#1270). SAME
+                     $songHasChords gate as the Chords button above — no dead
+                     control on a chordless song, and hidden below `lg` (the
+                     column layout needs the width) via `d-none d-lg-inline-block`,
+                     matching the CSS media-query gate in app.css. Wired by
+                     transpose.js's bindChordColumnsToggle(); persists a GLOBAL
+                     (not per-song) preference so once a guitarist prefers the
+                     two-column chart it applies to every song they open. -->
+                <?php if ($songHasChords): ?>
+                <button type="button" class="btn btn-sm btn-outline-secondary d-none d-lg-inline-block" id="btn-chord-columns"
+                        aria-pressed="false" title="Two-column chord chart">
+                    <i class="fa-solid fa-grip-lines-vertical me-1" aria-hidden="true"></i>Columns
+                </button>
+                <?php endif; ?>
+
                 <?php /* Per-line translation toggle (#1089 / #1100 P1). Rendered ONLY
                          when $hasLineTranslations is true (computed above from the
                          scoped tblLyricLineTranslations read) — the fragment is a

@@ -17,7 +17,7 @@
  *   - data-chord attributes on lyric lines for inline chord display
  */
 import { escapeHtml } from '../utils/html.js';
-import { STORAGE_TRANSPOSE_PREFIX } from '../constants.js';
+import { STORAGE_TRANSPOSE_PREFIX, STORAGE_CHORD_COLUMNS } from '../constants.js';
 
 export class Transpose {
     /**
@@ -136,6 +136,22 @@ export class Transpose {
            button reveals them. aria-pressed tracks the state for assistive tech. */
         this.bindChordToggle(songPage);
 
+        /* #1270 — two-column chord-chart layout. GLOBAL (not per-song)
+           preference, so restore it on every song page, then wire the
+           toggle. Guarded on the button's own presence — same
+           `$songHasChords` gate the button itself renders under (song.php),
+           so this is a no-op on a chordless song without needing its own
+           `hasChords` check here. */
+        if (localStorage.getItem(STORAGE_CHORD_COLUMNS) === '1') {
+            songPage.classList.add('chord-columns');
+            const columnsBtn = document.getElementById('btn-chord-columns');
+            if (columnsBtn) {
+                columnsBtn.setAttribute('aria-pressed', 'true');
+                columnsBtn.classList.add('active');
+            }
+        }
+        this.bindChordColumnsToggle(songPage);
+
         /* Apply initial transpose if offset is non-zero */
         if (this.offset !== 0 && hasChords) {
             this.applyTranspose();
@@ -154,6 +170,31 @@ export class Transpose {
             const showing = songPage.classList.toggle('chords-visible');
             btn.setAttribute('aria-pressed', showing ? 'true' : 'false');
             btn.classList.toggle('active', showing);
+        });
+    }
+
+    /**
+     * Wire the #btn-chord-columns button to toggle a two-column chord-chart
+     * layout on `.song-lyrics` (#1270, css/app.css). Unlike the show/hide
+     * chords toggle above, this preference is persisted GLOBALLY across
+     * every song (STORAGE_CHORD_COLUMNS, not a per-song key) — a reader who
+     * prefers two columns wants it on every song, not re-toggled each time.
+     * No-op when the button is absent (chordless song — same gate as
+     * bindChordToggle above).
+     * @param {HTMLElement} songPage The `.page-song` root.
+     */
+    bindChordColumnsToggle(songPage) {
+        const btn = document.getElementById('btn-chord-columns');
+        if (!btn || !songPage) return;
+        btn.addEventListener('click', () => {
+            const on = songPage.classList.toggle('chord-columns');
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+            btn.classList.toggle('active', on);
+            if (on) {
+                localStorage.setItem(STORAGE_CHORD_COLUMNS, '1');
+            } else {
+                localStorage.removeItem(STORAGE_CHORD_COLUMNS);
+            }
         });
     }
 
