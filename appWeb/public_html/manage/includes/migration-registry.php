@@ -4802,4 +4802,35 @@ return [
         /* Single-object probe (rule #19) — never `=> true`. */
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblPushTokens'),
     ],
+
+    /* #1266 Phase 1 — per-user song markup / notes: DORMANT backend groundwork.
+       One new table (tblUserSongMarkup), a validators module
+       (includes/user_markup.php) and three api.php actions
+       (user_markup_list/_upsert/_delete) that nothing calls yet — Phase 2 (a
+       SEPARATE later commit) wires the client. Additive, idempotent, a
+       verified no-op until that client exists. */
+    'user-song-markup' => [
+        'script' => 'migrate-user-song-markup.php',
+        'card' => [
+            'title'  => 'Per-user song markup / notes (#1266 Phase 1)',
+            'body'   => 'Creates <code>tblUserSongMarkup</code> — a signed-in'
+                      . ' user&rsquo;s PRIVATE per-song markup: a note anchored'
+                      . ' to a lyric line (or the whole song) and/or a'
+                      . ' highlight span. Sibling in shape to'
+                      . ' <code>tblLyricLineTranslations</code>/'
+                      . ' <code>tblLyricLineAnnotations</code> (#1088) but'
+                      . ' scoped to ONE user, never published. Both line'
+                      . ' anchors are <code>SET NULL</code> on line death'
+                      . ' (never CASCADE) so a note degrades to song-level'
+                      . ' rather than being silently deleted.'
+                      . ' <strong>Entirely dormant</strong> — the three new'
+                      . ' <code>api.php</code> actions this ships alongside'
+                      . ' have no client caller until Phase 2 lands. Additive,'
+                      . ' idempotent — safe to re-run.',
+            'button' => 'Run Per-User Song Markup Migration',
+        ],
+        /* Single-table probe (rule #19): pending until the table exists. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblUserSongMarkup'),
+    ],
 ];

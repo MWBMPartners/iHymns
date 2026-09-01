@@ -252,6 +252,12 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    tblUserPreferences was deleted in the same change — two stores for one
    concept is a data-integrity trap, not a dormant feature. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_settings.php';
+/* Per-user song markup / notes (#1266 Phase 1) — vocab + pure validators +
+   read/write layer for a signed-in user's PRIVATE notes/highlights on a song
+   or lyric line. DORMANT: the three user_markup_* actions below are the only
+   callers anywhere in this codebase until Phase 2 (a separate later commit)
+   wires a client, so requiring this here changes no existing behaviour. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_markup.php';
 /* Setlist collaboration access resolution (#1638). ONE implementation of
    "may this viewer read / write somebody else's setlist?", asked by the
    setlist_collab_* family — never re-decided inside a case body. Also hosts
@@ -6990,6 +6996,148 @@ if ($action !== null) {
                 'truncated' => $truncated,
                 'cap'       => 200,
             ]);
+            break;
+
+        /* =================================================================
+         * PER-USER SONG MARKUP / NOTES — private notes + highlights (#1266
+         * Phase 1, dormant backend). A signed-in user's own margin notes on
+         * a song or a specific lyric line — NEVER published, NEVER visible
+         * to another user. Validation + persistence live in the ONE shared
+         * module includes/user_markup.php (required near the top of this
+         * file); this surface is on api.php (the public per-user pattern —
+         * getAuthenticatedUser() + 401, the global X-Requested-With CSRF
+         * gate above), NOT the editor-gated manage/editor/api2.php, because
+         * a congregant with no editor role must still be able to save a
+         * personal note.
+         *
+         * DORMANT: no client calls any of these three actions yet — Phase 2
+         * (a SEPARATE later commit) wires one. Applying the #1266 Phase 1
+         * migration and deploying this code changes no existing behaviour.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * List the authenticated user's markup rows for one song.
+         * GET ?action=user_markup_list&songId=CP-0001
+         * Returns: { "markup": [ {...}, ... ] } — [] both when the table is
+         * un-migrated (fail-open read, rule #19) and when the user has none.
+         * ----------------------------------------------------------------- */
+        case 'user_markup_list':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $markupSongId = trim((string)($_GET['songId'] ?? $_GET['song_id'] ?? ''));
+            if (!preg_match('/^[A-Za-z]+-\d+$/', $markupSongId)) {
+                sendJson(['error' => 'Invalid song ID.'], 400);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $markupRows = userMarkupListForSong($db, (int)$authUser['Id'], $markupSongId);
+
+            sendJson(['markup' => $markupRows]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Create or update one markup row.
+         * POST body (JSON): { "songId": "CP-0001", "id"?: 123,
+         *   "kind"?: "note"|"highlight" (default "note"), "colour"?: "...",
+         *   "body"?: "...", "startLineId"?: 456, "endLineId"?: 789 }
+         * Status codes: 401 unauthenticated; 409 {reason:'not_migrated'} if
+         * tblUserSongMarkup is absent (rule #35 — status carries the kind of
+         * failure, never the client parsing this file's prose); 404 if
+         * songId doesn't resolve to a real, visible song; 422 on an invalid
+         * kind/colour/body/line-ownership/row-cap, or an `id` that doesn't
+         * belong to this user (folded into 422, not 404 — see
+         * userMarkupUpsert()'s doc-block on why that case is never
+         * distinguishable from "doesn't exist"); 200 with the RE-READ
+         * stored row.
+         * ----------------------------------------------------------------- */
+        case 'user_markup_upsert':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!userMarkupTableReady($db)) {
+                sendJson(['error' => 'Song markup is not available on this server yet.', 'reason' => 'not_migrated'], 409);
+                break;
+            }
+
+            $markupBody = json_decode((string)file_get_contents('php://input'), true);
+            if (!is_array($markupBody)) {
+                sendJson(['error' => 'Invalid JSON body.'], 400);
+                break;
+            }
+
+            $markupSongId = trim((string)($markupBody['songId'] ?? $markupBody['song_id'] ?? ''));
+            if (!preg_match('/^[A-Za-z]+-\d+$/', $markupSongId)) {
+                sendJson(['error' => 'Invalid song ID.'], 400);
+                break;
+            }
+
+            try {
+                $markupRow = userMarkupUpsert($db, (int)$authUser['Id'], $markupSongId, $markupBody);
+            } catch (\InvalidArgumentException $e) {
+                sendJson(['error' => $e->getMessage()], 422);
+                break;
+            } catch (\RuntimeException $e) {
+                sendJson(['error' => $e->getMessage()], 404);
+                break;
+            }
+
+            /* No logActivity() here, deliberately — Body is the user's
+               PRIVATE note text and does not belong in the shared activity
+               log (mirrors the "never logActivity a note Body" contract in
+               includes/user_markup.php's doc-block). */
+            sendJson(['ok' => true, 'markup' => $markupRow]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Delete one of the authenticated user's markup rows.
+         * POST body (JSON): { "id": 123 }
+         * Ownership-scoped in the SQL WHERE clause itself (Id AND UserId);
+         * answers {ok:true} whether or not a row actually existed to delete,
+         * so a stale/foreign id cannot be used to probe for existence
+         * (mirrors favorites_remove).
+         * ----------------------------------------------------------------- */
+        case 'user_markup_delete':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDbMysqli();
+            if (!userMarkupTableReady($db)) {
+                sendJson(['error' => 'Song markup is not available on this server yet.', 'reason' => 'not_migrated'], 409);
+                break;
+            }
+
+            $markupBody = json_decode((string)file_get_contents('php://input'), true);
+            $markupId   = is_array($markupBody) ? (int)($markupBody['id'] ?? 0) : 0;
+            if ($markupId <= 0) {
+                sendJson(['error' => 'A valid id is required.'], 400);
+                break;
+            }
+
+            userMarkupDelete($db, (int)$authUser['Id'], $markupId);
+
+            sendJson(['ok' => true]);
             break;
 
         /* =================================================================

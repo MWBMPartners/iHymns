@@ -5688,6 +5688,52 @@ CREATE TABLE IF NOT EXISTS tblPushTokens (
   COMMENT='Android/FireOS push registration tokens (API-coverage 2026-08-28 C1). Provider discriminates FCM vs ADM. Entirely dormant until includes/fcm.php is keyed AND a live trigger calls fcmSend() — neither is true yet.';
 
 
+-- ----------------------------------------------------------------------------
+-- tblUserSongMarkup (#1266 Phase 1) — per-user PRIVATE song markup: a note
+-- anchored to a lyric line (or the whole song) and/or a highlight span.
+-- Sibling in shape to tblLyricLineTranslations/tblLyricLineAnnotations
+-- (#1088) but scoped to ONE user, never published — no Status/moderation
+-- column, because there is nothing to moderate on a private note. Both line
+-- FKs are ON DELETE SET NULL (deliberately NOT CASCADE, unlike the #1088
+-- pair): a user's own note degrades to song-level when the line it was
+-- pinned to is edited away, rather than being silently deleted out from
+-- under them (mirrors tblSongScriptureRefs.StartLineId, #1112).
+-- StartOffset/EndOffset/MetaJson are DORMANT v1 (rule #20/#21) — no reader
+-- or writer exists until a later phase gives phrase-level highlighting a
+-- purpose. Entirely dormant on arrival: no client calls the three
+-- api.php actions this schema backs until Phase 2 (a SEPARATE later
+-- commit) wires one.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblUserSongMarkup (
+    Id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    UserId      INT UNSIGNED    NOT NULL COMMENT 'FK to tblUsers.Id — the owning user. This is a PRIVATE layer: never published, never readable by another user.',
+    SongId      VARCHAR(20)     NOT NULL COMMENT 'FK to tblSongs.SongId — the song this markup belongs to.',
+    Kind        VARCHAR(20)     NOT NULL DEFAULT 'note' COMMENT 'note | highlight — app-validated central map (VARCHAR never ENUM, rule #20); future: drawing',
+    StartLineId BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Anchor line; NULL = song-level. SET NULL on line death: a user note degrades to song-level, never silently deleted',
+    EndLineId   BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Optional span end line; NULL = single-line/song-level anchor (same StartLineId as EndLineId is not stored — mirrors tblLyricLineAnnotations)',
+    StartOffset INT UNSIGNED    NULL DEFAULT NULL COMMENT 'DORMANT v1 — 0-based UTF-8 code-point (rule #21); phrase-level later, no second migration',
+    EndOffset   INT UNSIGNED    NULL DEFAULT NULL COMMENT 'DORMANT v1 — exclusive code-point end',
+    Colour      VARCHAR(20)     NULL DEFAULT NULL COMMENT 'highlight colour token, app-validated central map',
+    Body        MEDIUMTEXT      NULL DEFAULT NULL COMMENT 'note text; NULL for a pure highlight',
+    MetaJson    JSON            NULL DEFAULT NULL COMMENT 'forward-looking growth (pen strokes etc.) inside JSON, never a second ALTER',
+    CreatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_UserSong (UserId, SongId),
+    INDEX idx_StartLine (StartLineId),
+
+    CONSTRAINT fk_UserMarkup_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_UserMarkup_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_UserMarkup_StartLine
+        FOREIGN KEY (StartLineId) REFERENCES tblLyricLines(Id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_UserMarkup_EndLine
+        FOREIGN KEY (EndLineId) REFERENCES tblLyricLines(Id) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Per-user private song markup — notes + highlights, dormant until Phase 2 UI (#1266).';
+
+
 -- =====================================================================
 -- DEFERRED FOREIGN KEYS (#1708)
 --

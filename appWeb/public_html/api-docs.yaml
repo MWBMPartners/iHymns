@@ -317,6 +317,13 @@ tags:
     description: Submit and view community song requests
   - name: Favorites
     description: Server-synced user favorites
+  - name: Song Markup
+    description: |
+      Per-user PRIVATE song markup — notes anchored to a lyric line (or the
+      whole song) and highlight spans (#1266 Phase 1). Never published, never
+      visible to another user; distinct from the curated, everyone-sees-it
+      per-line **Lyrics** annotations/translations. DORMANT: this is a
+      backend-only phase — no first-party client calls these endpoints yet.
   - name: Authentication
     description: User registration, login, logout, and profile management
   - name: User Access
@@ -3851,6 +3858,227 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  # ===========================================================================
+  # SONG MARKUP — private per-user notes / highlights (#1266 Phase 1)
+  #
+  # DORMANT: schema + validators + these three endpoints ship in Phase 1 with
+  # no client caller. Phase 2 (a separate later commit) wires the web UI.
+  # ===========================================================================
+
+  /api.php?action=user_markup_list:
+    get:
+      operationId: listUserSongMarkup
+      tags: [Song Markup]
+      summary: List the authenticated user's markup for one song
+      description: |
+        Returns the signed-in user's own private notes/highlights for
+        `songId` — never another user's. Fail-open: an empty `markup` array
+        both when `tblUserSongMarkup` hasn't been migrated on this server yet
+        and when the user simply has none for this song, so a caller cannot
+        distinguish "not migrated" from "no notes" on the read path (only
+        the write actions surface `409`).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_markup_list] }
+        - name: songId
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z]+-\\d+$"
+            example: CP-0202
+      responses:
+        "200":
+          description: The user's markup rows for this song
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  markup:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/UserSongMarkup"
+        "400":
+          description: Invalid song ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=user_markup_upsert:
+    post:
+      operationId: upsertUserSongMarkup
+      tags: [Song Markup]
+      summary: Create or update a private note / highlight
+      description: |
+        Creates a new markup row (omit `id`) or updates one the caller
+        already owns (`id` set). `UserId` is always the authenticated caller
+        — never read from the body, so ownership cannot be spoofed. `kind`
+        defaults to `note`; a `note` requires non-empty `body`, a `highlight`
+        may omit it. `startLineId`/`endLineId`, when given, must belong to a
+        current lyrics version of `songId` or the request is refused. The
+        response is the row RE-READ from the database, not an echo of the
+        request body.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_markup_upsert] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId]
+              properties:
+                songId:
+                  type: string
+                  pattern: "^[A-Za-z]+-\\d+$"
+                  example: CP-0202
+                id:
+                  type: integer
+                  description: Omit to create; set to update a row you own.
+                kind:
+                  type: string
+                  enum: [note, highlight]
+                  default: note
+                colour:
+                  type: string
+                  enum: [yellow, green, blue, pink, orange]
+                  nullable: true
+                body:
+                  type: string
+                  maxLength: 5000
+                  nullable: true
+                  description: Required for kind=note; optional for kind=highlight.
+                startLineId:
+                  type: integer
+                  nullable: true
+                  description: FK to a tblLyricLines row of this song. Omit/null = song-level.
+                endLineId:
+                  type: integer
+                  nullable: true
+                  description: Optional span end; requires startLineId.
+      responses:
+        "200":
+          description: Saved — the stored row, re-read from the database
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean }
+                  markup: { $ref: "#/components/schemas/UserSongMarkup" }
+        "400":
+          description: Invalid JSON body or malformed song ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: songId does not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: |
+            `tblUserSongMarkup` has not been migrated on this server yet.
+            Distinct from `422` (rule #35) so a client branches on STATUS,
+            never on this file's error prose.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:  { type: string }
+                  reason: { type: string, enum: [not_migrated], example: not_migrated }
+        "422":
+          description: |
+            Invalid `kind` / `colour` / `body` (empty on a note, or over the
+            5000-character cap) / a `startLineId`/`endLineId` that doesn't
+            belong to `songId` / the 200-row-per-song cap reached / an `id`
+            that doesn't belong to the caller.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=user_markup_delete:
+    post:
+      operationId: deleteUserSongMarkup
+      tags: [Song Markup]
+      summary: Delete a private note / highlight
+      description: |
+        Ownership-scoped in the delete statement itself (`Id AND UserId`).
+        Answers `{ok:true}` whether or not a row actually existed to remove,
+        so a stale or another user's `id` cannot be used to probe for
+        existence (mirrors `favorites_remove`).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [user_markup_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted (or already absent — same response either way)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+        "400":
+          description: Missing/invalid id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: "`tblUserSongMarkup` has not been migrated on this server yet."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:  { type: string }
+                  reason: { type: string, enum: [not_migrated], example: not_migrated }
 
   # ===========================================================================
   # AUTHENTICATION
@@ -23763,6 +23991,39 @@ components:
             type: string
             maxLength: 50
           example: ["Easter", "Communion"]
+
+    # -------------------------------------------------------------------------
+    # Song markup models (#1266 Phase 1 — dormant, no client caller yet)
+    # -------------------------------------------------------------------------
+
+    UserSongMarkup:
+      type: object
+      description: |
+        A signed-in user's own private note/highlight on a song — never
+        visible to another user (#1266 Phase 1).
+      properties:
+        id: { type: integer }
+        songId:
+          type: string
+          pattern: "^[A-Za-z]+-\\d+$"
+          example: CP-0202
+        kind: { type: string, enum: [note, highlight] }
+        startLineId:
+          type: integer
+          nullable: true
+          description: FK to tblLyricLines.Id; null = song-level.
+        endLineId:
+          type: integer
+          nullable: true
+        colour:
+          type: string
+          enum: [yellow, green, blue, pink, orange]
+          nullable: true
+        body:
+          type: string
+          nullable: true
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
 
     # -------------------------------------------------------------------------
     # Song request models
