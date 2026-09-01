@@ -10,18 +10,19 @@
  *
  * WHY per-chord <span data-chord>: js/modules/transpose.js (already built +
  * router-wired) transposes by walking every `[data-chord]` element and
- * replacing its text with the transposed chord (`applyTranspose()`). The chord
- * DATA, though, is a whole space-positioned line — so this splits the line into
- * chord tokens (wrapped) and whitespace runs (preserved verbatim), which a
- * `white-space: pre` monospace container then lays out. Same fidelity as the
- * print path (js/modules/print.js `renderBlock` — a `<div class="print-chord">`
- * above each line), just made transpose-aware.
+ * replacing its text with the transposed chord (`renderChords()`, composing
+ * the transpose offset with the #1271 capo overlay via composeChordDisplay()).
+ * The chord DATA, though, is a whole space-positioned line — so this splits
+ * the line into chord tokens (wrapped) and whitespace runs (preserved
+ * verbatim), which a `white-space: pre` monospace container then lays out.
+ * Same fidelity as the print path (js/modules/print.js `renderBlock` — a
+ * `<div class="print-chord">` above each line), just made transpose-aware.
  *
  * The chord value may arrive as a positioned STRING or as an ARRAY of tokens
  * (both shapes exist in the component payload — print.js handles both the same
  * way); an array is space-joined, matching print.js.
  *
- * @see appWeb/public_html/js/modules/transpose.js  applyTranspose()
+ * @see appWeb/public_html/js/modules/transpose.js  renderChords(), composeChordDisplay()
  * @see appWeb/public_html/js/modules/print.js       renderBlock() chord path
  * @see https://developer.mozilla.org/docs/Web/CSS/white-space  (pre)
  * @link https://github.com/MWBMPartners/iHymns/issues/299

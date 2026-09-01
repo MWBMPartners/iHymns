@@ -139,6 +139,15 @@ export const STORAGE_TRANSPOSE_PREFIX   = 'ihymns_transpose_';
    canonical-key shape above — presence, not a stringly 'true'/'false'). */
 export const STORAGE_CHORD_COLUMNS      = 'ihymns_chord_columns';
 
+/* #1271 — per-song capo + octave DISPLAY overlay (per-song, like
+   STORAGE_TRANSPOSE_PREFIX above — NOT global like STORAGE_CHORD_COLUMNS,
+   since a capo/octave choice is specific to how one song is being played).
+   See js/modules/transpose.js composeChordDisplay() for how capo composes
+   with the transpose offset into what a chord shape shows; octave never
+   reaches that composition at all — it is display-only. */
+export const STORAGE_CAPO_PREFIX        = 'ihymns_capo_';
+export const STORAGE_OCTAVE_PREFIX      = 'ihymns_octave_';
+
 /* #1770 §4.7 — Live Follow leader-idle timeout, the USER layer of the
    three-layer precedence chain (app default → org override → user
    preference; includes/service_mode.php's serviceMode_resolveIdleTimeoutMins()).
