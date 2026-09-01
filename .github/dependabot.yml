@@ -9,10 +9,15 @@
 # this file:
 #
 #  1. **Version updates** (this file). Keeps dependencies current by opening
-#     PRs on a schedule. `target-branch` is PER-ENTRY and singular, so to keep
-#     `main`, `alpha` and `beta` all current we declare one entry per branch
-#     for each ecosystem. Updates are GROUPED so each ecosystem/branch produces
-#     at most a couple of PRs per week rather than a flood.
+#     PRs on a schedule. Every entry targets **`alpha`** — the single source of
+#     truth in this repo's promotion model. `beta` and `main` are FORCE-RESET
+#     to `alpha` on every alpha→beta→main promotion (promotion-deploy-bridge.yml),
+#     so a version-update PR opened directly against `beta`/`main` is overwritten
+#     on the next promotion and never sticks — it just produces duplicate,
+#     doomed PRs (#1892). Landing the update on `alpha` instead carries it to
+#     `beta` and `main` automatically via promotion. So there is ONE entry per
+#     ecosystem, all `target-branch: alpha`. Updates are GROUPED so each
+#     ecosystem produces at most a couple of PRs per week rather than a flood.
 #
 #  2. **Security updates** (NOT configurable here). When GitHub's Dependabot
 #     alerts fire, GitHub auto-opens a fix PR — but ONLY against the repository
@@ -22,11 +27,12 @@
 #     `.github/workflows/dependabot-security-backport.yml`, which cherry-picks
 #     the merged fix and opens a PR against each of those branches.
 #
-# Together: routine version bumps reach every active branch directly (this
-# file), and security fixes reach every active branch too (main directly +
-# the backport workflow). See docs/DEPLOYMENT / DEV_NOTES for the branch model
-# (alpha = active dev/deploy, beta = staging, main = stable; release-candidate
-# is planned — the backport workflow skips it gracefully until it exists).
+# Together: routine version bumps land on `alpha` and reach `beta`/`main` via
+# promotion (this file), and security fixes reach every active branch too
+# (main directly + the backport workflow). See docs/DEPLOYMENT / DEV_NOTES for
+# the branch model (alpha = active dev/deploy, beta = staging, main = stable;
+# release-candidate is planned — the backport workflow skips it gracefully
+# until it exists).
 #
 # Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 # =============================================================================
@@ -35,43 +41,12 @@ version: 2
 
 updates:
   # ---------------------------------------------------------------------------
-  # npm — the web/PWA client + build tooling (package.json at repo root)
+  # npm — the web/PWA client + build tooling (package.json at repo root).
+  # Targets alpha only (see the header: beta/main are promotion-derived).
   # ---------------------------------------------------------------------------
   - package-ecosystem: "npm"
     directory: "/"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    labels: ["dependencies", "javascript"]
-    commit-message:
-      prefix: "chore(deps)"
-      prefix-development: "chore(deps-dev)"
-    groups:
-      npm-minor-and-patch:
-        applies-to: version-updates
-        update-types: ["minor", "patch"]
-
-  - package-ecosystem: "npm"
-    directory: "/"
     target-branch: "alpha"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    labels: ["dependencies", "javascript"]
-    commit-message:
-      prefix: "chore(deps)"
-      prefix-development: "chore(deps-dev)"
-    groups:
-      npm-minor-and-patch:
-        applies-to: version-updates
-        update-types: ["minor", "patch"]
-
-  - package-ecosystem: "npm"
-    directory: "/"
-    target-branch: "beta"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -87,24 +62,8 @@ updates:
 
   # ---------------------------------------------------------------------------
   # GitHub Actions — the CI/CD workflows themselves (security-sensitive:
-  # a compromised action runs with repo credentials). Kept current on every
-  # active branch.
+  # a compromised action runs with repo credentials). Targets alpha only.
   # ---------------------------------------------------------------------------
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    target-branch: "main"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    labels: ["dependencies", "github-actions"]
-    commit-message:
-      prefix: "chore(ci)"
-    groups:
-      actions-all:
-        applies-to: version-updates
-        patterns: ["*"]
-
   - package-ecosystem: "github-actions"
     directory: "/"
     target-branch: "alpha"
@@ -120,30 +79,17 @@ updates:
         applies-to: version-updates
         patterns: ["*"]
 
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    target-branch: "beta"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    labels: ["dependencies", "github-actions"]
-    commit-message:
-      prefix: "chore(ci)"
-    groups:
-      actions-all:
-        applies-to: version-updates
-        patterns: ["*"]
-
   # ---------------------------------------------------------------------------
-  # Gradle — the Android/FireOS app dependencies. Version updates are tracked
-  # on `main`; security fixes reach the release branches via the backport
-  # workflow. (Extend with alpha/beta entries here if direct version PRs on
-  # those branches are wanted for mobile too.)
+  # Gradle — the Android/FireOS app dependencies. Targets alpha (was `main`,
+  # #1892): a gradle bump merged to main is overwritten by the next promotion,
+  # and major bumps (AGP/compose-BOM) are CI-unverified until an Android build
+  # job exists — landing them on alpha keeps them in the promotion lane with
+  # everything else. Security fixes still reach the release branches via the
+  # backport workflow.
   # ---------------------------------------------------------------------------
   - package-ecosystem: "gradle"
     directory: "/appAndroid"
-    target-branch: "main"
+    target-branch: "alpha"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -158,12 +104,12 @@ updates:
 
   # ---------------------------------------------------------------------------
   # Swift Package Manager — the shared Apple `iHymnsKit` package. Same posture
-  # as Gradle: version updates on `main`, security fixes fanned out by the
-  # backport workflow.
+  # as Gradle: version updates on `alpha` (#1892), security fixes fanned out by
+  # the backport workflow.
   # ---------------------------------------------------------------------------
   - package-ecosystem: "swift"
     directory: "/appApple/Packages/iHymnsKit"
-    target-branch: "main"
+    target-branch: "alpha"
     schedule:
       interval: "weekly"
       day: "monday"
