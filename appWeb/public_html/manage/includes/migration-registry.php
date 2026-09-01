@@ -2535,6 +2535,78 @@ return [
         },
     ],
 
+    /* ---- #2063 — cleanup zero-mirrored-line tblSongComponents rows (data-only, manual + gated) ----
+       Unblocks G1 of the "Verify Lyrics-Cutover Gate": a tblSongComponents row with NO
+       mirrored tblLyricLines child is invisible to the read assembler (lyric_lines_read.php
+       is line-driven), so the source count (tblSongComponents) and the assembled count
+       permanently disagree for any song carrying this junk — e.g. Psalty-1778530312276's 4
+       mis-parsed empty sections. Registered BEFORE the C6 DROP below: cleaning up this junk
+       is a prerequisite to a clean pre-drop verify, though both cards are 'manual' so registry
+       order doesn't itself enforce anything for either. Dry-run by default; ?confirm=1 to
+       delete. Data-only — no schema.sql change. See the migration script's header for the
+       full three-clause predicate. */
+    'cleanup-zero-line-components' => [
+        'script' => 'migrate-cleanup-zero-line-components.php',
+        /* #2063 — DATA DELETE + manual-only: EXCLUDED from "Apply all" (both the JS bulk
+           runner and the no-JS apply-all loop) and the pending counter — it deletes
+           curator-visible tblSongComponents rows, so a routine bulk run must never trigger
+           it. A WEB run defaults to report-only; ?confirm=1 (CLI: --confirm) applies. */
+        'manual' => true,
+        /* Real dry-run report mode (mirrors 'backfill-canonical-songids' / 'reconcile-media-flags'):
+           renders a distinct "Dry-run (report only)" link alongside the confirm button. */
+        'dryRunnable' => true,
+        'card' => [
+            'title'  => '⚠ Cleanup zero-line tblSongComponents rows (#2063)',
+            'body'   => 'DATA DELETE — removes <code>tblSongComponents</code> rows that mirrored'
+                      . ' ZERO <code>tblLyricLines</code> children (mis-parsed empty sections),'
+                      . ' which is what makes G1 of the &ldquo;Verify Lyrics-Cutover Gate&rdquo; fail'
+                      . ' forever for the songs carrying them (the read assembler is line-driven, so a'
+                      . ' childless component is invisible to it while still counting on the source'
+                      . ' side). Deletes a row ONLY when it has no mirrored line, its song has real'
+                      . ' mirrored content elsewhere (never a blank draft&rsquo;s only sections), AND its'
+                      . ' <code>LinesJson</code> does not decode to real, non-empty lines (a genuine'
+                      . ' mirror failure is left for the gate to keep flagging, not deleted). Do NOT run'
+                      . ' via &ldquo;Apply all&rdquo;. Defaults to <strong>dry-run</strong> (reports the'
+                      . ' candidate rows + per-song counts); pass <code>&amp;confirm=1</code> to delete.'
+                      . ' Data-only — no schema change. Idempotent — a re-run finds nothing once clean.',
+            'button' => 'Cleanup Zero-Line Components (dry-run unless confirmed)',
+        ],
+        /* Real data-derived probe (rule #19) — never `=> true`. Pending while >= 1 candidate
+           row exists under the SAME three-clause predicate the migration deletes by (clause 3
+           via JSON_LENGTH, columnExists-gated below). Table-existence-gated so an un-mirrored
+           install (no tblLyricLines/tblLyrics yet) reports not-pending, not a STRICT throw. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblSongComponents')) return false;
+            if (!_migProbe_tableExists($db, 'tblLyricLines'))     return false;
+            if (!_migProbe_tableExists($db, 'tblLyrics'))         return false;
+            try {
+                $hasLinesJson = _migProbe_columnExists($db, 'tblSongComponents', 'LinesJson');
+                $jsonClause   = $hasLinesJson
+                    ? ' AND (sc.LinesJson IS NULL OR JSON_LENGTH(sc.LinesJson) = 0)'
+                    : '';   /* fixed PHP-source constant, never user input */
+                $res = $db->query(
+                    "SELECT 1
+                       FROM tblSongComponents sc
+                       LEFT JOIN tblLyricLines ll ON ll.ComponentId = sc.Id
+                      WHERE ll.Id IS NULL
+                        AND EXISTS (
+                              SELECT 1
+                                FROM tblLyricLines ll2
+                                JOIN tblLyrics ly2 ON ly2.Id = ll2.LyricsId
+                               WHERE ly2.SongId = sc.SongId AND ly2.Source = 'ihymns'
+                            )
+                        {$jsonClause}
+                      LIMIT 1"
+                );
+                $pending = ($res && $res->fetch_row() !== null);
+                if ($res) { $res->close(); }
+                return $pending;
+            } catch (\Throwable $_e) {
+                return false;
+            }
+        },
+    ],
+
     /* ---- #1235 P4 / C6 — the DROP (DESTRUCTIVE, manual + gated) ----------------
        Retires the four tblSongComponents JSON payload columns now that tblLyricLines is
        authoritative. Registered LAST (after every ADD migration). alpha/beta/production SHARE
