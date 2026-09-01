@@ -698,7 +698,22 @@ jobs:
           # Minify JavaScript files
           find "$SOURCE_DIR" -name "*.js" -type f 2>/dev/null | while read -r file; do
             echo "Minifying JS: $file"
-            terser "$file" --compress --mangle --output "$file" || echo "  Warning: failed to minify $file"
+            # js/modules/** are native ES modules (top-level import/export,
+            # loaded with type="module") — terser needs --module for these so
+            # top-level bindings mangle safely as module scope rather than
+            # being left untouched under the conservative could-be-global
+            # assumption it makes for a plain <script>. #1574.
+            TERSER_ARGS=(--compress --mangle)
+            case "$file" in
+              */js/modules/*) TERSER_ARGS+=(--module) ;;
+            esac
+            # A minify failure is surfaced as a loud GitHub Actions annotation
+            # (visible in the Actions UI + checks) rather than a silently
+            # swallowed "Warning" line, but is deliberately still non-fatal —
+            # the previous file ships unminified rather than blocking the
+            # whole deploy. #1574.
+            terser "$file" "${TERSER_ARGS[@]}" --output "$file" \
+              || echo "::error file=$file::terser minification failed for $file"
           done
 
           # Minify CSS files
