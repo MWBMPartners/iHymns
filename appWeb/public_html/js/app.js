@@ -31,6 +31,7 @@ import { History } from './modules/history.js';
 import { SetList } from './modules/setlist.js';
 import { UserAuth } from './modules/user-auth.js';
 import { Display } from './modules/display.js';
+import { MidiInput } from './modules/midi-input.js';   /* #1267 — Web MIDI foot pedal, default OFF */
 import { LiveFollow } from './modules/live-follow.js';
 import { ServiceFollow } from './modules/service-follow.js';
 import { Compare } from './modules/compare.js';
@@ -131,6 +132,9 @@ class iHymnsApp {
 
         /** @type {Display} Display preferences & presentation mode (#95) */
         this.display = null;
+
+        /** @type {MidiInput} Web MIDI foot-pedal input, default OFF (#1267) */
+        this.midiInput = null;
 
         /** @type {Compare} Side-by-side song comparison (#102) */
         this.compare = null;
@@ -335,6 +339,23 @@ class iHymnsApp {
             /* Display preferences & presentation mode (#95) */
             this.display = new Display(this);
             this.display.init();
+
+            /* Web MIDI foot-pedal / controller input (#1267). Constructed
+               unconditionally — the constructor itself is inert, it never
+               touches navigator.requestMIDIAccess() — so the Settings →
+               Accessibility toggle can start()/stop() it live without a
+               page reload. Only actually started here when the user has
+               already opted in; requestMIDIAccess() triggers a browser
+               permission prompt, and nobody should see that without
+               asking for it first (progressive enhancement — no-ops
+               entirely in browsers without Web MIDI). Placed after
+               Display, which it depends on: MidiInput.jumpToSection()
+               calls (via this.app.display) reuse the SAME action funnel
+               PageDown/PageUp use below. */
+            this.midiInput = new MidiInput(this);
+            if (this.settings.get('midiPedal') === true) {
+                this.midiInput.start();
+            }
 
             /* Live Follow — real-time leader→followers song sync (#1268).
                After userAuth + display so isLoggedIn() + the song toolbar exist. */
@@ -630,6 +651,31 @@ class iHymnsApp {
                     if (this.display.autoScrollActive) {
                         e.preventDefault();
                         this.display.toggleAutoScroll();
+                    }
+                    break;
+                case 'PageDown':
+                case 'PageUp':
+                    /* Hands-free section turns for a Bluetooth foot pedal
+                       that emits real PageUp/PageDown keystrokes (#1267).
+                       Web MIDI hardware (raw MIDI messages, no keystrokes
+                       at all) is handled separately by midi-input.js,
+                       which calls display.jumpToSection() directly — same
+                       funnel, different entry point (modularity rule).
+                       Scoped to song pages only ('.song-lyrics' — the same
+                       existence check the 's' auto-scroll case above
+                       uses) so native PageUp/PageDown paging is preserved
+                       everywhere else (search results, admin tables, long
+                       articles). Also skipped while present-mode.js's OWN
+                       slide-by-slide overlay is open: that overlay wires
+                       these SAME two keys (added below) to its own
+                       next()/prev() via its own document keydown
+                       listener, and doesn't remove '.song-lyrics' from the
+                       DOM behind it — without this check one keypress
+                       would fire both handlers at once. */
+                    if (document.querySelector('.song-lyrics')
+                        && !document.querySelector('.presentation-overlay .present-nav')) {
+                        e.preventDefault();
+                        this.display.jumpToSection(e.key === 'PageDown' ? 1 : -1);
                     }
                     break;
             }

@@ -778,7 +778,7 @@ declare(strict_types=1);
             </div>
 
             <!-- Keyboard shortcuts toggle (#406) -->
-            <div class="form-check form-switch mb-0">
+            <div class="form-check form-switch mb-3">
                 <input class="form-check-input"
                        type="checkbox"
                        id="setting-keyboard-shortcuts"
@@ -789,6 +789,31 @@ declare(strict_types=1);
                     <small class="text-muted d-block">
                         Press <kbd>?</kbd> to view all shortcuts, <kbd>/</kbd> to focus search,
                         arrow keys to navigate songs, and more.
+                    </small>
+                </label>
+            </div>
+
+            <!-- Web MIDI foot-pedal input toggle (#1267). Mirrors the
+                 keyboard-shortcuts switch above exactly; settings.js hides
+                 this whole row (adds d-none) in browsers without
+                 navigator.requestMIDIAccess — the same
+                 hidden-when-unsupported posture audio.js already uses for
+                 its playback buttons (#602) — rather than showing a dead
+                 control. Default OFF: turning it ON is what triggers the
+                 browser's MIDI permission prompt (js/modules/midi-input.js),
+                 so nothing asks for that unprompted. -->
+            <div class="form-check form-switch mb-0">
+                <input class="form-check-input"
+                       type="checkbox"
+                       id="setting-midi-pedal"
+                       role="switch"
+                       aria-label="Enable Web MIDI foot pedal input">
+                <label class="form-check-label" for="setting-midi-pedal">
+                    <strong>Foot Pedal / MIDI Input</strong>
+                    <small class="text-muted d-block">
+                        Advance to the next or previous lyric section with a Bluetooth foot pedal or
+                        MIDI sustain pedal while reading or presenting. Asks for browser permission
+                        the first time you turn this on.
                     </small>
                 </label>
             </div>

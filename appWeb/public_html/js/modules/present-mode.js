@@ -202,6 +202,12 @@ export function initPresentMode() {
             if (e.key === 'Escape') { close(); }
             else if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next(); }
             else if (e.key === 'ArrowLeft') { e.preventDefault(); prev(); }
+            /* #1267 — the same PageDown/PageUp a Bluetooth foot pedal
+               emits as real keystrokes, so a pedal advances slides here
+               exactly as it advances lyric sections on the plain song
+               page (app.js's own PageDown/PageUp case). */
+            else if (e.key === 'PageDown') { e.preventDefault(); next(); }
+            else if (e.key === 'PageUp') { e.preventDefault(); prev(); }
             else if (e.key === 'Tab') { trapTab(e); }
         }
 

@@ -50,8 +50,12 @@ import {
  * profile when signed in (and the sync toggle is on). Anything not
  * listed here stays device-local — that includes analytics consent,
  * the install banner state, the disclaimer flag, the per-device
- * owner ID, and the offline-downloads toggles which are tied to
- * device storage choices rather than UI preferences.
+ * owner ID, the offline-downloads toggles which are tied to
+ * device storage choices rather than UI preferences, and (#1267)
+ * `midiPedal` — a MIDI foot pedal is physically plugged into ONE
+ * specific computer, so "on" syncing to a signed-in user's phone
+ * would just mean that phone silently prompts for MIDI permission
+ * the next time it loads a song page, for hardware it can't see.
  */
 const SYNC_PREF_KEYS = Object.freeze([
     'ihymns_theme',
@@ -141,6 +145,8 @@ export class Settings {
             reduceTransparency: false,
             fontSize: 18,
             keyboardShortcuts: true,  /* '?' opens help, '/' focuses search, etc. (#406) */
+            midiPedal: false,  /* Web MIDI foot-pedal section turns — OFF by default so
+                                   nobody sees an un-asked browser permission prompt (#1267) */
             includeAudioOffline: false, /* Include audio files in offline download (#401) */
         };
 
@@ -870,6 +876,34 @@ export class Settings {
             shortcutsToggle.addEventListener('change', () => {
                 this.set('keyboardShortcuts', shortcutsToggle.checked);
             });
+        }
+
+        /* Web MIDI foot-pedal toggle (#1267). Feature-detected: hidden
+           entirely (not just disabled) in a browser without
+           navigator.requestMIDIAccess — the SAME hidden-when-unsupported
+           posture audio.js's hideButtonsIfUnsupported() already uses
+           (#602) — rather than left as a dead control nobody can use.
+           Default OFF (this.defaults.midiPedal above); unlike the
+           keyboard-shortcuts toggle this one does more than flip a flag
+           app.js reads later: turning it ON must actually call
+           navigator.requestMIDIAccess() (or turning it OFF must release
+           those listeners) for the change to take effect without a page
+           reload, so this also drives this.app.midiInput directly. */
+        const midiToggle = document.getElementById('setting-midi-pedal');
+        if (midiToggle) {
+            if (typeof navigator === 'undefined' || !('requestMIDIAccess' in navigator)) {
+                midiToggle.closest('.form-check')?.classList.add('d-none');
+            } else {
+                midiToggle.checked = this.get('midiPedal') === true;
+                midiToggle.addEventListener('change', () => {
+                    const enabled = midiToggle.checked;
+                    this.set('midiPedal', enabled);
+                    if (this.app.midiInput) {
+                        if (enabled) this.app.midiInput.start();
+                        else this.app.midiInput.stop();
+                    }
+                });
+            }
         }
 
         /* Include-audio-offline toggle (#401). Read by the offline download

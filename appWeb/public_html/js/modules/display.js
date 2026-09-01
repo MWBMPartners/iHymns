@@ -16,6 +16,58 @@ import { STORAGE_DISPLAY } from '../constants.js';
    (the extracted, reusable version of that same recipe). See
    enterPresentationMode() below. */
 import { openModalDialog } from '../utils/dialog-a11y.js';
+/* #1267 — jumpToSection()'s announce + reduce-motion handling deliberately
+   reuses the SAME two helpers service-follow.js's _scrollToComponent()
+   already uses for an almost-identical "scroll to a lyric section" job,
+   rather than a third private copy of either check (modularity rule). */
+import { announce } from '../utils/announce.js';
+import { prefersReducedMotion } from '../utils/motion.js';
+
+/**
+ * Pure helper for jumpToSection() below — given the top offsets of every
+ * lyric-component section (ascending, same coordinate space as scrollY)
+ * and the current scroll position, returns which section index a "next"
+ * (dir=1) or "previous" (dir=-1) command should land on. Exported
+ * standalone (rather than folded into jumpToSection itself) so
+ * tests/test-midi-input.js can exercise the maths without a DOM (#1267).
+ *
+ * ELI5: figures out which verse/chorus box you're currently looking at,
+ * then picks the one right after (or before) it — clamped so pressing
+ * "next" on the last section (or "previous" on the first) just stays put
+ * instead of running off the end of the list.
+ *
+ * Detail: "current section" is the LAST index whose top is at or before
+ * `scrollY` (within a small EPSILON tolerance for the sub-pixel rounding
+ * a smooth scrollIntoView() landing can leave behind) — i.e. whichever
+ * section's start you've most recently scrolled past. next/prev then
+ * move exactly one section from there, clamped to the array bounds,
+ * regardless of how far INTO that section the current scroll position
+ * actually is — so "next" always advances a whole section even if
+ * you're already most of the way down a long verse, and "previous"
+ * always returns to the section before the current one rather than
+ * back to the top of the current one.
+ *
+ * @param {number[]} tops Ascending top-offsets of each section, in the
+ *   same coordinate space as scrollY (see jumpToSection()'s own
+ *   coordinate note for how that space is built for each surface).
+ * @param {number} scrollY Current scroll position in that same space.
+ * @param {1|-1} dir +1 = next section, -1 = previous section.
+ * @returns {number|null} Target index, or null when there is nothing to
+ *   jump to (no sections) or dir is not exactly +1/-1.
+ */
+export function nextSectionIndex(tops, scrollY, dir) {
+    if (!Array.isArray(tops) || tops.length === 0) return null;
+    if (dir !== 1 && dir !== -1) return null;
+
+    const EPSILON = 2; /* px tolerance — see doc-comment above */
+    let current = 0;
+    for (let i = 0; i < tops.length; i++) {
+        if (tops[i] <= scrollY + EPSILON) current = i;
+        else break;
+    }
+
+    return Math.max(0, Math.min(tops.length - 1, current + dir));
+}
 
 export class Display {
     /**
@@ -507,6 +559,74 @@ export class Display {
 
     _hideFloatingStop() {
         document.getElementById('autoscroll-fab')?.remove();
+    }
+
+    /* =====================================================================
+     * SECTION NAVIGATION (#1267 — hands-free foot-pedal / Web MIDI turns)
+     * ===================================================================== */
+
+    /**
+     * Jump to the next/previous lyric section (verse/chorus/bridge/...),
+     * scrolling it into view. THE one action funnel both hands-free input
+     * paths share (modularity rule): app.js's PageDown/PageUp keydown case
+     * (a Bluetooth foot pedal that emits real keystrokes) and
+     * midi-input.js's mapped 'next'/'prev' actions (raw Web MIDI hardware —
+     * no keystrokes at all) both call this method directly rather than
+     * each re-implementing the scroll/scan logic.
+     *
+     * Targets whichever lyrics surface is actually on screen: THIS
+     * module's own fullscreen "Presentation mode" overlay
+     * (`#presentation-overlay .presentation-lyrics` — the "P" key, a
+     * scrolling clone of the whole song; distinct from present-mode.js's
+     * SEPARATE slide-by-slide `.present-lyrics` overlay, which owns its
+     * own Prev/Next and is never touched here) when open, otherwise the
+     * in-page `.song-lyrics`. No-ops when neither exists — this is called
+     * from global key/MIDI handlers with no per-page guard of their own
+     * beyond what they already check before calling it.
+     *
+     * @param {1|-1} dir +1 = next section, -1 = previous section.
+     */
+    jumpToSection(dir) {
+        const overlay = document.getElementById('presentation-overlay');
+        const surface = overlay
+            ? overlay.querySelector('.presentation-lyrics')
+            : document.querySelector('.song-lyrics');
+        if (!surface) return;
+
+        const comps = Array.from(surface.querySelectorAll('.lyric-component'));
+        if (comps.length === 0) return;
+
+        /* Coordinate space for nextSectionIndex(): the presentation
+           overlay scrolls ITSELF (overflow-y: auto, position: fixed, top:
+           0 — app.css), so a child's absolute position within it is
+           `rect.top + overlay.scrollTop` (the overlay's own box never
+           moves on screen — only its content does). The in-page lyrics
+           scroll the document instead, the same element startAutoScroll()
+           above already uses — same formula, `window.scrollY` in place of
+           the overlay's own scrollTop. */
+        const scrollY = overlay
+            ? overlay.scrollTop
+            : (window.scrollY || document.documentElement.scrollTop || 0);
+        const tops = comps.map((el) => el.getBoundingClientRect().top + scrollY);
+
+        const targetIdx = nextSectionIndex(tops, scrollY, dir);
+        if (targetIdx === null) return;
+
+        const target = comps[targetIdx];
+        /* Honour reduced motion (mirrors service-follow.js's
+           _scrollToComponent() — see that method's own comment for why
+           the OPTION, not just the CSS rule, has to be checked). */
+        target.scrollIntoView({
+            behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+            block: 'start',
+        });
+
+        /* Announce the section change (WCAG 4.1.3) — a foot pedal or MIDI
+           controller turn is exactly as silent to a screen reader as the
+           scroll it produces; without this a blind user pressing the
+           pedal gets no confirmation anything happened. */
+        const label = (target.querySelector('.lyric-label')?.textContent || '').trim();
+        announce(label ? `Now at ${label}` : `Section ${targetIdx + 1} of ${comps.length}`);
     }
 
     /* =====================================================================

@@ -448,6 +448,10 @@ const NATIVE_DOM_EVENTS = new Set([
     /* PWA / service-worker */
     'appinstalled', 'beforeinstallprompt', 'controllerchange', 'updatefound', 'statechange',
     'install', 'activate', 'fetch', 'push', 'notificationclick', 'sync', 'periodicsync',
+    /* Web MIDI API (#1267 — js/modules/midi-input.js). 'statechange' above
+       is ALSO MIDIAccess's own hot-plug event, already covered.
+       https://developer.mozilla.org/docs/Web/API/MIDIInput/midimessage_event */
+    'midimessage',
     /* device/gesture (documented in the original scan even though unused today) */
     'gesturestart', 'devicemotion', 'deviceorientation', 'orientationchange', 'freeze', 'resume',
     'securitypolicyviolation', 'connect',

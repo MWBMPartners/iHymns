@@ -109,6 +109,14 @@ export class Shortcuts {
                                 <dd>Pause auto-scroll</dd>
                             </div>
                             <div class="shortcut-row">
+                                <dt><kbd>PageDown</kbd></dt>
+                                <dd>Next section (foot pedal / MIDI, #1267)</dd>
+                            </div>
+                            <div class="shortcut-row">
+                                <dt><kbd>PageUp</kbd></dt>
+                                <dd>Previous section (foot pedal / MIDI, #1267)</dd>
+                            </div>
+                            <div class="shortcut-row">
                                 <dt><kbd>+</kbd> / <kbd>-</kbd></dt>
                                 <dd>Font size</dd>
                             </div>
