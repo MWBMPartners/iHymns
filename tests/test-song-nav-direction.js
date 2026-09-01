@@ -248,6 +248,45 @@ const cdoc = new JSDOM(conflicting).window.document;
 check('when the two selectors disagree, the named one wins',
     (cdoc.querySelector('[data-song-nav="next"]') || {}).getAttribute?.('href') === '/song/NAMED-NEXT');
 
+console.log('\n4 — the ArrowLeft/ArrowRight case ignores the keys while a presentation overlay is open (#2065)\n');
+
+/**
+ * #2065: present-mode.js's own slide-by-slide overlay binds these same two
+ * keys via its own `document.addEventListener('keydown', …)`, registered
+ * AFTER this app.js listener. Its `preventDefault()` cannot stop an
+ * earlier-registered sibling listener from also firing, so one press both
+ * advanced the presentation slide AND walked the background song page —
+ * the exact double-fire class the PageDown/PageUp case just below it
+ * already guards against with its own `.presentation-overlay` check.
+ *
+ * This asserts the SOURCE SHAPE (the guard runs before the navigation
+ * call), not the runtime behaviour — a jsdom simulation of two independent
+ * `document.addEventListener('keydown', …)` listeners racing each other
+ * would mostly be re-testing jsdom's event dispatch order, not this fix.
+ *
+ * Bounded up to (not including) the NEXT `case ` label at the switch's own
+ * indentation — not the first `break;`, because the #2065 guard itself is
+ * an early `if (…) break;`, so a first-`break;` bound would stop at that
+ * guard and never see the real navigation call after it. Two drafts of
+ * this bound were each wrong in a way that only showed up against the
+ * real file (rule #34): bounding on the first `break;` sliced off the
+ * navigation call itself (false FAIL); starting the search at `case
+ * 'ArrowLeft':` then matched ZERO characters, because the very next line
+ * is ALSO a `case` label at this indentation — `case 'ArrowRight':`,
+ * the fallthrough sibling — so the lookahead fired immediately. Starting
+ * at `case 'ArrowRight':` instead lands after BOTH labels, at the start
+ * of their one shared body.
+ */
+const arrowCaseMatch = /case 'ArrowRight':[\s\S]*?(?=\n {16}case )/.exec(appSrc);
+check('found the ArrowLeft/ArrowRight case in app.js\'s keydown handler', !!arrowCaseMatch);
+
+const arrowCase = arrowCaseMatch ? arrowCaseMatch[0] : '';
+const overlayIdx = arrowCase.indexOf('.presentation-overlay');
+const navCallIdx = arrowCase.indexOf('navigateSongDirection(');
+check('the case checks .presentation-overlay BEFORE calling navigateSongDirection()',
+    overlayIdx !== -1 && navCallIdx !== -1 && overlayIdx < navCallIdx,
+    `.presentation-overlay at ${overlayIdx}, navigateSongDirection( at ${navCallIdx} (both -1 means not found)`);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
     console.error('\nFailures:');

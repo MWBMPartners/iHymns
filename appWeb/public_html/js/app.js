@@ -606,12 +606,16 @@ class iHymnsApp {
                     this.favorites.toggleCurrentSong();
                     break;
                 case 'ArrowLeft':
-                    /* Previous song (if on song page) */
-                    this.navigateSongDirection('prev');
-                    break;
                 case 'ArrowRight':
-                    /* Next song (if on song page) */
-                    this.navigateSongDirection('next');
+                    /* #2065 — not while a presentation overlay is open. present-mode.js binds
+                       these same keys via its own document listener, and preventDefault() there
+                       cannot stop THIS earlier-registered sibling, so one press advanced a slide
+                       AND walked the background page. display.js's "P" overlay binds no arrows and
+                       navigating under it closed it via router cleanup. Same double-fire class the
+                       PageDown/PageUp case below already guards. */
+                    if (document.querySelector('.presentation-overlay')) break;
+                    /* Previous/next song (if on song page) */
+                    this.navigateSongDirection(e.key === 'ArrowLeft' ? 'prev' : 'next');
                     break;
                 case 'p':
                 case 'P':
