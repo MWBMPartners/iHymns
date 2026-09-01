@@ -579,16 +579,12 @@ function attemptLogin(string $username, string $password): ?array
        REMOTE_ADDR (not a spoofable forwarded header) is the rate-limit key. */
     $clientIp = (string)($_SERVER['REMOTE_ADDR'] ?? '');
     if ($clientIp !== '') {
-        $bf = $db->prepare(
-            'SELECT COUNT(*) FROM tblLoginAttempts
-             WHERE IpAddress = ? AND Success = 0
-               AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 15 MINUTE)'
-        );
-        $bf->bind_param('s', $clientIp);
-        $bf->execute();
-        $recentFailures = (int)($bf->get_result()->fetch_row()[0] ?? 0);
-        $bf->close();
-        if ($recentFailures >= 10) {
+        /* #1929 — action-scoped via the ONE shared helper (includes/rate_limit.php)
+           so an unrelated action writing into the same generic tblLoginAttempts
+           table can no longer inflate THIS lockout. De-duplicates what used to be
+           a byte-for-byte copy of this same query in api.php's auth_login case. */
+        $recentFailures = authLoginIpFailureCount($clientIp);
+        if ($recentFailures >= IHYMNS_AUTH_IP_MAX) {
             logActivity('auth.login', 'user', $normalised,
                 ['reason' => 'rate_limited', 'recent_failures' => $recentFailures], 'failure');
             return null;
@@ -625,12 +621,11 @@ function attemptLogin(string $username, string $password): ?array
 
     if (!$user || !password_verify($password, $user['PasswordHash'])) {
         /* SECURITY: record the failed attempt in tblLoginAttempts so the
-           brute-force counter above can see it (mirrors api.php auth_login). */
+           brute-force counter above can see it (mirrors api.php auth_login).
+           #1929 — Action='login' via the shared primitive
+           (includes/rate_limit.php). */
         if ($clientIp !== '') {
-            $fa = $db->prepare('INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 0)');
-            $fa->bind_param('ss', $clientIp, $normalised);
-            $fa->execute();
-            $fa->close();
+            loginAttemptsInsert($db, $clientIp, $normalised, false, 'login');
         }
         /* #1027 — the SAME failure also fills the per-account bucket checked at
            the top of this function, written through the shared helper so the

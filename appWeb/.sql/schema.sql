@@ -2331,6 +2331,7 @@ CREATE TABLE IF NOT EXISTS tblLoginAttempts (
     IpAddress       VARCHAR(45)     NOT NULL,
     Username        VARCHAR(100)    NOT NULL DEFAULT '',
     Success         TINYINT(1)      NOT NULL DEFAULT 0,
+    Action          VARCHAR(40)     NOT NULL DEFAULT 'login' COMMENT 'Action namespace for this generic per-IP/per-key attempts counter (#1929) -- e.g. login, auth_register, email_verify, auth_apple, account_delete, service_join. The login-lockout readers (api.php auth_login, manage/includes/auth.php attemptLogin) count Action=login ONLY, so an unrelated action can no longer inflate the login brute-force lockout. DEFAULT login is deliberately never-weaker for pre-existing rows written before this column existed. Stamped server-side by the ONE write primitive loginAttemptsInsert() (includes/rate_limit.php) -- never client-supplied.',
     AttemptedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_Ip        (IpAddress),

@@ -4833,4 +4833,36 @@ return [
         'probe' => static fn(\mysqli $db) =>
             !_migProbe_tableExists($db, 'tblUserSongMarkup'),
     ],
+
+    /* #1929 — action-scope the shared login-attempts counter so an unrelated
+       action (registration, email-verify, Apple sign-in, account deletion,
+       the Service Mode congregant join code, …) can no longer inflate the
+       LOGIN brute-force lockout. Additive, idempotent, never-weaker: every
+       pre-existing row DEFAULTs to Action='login' (the conservative choice —
+       it stays counted by the login lockout, never silently drops out of
+       it), and the new column is dormant read-side until the paired code
+       change (includes/rate_limit.php's loginAttemptsInsert()/
+       authLoginIpFailureCount()) ships alongside it. */
+    'login-attempts-action' => [
+        'script' => 'migrate-add-login-attempts-action.php',
+        'card' => [
+            'title'  => 'Login-attempts action namespace (#1929)',
+            'body'   => 'Adds <code>tblLoginAttempts.Action</code> — a real'
+                      . ' action name (<code>login</code>,'
+                      . ' <code>auth_register</code>, <code>email_verify</code>,'
+                      . ' <code>auth_apple</code>, <code>account_delete</code>,'
+                      . ' <code>service_join</code>, …) stamped on every row of'
+                      . ' the app&rsquo;s shared per-IP attempts counter, so the'
+                      . ' LOGIN brute-force lockout can finally count'
+                      . ' <code>Action = &#39;login&#39;</code> rows only instead'
+                      . ' of every failed attempt from an IP regardless of what'
+                      . ' caused it. Pre-existing rows default to'
+                      . ' <code>&#39;login&#39;</code> (never-weaker — they stay'
+                      . ' counted, never silently drop out of the lockout).'
+                      . ' Additive, idempotent. Safe to re-run.',
+            'button' => 'Run Login Attempts Action Migration',
+        ],
+        /* Single-object probe (rule #19) — never `=> true`. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblLoginAttempts', 'Action'),
+    ],
 ];

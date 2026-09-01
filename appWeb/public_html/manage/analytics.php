@@ -149,7 +149,18 @@ try {
 $loginCount = 0;
 $activeUsers = 0;
 try {
-    $stmt = $db->prepare('SELECT COUNT(*) FROM tblLoginAttempts WHERE Success = 1 AND AttemptedAt >= ?');
+    /* #1929 — scoped to Action='login' once the column exists, so a flood of
+       unrelated attempts (registration, service_join, …) can no longer
+       inflate this count. Gated on loginAttemptsActionReady() so an
+       un-migrated install keeps running exactly the query it always has —
+       this whole block's try/catch would otherwise degrade an un-migrated
+       install's count to 0 on an unknown-column error instead. */
+    $loginActionReady = loginAttemptsActionReady($db);
+    $stmt = $db->prepare(
+        'SELECT COUNT(*) FROM tblLoginAttempts WHERE Success = 1'
+        . ($loginActionReady ? " AND Action = 'login'" : '')
+        . ' AND AttemptedAt >= ?'
+    );
     $stmt->bind_param('s', $since);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_row();

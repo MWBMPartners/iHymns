@@ -62,11 +62,17 @@ $auth = $pub . '/manage/includes/auth.php';
 $reg    = shUnit($api, "case 'auth_register'");
 $regSql = shUnitStrings($api, "case 'auth_register'");   // SQL is opaque in the code view
 shOk("auth_register is a locatable case unit", $reg !== '');
-/* Mutation: delete the INSERT → the dead 20/hr cap never fills again → RED. */
-shOk("auth_register records the attempt (INSERT tblLoginAttempts … 'auth_register')",
-    strpos($reg, "@SQL:INSERT:tblLoginAttempts@") !== false
-    && strpos($regSql, "INSERT INTO tblLoginAttempts") !== false
-    && strpos($regSql, "'auth_register'") !== false);
+/* #1929 — the raw INSERT literal moved into the shared write primitive
+   loginAttemptsInsert() (includes/rate_limit.php), which every writer now
+   funnels through so the new Action column gets stamped consistently
+   (rule #35: one write primitive, not a fork per call site). The case body
+   now calls that helper rather than preparing its own INSERT, so the
+   fingerprint moves from a SQL-literal marker to a function-call marker.
+   Mutation: delete the loginAttemptsInsert(…, 'auth_register') call → the
+   dead 20/hr cap never fills again → RED. */
+shOk("auth_register records the attempt via the shared loginAttemptsInsert() primitive",
+    strpos($reg, 'loginAttemptsInsert(') !== false
+    && substr_count($regSql, 'auth_register') >= 3);   // 1 in the SELECT text below + Username/Action args
 /* The count read is action-scoped so a busy login IP can't block signup: the
    SELECT WHERE clause names the action. Mutation: drop the scope → RED. */
 shOk("auth_register count read is action-scoped (Username = 'auth_register')",

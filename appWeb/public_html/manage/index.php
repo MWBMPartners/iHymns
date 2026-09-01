@@ -93,7 +93,18 @@ try {
    home tiles. */
 $totalSongbooks= $tryInt('SELECT COUNT(*) FROM tblSongbooks WHERE SongCount > 0 AND ' . songbookVisibleSql($db, ''));
 $pendingReqs   = $tryInt("SELECT COUNT(*) FROM tblSongRequests WHERE Status = 'pending'");
-$logins24h     = $tryInt('SELECT COUNT(*) FROM tblLoginAttempts WHERE Success = 1 AND AttemptedAt >= (NOW() - INTERVAL 1 DAY)');
+/* #1929 — scoped to Action='login' once the column exists, so a flood of
+   unrelated attempts (registration, service_join, …) can no longer inflate
+   this tile. Gated on loginAttemptsActionReady() so an un-migrated install
+   keeps reading exactly the query it always has ($tryInt's try/catch would
+   otherwise degrade an un-migrated install's tile to 0 on an unknown-column
+   error — this avoids that regression entirely). */
+$loginActionReady = loginAttemptsActionReady($db);
+$logins24h     = $tryInt(
+    'SELECT COUNT(*) FROM tblLoginAttempts WHERE Success = 1'
+    . ($loginActionReady ? " AND Action = 'login'" : '')
+    . ' AND AttemptedAt >= (NOW() - INTERVAL 1 DAY)'
+);
 $views24h      = $tryInt('SELECT COUNT(*) FROM tblSongHistory WHERE ViewedAt >= (NOW() - INTERVAL 1 DAY)');
 
 /* User counts by role */

@@ -167,6 +167,76 @@ function tarlExtractCase(string $source, string $case): ?string
     return substr($source, $start, $next - $start);
 }
 
+/**
+ * Extract every PHP string literal (single- or double-quoted) that contains
+ * $needle, tolerant of the literal spanning several source lines.
+ *
+ * ELI5: find "tblLoginAttempts", then look just a little to the left for the
+ * quote mark that opened its string and just a little to the right for the
+ * one that closes it — like finding a word on a page and then finding the
+ * quotation marks around the sentence it sits in, instead of re-reading the
+ * WHOLE page character by character every time.
+ *
+ * WHY THIS EXISTS RATHER THAN ONE GLOBAL REGEX (rule #34's own worked
+ * lesson, discovered writing THIS guard). The obvious regex —
+ * `/(['"])((?:(?!\1).)*?tblLoginAttempts(?:(?!\1).)*?)\1/s` — matches a
+ * needle inside ANY pair of same-type quotes ANYWHERE in the file, so its
+ * negative-lookahead has to re-try at every byte across the whole ~1.4 MB of
+ * api.php. That is catastrophic backtracking by construction, and it does
+ * not time out or warn — it hits PHP's PCRE JIT stack limit and
+ * preg_match_all() returns exactly 0 matches, silently. A guard whose
+ * detector is broken reads as "found nothing to complain about" — the exact
+ * wrong-but-green failure rule #34 exists to catch, and it was caught only
+ * because a deliberately reintroduced violation was mutation-tested and
+ * stayed green when it should not have.
+ *
+ * BOUNDING THE SEARCH is what fixes it: find $needle first with a cheap
+ * literal strpos() scan (fast, no backtracking), then look only within a
+ * SMALL window on either side for the enclosing quote characters. Every
+ * `tblLoginAttempts` string literal in this codebase places the table name
+ * within the first ~60 characters of its opening quote (right after
+ * `FROM ` / `INTO `), so a 300-byte lookback and an 800-byte lookahead are
+ * both far larger than any real literal needs while staying cheap.
+ *
+ * @param string $src    Source to scan (comment-stripped recommended).
+ * @param string $needle Substring the returned literals must contain.
+ * @return string[] Decoded literal bodies (quotes stripped, escapes NOT
+ *                   processed — none of the literals this is used for
+ *                   contain escape sequences).
+ */
+function tarlExtractLiteralsContaining(string $src, string $needle): array
+{
+    $out = [];
+    $len = strlen($src);
+    $searchFrom = 0;
+    while (($pos = strpos($src, $needle, $searchFrom)) !== false) {
+        $searchFrom = $pos + strlen($needle);
+
+        $backStart = max(0, $pos - 300);
+        $before = substr($src, $backStart, $pos - $backStart);
+        $qSingle = strrpos($before, "'");
+        $qDouble = strrpos($before, '"');
+        if ($qSingle === false && $qDouble === false) { continue; }
+        if ($qDouble === false || ($qSingle !== false && $qSingle > $qDouble)) {
+            $quote = "'";
+            $openPos = $backStart + $qSingle;
+        } else {
+            $quote = '"';
+            $openPos = $backStart + $qDouble;
+        }
+
+        $closePos = strpos($src, $quote, $pos);
+        if ($closePos === false || $closePos - $openPos > 4000) {
+            // No plausible close within reach — not a real literal match.
+            continue;
+        }
+
+        $out[] = substr($src, $openPos + 1, $closePos - $openPos - 1);
+        $searchFrom = min($len, $closePos + 1);
+    }
+    return $out;
+}
+
 /* ===========================================================================
  * SECTION 1 — #1028 pure decision helpers (behaviour)
  * ======================================================================== */
@@ -427,32 +497,57 @@ if ($loginCase !== null) {
 }
 
 /* --- 3d. The shared constants compose with the per-IP cap ---------------- */
+/* #1929 — read via the extract+eval technique rather than hardcoding 10/900:
+   the per-IP threshold and window now live in their OWN named constants
+   (IHYMNS_AUTH_IP_MAX / IHYMNS_AUTH_IP_WINDOW, includes/rate_limit.php)
+   instead of being two bare literals repeated at each login call site, so
+   this guard should read the SAME source of truth the code does rather than
+   re-typing the numbers a second time (rule #34 — a hardcoded expectation
+   drifts silently the moment either constant changes). */
+$ipMax = $ipWin = 0;
+if ($rateSrc !== '') {
+    $ipMax = preg_match('/const\s+IHYMNS_AUTH_IP_MAX\s*=\s*(\d+)/', $rateSrc, $m) ? (int)$m[1] : 0;
+    $ipWin = preg_match('/const\s+IHYMNS_AUTH_IP_WINDOW\s*=\s*(\d+)/', $rateSrc, $m) ? (int)$m[1] : 0;
+}
+tarl($ipMax > 0, '3.13a IHYMNS_AUTH_IP_MAX is defined in includes/rate_limit.php');
 if ($rateSrc !== '') {
     $accMax = preg_match('/const\s+IHYMNS_AUTH_ACCT_MAX\s*=\s*(\d+)/', $rateSrc, $m) ? (int)$m[1] : 0;
     $accWin = preg_match('/const\s+IHYMNS_AUTH_ACCT_WINDOW\s*=\s*(\d+)/', $rateSrc, $m) ? (int)$m[1] : 0;
-    tarl($accMax > 10,
-        '3.14 IHYMNS_AUTH_ACCT_MAX (' . $accMax . ') exceeds the per-IP cap (10) — unreachable from one address');
-    tarl($accWin === 900,
-        '3.15 IHYMNS_AUTH_ACCT_WINDOW (' . $accWin . ') matches the per-IP 15-minute window so the two compose');
+    tarl($ipMax > 0 && $accMax > $ipMax,
+        '3.14 IHYMNS_AUTH_ACCT_MAX (' . $accMax . ') exceeds IHYMNS_AUTH_IP_MAX (' . $ipMax . ') — unreachable from one address');
+    tarl($ipWin > 0 && $accWin === $ipWin,
+        '3.15 IHYMNS_AUTH_ACCT_WINDOW (' . $accWin . ') matches IHYMNS_AUTH_IP_WINDOW (' . $ipWin . ') so the two compose');
 }
 
 /* --- 3e. EVERY login surface got the shared bucket (tree-derived) -------- */
 /* Derive the login-surface set from the tree rather than a typed list: a
-   credential-LOGIN lockout surface is one that verifies a password AND carries
-   the per-IP login brute-force count query `IpAddress = ? AND Success = 0`. The
-   IpAddress-keyed query is what distinguishes a LOGIN (an anonymous caller
-   establishing a session, keyed on the client IP) from a RE-AUTH gate (an
-   already-signed-in admin re-proving identity — e.g. setup-database.php's
-   secret_rotate, which looks up by session Id and keys its own isolated
-   lockout on `Username = ?` with an EMPTY IpAddress, and MUST NOT share the
-   login bucket per #1466). A future third login surface following the house
-   per-IP-lockout pattern is then automatically DEMANDED to check the shared
-   account bucket. */
+   credential-LOGIN lockout surface is one that verifies a password AND calls
+   the shared per-IP login-failure reader authLoginIpFailureCount()
+   (includes/rate_limit.php, #1929).
+   PRE-#1929 this was fingerprinted on the literal SELECT text
+   `IpAddress = ? AND Success = 0` — that fingerprint broke the moment the
+   query moved into the shared helper, and it broke in a genuinely
+   instructive way worth keeping in this comment: api.php's four OTHER,
+   correctly Username-scoped namespace readers (auth_register / email_verify
+   / auth_apple / account_delete) each happen to CONTAIN that exact substring
+   too (`... WHERE IpAddress = ? AND Success = 0 AND Username = 'x' ...`), so
+   the old heuristic kept "detecting" api.php as a login surface by
+   COINCIDENCE even after the real login query left it, while silently
+   losing manage/includes/auth.php the instant its own copy was refactored —
+   a guard that stays green for the wrong reason is worse than one that goes
+   red (rule #34). Fingerprinting the SHARED FUNCTION CALL instead is
+   precise: it is true only for a file that actually asks the shared
+   login-lockout reader, never one that merely contains similar-looking SQL.
+   rate_limit.php itself is excluded — it DEFINES authLoginIpFailureCount(),
+   it is not a caller, and it has no password_verify() call anyway. A future
+   third login surface following the house per-IP-lockout pattern is then
+   automatically DEMANDED to check the shared account bucket. */
 $loginSurfaceFiles = [];
 foreach ($phpFiles as $pf) {
+    if (basename($pf) === 'rate_limit.php') { continue; }
     $src = tarlStripComments((string)file_get_contents($pf));
     $isLoginLockoutSurface = strpos($src, 'password_verify(') !== false
-        && strpos($src, 'IpAddress = ? AND Success = 0') !== false;
+        && strpos($src, 'authLoginIpFailureCount(') !== false;
     if ($isLoginLockoutSurface) { $loginSurfaceFiles[] = $pf; }
 }
 tarl(count($loginSurfaceFiles) >= 2,
@@ -551,6 +646,137 @@ if ($posProbe !== false && $posBootstrap !== false && $posProbe < $posBootstrap)
     tarl(strpos($probe, "header('Cache-Control: no-store')") !== false,
         '4.13 probe responses are no-store (a cached "ok" from a dead node is worse than none)');
 }
+
+/* ===========================================================================
+ * SECTION 5 — #1929 action-scoped login lockout + #1930 structural hardening
+ * ===========================================================================
+ * #1929 gave the shared per-IP login-lockout query its own extracted seam,
+ * `authLoginIpFailureCountSql()` (+ its DB-calling wrapper
+ * `authLoginIpFailureCount()`), and its own write primitive
+ * `loginAttemptsInsert()`, all in includes/rate_limit.php. #1930 asked for
+ * the CI guard itself to be hardened so this class of drift — an unscoped
+ * counter query reappearing somewhere in the tree — is caught structurally,
+ * not just pinned against today's four known call sites (which
+ * tests/php/test-security-hardening-1906.php already covers individually).
+ * ======================================================================== */
+
+/* --- 5a. authLoginIpFailureCountSql() behaviour: never-weaker, DB-free --- */
+$fnSql = $rateSrc !== '' ? tarlExtractFunction($rateSrc, 'authLoginIpFailureCountSql') : null;
+tarl($fnSql !== null, '5.1 authLoginIpFailureCountSql() is defined in includes/rate_limit.php');
+if ($fnSql !== null) {
+    /* The function reads IHYMNS_AUTH_IP_WINDOW; define it from the SAME
+       source read in 3d (not re-typed) before eval'ing the isolated body. */
+    if (!defined('IHYMNS_AUTH_IP_WINDOW')) {
+        define('IHYMNS_AUTH_IP_WINDOW', $ipWin > 0 ? $ipWin : 900);
+    }
+    eval($fnSql);
+
+    /* NEVER-WEAKER PROOF 1: the un-migrated fallback (false) must be
+       functionally BYTE-EQUAL (whitespace-normalised — indentation is not
+       semantic) to the query every login surface ran before #1929, so an
+       un-migrated install's lockout is behaviourally UNCHANGED. */
+    $legacyQuery = "SELECT COUNT(*) FROM tblLoginAttempts WHERE IpAddress = ? AND Success = 0"
+        . " AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 15 MINUTE)";
+    $normFalse = preg_replace('/\s+/', ' ', trim(authLoginIpFailureCountSql(false)));
+    tarl($normFalse === $legacyQuery,
+        '5.2 authLoginIpFailureCountSql(false) is functionally byte-equal to the '
+        . 'pre-#1929 query (found: ' . $normFalse . ')');
+
+    /* NEVER-WEAKER PROOF 2: the migrated branch (true) adds ONLY the Action
+       scope — nothing about the window, the operator, or the table changed
+       alongside it. */
+    $normTrue = preg_replace('/\s+/', ' ', trim(authLoginIpFailureCountSql(true)));
+    $expectedTrue = "SELECT COUNT(*) FROM tblLoginAttempts WHERE IpAddress = ? AND Action = 'login' AND Success = 0"
+        . " AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 15 MINUTE)";
+    tarl($normTrue === $expectedTrue,
+        "5.3 authLoginIpFailureCountSql(true) adds ONLY \"AND Action = 'login'\" "
+        . '(found: ' . $normTrue . ')');
+    tarl(str_replace(" AND Action = 'login'", '', $normTrue) === $normFalse,
+        '5.4 the ONLY textual difference between the two branches is the Action clause');
+
+    /* Same proof again, but over the SOURCE TEXT rather than the eval'd
+       behaviour, with a whitespace-normalised regex — this is what #1930
+       specifically asked to be checkable independent of how the string is
+       laid out across lines. */
+    $fnSqlNorm = preg_replace('/\s+/', ' ', $fnSql);
+    tarl(
+        (bool) preg_match("/IpAddress\s*=\s*\?\s*AND\s*Action\s*=\s*'login'\s*AND\s*Success\s*=\s*0/", $fnSqlNorm),
+        '5.5 (#1930) the ready-branch SQL text itself is action-scoped (source-level regex, not just eval)'
+    );
+}
+
+/* --- 5b. Exactly ONE definition of each #1929 primitive, tree-wide ------- */
+$ipFailureDefs = $ipFailureSqlDefs = $loginInsertDefs = 0;
+foreach ($phpFiles as $pf) {
+    $src = tarlStripComments((string)file_get_contents($pf));
+    $ipFailureDefs    += preg_match_all('/function\s+authLoginIpFailureCount\s*\(/', $src);
+    $ipFailureSqlDefs += preg_match_all('/function\s+authLoginIpFailureCountSql\s*\(/', $src);
+    $loginInsertDefs  += preg_match_all('/function\s+loginAttemptsInsert\s*\(/', $src);
+}
+tarl($ipFailureDefs === 1,
+    '5.6 exactly ONE authLoginIpFailureCount() definition tree-wide (found ' . $ipFailureDefs . ')');
+tarl($ipFailureSqlDefs === 1,
+    '5.7 exactly ONE authLoginIpFailureCountSql() definition tree-wide (found ' . $ipFailureSqlDefs . ')');
+tarl($loginInsertDefs === 1,
+    '5.8 exactly ONE loginAttemptsInsert() definition tree-wide (found ' . $loginInsertDefs . ')');
+
+/* --- 5c. (#1930) no unscoped `Success = 0` SELECT can reappear ----------- */
+/* This is the structural half of #1930: it does not matter whether TODAY's
+   handful of call sites are all correctly scoped (pinned individually above
+   and in test-security-hardening-1906.php) — #1930 specifically asked that a
+   FUTURE unscoped copy be caught even if nobody remembers to update this
+   file. Every string literal that mentions tblLoginAttempts is extracted
+   (single- or double-quoted, DOTALL so a query spanning several source lines
+   is read whole), whitespace-normalised, and — for the ones that look like a
+   SELECT — flagged if `Success = 0` appears WITHOUT a `Username =` or
+   `Action =` scope anywhere in that same literal. Whitespace-normalising
+   before matching is what closes the specific gap #1930 names: a spacing
+   variant of the unscoped query (extra blank line, different indent) cannot
+   dodge a naive byte-for-byte string search. */
+$unscopedSelects = [];
+foreach ($phpFiles as $pf) {
+    if (basename($pf) === 'rate_limit.php') { continue; }   // defines the scoped builder itself
+    $src = tarlStripComments((string)file_get_contents($pf));
+    foreach (tarlExtractLiteralsContaining($src, 'tblLoginAttempts') as $literal) {
+        $norm = preg_replace('/\s+/', ' ', trim($literal));
+        if (!preg_match('/^SELECT\b/i', $norm)) { continue; }        // writes are covered in 5d
+        if (preg_match('/Success\s*=\s*0/i', $norm)
+            && !preg_match('/Username\s*=/i', $norm)
+            && !preg_match('/Action\s*=/i', $norm)) {
+            $unscopedSelects[] = str_replace($docroot . '/', '', $pf) . ': ' . $norm;
+        }
+    }
+}
+tarl($unscopedSelects === [],
+    "5.9 (#1930) no file outside rate_limit.php runs an unscoped `Success = 0` SELECT "
+    . 'against tblLoginAttempts (found: ' . implode(' | ', $unscopedSelects) . ')');
+
+/* --- 5d. (#1930) the ONE write primitive, with the ONE deliberate exemption */
+/* setup-database.php's secret_rotate re-auth lockout (#1466) is deliberately
+   ISOLATED from the shared login bucket — see that file's own extensive
+   comment — so it is exempt, but the exemption is anchored on its own
+   `$emptyIp = ''` marker sitting near the SPECIFIC INSERT occurrence, not on
+   "this filename may contain any raw INSERT anywhere". A stray raw INSERT
+   added elsewhere in that (large) file would still be caught. */
+$badInserts = [];
+foreach ($phpFiles as $pf) {
+    if (basename($pf) === 'rate_limit.php') { continue; }   // defines the primitive itself
+    $src = tarlStripComments((string)file_get_contents($pf));
+    if (!preg_match_all('/INSERT\s+INTO\s+tblLoginAttempts/i', $src, $mm, PREG_OFFSET_CAPTURE)) {
+        continue;
+    }
+    foreach ($mm[0] as $hit) {
+        $pos = $hit[1];
+        if (basename($pf) === 'setup-database.php') {
+            $window = substr($src, max(0, $pos - 1500), 3000);
+            if (strpos($window, "\$emptyIp = ''") !== false) { continue; }
+        }
+        $badInserts[] = str_replace($docroot . '/', '', $pf) . ' @byte' . $pos;
+    }
+}
+tarl($badInserts === [],
+    '5.10 (#1930) no raw `INSERT INTO tblLoginAttempts` outside rate_limit.php, except '
+    . "setup-database.php's isolated secret_rotate sentinel (found: " . implode(' | ', $badInserts) . ')');
 
 /* ======================================================================== */
 

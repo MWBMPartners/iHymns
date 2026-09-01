@@ -3218,14 +3218,12 @@ if ($action !== null) {
             }
             /* Record THIS attempt so the cap above counts it for the next hour
                (the write half that was missing). Every registration POST leaves
-               one row; outcome-independent (a flood is a flood). */
+               one row; outcome-independent (a flood is a flood). #1929 —
+               Action='auth_register' via the shared primitive
+               (includes/rate_limit.php), so a registration flood can no
+               longer inflate the unrelated LOGIN lockout for this IP. */
             if ($clientIp !== '') {
-                $regAtt = $db->prepare(
-                    "INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, 'auth_register', 0)"
-                );
-                $regAtt->bind_param('s', $clientIp);
-                $regAtt->execute();
-                $regAtt->close();
+                loginAttemptsInsert($db, $clientIp, 'auth_register', false, 'auth_register');
             }
 
             $rawBody = file_get_contents('php://input');
@@ -3504,19 +3502,15 @@ if ($action !== null) {
 
             $db = getDbMysqli();
 
-            /* Brute force protection: check recent failed attempts from this IP (#290) */
-            $stmt = $db->prepare(
-                'SELECT COUNT(*) FROM tblLoginAttempts
-                 WHERE IpAddress = ? AND Success = 0
-                 AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 15 MINUTE)'
-            );
-            $stmt->bind_param('s', $clientIp);
-            $stmt->execute();
-            $row = $stmt->get_result()->fetch_row();
-            $stmt->close();
-            $recentFailures = (int)($row[0] ?? 0);
+            /* Brute force protection: check recent failed attempts from this IP (#290).
+               #1929 — action-scoped via the ONE shared helper (includes/rate_limit.php)
+               so an unrelated action (registration, service_join, …) writing into the
+               same generic tblLoginAttempts table can no longer inflate THIS lockout.
+               De-duplicates what used to be a byte-for-byte copy of this same query in
+               manage/includes/auth.php's attemptLogin(). */
+            $recentFailures = authLoginIpFailureCount($clientIp);
 
-            if ($recentFailures >= 10) {
+            if ($recentFailures >= IHYMNS_AUTH_IP_MAX) {
                 logActivity(
                     'auth.login',
                     'user',
@@ -3643,13 +3637,10 @@ if ($action !== null) {
                    slightly different things — tblLoginAttempts is
                    tight, indexed for fast brute-force lookup;
                    tblActivityLog carries richer context (RequestId,
-                   UA, reason). */
-                $stmt = $db->prepare(
-                    'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 0)'
-                );
-                $stmt->bind_param('ss', $clientIp, $username);
-                $stmt->execute();
-                $stmt->close();
+                   UA, reason). #1929 — Action='login' via the shared
+                   primitive (includes/rate_limit.php), so this row is
+                   counted by the action-scoped lockout read above. */
+                loginAttemptsInsert($db, $clientIp, $username, false, 'login');
 
                 /* #1027 — the SAME failure also counts toward the per-account
                    bucket checked at the top of this case. Written through the
@@ -3694,13 +3685,9 @@ if ($action !== null) {
                 break;
             }
 
-            /* Log successful login attempt */
-            $stmt = $db->prepare(
-                'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 1)'
-            );
-            $stmt->bind_param('ss', $clientIp, $username);
-            $stmt->execute();
-            $stmt->close();
+            /* Log successful login attempt. #1929 — Action='login' via the
+               shared primitive (includes/rate_limit.php). */
+            loginAttemptsInsert($db, $clientIp, $username, true, 'login');
 
             /* Update last login timestamp and count */
             $userIdInt = (int)$user['Id'];
@@ -5308,13 +5295,12 @@ if ($action !== null) {
 
             if ($verified === null) {
                 /* SECURITY: record a code-mode miss so the per-IP throttle above
-                   sees it (the counter reads Success=0, Username='email_verify'). */
+                   sees it (the counter reads Success=0, Username='email_verify').
+                   #1929 — Action='email_verify' via the shared primitive
+                   (includes/rate_limit.php). */
                 if ($isCodeMode && $verifyIp !== '') {
                     $db = getDbMysqli();
-                    $fa = $db->prepare("INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, 'email_verify', 0)");
-                    $fa->bind_param('s', $verifyIp);
-                    $fa->execute();
-                    $fa->close();
+                    loginAttemptsInsert($db, $verifyIp, 'email_verify', false, 'email_verify');
                 }
                 /* SECURITY (#1906): and spend the PER-EMAIL failure budget so the
                    distributed-across-IPs cap above fills regardless of source IP. */
@@ -5350,16 +5336,14 @@ if ($action !== null) {
                 setAuthTokenCookie($loginResult['token'], time() + 30 * 86400);
             }
 
-            /* Log the successful login */
+            /* Log the successful login. #1929 — Action='login' via the shared
+               primitive: a completed email-verify sign-in IS a login, so it
+               should count toward the (rare, positive) login stats readers
+               that scope on Action='login' just like a password login does. */
             $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
             $db = getDbMysqli();
-            $stmt = $db->prepare(
-                'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 1)'
-            );
             $loginUsername = $loginResult['user']['username'];
-            $stmt->bind_param('ss', $clientIp, $loginUsername);
-            $stmt->execute();
-            $stmt->close();
+            loginAttemptsInsert($db, $clientIp, $loginUsername, true, 'login');
 
             /* Audit (#535). Mode + email captured so admins can answer
                "is the magic-link path being used at all?" Token never
@@ -5682,10 +5666,12 @@ if ($action !== null) {
             $stmt->execute();
             $stmt->close();
 
-            $stmt = $db->prepare("INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, 'auth_apple', 1)");
-            $stmt->bind_param('s', $clientIp);
-            $stmt->execute();
-            $stmt->close();
+            /* #1929 — Action='login': a completed Sign in with Apple IS a
+               login, so it counts toward the Action-scoped login stats
+               readers just like a password login does. The Username
+               column keeps its historical 'auth_apple' sentinel value
+               (unchanged) — this row was never keyed on the real username. */
+            loginAttemptsInsert($db, $clientIp, 'auth_apple', true, 'login');
 
             $isPrivateRelayFlag = false;
             $claimEmailForFlag = is_string($claims['email'] ?? null) ? $claims['email'] : '';
@@ -26719,14 +26705,14 @@ function _authApplePlatformResolve($platformRaw): array
  * `auth.login_apple` failure row in tblActivityLog carrying ONLY the fixed
  * `$reason` code — never token/claim content (#1402 §2.7 — the client always
  * sees the SAME generic 401 message; the reason is for operator triage only).
+ * #1929 — Action='auth_apple' via the shared primitive
+ * (includes/rate_limit.php), so a flood of failed Apple-token verifies can no
+ * longer inflate the unrelated LOGIN lockout for this IP.
  */
 function _authAppleRecordFailure(\mysqli $db, string $clientIp, string $reason): void
 {
     try {
-        $stmt = $db->prepare("INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, 'auth_apple', 0)");
-        $stmt->bind_param('s', $clientIp);
-        $stmt->execute();
-        $stmt->close();
+        loginAttemptsInsert($db, $clientIp, 'auth_apple', false, 'auth_apple');
     } catch (\Throwable $_e) {
         /* Best-effort — a rate-limit bookkeeping failure must never block
            the (already-failing) response from going out. */
@@ -27118,15 +27104,14 @@ function _accountDeleteHasAppleLink(\mysqli $db, int $userId): bool
  * tblLoginAttempts row (feeds the per-IP rate limit) plus an
  * `account.delete` failure row in tblActivityLog carrying ONLY the fixed
  * `$reason` code and the (already-known, non-PII) numeric user id — never a
- * password, code, or token value.
+ * password, code, or token value. #1929 — Action='account_delete' via the
+ * shared primitive (includes/rate_limit.php), so a flood of failed re-auth
+ * attempts can no longer inflate the unrelated LOGIN lockout for this IP.
  */
 function _accountDeleteRecordFailure(\mysqli $db, string $clientIp, int $userId, string $reason): void
 {
     try {
-        $stmt = $db->prepare("INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, 'account_delete', 0)");
-        $stmt->bind_param('s', $clientIp);
-        $stmt->execute();
-        $stmt->close();
+        loginAttemptsInsert($db, $clientIp, 'account_delete', false, 'account_delete');
     } catch (\Throwable $_e) {
         /* Best-effort — a rate-limit bookkeeping failure must never block
            the (already-failing) response from going out. */
