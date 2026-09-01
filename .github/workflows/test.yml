@@ -675,10 +675,11 @@ jobs:
           fi
 
   # ===========================================================================
-  # PHP forward-compat matrix (#1200) — actually runs the PHP lint + the PHP
-  # test suite on the SUPPORTED interpreter versions: 8.4 (backward-compat
-  # floor) and 8.5 (project target, per ProjectBrief). Catches syntax that only
-  # breaks on a newer PHP, on every push/PR (this workflow's existing triggers).
+  # PHP forward-compat matrix (#1200) — actually runs the PHP lint + EVERY
+  # tests/php/*.php suite on the SUPPORTED interpreter versions: 8.4
+  # (backward-compat floor) and 8.5 (project target, per ProjectBrief).
+  # Catches syntax — and behaviour — that only breaks on a newer PHP, on
+  # every push/PR (this workflow's existing triggers).
   #
   # Deliberately a SEPARATE job from `lint` (not a matrix ON `lint`): the `lint`
   # job's name "Lint & Validate" is a REQUIRED status check on alpha branch
@@ -686,6 +687,44 @@ jobs:
   # "(8.5)", orphaning the required check and soft-locking auto-merge (see
   # .claude/CLAUDE.md CI lesson #1). This job is additive + non-blocking until
   # someone adds "PHP 8.4" / "PHP 8.5" to alpha's required checks in repo Settings.
+  #
+  # HISTORY — TREE-DERIVED, NOT HAND-LISTED (#1682, rule #34)
+  # -----------------------------------------------------------------------
+  # This job used to hand-list ~29 individual `php tests/php/...` invocations
+  # instead of calling `tools/run-php-tests.php` (the ONE glob-derived runner
+  # the `lint` job uses). That is the exact rule-#34 anti-pattern: a new
+  # tests/php/*.php file (e.g. test-orphan-inventory.php,
+  # test-openapi-actions-exist.php) was covered on PHP-version-of-the-`lint`-
+  # job's-runner only, and NEVER on 8.4/8.5 here, with no signal that coverage
+  # had fallen behind — the hand-list simply never grew.
+  #
+  # Two things had to be verified before swapping in the glob runner, so this
+  # job does not go red where the hand-list happened to dodge a gap:
+  #
+  #   1. DSN/DB: several tests/php/*.php reference IHYMNS_TEST_DSN (e.g.
+  #      test-schema-installs.php, test-live-follow-idle.php,
+  #      test-secret-crypto-rewrap.php — 23 files). Verified directly: with
+  #      NO IHYMNS_TEST_DSN set and NO MySQL/MariaDB reachable at all, every
+  #      one of those 23 files exits 0 — each prints an explicit "SKIP ... no
+  #      MySQL/MariaDB reachable" for its live-DB half and still runs its pure
+  #      assertions. So this job deliberately carries NO mariadb service —
+  #      the DSN tests self-skip cleanly, and adding a service here would
+  #      only cost CI minutes for zero extra coverage.
+  #   2. Node/npm: three tests/php/*.php (test-pp7-chord-import.php,
+  #      test-pp7-roundtrip.php, test-pp7-setlist-roundtrip.php) shell out to
+  #      a `node` fixture generator built on the `protobufjs` npm package
+  #      (package.json dependency). Verified directly: those three genuinely
+  #      HARD-FAIL (exit 1, no skip) when node_modules/ is absent — unlike
+  #      the DSN tests, they have no graceful-skip path. This job therefore
+  #      adds the same Node.js setup + `npm ci` the `lint` job already runs,
+  #      so `node_modules/protobufjs` exists before the PHP suite shells out
+  #      to it. (The other two node-invoking tests, inside
+  #      test-new-song-wizard.php, run plain `node` scripts with no external
+  #      package and already passed either way.)
+  #
+  # With both of those satisfied, `php tools/run-php-tests.php` — the exact
+  # glob (`tests/php/*.php`, non-recursive) the `lint` job uses — passed all
+  # 259 files locally under these conditions (no DSN, no DB, npm ci run).
   # ===========================================================================
   php-compat:
     name: PHP ${{ matrix.php }}
@@ -705,6 +744,19 @@ jobs:
         with:
           php-version: ${{ matrix.php }}
           coverage: none
+
+      # Needed so the pp7 chord/roundtrip/setlist-roundtrip fixture
+      # generators (which shell out to `node` and require the `protobufjs`
+      # npm package) don't hard-fail for want of node_modules/ — see the box
+      # comment above `php-compat:` for the verified evidence.
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install npm dependencies
+        run: npm ci
 
       # Same embedded-PHP-tag guard as the lint job — re-run per interpreter so
       # a tag that only fatals on a newer PHP is still caught (#536 incident).
@@ -738,95 +790,14 @@ jobs:
           fi
           echo "All PHP files parse cleanly on $(php -r 'echo PHP_VERSION;')."
 
-      - name: Migration registry sanity
-        run: php tests/php/test-migration-registry.php
-
-      - name: Schema-coverage drift guard
-        run: php tests/php/test-schema-coverage.php
-
-      - name: Lyric-line diff (Id preservation)
-        run: php tests/php/test-lyric-lines-diff.php
-
-      - name: Line enrichment validators
-        run: php tests/php/test-line-enrichment.php
-
-      - name: Line-first assembler (P4 C1)
-        run: php tests/php/test-lyric-lines-read.php
-
-      - name: Component JSON-payload column guard (P4 C5)
-        run: php tests/php/test-component-json-guard.php
-
-      # No Node here — this job is PHP-only (see the box comment above
-      # `php-compat:`) — so only the PHP guard runs; the Node unit tests
-      # (test-propresenter-export.js / test-export-ui.js) run once, in `lint`.
-      - name: Fragment inline-script CSP guard (#1565)
-        run: php tests/php/test-fragment-inline-scripts.php
-
-      - name: Hard-key counterpart auto-promoter planner (#1125)
-        run: php tests/php/test-auto-link-hard-id.php
-
-      - name: ChordPro importer (incl. #1126 chord retention)
-        run: php tests/php/test-chordpro-parser.php
-
-      - name: Per-action content-gating matcher (#1120)
-        run: php tests/php/test-content-access-action.php
-
-      - name: Content-gating no-op + signing dormancy (#1357 / #1358)
-        run: php tests/php/test-gating-noop.php
-
-      - name: Admin-configurable feature gating registry (#1481 P1)
-        run: php tests/php/test-gating-registry.php
-
-      - name: Admin-configurable feature gating enforcement (#1481 P2)
-        run: php tests/php/test-gating-rules.php
-
-      - name: OpenLyrics importer enrichment (#1130)
-        run: php tests/php/test-openlyrics-parser.php
-
-      - name: Deploy-path smell guard (#1196)
-        run: php tests/php/test-deploy-paths.php
-
-      - name: Song permalink redirect resolver (#1343)
-        run: php tests/php/test-song-redirects.php
-
-      - name: Song PublicId helper (#1343-B)
-        run: php tests/php/test-song-public-id.php
-
-      - name: Sign in with Apple — RS256 verify core (#1402)
-        run: php tests/php/test-apple-siwa-verify.php
-
-      - name: Sign in with Apple — ES256 client_secret (#1402)
-        run: php tests/php/test-apple-client-secret.php
-
-      - name: Auth response-shape parity lock (#1402)
-        run: php tests/php/test-auth-response-shape.php
-
-      - name: Sign in with Apple — static source guards (#1402/#1403)
-        run: php tests/php/test-apple-siwa-sources.php
-
-      - name: Sign in with Apple for web — dormancy gate + redirect URI (#1470)
-        run: php tests/php/test-apple-siwa-web.php
-
-      - name: auth_apple platform + single-audience guard (#1470)
-        run: php tests/php/test-auth-apple-platform.php
-
-      - name: Linked-account unlink — lockout guard + list masking (#1479)
-        run: php tests/php/test-auth-provider-unlink.php
-
-      - name: account_delete FK cascade coverage (#1403)
-        run: php tests/php/test-account-delete-fk-coverage.php
-
-      - name: Analytics-ingestion validation (#1448)
-        run: php tests/php/test-analytics-ingest.php
-
-      - name: RFC 8628 device-code pairing (#1407)
-        run: php tests/php/test-device-code.php
-
-      - name: APNs bridge — ES256 provider-token JWT (#1410)
-        run: php tests/php/test-apns-jwt.php
-
-      - name: Live Activities push bridge (#1429)
-        run: php tests/php/test-apns-live-activity-push.php
+      # Tree-derived: globs tests/php/*.php, so a NEW suite added there runs
+      # on this interpreter automatically with no hand-list edit (#1682).
+      # Deliberately no IHYMNS_TEST_DSN / mariadb service — see the box
+      # comment above `php-compat:` for the verified self-skip evidence.
+      - name: All PHP test suites (PHP ${{ matrix.php }})
+        run: |
+          echo "Running every tests/php/*.php suite on $(php -r 'echo PHP_VERSION;')..."
+          php tools/run-php-tests.php
 
   # ===========================================================================
   # Browser smoke test — the ONE runtime safety net none of the jobs above
