@@ -3022,7 +3022,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                        confirm() (a read-only report needs no speed-bump). */
                     $dryRunHref = '?action=' . htmlspecialchars($migAction) . $csrfQs;
                     ?>
-                    <div class="col-md-6">
+                    <div class="col-md-6" id="mig-<?= htmlspecialchars($migAction, ENT_QUOTES) ?>">
                         <div class="card bg-body-tertiary <?= $isManual ? 'border-danger' : 'border-secondary' ?> h-100">
                             <div class="card-body">
                                 <h5 class="card-title"><?= $card['title'] ?></h5>
@@ -4192,6 +4192,25 @@ if ($hasCredentials && defined('DB_HOST')) {
     import { bootSetupWizard }
         from '/js/modules/setup-wizard.js?v=<?= htmlspecialchars($_setupWizardJsVer, ENT_QUOTES) ?>';
     bootSetupWizard();
+</script>
+
+<?php /* #1714 residual 4 — deep-link reveal for a migration card's id="mig-<slug>"
+         (see $_renderCard above) when it sits inside the closed "already applied"
+         <details> expander (line ~3077). Most browsers already auto-open a <details>
+         ancestor of a fragment-navigation target per the HTML "scroll to the
+         fragment" algorithm, but that support isn't universal, so this is a small
+         belt-and-suspenders fallback. Lives HERE (not help.php, which only LINKS
+         to this page) because the hash target + the <details> it may be hidden
+         inside both live on THIS page — a script on the referring page never runs
+         on this one. */ ?>
+<script>
+(() => {
+    if (!location.hash) return;
+    const t = document.getElementById(location.hash.slice(1));
+    if (!t) return;
+    t.closest('details')?.setAttribute('open', '');
+    t.scrollIntoView();
+})();
 </script>
 
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-footer.php'; ?>

@@ -839,7 +839,7 @@ foreach ($sections as $s) {
                         Typed text that doesn't match a registry entry still saves fine (a script subtag must never be blocked from a valid import) &mdash; an amber note appears under the picker naming which field wasn't recognised, and upgrades to a warning if the whole composed tag isn't even grammatically valid BCP 47 (that shape the server would reject).
                     </p>
                     <p class="small text-muted mb-2">
-                        The full IANA Language Subtag Registry plus CLDR English display names ship bundled with the app and refresh themselves automatically every month &mdash; nobody needs to remember to update them. <a href="/manage/setup-database#bcp47">Database Setup → "Refresh BCP 47 reference data"</a> also has a manual live-fetch button for an immediate pull. Tags that end up not matching anything in the catalogue (typos, retired subtags) show up on <a href="/manage/languages?view=unknown">Languages → Unknown tags</a> for review.
+                        The full IANA Language Subtag Registry plus CLDR English display names ship bundled with the app and refresh themselves automatically every month &mdash; nobody needs to remember to update them. <a href="/manage/setup-database#mig-iana-language-subtag-registry">Database Setup → "Refresh BCP 47 reference data"</a> also has a manual live-fetch button for an immediate pull. Tags that end up not matching anything in the catalogue (typos, retired subtags) show up on <a href="/manage/languages?view=unknown">Languages → Unknown tags</a> for review.
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Closing the tab while there are unsaved changes loses them — auto-save catches most things, but treat Save as the source of truth.
@@ -2036,7 +2036,7 @@ foreach ($sections as $s) {
                     </p>
                     <ul>
                         <li><strong>Regenerate</strong> &mdash; issues a fresh key, shown once. Paste it into the GitHub repository's <code>IHYMNS_LANG_REFRESH_KEY</code> secret.</li>
-                        <li>The card also shows whether the one-time <a href="/manage/setup-database#bcp47">BCP 47 reference data</a> migration has been applied yet &mdash; the scheduled refresh stays dormant until it has, on purpose: an unattended job must never be the thing that first changes the database's structure.</li>
+                        <li>The card also shows whether the one-time <a href="/manage/setup-database#mig-iana-language-subtag-registry">BCP 47 reference data</a> migration has been applied yet &mdash; the scheduled refresh stays dormant until it has, on purpose: an unattended job must never be the thing that first changes the database's structure.</li>
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> this is entirely optional. Without it configured, the registry still works exactly as it always has &mdash; the manual "Refresh from IANA + CLDR" button on Database Setup still pulls the latest data on demand.
