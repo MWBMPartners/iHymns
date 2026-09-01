@@ -262,6 +262,37 @@ try {
     echo "tblWebhook*:           ERROR — " . $e->getMessage() . "\n";
 }
 
+/* 8. tblReadRateLimit windowed rate-limit counter prune (#1922).
+   ELI5: includes/read_rate_limit.php writes one row per (requester, endpoint,
+   minute-or-day window) it counts a public read against — nothing ever
+   deleted an old bucket, so the table only grew.
+   DETAIL: same single-table shape as the tblQrCache block (#6) above — a
+   recent, optional-migration table, existence-gated purely by the
+   surrounding try/catch (mysqli STRICT throws mysqli_sql_exception on a
+   missing table; caught below and printed as an informational line, so an
+   un-migrated install is a clean no-op — migrations aren't auto-applied,
+   rule #41). A bucket row is functionally dead the moment its own fixed
+   window rolls (every read in read_rate_limit.php matches on an exact,
+   currently-computed WindowStart — an old window is never looked at again),
+   so any retention here is pure margin; 30 days reuses the tblLoginAttempts
+   short-lived-counter horizon above (#4) rather than inventing a new one,
+   leaving comfortable room to inspect recent rate-limit activity without
+   letting the table grow unbounded. Filters on idx_WindowStart
+   (migrate-add-read-rate-limit.php); UTC_TIMESTAMP() matches the UTC frame
+   WindowStart is written in, exactly like block 4b/#6 above. */
+try {
+    $rateLimitRetentionDays = 30;
+    $stmt = $db->prepare('DELETE FROM tblReadRateLimit WHERE WindowStart < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY)');
+    $stmt->bind_param('i', $rateLimitRetentionDays);
+    $stmt->execute();
+    $count = $stmt->affected_rows;
+    echo "tblReadRateLimit:      $count expired rate-limit counter(s) deleted\n";
+    $totalDeleted += $count;
+    $stmt->close();
+} catch (\mysqli_sql_exception $e) {
+    echo "tblReadRateLimit:      ERROR — " . $e->getMessage() . "\n";
+}
+
 echo str_repeat('-', 50) . "\n";
 echo "Total deleted: $totalDeleted row(s)\n";
 echo "Cleanup complete.\n";
