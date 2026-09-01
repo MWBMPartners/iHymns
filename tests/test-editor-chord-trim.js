@@ -18,7 +18,7 @@
  *
  * v2 EDITOR HAS THE SAME BUG (discovered during this commit's authoring, not in the original
  * plan's file list — `.claude/propresenter-chords-plan.md` §7's C5 row names only editor.js):
- * `manage/editor/v2/structure-tab.js`'s own chords textarea (#1627 item 1, whose own comment says
+ * `manage/editor/v2/structure-tab.js`'s own chords UI (#1627 item 1, whose own comment says
  * it "mirrors v1's card layout order") is a SEPARATE, independent implementation of the identical
  * UI pattern — not a shared module (CLAUDE.md's modularity rule flags this duplication, but
  * splitting it into one shared control is a larger refactor out of scope here) — and carried the
@@ -26,10 +26,20 @@
  * would mean #1968 P6's own PP7-import chord support ships alongside a still-live corruption path
  * in the editor curators actually use day to day, so it is fixed in this SAME commit rather than
  * left for a separate one. Its own "clear semantics" logic (`rows.some((r) => r !== '')`, which
- * decides whether an all-blank textarea clears `comp.chords` to `[]`) is UNAFFECTED by switching
- * to right-trim-only — a line that is entirely whitespace still right-trims to `''` (every
- * character IS trailing whitespace), so that decision only changes for lines with a REAL leading
+ * decides whether an all-blank set of rows clears `comp.chords` to `[]`) is UNAFFECTED by switching
+ * to right-trim-only — a row that is entirely whitespace still right-trims to `''` (every
+ * character IS trailing whitespace), so that decision only changes for rows with a REAL leading
  * gap before their first chord, exactly the case this fix is FOR.
+ *
+ * #1263 UPDATE — v2's chords UI stopped being ONE shared multiline textarea (one line of chords
+ * per lyric line, newline-split) and became ONE `<input>` PER lyric line (the chord-drift-on-
+ * reorder fix: a lines-parallel `chords` array survives a reorder by staying content-matched to
+ * its line, not index-matched, via the new `remapChordsOnLinesChange()` — see
+ * tests/test-structure-chords-remap.js). The right-trim transform itself is UNCHANGED in shape —
+ * still `l.replace(/\s+$/, '')` — only its SOURCE changed, from `chordsArea.value.split('\n')` to
+ * `chordRowInputs.map((inp) => inp.value...)`; the v2 extractor below is re-pointed at that new
+ * statement and calls the extracted transform against a `{value: …}` stand-in for one `<input>`
+ * element instead of a raw string, mirroring what `onChordRowInput()` actually does per row.
  *
  * WHY A SOURCE-LEVEL EXTRACTION, NOT A FULL DOM TEST
  * -----------------------------------------------------
@@ -44,9 +54,9 @@
  * brace-depth matching directly in the source text, then EXECUTE that extracted body (via `new
  * Function`) against real input — so this test runs the REAL deployed transform, not a hand-typed
  * stand-in of what it's supposed to do. v1's `.map()` callback is a classic `function (l) { ... }`
- * (brace-delimited); v2's is a brace-less single-expression arrow `(l) => l.replace(...)`, so each
- * gets its OWN syntax-appropriate extractor below rather than forcing one generic parser onto two
- * different JS forms.
+ * (brace-delimited); v2's is a brace-less single-expression arrow `(inp) => inp.value.replace(...)`,
+ * so each gets its OWN syntax-appropriate extractor below rather than forcing one generic parser
+ * onto two different JS forms.
  *
  * MUTATION-PROVEN (rule #34), each performed once against the real working tree during authoring,
  * this test re-run and confirmed RED, then reverted (`git diff --stat` empty before moving on):
@@ -55,7 +65,8 @@
  *     exists to catch).
  *   - restored the pre-fix `l.trim()` in structure-tab.js -> its "preserves LEADING whitespace"
  *     row went RED the same way, independently (proving this guard actually checks BOTH files,
- *     not just one and assuming the other matches).
+ *     not just one and assuming the other matches). Re-confirmed again post-#1263, against the
+ *     new `chordRowInputs.map((inp) => inp.value.trim())` shape.
  *
  * Usage: node tests/test-editor-chord-trim.js
  */
@@ -185,45 +196,54 @@ console.log('\nv2 (structure-tab.js):');
     const v2Src = fs.readFileSync(
         path.join(PROJECT_ROOT, 'appWeb', 'public_html', 'manage', 'editor', 'v2', 'structure-tab.js'), 'utf8'
     );
+    /* #1263 — re-pointed from the retired single-textarea statement
+       (`const rows = chordsArea.value.split(...)`) at the per-line handler's
+       equivalent: one chord <input> per lyric line, read via
+       chordRowInputs.map(...) instead of one shared textarea's newline-split
+       value. Same extraction technique (extractStatement, brace/paren-depth
+       bound), same anchor SHAPE (`const rows = …`), new source expression. */
     const statement = extractStatement(
-        v2Src, 'const rows = chordsArea.value.split', 'v2 chords rows statement'
+        v2Src, 'const rows = chordRowInputs.map', 'v2 chords rows statement'
     );
 
-    test('v2: the chords rows statement does NOT call l.trim() (the #1968 P6 corruption bug)', () => {
-        assert.ok(!/\(l\)\s*=>\s*l\.trim\(\)/.test(statement),
-            'found the pre-fix l.trim() pattern — this destroys a positioned chord cell\'s leading column');
+    test('v2: the chords rows statement does NOT call inp.value.trim() (the #1968 P6 corruption bug)', () => {
+        assert.ok(!/\(inp\)\s*=>\s*inp\.value\.trim\(\)/.test(statement),
+            'found the pre-fix inp.value.trim() pattern — this destroys a positioned chord cell\'s leading column');
     });
     test('v2: the chords rows statement uses a RIGHT-trim-only regex (\\s+$)', () => {
-        assert.match(statement, /\(l\)\s*=>\s*l\.replace\(\s*\/\\s\+\$\/\s*,\s*''\s*\)/,
-            'expected (l) => l.replace(/\\s+$/, \'\') — a right-trim-only transform');
+        assert.match(statement, /\(inp\)\s*=>\s*inp\.value\.replace\(\s*\/\\s\+\$\/\s*,\s*''\s*\)/,
+            'expected (inp) => inp.value.replace(/\\s+$/, \'\') — a right-trim-only transform');
     });
 
-    // Extract "l.replace(...)" via paren-depth matching (never a naive "first )" regex, which
-    // would stop one paren too early and swallow the ENCLOSING .map()'s own closing paren
-    // instead) — then wrap it back into a callable arrow so this test runs the REAL deployed
-    // expression, not a hand-typed stand-in of it.
-    const replaceCall = extractCallExpression(statement, 'l.replace(', 'v2 l.replace(...) call');
+    // Extract "inp.value.replace(...)" via paren-depth matching (never a naive "first )" regex,
+    // which would stop one paren too early and swallow the ENCLOSING .map()'s own closing paren
+    // instead) — then wrap it back into a callable function so this test runs the REAL deployed
+    // expression, not a hand-typed stand-in of it. `inp` stands in for one chord <input> element
+    // (only its `.value` is read by the real expression), matching what onChordRowInput() actually
+    // hands the transform per row — NOT a raw string, unlike v1's `l` above.
+    const replaceCall = extractCallExpression(statement, 'inp.value.replace(', 'v2 inp.value.replace(...) call');
     // eslint-disable-next-line no-new-func
-    const trimFn = new Function('l', `return ${replaceCall};`);
+    const trimFn = new Function('inp', `return ${replaceCall};`);
+    const asInput = (value) => ({ value });
 
     test('v2: EXECUTING the extracted real transform — preserves LEADING whitespace (a positioned column)', () => {
-        assert.equal(trimFn('            G'), '            G',
+        assert.equal(trimFn(asInput('            G')), '            G',
             'a chord positioned at column 12 must keep its leading padding');
     });
     test('v2: EXECUTING the extracted real transform — strips TRAILING whitespace (incidental)', () => {
-        assert.equal(trimFn('G        D   '), 'G        D');
+        assert.equal(trimFn(asInput('G        D   ')), 'G        D');
     });
     test('v2: EXECUTING the extracted real transform — preserves INTERIOR whitespace exactly', () => {
-        assert.equal(trimFn('G                   D'), 'G                   D');
+        assert.equal(trimFn(asInput('G                   D')), 'G                   D');
     });
     test('v2: EXECUTING the extracted real transform — an all-whitespace line collapses to empty', () => {
-        assert.equal(trimFn('   '), '');
+        assert.equal(trimFn(asInput('   ')), '');
     });
     test('v2: EXECUTING the extracted real transform — an already-clean line is untouched', () => {
-        assert.equal(trimFn('C G Am'), 'C G Am');
+        assert.equal(trimFn(asInput('C G Am')), 'C G Am');
     });
     test('v2: EXECUTING the extracted real transform — an empty line stays empty', () => {
-        assert.equal(trimFn(''), '');
+        assert.equal(trimFn(asInput('')), '');
     });
 }
 

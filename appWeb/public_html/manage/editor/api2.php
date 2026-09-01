@@ -93,7 +93,7 @@ declare(strict_types=1);
  *                               uses, so TuneName can never again be written
  *                               without TuneId; answers { ok, field:'tuneName', tuneId }.
  *   POST component_upsert       { songId, component:{id?,type,number,sortOrder,lines[],chords?,language?,label?,sourceWorkId?} }
- *                               -> { ok, componentId, label, sourceWorkId, sourceWorkIdIgnored }
+ *                               -> { ok, componentId, label, sourceWorkId, sourceWorkIdIgnored, lineIds }
  *                               #1860 Phase 5 §3.2 — `label`/`sourceWorkId` are PRESENCE-gated
  *                               (an absent key preserves the stored value, never wipes it — the
  *                               "provided-else-preserve" contract §3's three layers exist for).
@@ -103,7 +103,11 @@ declare(strict_types=1);
  *                               `sourceWorkId` is coerced to NULL — never a 422 — with
  *                               `sourceWorkIdIgnored:true` in the response so the client can toast;
  *                               the response is read BACK from the stored row (rule #35), not
- *                               echoed from the request.
+ *                               echoed from the request. #1263 — `lineIds` is the SAME rule-#35
+ *                               read-back, ADDITIVE: the freshly re-read tblLyricLines ids for this
+ *                               component's lines (parallel to `lines`, `[]` on the lines-json-
+ *                               fallback path), so the editor's comp.lineIds — and therefore the
+ *                               per-line enrichment panel's anchors — never goes stale after a save.
  *   POST component_delete       { songId, componentId }     -> { ok }
  *   POST component_reorder      { songId, order:[id,...] }  -> { ok }
  *   POST components_replace     { songId, components:[...], mode? } -> { ok, count, components }
@@ -3508,6 +3512,17 @@ try {
             'label'               => $after[$targetPos]['label']        ?? null,
             'sourceWorkId'        => $after[$targetPos]['sourceWorkId'] ?? null,
             'sourceWorkIdIgnored' => $srcWorkIgnored,
+            /* #1263 — rule #35 read-back, ADDITIVE (no existing key removed
+               or renamed): the freshly re-read tblLyricLines ids for this
+               component's lines, so the v2 editor's comp.lineIds never goes
+               stale after a save. $after is ed2_currentComponents()'s
+               post-write re-read — on the mirrored install that is
+               lyricLinesEditableComponents(), which already carries
+               'lineIds' (includes/lyric_lines_read.php); the lines-json-
+               fallback branch (un-migrated install) never sets that key at
+               all, so `?? []` is the CORRECT degrade there, matching
+               enrichment-panel.js's own "[] on a pre-mirror install" note. */
+            'lineIds'             => $after[$targetPos]['lineIds']       ?? [],
         ]);
         break;
     }

@@ -18,16 +18,37 @@
  *                   Save button — see flushPending() below)
  *
  *  #1627 items 1+3 — chords UI + per-line enrichment panel. Both extend
- *  buildCard(), which is why they land in one PR: a chords textarea (ABOVE
- *  the enrichment panel, mirroring v1's card layout order) ported from v1's
- *  componentChordsToText(), and enrichment-panel.js's buildEnrichmentPanel()
- *  for per-line language/translation/annotation. See enrichment-panel.js's
- *  own file header for the full per-line-enrichment design; see
- *  componentChordsToText() below + saveComponent()'s chords branch for the
- *  chords clear-semantics trap (empty ARRAY clears, `null` PRESERVES).
+ *  buildCard(), which is why they land in one PR: a chords UI (ABOVE
+ *  the enrichment panel, mirroring v1's card layout order), and
+ *  enrichment-panel.js's buildEnrichmentPanel() for per-line
+ *  language/translation/annotation. See enrichment-panel.js's own file
+ *  header for the full per-line-enrichment design; see chordCellText()
+ *  below + onChordRowInput()'s chords branch for the chords clear-semantics
+ *  trap (empty ARRAY clears, `null` PRESERVES).
+ *
+ *  #1263 (chord-drift-on-reorder fix) — the chords box above became a
+ *  PER-LINE editor: one chord input per lyric line (keyed to
+ *  comp.lineIds[i] where available), replacing the single multiline
+ *  textarea #1627 originally shipped. THE BUG: that textarea stored
+ *  `comp.chords` as one array PARALLEL to `comp.lines` BY INDEX — correct
+ *  while lines never moved, but the server's desired-lines builder
+ *  (lyricLinesBuildDesiredFromComponents, includes/lyric_lines_sync.php)
+ *  assigns `chords[i]` to line `i` positionally too, so REORDERING lines in
+ *  the lyrics textarea silently left every chord behind on its OLD index —
+ *  even though the server correctly Id-preserves each LINE's own identity
+ *  (rule #25) and every per-line translation/annotation FK'd to it. A
+ *  chord would drift onto whichever line now sat at its old position, with
+ *  no error anywhere. STORAGE IS UNCHANGED (rule #25/#45 — still the same
+ *  lines-parallel `chords` array on the SAME write path); only the EDITOR
+ *  now (a) tracks each row against the line's own CONTENT/identity as the
+ *  lyrics textarea changes, via the pure `remapChordsOnLinesChange()`
+ *  helper below, and (b) adopts the server's read-back `lineIds` (rule
+ *  #35) after every save in saveComponent(), which also un-stales the
+ *  enrichment panel's own `comp.lineIds` anchors as a free side effect —
+ *  see that function's own doc-block for the detail.
  * ========================================================================== */
 
-import { buildEnrichmentPanel } from './enrichment-panel.js';
+import { buildEnrichmentPanel, componentLineId } from './enrichment-panel.js';
 import { iconBtn } from './ui-helpers.js';
 
 /* #1869 (epic #1863, CLAUDE.md rule #43's LAST picker item — registry
@@ -82,23 +103,129 @@ const PART_TYPES = resolvePartTypes();
 const SAVE_DEBOUNCE_MS = 500;
 
 /**
- * componentChordsToText(comp) — render a component's chords back into the
- * editable textarea: one line per lyric line, chords space-separated. A
- * freshly-LOADED component's chords are arrays per line (["C","G"]); a
- * component the user has already typed into this session holds a plain
- * per-line string ("C G") because the textarea's own input handler writes
- * strings, not arrays — both render identically. Ported from v1
- * (editor.js's componentChordsToText, ~1275) unchanged in behaviour. (#1094,
- * #1627 item 1)
- * @param {{chords?:Array}} comp
+ * chordCellText(c) — render ONE stored chord cell back into its editable
+ * string. A freshly-LOADED cell is an array per line (["C","G"], #1094); a
+ * cell the user has already typed into THIS session is a plain per-line
+ * string ("C G"), because the per-line chord input's own 'input' handler
+ * (onChordRowInput(), in buildCard() below) writes strings, not arrays —
+ * both render identically. Ported from v1's componentChordsToText()
+ * (editor.js ~1304) and this file's own pre-#1263 whole-textarea version,
+ * narrowed to ONE cell now that #1263 gives each lyric line its own input
+ * instead of one shared multiline textarea. (#1094, #1627 item 1, #1263)
+ * @param {*} c
  * @returns {string}
  */
-function componentChordsToText(comp) {
-    if (!Array.isArray(comp.chords)) { return ''; }
-    return comp.chords.map((c) => {
-        if (Array.isArray(c)) { return c.join(' '); }
-        return (c == null) ? '' : String(c);
-    }).join('\n');
+function chordCellText(c) {
+    if (Array.isArray(c)) { return c.join(' '); }
+    return (c == null) ? '' : String(c);
+}
+
+/**
+ * remapChordsOnLinesChange(oldLines, oldChords, newLines) — #1263. Re-maps a
+ * component's per-line chord array onto a NEW lyric-line list after the
+ * lyrics textarea changes, so a chord row FOLLOWS its lyric line's content
+ * instead of staying pinned to a numeric index that just shifted under it —
+ * the drift bug described in this file's own header. Storage is a `chords`
+ * array PARALLEL to `lines` BY INDEX (rule #25/#45 — the wire contract this
+ * helper must never change); this function only decides which OLD index's
+ * value belongs at each NEW index.
+ *
+ * ELI5: move a lyric line and its chords move with it; fix a typo on a line
+ * (this runs on every keystroke of the lyrics textarea — see its 'input'
+ * handler below) and the chord stays put; add or remove a line and only the
+ * truly new/removed line is affected — a chord never lands on a stranger's
+ * line.
+ *
+ * ALGORITHM — the same "content first" matching family as the server's
+ * Id-preserving diff (lyricLinesDiff(), includes/lyric_lines_sync.php),
+ * simplified for a single component (no part-identity bucket, no
+ * Levenshtein fuzzy pass — see below for why):
+ *   PASS 1 — exact content match. Old-line indices are bucketed by TRIMMED
+ *     text into FIFO queues; walking the new lines in order, each claims
+ *     the OLDEST still-unclaimed old line with identical text. This alone
+ *     is what makes a REORDER carry its chord, and what makes two
+ *     DUPLICATE lines each keep their OWN chord rather than both grabbing
+ *     the first one (they claim the queue in the same relative order they
+ *     appear).
+ *   PASS 2 — positional fallback for the LEFTOVERS only. Whatever pass 1
+ *     could not place — because its text genuinely changed — is paired up
+ *     by walking the remaining unmatched old lines and unmatched new lines
+ *     BOTH in ascending original order and zipping them together. This is
+ *     what makes an IN-PLACE EDIT keep its chord: every OTHER line already
+ *     matched exactly in pass 1 (nothing else changed on this keystroke),
+ *     so the one edited line is the ONLY leftover on both sides and pairs
+ *     with itself. A genuinely inserted line has no leftover old
+ *     counterpart once every unrelated line has exact-matched, so it
+ *     correctly gets no chord; a genuinely removed line's chord is simply
+ *     never claimed and is dropped with it.
+ *   Any new line still unmatched after both passes gets `''`.
+ * No Levenshtein/fuzzy pass, unlike the server's pass 3: pass 2 already
+ * handles the dominant per-keystroke single-line-changed case exactly, and
+ * a coarser multi-line rewrite (e.g. a paste) is a best-effort alignment
+ * either way — that machinery's cost isn't worth paying on every keystroke
+ * of a textarea `input` handler.
+ *
+ * CLEAR-SEMANTICS (rule #45, the SAME trap onChordRowInput() below
+ * documents): when every remapped cell comes out blank, return `[]` — a
+ * genuine empty array clears the stored chords server-side; a same-length
+ * array of `''` does not (component_upsert's `isset()` gate treats it as
+ * "chords supplied, all blank" rather than "no chords at all").
+ *
+ * @param {Array<string>} oldLines   comp.lines BEFORE this change
+ * @param {?Array} oldChords         comp.chords BEFORE this change (parallel
+ *   to oldLines); each cell may be a string or an array (#1094) — carried
+ *   over VERBATIM, never renormalised, so a cell's own shape survives a move.
+ * @param {Array<string>} newLines   comp.lines AFTER this change
+ * @returns {Array} the remapped chords, same length as newLines, or `[]`
+ *   when every remapped cell is blank.
+ */
+export function remapChordsOnLinesChange(oldLines, oldChords, newLines) {
+    const oLines = Array.isArray(oldLines) ? oldLines : [];
+    const oChords = Array.isArray(oldChords) ? oldChords : [];
+    const nLines = Array.isArray(newLines) ? newLines : [];
+
+    // PASS 1 — bucket old-line indices by trimmed text, FIFO per bucket.
+    const buckets = new Map();
+    oLines.forEach((line, i) => {
+        const key = String(line == null ? '' : line).trim();
+        if (!buckets.has(key)) { buckets.set(key, []); }
+        buckets.get(key).push(i);
+    });
+
+    const claimedOld = new Array(oLines.length).fill(false);
+    const matchedOldForNew = new Array(nLines.length).fill(-1);
+    nLines.forEach((line, ni) => {
+        const key = String(line == null ? '' : line).trim();
+        const queue = buckets.get(key);
+        if (queue && queue.length) {
+            const oi = queue.shift();
+            claimedOld[oi] = true;
+            matchedOldForNew[ni] = oi;
+        }
+    });
+
+    // PASS 2 — leftover old/new lines pair up in their own ascending relative order.
+    const leftoverOld = [];
+    for (let oi = 0; oi < oLines.length; oi++) { if (!claimedOld[oi]) { leftoverOld.push(oi); } }
+    let cursor = 0;
+    for (let ni = 0; ni < nLines.length; ni++) {
+        if (matchedOldForNew[ni] === -1 && cursor < leftoverOld.length) {
+            matchedOldForNew[ni] = leftoverOld[cursor];
+            cursor++;
+        }
+    }
+
+    const result = nLines.map((_line, ni) => {
+        const oi = matchedOldForNew[ni];
+        if (oi === -1) { return ''; }
+        const v = oChords[oi];
+        return (v === undefined) ? '' : v;
+    });
+
+    const hasAny = result.some((r) => (Array.isArray(r)
+        ? r.some((c) => c != null && String(c).trim() !== '')
+        : (r != null && String(r).trim() !== '')));
+    return hasAny ? result : [];
 }
 
 /**
@@ -272,6 +399,21 @@ export function mountStructureTab(container, opts) {
                truthy check: the server always sends the key (possibly
                `null`), and a `null` IS the value to adopt. */
             if (Object.prototype.hasOwnProperty.call(res, 'label')) { comp.label = res.label; }
+            /* #1263 — rule #35 read-back, ADDITIVE (api2.php's component_upsert
+               response gains `lineIds` alongside the existing `label`/
+               `sourceWorkId` echoes, never removes anything): adopt the
+               FRESHLY re-read line ids for this component so comp.lineIds never
+               goes stale after a save. Before this, comp.lineIds was set ONCE
+               at load_song and never refreshed — every subsequent lyric edit
+               (insert/delete/reorder a line) silently staled it, and the
+               enrichment panel's own per-line translation/annotation "add"
+               buttons (keyed on comp.lineIds[i], enrichment-panel.js) degrade
+               to "not saved yet" for a line whose real id had already changed
+               underneath them. `hasOwnProperty`, matching the `label` adoption
+               immediately above: the key is always present (possibly `[]` on
+               an un-migrated/lines-json-fallback install), and an explicit `[]`
+               IS the value to adopt, not a reason to skip the assignment. */
+            if (Object.prototype.hasOwnProperty.call(res, 'lineIds')) { comp.lineIds = res.lineIds; }
             if (res.sourceWorkIdIgnored) {
                 /* SD1 — the server coerced an unresolvable sourceWorkId to
                    NULL rather than failing the whole section save (a
@@ -540,17 +682,31 @@ export function mountStructureTab(container, opts) {
         ta.placeholder = 'Enter lyrics here…';
         ta.value = Array.isArray(comp.lines) ? comp.lines.join('\n') : '';
         ta.addEventListener('input', () => {
-            comp.lines = ta.value.split('\n');
+            const oldLines = Array.isArray(comp.lines) ? comp.lines : [];
+            const newLines = ta.value.split('\n');
+            /* #1263 — remap BEFORE reassigning comp.lines (remapChordsOnLinesChange
+               needs the PRE-edit line list to match against), and ONLY when chords
+               have actually been engaged with (comp.chords is already an array —
+               see that helper's own doc-block): a component that has never had a
+               chord touched stays `null`/absent, so a plain lyric edit never
+               manufactures — and therefore never sends — a chords array out of
+               thin air. */
+            if (Array.isArray(comp.chords)) {
+                comp.chords = remapChordsOnLinesChange(oldLines, comp.chords, newLines);
+            }
+            comp.lines = newLines;
+            renderChordRows();   // keep the per-line chord rows in lockstep — LOCAL re-render, not store.set
             debouncedSave(comp);   // incremental — NO list re-render
         });
         body.appendChild(ta);
 
-        /* #1627 item 1 — optional manual per-line chords (collapsible),
-           ABOVE the enrichment panel (mirrors v1's card layout order). One
-           line of chords per lyric line; persisted via saveComponent()'s
-           existing `chords: comp.chords || null` (above). Auto-opened when
-           the loaded component already carries chords, same "hasChords"
-           test as v1's chordsBox.style.display. */
+        /* #1627 item 1 / #1263 — one chord INPUT per lyric line (collapsible),
+           ABOVE the enrichment panel (mirrors v1's card layout order). Persisted
+           via saveComponent()'s existing `chords: comp.chords || null` (above);
+           see this file's own #1263 header paragraph for why a single shared
+           textarea was replaced by per-line inputs. Auto-opened when the loaded
+           component already carries chords, same "hasChords" test as v1's
+           chordsBox.style.display. */
         const chordsWrap = document.createElement('div');
         chordsWrap.className = 'mt-2';
         const hasChords = Array.isArray(comp.chords) && comp.chords.some((c) => c && (Array.isArray(c) ? c.length : String(c).trim()));
@@ -561,44 +717,95 @@ export function mountStructureTab(container, opts) {
         const chordsBox = document.createElement('div');
         chordsBox.className = 'mt-1';
         chordsBox.style.display = hasChords ? '' : 'none';
-        const chordsArea = document.createElement('textarea');
-        chordsArea.className = 'form-control form-control-sm component-chords font-monospace';
-        chordsArea.rows = 2;
-        chordsArea.placeholder = 'One line of chords per lyric line, e.g.  C    G    Am';
-        chordsArea.value = componentChordsToText(comp);
-        chordsArea.addEventListener('input', () => {
+        const chordsRowsHost = document.createElement('div');
+        chordsRowsHost.className = 'component-chords-rows';
+
+        /* Every currently-mounted chord <input>, index-parallel to comp.lines —
+           rebuilt fresh by renderChordRows() below on every call, so it is
+           always in step with whatever DOM renderChordRows() most recently
+           built. Read by onChordRowInput() to recompute the FULL chords array
+           on any single row's edit (the same "whole textarea's value" shape
+           the old single-textarea handler read, just sourced from N inputs). */
+        let chordRowInputs = [];
+
+        /** Rebuild the per-line chord rows from the CURRENT comp.lines /
+         *  comp.chords. Called once at mount and again — LOCALLY, never via
+         *  store.set('components', …) — from the lyrics textarea's own
+         *  'input' handler above whenever comp.lines changes, so a row's
+         *  lyric preview and its input's line-identity never go stale
+         *  (#1263). Each row's `data-line-id` is comp.lineIds[i] via the
+         *  SAME "unsaved line ⇒ 0" degrade enrichment-panel.js already
+         *  established (componentLineId(), imported above — the modularity
+         *  rule) — a display/debugging aid only; the SAVED payload stays the
+         *  index-parallel `chords` array onChordRowInput() builds below,
+         *  never keyed by this id. */
+        function renderChordRows() {
+            chordsRowsHost.innerHTML = '';
+            chordRowInputs = [];
+            const lines = Array.isArray(comp.lines) ? comp.lines : [];
+            lines.forEach((lineText, i) => {
+                const row = document.createElement('div');
+                row.className = 'd-flex align-items-center gap-2 mb-1 component-chord-row';
+                row.dataset.lineId = String(componentLineId(comp, i));
+
+                const preview = document.createElement('span');
+                preview.className = 'text-muted small text-truncate component-chord-line-preview';
+                preview.style.width = '200px';
+                preview.style.flex = '0 0 auto';
+                const text = (lineText && String(lineText).trim()) ? String(lineText) : '(blank line)';
+                preview.textContent = text;
+                preview.title = text;
+
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.className = 'form-control form-control-sm component-chord-line font-monospace';
+                input.placeholder = 'Chords for this line';
+                input.setAttribute('aria-label', 'Chords for line ' + (i + 1) + ': ' + text);
+                input.value = chordCellText(Array.isArray(comp.chords) ? comp.chords[i] : null);
+                input.addEventListener('input', onChordRowInput);
+
+                chordRowInputs.push(input);
+                row.append(preview, input);
+                chordsRowsHost.appendChild(row);
+            });
+        }
+
+        /** ANY chord row's input fired — recompute the FULL per-line chords
+         *  array from EVERY row (never just the one that changed) and hand it
+         *  to the exact save path + clear-semantics #1627 item 1 established. */
+        function onChordRowInput() {
             /* #1968 P6 (commit C5) — RIGHT-trim only, never l.trim(). Mirrors the identical fix
-               in v1's editor.js (manage/editor/editor.js) — this is v2's OWN independent copy of
-               the same chords textarea (#1627 item 1 above says so explicitly: "mirrors v1's card
-               layout order"), so it carried the SAME bug: a stored chord cell is a POSITIONED
+               in v1's editor.js (manage/editor/editor.js) — a stored chord cell is a POSITIONED
                STRING (#299/#1094, and — since #1968 P6 — PP7's own import/export shape, plan
-               §2.2), so `l.trim()` silently destroyed a PP7-imported chord's leading column the
-               moment a curator touched this box. A right-trim-only transform still correctly
-               collapses an all-whitespace line to '' (every character IS trailing whitespace),
-               so the CLEAR-SEMANTICS logic two lines below (`rows.some((r) => r !== '')`) is
-               unaffected — only a line with a REAL leading gap before its first chord changes
+               §2.2), so `l.trim()` would silently destroy a PP7-imported chord's leading column
+               the moment a curator touched this box. A right-trim-only transform still correctly
+               collapses an all-whitespace row to '' (every character IS trailing whitespace), so
+               the CLEAR-SEMANTICS logic two lines below (`rows.some((r) => r !== '')`) is
+               unaffected — only a row with a REAL leading gap before its first chord changes
                behaviour, from corrupted to preserved. */
-            const rows = chordsArea.value.split('\n').map((l) => l.replace(/\s+$/, ''));
+            const rows = chordRowInputs.map((inp) => inp.value.replace(/\s+$/, ''));
             /* CLEAR-SEMANTICS TRAP, opposite direction from the per-line
                language one in enrichment-panel.js: component_upsert PRESERVES
                the stored chords when the `chords` key is absent/null
                (isset() gate) but CLEARS them when it's an empty array. So an
-               all-blank textarea must become `[]`, never a same-length array
+               all-blank set of rows must become `[]`, never a same-length array
                of '' — sending `['','','']` would "succeed" but silently
                leave the old chord symbols in place, and `null` would too.
                `[] || null` in saveComponent() stays `[]` (a truthy array),
                so this is the one line that has to get it right. */
             comp.chords = rows.some((r) => r !== '') ? rows : [];
             debouncedSave(comp);   // incremental — NO list re-render
-        });
+        }
+
+        renderChordRows();
         chordsToggle.addEventListener('click', () => {
             chordsBox.style.display = (chordsBox.style.display === 'none') ? '' : 'none';
-            if (chordsBox.style.display !== 'none') { chordsArea.focus(); }
+            if (chordsBox.style.display !== 'none' && chordRowInputs[0]) { chordRowInputs[0].focus(); }
         });
         const chordsHint = document.createElement('div');
         chordsHint.className = 'form-text small';
-        chordsHint.textContent = 'Optional. Each chord line lines up with the lyric line above it.';
-        chordsBox.append(chordsArea, chordsHint);
+        chordsHint.textContent = 'Optional. One chord field per lyric line — leading spaces position the chord within it.';
+        chordsBox.append(chordsRowsHost, chordsHint);
         chordsWrap.append(chordsToggle, chordsBox);
         body.appendChild(chordsWrap);
 

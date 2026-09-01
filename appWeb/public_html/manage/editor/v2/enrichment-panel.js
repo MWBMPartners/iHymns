@@ -242,6 +242,23 @@ function smallBtn(label, onClick) {
     return b;
 }
 
+/**
+ * componentLineId(comp, i) — comp.lineIds[i], the tblLyricLines PK for lyric
+ * line `i` of this component, or `0` when absent (an unsaved line, or a
+ * pre-mirror install where lineIds is always `[]`, #1627). Exported so
+ * structure-tab.js's per-line chord editor (#1263) can key its rows to the
+ * SAME "unsaved line ⇒ 0" degrade this panel already established, instead of
+ * a second copy of the same one-line lookup drifting alongside it (the
+ * modularity rule) — see buildEnrichmentPanel()'s own `lineIdAt()` below,
+ * now a thin `comp`-bound wrapper over this.
+ * @param {{lineIds?:Array}} comp
+ * @param {number} i
+ * @returns {number}
+ */
+export function componentLineId(comp, i) {
+    return (Array.isArray(comp.lineIds) && comp.lineIds[i] != null) ? Number(comp.lineIds[i]) : 0;
+}
+
 /** True when the #1088 enrichment tables are un-migrated on this install — the
  *  signal for a calm "not available here yet" notice instead of a red failure
  *  toast.
@@ -284,9 +301,12 @@ export function buildEnrichmentPanel(comp, ctx) {
     /* comp.lineIds is parallel to comp.lines (#1627's addition to
        lyricLinesEditableComponents()); 0/undefined means "no saved line id
        yet" (unsaved line, or a pre-mirror install where the array is [] for
-       every component). */
+       every component). A thin `comp`-bound wrapper over the exported
+       componentLineId() above (#1263) — this panel's own call sites all
+       close over the same `comp`, so partially applying it here keeps every
+       lineIdAt(i) call below unchanged. */
     function lineIdAt(i) {
-        return (Array.isArray(comp.lineIds) && comp.lineIds[i] != null) ? Number(comp.lineIds[i]) : 0;
+        return componentLineId(comp, i);
     }
     function translations() { const t = store.get('lineTranslations'); return Array.isArray(t) ? t : []; }
     function annotations()  { const a = store.get('lineAnnotations');  return Array.isArray(a) ? a : []; }

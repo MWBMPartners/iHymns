@@ -875,6 +875,82 @@ check(
     $applyBody !== '' && (bool)preg_match('/\bsongCopyrightHoldersReplace\s*\(/', $applyBody)
 );
 
+/* =============================================================================
+ * component_upsert — the `lineIds` read-back (#1263, rule #35)
+ * =============================================================================
+ *
+ * ELI5
+ * ----
+ * The v2 editor keeps a "which database line is this?" id next to every
+ * lyric line so per-line translations/annotations and (since #1263) the
+ * per-line chord editor can find the right line even after it's saved. That
+ * id list used to be sent to the browser only ONCE, when the song first
+ * loads — every SAVE afterwards left the browser's copy stale. This section
+ * checks the server now sends a FRESH copy back on every `component_upsert`
+ * response, isolated to that ONE case body so an unrelated `lineIds`
+ * mention elsewhere in the file (e.g. `load_song`, which already emitted it)
+ * cannot satisfy this assertion in its place.
+ *
+ * WHY A GENEROUS ISOLATION WINDOW
+ * --------------------------------
+ * `$isolateCase` (defined above, Wave 4 C4) already solves this the same way
+ * revision_get / revision_snapshots do: isolate `case 'component_upsert':`
+ * up to the next top-level `case '`, comments stripped first. This IS the
+ * exact case this codebase's rule #34 recorded needing a 120 -> 300 char
+ * widen for (see the doc-block above section 4) — component_upsert's real
+ * body is comfortably over 1000 chars (it opens a transaction, resolves the
+ * target position, runs the work-medley lockstep, and builds the response),
+ * so the >= 300 floor here is the SAME proven-sufficient number, not a
+ * fresh guess.
+ *
+ * MUTATION-TESTED (rule #34), performed once against the real working tree
+ * during authoring, confirmed RED, then reverted (`git diff --stat` empty
+ * before moving on): removed the `'lineIds' => …` line from the
+ * `ed2_respond([...])` call inside `case 'component_upsert'` -> the
+ * "'lineIds' appears in the response" assertion below went RED. Restored;
+ * green again.
+ * ============================================================================= */
+
+echo "\n#1263 — component_upsert's additive `lineIds` read-back\n\n";
+
+$componentUpsertBody = $isolateCase($apiNoComments, 'component_upsert');
+check("api2.php has a 'component_upsert' case", $componentUpsertBody !== '');
+check(
+    "component_upsert's isolated case body is a real handler, not a stub (>= 300 chars — "
+        . 'this test\'s own recorded lesson about generous regex windows)',
+    strlen($componentUpsertBody) >= 300
+);
+check(
+    "component_upsert's response includes 'lineIds' (rule #35 read-back — keeps the editor's "
+        . 'comp.lineIds from going stale after a save, which also un-stales the per-line '
+        . 'enrichment panel\'s translation/annotation anchors)',
+    $componentUpsertBody !== '' && (bool)preg_match("/'lineIds'\s*=>/", $componentUpsertBody)
+);
+check(
+    "component_upsert still returns its pre-existing 'label' / 'sourceWorkId' / "
+        . "'sourceWorkIdIgnored' keys too — the lineIds addition is ADDITIVE, nothing dropped",
+    $componentUpsertBody !== ''
+        && (bool)preg_match("/'label'\s*=>/", $componentUpsertBody)
+        && (bool)preg_match("/'sourceWorkId'\s*=>/", $componentUpsertBody)
+        && (bool)preg_match("/'sourceWorkIdIgnored'\s*=>/", $componentUpsertBody)
+);
+
+/* The client side of the same pair: saveComponent() adopts res.lineIds the
+   SAME `hasOwnProperty`-gated way it already adopts res.label (rule #35 —
+   an explicit `[]` IS the value to adopt, not a reason to skip the write).
+   Parsed from source (never re-typed), mirroring section 1's client checks
+   above. Comments stripped first for the same reason $stripJs exists. */
+$structSrc = (string)file_get_contents($editor . '/v2/structure-tab.js');
+$structNoComments = preg_replace('#/\*[\s\S]*?\*/#', '', $structSrc) ?? $structSrc;
+check(
+    "v2 structure-tab.js's saveComponent() adopts res.lineIds onto comp.lineIds "
+        . '(hasOwnProperty-gated, matching the label adoption)',
+    (bool)preg_match(
+        "/hasOwnProperty\.call\(\s*res\s*,\s*'lineIds'\s*\)\s*\)\s*\{\s*comp\.lineIds\s*=\s*res\.lineIds\s*;/",
+        $structNoComments
+    )
+);
+
 echo "\n{$passed} passed, {$failed} failed\n";
 if ($failed > 0) {
     echo "\nFailures:\n";
