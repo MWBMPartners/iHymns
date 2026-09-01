@@ -1638,6 +1638,12 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
         if ($kind === 'opensong') {
             $peek = $zip->getFromIndex($i);
             if ($peek !== false && _bulkImport_looksLikeOpenLyrics($peek)) {
+                /* #2062 Part A — $olParsed['warnings'] (skipped verseOrder
+                   tokens) is not surfaced from this ZIP-inline branch, same
+                   pre-existing gap as the ProPresenter 7+ branch below (its
+                   own arrangement warnings aren't carried here either) —
+                   only the single-file _bulkImport_processOpenLp() path
+                   reads it into a summary today. */
                 [$olParsed, $olReason] = _bulkImport_parseOpenLyrics($peek);
                 if ($olParsed === null) {
                     $errors[] = ['entry' => $name, 'error' => 'OpenLyrics parse failed: ' . $olReason];
@@ -3162,9 +3168,30 @@ function _bulkImport_openLyricsParseLines(\SimpleXMLElement $linesNode): array
  * abbreviation / number / SongId resolution — the caller does that, since it
  * depends on the live DB auto-increment).
  *
+ * `<properties><verseOrder>` (#2062 Part A) — OpenLyrics' explicit verse
+ * play-order, e.g. "v1 c v2 c". Resolved against the RAW `<verse name>` text
+ * (never through `_bulkImport_openLyricsVerseType()`, which is LOSSY —
+ * several distinctly-named verses can fold to the same [type,num] pair) into
+ * `?int[]` indices into `components[]`, reusing the SAME `arrangement` key
+ * `_bulkImport_parsePro7()` already populates (#1968 PR-1) and that
+ * `_bulkImport_assembleSong()` / `_bulkImport_saveSong()` already persist —
+ * no schema change, this importer was simply the one caller that dropped the
+ * signal on the floor. A token naming SEVERAL same-named verses (a
+ * translation pair, e.g. `<verse name="v1" lang="en">` + `<verse name="v1"
+ * lang="de">`) expands to ALL of them in document order — never
+ * first-occurrence-only — because the public render EXCLUDES any component
+ * not listed in the arrangement (`includes/pages/song.php`), so picking just
+ * one would silently HIDE the other translation's verse. Set SPARSELY: only
+ * when at least one token resolved AND the resolved list is not simply the
+ * natural `[0..count-1]` order — iHymns' own OpenLyrics exporter always
+ * emits a natural-order `<verseOrder>` (`js/modules/format-export.js`), so
+ * without this identity suppression every re-imported iHymns export would
+ * pick up a redundant, no-op arrangement. A token that matches no verse name
+ * is skipped (never fails the whole song) and recorded in `warnings[]`.
+ *
  * @return array{0: ?array, 1: ?string}  [parsed, errorReason]
  *   parsed = { title, songbookName, entry, language, ccli, copyright,
- *              writers[], components[] }
+ *              writers[], components[], arrangement?:int[], warnings[] }
  */
 function _bulkImport_parseOpenLyrics(string $body): array
 {
@@ -3249,10 +3276,19 @@ function _bulkImport_parseOpenLyrics(string $body): array
        <title lang>; we read the first verse's lang as a best-effort hint. */
     $language = '';
 
+    /* #2062 Part A — index every component's ORIGINAL raw <verse name> (lower-
+       folded, trimmed) to the list of component positions it produced. Keyed
+       on the raw text, never through _bulkImport_openLyricsVerseType() — that
+       mapping is LOSSY (e.g. "v1" and a mistyped "V1 " both fold to the same
+       [type,num], but so do unrelated names sharing a letter+number shape),
+       and verseOrder must resolve against exactly what the document wrote. */
+    $nameToIndices = [];
+
     $components = [];
     if (isset($xml->lyrics->verse)) {
         foreach ($xml->lyrics->verse as $verse) {
-            [$type, $num] = _bulkImport_openLyricsVerseType((string)($verse['name'] ?? 'v'));
+            $rawName = (string)($verse['name'] ?? 'v');
+            [$type, $num] = _bulkImport_openLyricsVerseType($rawName);
             /* Per-verse language = the translation/transliteration signal (#1130):
                OpenLyrics models a translated verse as a separate <verse lang="…">. */
             $verseLang = isset($verse['lang']) ? trim((string)$verse['lang']) : '';
@@ -3275,6 +3311,7 @@ function _bulkImport_parseOpenLyrics(string $body): array
                 foreach ($chords as $c) { if ($c !== '') { $comp['chords'] = $chords; break; } }
                 foreach ($notes as $n)  { if ($n !== '') { $comp['notes']  = $notes;  break; } }
                 $components[] = $comp;
+                $nameToIndices[strtolower(trim($rawName))][] = count($components) - 1;
             }
         }
     }
@@ -3282,7 +3319,42 @@ function _bulkImport_parseOpenLyrics(string $body): array
         return [null, 'no <verse>/<lines> content found'];
     }
 
-    return [[
+    /* #2062 Part A — resolve <properties><verseOrder> (whitespace-separated
+       verse-name tokens) into component indices. See this function's
+       doc-block for the expand-all + identity-suppression rules. */
+    $warnings    = [];
+    $arrangement = null;
+    $orderRaw    = $props ? trim((string)($props->verseOrder ?? '')) : '';
+    if ($orderRaw !== '') {
+        $resolved = [];
+        foreach (preg_split('/\s+/', $orderRaw, -1, PREG_SPLIT_NO_EMPTY) as $token) {
+            $key = strtolower(trim($token));
+            if (isset($nameToIndices[$key])) {
+                /* Expand-all (D1 default, #2062): a token naming several
+                   same-name components (e.g. a translation pair) resolves to
+                   ALL of them in document order, never just the first — the
+                   public render excludes anything not listed, so picking one
+                   would silently hide the other(s). */
+                foreach ($nameToIndices[$key] as $idx) {
+                    $resolved[] = $idx;
+                }
+            } else {
+                $warnings[] = "verseOrder token \"{$token}\" did not match any verse — skipped";
+            }
+        }
+        if (!empty($resolved)) {
+            $identity = range(0, count($components) - 1);
+            /* Identity suppression (load-bearing, #2062): iHymns' own
+               exporter always emits a natural-order <verseOrder>
+               (format-export.js), so without this a re-imported iHymns
+               export would be stamped with a redundant no-op arrangement. */
+            if ($resolved !== $identity) {
+                $arrangement = $resolved;
+            }
+        }
+    }
+
+    $result = [
         'title'        => $title,
         'songbookName' => $songbookName,
         'entry'        => $entry,
@@ -3291,8 +3363,16 @@ function _bulkImport_parseOpenLyrics(string $body): array
         'copyright'    => $copyright,
         'writers'      => $writers,
         'altTitles'    => $altTitles,
+        'warnings'     => $warnings,
         'components'   => $components,
-    ], null];
+    ];
+    /* Sparse — an absent key is byte-identical to the pre-#2062 shape, and
+       `_bulkImport_assembleSong()` already reads it via `?? null`. */
+    if ($arrangement !== null) {
+        $result['arrangement'] = $arrangement;
+    }
+
+    return [$result, null];
 }
 
 /**
@@ -3364,6 +3444,7 @@ function _bulkImport_processOpenLp(string $body, ?string $filenameHint = null): 
             'songs_failed'           => 0,
             'parsed_by_format'       => ['openlyrics' => 0],
             'errors'                 => [],
+            'warnings'               => [],
         ];
     }
 
@@ -3421,6 +3502,10 @@ function _bulkImport_processOpenLp(string $body, ?string $filenameHint = null): 
         'songs_failed'           => $songsFailed,
         'parsed_by_format'       => ['openlyrics' => $songsCreated + $songsSkipped],
         'errors'                 => $errors,
+        /* #2062 Part A — surfaces $parsed['warnings'] (skipped/unmatched
+           verseOrder tokens) the same way _bulkImport_processPro7() already
+           does for its own arrangement warnings. */
+        'warnings'               => $parsed['warnings'] ?? [],
     ];
 }
 
