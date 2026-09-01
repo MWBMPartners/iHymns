@@ -1,0 +1,469 @@
+{
+    "generatedBy": "php tests/php/test-interchange-roundtrip.php --matrix --write",
+    "fixture": "tools/interchange-gen-samples.js FIXTURE_SONG",
+    "legend": {
+        "held": "round-trips losslessly through our own exporter -> our own importer",
+        "reshaped": "the value survives but its role/shape changes (e.g. a composer relabelled a writer)",
+        "dropped": "the exporter writes this field but the importer never reads it back — lost on our own round trip",
+        "n/a": "this format's exporter never attempts to write this field at all — nothing was ever sent"
+    },
+    "fields": [
+        "title",
+        "writers",
+        "composers",
+        "copyright",
+        "ccli",
+        "tuneName",
+        "alternateTitle",
+        "chords",
+        "language",
+        "label",
+        "notes",
+        "arrangement",
+        "components"
+    ],
+    "formats": [
+        {
+            "id": "opensong",
+            "label": "OpenSong (.xml)",
+            "exportKey": "openSong",
+            "coverage": "closure",
+            "fields": {
+                "title": {
+                    "verdict": "held"
+                },
+                "writers": {
+                    "verdict": "reshaped",
+                    "reason": "writers+composers joined into one <author> element, comma-split back on import — a composer returns indistinguishable from a writer (format-export.js:121-123,141; song_importers.php:2252)"
+                },
+                "composers": {
+                    "verdict": "dropped",
+                    "reason": "always empty on import — no separate composer channel survives this format at all (song_importers.php:2277)"
+                },
+                "copyright": {
+                    "verdict": "held"
+                },
+                "ccli": {
+                    "verdict": "held"
+                },
+                "tuneName": {
+                    "verdict": "dropped",
+                    "reason": "DEFECT (4) — <tune> is emitted (format-export.js:147) but never read back; the importer hardcodes tuneName to '' (song_importers.php:2269)"
+                },
+                "alternateTitle": {
+                    "verdict": "n/a",
+                    "reason": "buildOpenSong() never reads song.alternateTitle — never attempted"
+                },
+                "chords": {
+                    "verdict": "n/a",
+                    "reason": "buildOpenSong() never reads comp.chords — OpenSong lyric rows have no chord channel in this exporter"
+                },
+                "language": {
+                    "verdict": "n/a",
+                    "reason": "buildOpenSong() never reads comp.language"
+                },
+                "label": {
+                    "verdict": "n/a",
+                    "reason": "buildOpenSong() never reads comp.label"
+                },
+                "notes": {
+                    "verdict": "n/a",
+                    "reason": "buildOpenSong() never reads comp.notes (per-line)"
+                },
+                "arrangement": {
+                    "verdict": "n/a",
+                    "reason": "this parser's return shape has no arrangement concept at all"
+                },
+                "components": {
+                    "verdict": "held",
+                    "reason": "lyric lines + per-component type/number round-trip exactly"
+                }
+            }
+        },
+        {
+            "id": "openlp",
+            "label": "OpenLP / OpenLyrics (.xml)",
+            "exportKey": "openLyrics",
+            "coverage": "closure",
+            "fields": {
+                "title": {
+                    "verdict": "held"
+                },
+                "writers": {
+                    "verdict": "reshaped",
+                    "reason": "writers+composers both become separate <author> elements, indistinguishable on import (format-export.js:403,408-411; song_importers.php:3251-3257)"
+                },
+                "composers": {
+                    "verdict": "n/a",
+                    "reason": "this parser's return shape has no separate composers key at all"
+                },
+                "copyright": {
+                    "verdict": "held"
+                },
+                "ccli": {
+                    "verdict": "held"
+                },
+                "tuneName": {
+                    "verdict": "n/a",
+                    "reason": "buildOpenLyrics() never reads song.tuneName"
+                },
+                "alternateTitle": {
+                    "verdict": "n/a",
+                    "reason": "buildOpenLyrics() never emits a second <title> — never attempted"
+                },
+                "chords": {
+                    "verdict": "n/a",
+                    "reason": "buildOpenLyrics() never emits <chord> — though its OWN importer can read one from a genuine third-party file"
+                },
+                "language": {
+                    "verdict": "n/a",
+                    "reason": "buildOpenLyrics() never emits a verse lang attribute — same caveat as chords"
+                },
+                "label": {
+                    "verdict": "n/a",
+                    "reason": "no label channel in OpenLyrics at all"
+                },
+                "notes": {
+                    "verdict": "n/a",
+                    "reason": "buildOpenLyrics() never emits <comment> — same caveat as chords"
+                },
+                "arrangement": {
+                    "verdict": "n/a",
+                    "reason": "THE headline documented lesson (see file header): FIXTURE_SONG.arrangement is [2,0,1] but buildOpenLyrics() (format-export.js:419) always emits a natural-order <verseOrder> from component iteration order, never from song.arrangement; re-import resolves the identity permutation and correctly, deliberately OMITS the key (#2062 identity-suppression) rather than storing a no-op. Mutation-proven (m5)."
+                },
+                "components": {
+                    "verdict": "held"
+                }
+            }
+        },
+        {
+            "id": "pro6",
+            "label": "ProPresenter 6 (.pro6)",
+            "exportKey": "proPresenter6",
+            "coverage": "closure",
+            "fields": {
+                "title": {
+                    "verdict": "held"
+                },
+                "writers": {
+                    "verdict": "reshaped",
+                    "reason": "CCLIAuthor is writers+composers joined with ' / ', slash-split back on import — composer folded into writer (format-export.js:575,579; song_importers.php:2283)"
+                },
+                "composers": {
+                    "verdict": "n/a",
+                    "reason": "this parser's return shape has no composers key at all"
+                },
+                "copyright": {
+                    "verdict": "held"
+                },
+                "ccli": {
+                    "verdict": "held"
+                },
+                "tuneName": {
+                    "verdict": "n/a",
+                    "reason": "no tune concept in .pro6"
+                },
+                "alternateTitle": {
+                    "verdict": "n/a",
+                    "reason": "no subtitle concept in .pro6"
+                },
+                "chords": {
+                    "verdict": "n/a",
+                    "reason": "no chord channel — .pro6 slide text is plain RTF"
+                },
+                "language": {
+                    "verdict": "n/a",
+                    "reason": "no language attribute in .pro6"
+                },
+                "label": {
+                    "verdict": "n/a",
+                    "reason": "no label channel in .pro6"
+                },
+                "notes": {
+                    "verdict": "n/a",
+                    "reason": "no per-line note channel in .pro6"
+                },
+                "arrangement": {
+                    "verdict": "n/a",
+                    "reason": "this parser's return shape has no arrangement concept at all"
+                },
+                "components": {
+                    "verdict": "held"
+                }
+            }
+        },
+        {
+            "id": "proclaim",
+            "label": "Proclaim (.txt)",
+            "exportKey": "proclaim",
+            "coverage": "closure",
+            "fields": {
+                "title": {
+                    "verdict": "held"
+                },
+                "writers": {
+                    "verdict": "n/a",
+                    "reason": "Proclaim's .txt format has NO metadata channel at all — always empty regardless of input"
+                },
+                "composers": {
+                    "verdict": "n/a",
+                    "reason": "same — no metadata channel"
+                },
+                "copyright": {
+                    "verdict": "n/a",
+                    "reason": "same — no metadata channel"
+                },
+                "ccli": {
+                    "verdict": "n/a",
+                    "reason": "same — no metadata channel"
+                },
+                "tuneName": {
+                    "verdict": "n/a",
+                    "reason": "same — no metadata channel"
+                },
+                "alternateTitle": {
+                    "verdict": "n/a",
+                    "reason": "same — no metadata channel"
+                },
+                "chords": {
+                    "verdict": "n/a",
+                    "reason": "same — lyrics text only"
+                },
+                "language": {
+                    "verdict": "n/a",
+                    "reason": "same — no metadata channel"
+                },
+                "label": {
+                    "verdict": "n/a",
+                    "reason": "same — no metadata channel"
+                },
+                "notes": {
+                    "verdict": "n/a",
+                    "reason": "same — no metadata channel"
+                },
+                "arrangement": {
+                    "verdict": "n/a",
+                    "reason": "same — no metadata channel"
+                },
+                "components": {
+                    "verdict": "held",
+                    "reason": "lyric text + section labels are the ONLY thing Proclaim carries"
+                }
+            }
+        },
+        {
+            "id": "videopsalm",
+            "label": "VideoPsalm (.json)",
+            "exportKey": "videoPsalm",
+            "coverage": "closure",
+            "fields": {
+                "title": {
+                    "verdict": "held"
+                },
+                "writers": {
+                    "verdict": "dropped",
+                    "reason": "DEFECT (1) — buildVideoPsalm() never emits an Author key at all (format-export.js:204-227); the importer reads sRaw['Author'] (song_importers.php:2577)"
+                },
+                "composers": {
+                    "verdict": "dropped",
+                    "reason": "DEFECT (1), continued — no composer channel either"
+                },
+                "copyright": {
+                    "verdict": "dropped",
+                    "reason": "DEFECT (1) — written to Memo1 (format-export.js:224); the importer reads Copyright (song_importers.php:2596)"
+                },
+                "ccli": {
+                    "verdict": "dropped",
+                    "reason": "DEFECT (1) — written to Memo2 as 'CCLI '+ccli (format-export.js:225); the importer reads CCLI (song_importers.php:2593)"
+                },
+                "tuneName": {
+                    "verdict": "n/a",
+                    "reason": "buildVideoPsalm() never reads song.tuneName"
+                },
+                "alternateTitle": {
+                    "verdict": "n/a",
+                    "reason": "buildVideoPsalm() never reads song.alternateTitle"
+                },
+                "chords": {
+                    "verdict": "n/a",
+                    "reason": "no chord channel in VideoPsalm"
+                },
+                "language": {
+                    "verdict": "n/a",
+                    "reason": "no per-component language channel in VideoPsalm"
+                },
+                "label": {
+                    "verdict": "n/a",
+                    "reason": "no label channel in VideoPsalm"
+                },
+                "notes": {
+                    "verdict": "n/a",
+                    "reason": "no per-line note channel in VideoPsalm"
+                },
+                "arrangement": {
+                    "verdict": "n/a",
+                    "reason": "this parser's return shape has no arrangement concept at all"
+                },
+                "components": {
+                    "verdict": "held",
+                    "reason": "lyric lines + Tag-derived type/number round-trip correctly; NOTE — songbookName also comes back as the SONG'S OWN title, not the exported songbookName input, because VideoPsalm's native unit is a whole songbook and a single-song export reuses the title as the \"book\" name (format-export.js:230; song_importers.php:2504) — a real quirk, distinct from defect (1), not scored as its own field here"
+                }
+            }
+        },
+        {
+            "id": "freeshow",
+            "label": "FreeShow (.show)",
+            "exportKey": "freeShow",
+            "coverage": "closure",
+            "fields": {
+                "title": {
+                    "verdict": "held"
+                },
+                "writers": {
+                    "verdict": "reshaped",
+                    "reason": "meta.author is writers+composers comma-joined, correctly comma-split back into 3 names on import — names intact, writer/composer ROLE distinction lost (format-export.js:308,316; song_importers.php:7925)"
+                },
+                "composers": {
+                    "verdict": "n/a",
+                    "reason": "this parser's return shape has no composers key at all"
+                },
+                "copyright": {
+                    "verdict": "held"
+                },
+                "ccli": {
+                    "verdict": "held",
+                    "reason": "unprefixed, unlike VideoPsalm's 'CCLI '-prefixed Memo2 (format-export.js:318)"
+                },
+                "tuneName": {
+                    "verdict": "n/a",
+                    "reason": "no tune concept in FreeShow"
+                },
+                "alternateTitle": {
+                    "verdict": "n/a",
+                    "reason": "no subtitle concept in FreeShow"
+                },
+                "chords": {
+                    "verdict": "n/a",
+                    "reason": "no chord channel — plain slide text runs only"
+                },
+                "language": {
+                    "verdict": "n/a",
+                    "reason": "no per-component language channel in FreeShow"
+                },
+                "label": {
+                    "verdict": "n/a",
+                    "reason": "no label channel in FreeShow"
+                },
+                "notes": {
+                    "verdict": "n/a",
+                    "reason": "no per-line note channel in FreeShow"
+                },
+                "arrangement": {
+                    "verdict": "n/a",
+                    "reason": "this parser's return shape has no arrangement concept at all"
+                },
+                "components": {
+                    "verdict": "held"
+                }
+            }
+        },
+        {
+            "id": "chordpro",
+            "label": "ChordPro (.cho, .chopro, .crd, .chord)",
+            "exportKey": "chordPro",
+            "coverage": "closure",
+            "fields": {
+                "title": {
+                    "verdict": "held"
+                },
+                "writers": {
+                    "verdict": "dropped",
+                    "reason": "DEFECT (2) — folded into the SAME {artist:} directive as composers (format-export.js:792,796); the importer's 'artist'/'composer'/'music' arm keeps the whole string as ONE composer entry (song_importers.php:2866-2867) — writers comes back empty. Mutation-proven (m3)."
+                },
+                "composers": {
+                    "verdict": "reshaped",
+                    "reason": "DEFECT (2), continued — holds the merged writers+composers string as a single un-split entry"
+                },
+                "copyright": {
+                    "verdict": "held"
+                },
+                "ccli": {
+                    "verdict": "held"
+                },
+                "tuneName": {
+                    "verdict": "n/a",
+                    "reason": "buildChordPro() never reads song.tuneName at all"
+                },
+                "alternateTitle": {
+                    "verdict": "dropped",
+                    "reason": "DEFECT (3) — {subtitle:} IS emitted (format-export.js:795), but the importer's directive switch has no case for it; its documented default arm says outright \"no target field in the song model\" (song_importers.php:2889-2893)"
+                },
+                "chords": {
+                    "verdict": "held",
+                    "reason": "the ONLY format-export.js builder that reads comp.chords at all; both the positioned-STRING cell and the word-aligned ARRAY cell collapse to the same space-joined ordered token list (chordless component correctly carries no 'chords' key)"
+                },
+                "language": {
+                    "verdict": "n/a",
+                    "reason": "buildChordPro() never reads comp.language"
+                },
+                "label": {
+                    "verdict": "n/a",
+                    "reason": "buildChordPro() never reads comp.label"
+                },
+                "notes": {
+                    "verdict": "n/a",
+                    "reason": "buildChordPro() never reads comp.notes (per-line)"
+                },
+                "arrangement": {
+                    "verdict": "n/a",
+                    "reason": "this parser's return shape has no arrangement concept at all"
+                },
+                "components": {
+                    "verdict": "held"
+                }
+            }
+        },
+        {
+            "id": "ihymns",
+            "label": "iHymns interchange (.json)",
+            "exportKey": null,
+            "coverage": "import-only",
+            "reason": "native iHymns interchange JSON (#1633) — import-only, no format-export.js exporter exists for it"
+        },
+        {
+            "id": "pro7",
+            "label": "ProPresenter 7+ (.pro)",
+            "exportKey": null,
+            "coverage": "closure-elsewhere",
+            "reason": "the ONE binary format deliberately excluded here — closure-tested separately by the sanctioned tests/php/test-pp7-roundtrip.php (see this file's header)"
+        },
+        {
+            "id": "probundle",
+            "label": "ProPresenter 7+ Bundle (.probundle)",
+            "exportKey": null,
+            "coverage": "import-only",
+            "reason": "a ZIP container of .pro entries, pro7-adjacent — import-only, no format-export.js exporter"
+        },
+        {
+            "id": "proplaylist",
+            "label": "ProPresenter Playlist (.proplaylist)",
+            "exportKey": null,
+            "coverage": "import-only",
+            "reason": "a ProPresenter service-order container, pro7-adjacent — import-only, no format-export.js exporter"
+        },
+        {
+            "id": "pptx",
+            "label": "PowerPoint (.pptx)",
+            "exportKey": null,
+            "coverage": "import-only",
+            "reason": "path/archive-based (a zip of slide XML) — no format-export.js exporter; test-import-format-coverage.php names the same exemption for its own fixture-parses-clean check"
+        },
+        {
+            "id": "easyworship",
+            "label": "EasyWorship (.db)",
+            "exportKey": null,
+            "coverage": "import-only",
+            "reason": "path/archive-based (a SQLite Songs.db) — no format-export.js exporter; test-import-format-coverage.php names the same exemption for its own fixture-parses-clean check"
+        }
+    ]
+}

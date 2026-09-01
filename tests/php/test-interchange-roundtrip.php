@@ -231,6 +231,14 @@ function ok(string $label, bool $cond): void
     }
 }
 
+/* --matrix: additionally (re)generate + verify the fidelity-matrix artifacts (Slice 2,
+   section (6) below). --write (only meaningful alongside --matrix): actually overwrite the
+   two committed artifact files with the freshly generated content — the author's local
+   "regenerate the golden files" step; CI never passes this, so CI can only ever DETECT drift,
+   never silently paper over it. */
+$runMatrix = in_array('--matrix', $argv, true);
+$writeMatrix = in_array('--write', $argv, true);
+
 echo "\n#1129 — unified interchange export -> import CLOSURE (our exporters -> our importers)\n\n";
 
 /* ================================================================================================
@@ -717,7 +725,14 @@ if ($manifest !== null) {
  * narrow, equally local copy rather than reaching into another test file's private
  * function or refactoring a passing, unrelated guard out from under itself.
  *
- * @return array<int,string> every $formats key except 'auto'
+ * Captures each entry's VALUE too (the dropdown's human-readable label, e.g.
+ * "OpenSong (.xml)") alongside its key — not needed by the completeness cross-check
+ * below (which only cares about keys), but reused by section (6)'s fidelity-matrix
+ * generator so the matrix's format labels are ALSO tree-derived from import2.php's own
+ * copy rather than a second hand-typed list drifting from it (rule #34 applies to
+ * labels exactly as much as to the key list itself).
+ *
+ * @return array<string,string> $formats key (except 'auto') => its label
  */
 function ihymnsInterchangeUiImportFormats(): array
 {
@@ -738,19 +753,26 @@ function ihymnsInterchangeUiImportFormats(): array
         if (($toks[$j] ?? null) !== '[') { continue; }
 
         $depth = 0;
-        $keys = [];
+        $entries = [];
         for (; $j < $n; $j++) {
             if ($toks[$j] === '[') { $depth++; continue; }
             if ($toks[$j] === ']') { $depth--; if ($depth === 0) { break; } continue; }
             if ($depth === 1 && is_array($toks[$j]) && $toks[$j][0] === T_CONSTANT_ENCAPSED_STRING) {
+                $keyStr = trim($toks[$j][1], "'\"");
                 $k = $j + 1;
                 while ($k < $n && $isWs($toks[$k])) { $k++; }
                 if (is_array($toks[$k] ?? null) && $toks[$k][0] === T_DOUBLE_ARROW) {
-                    $keys[] = trim($toks[$j][1], "'\"");
+                    $m = $k + 1;
+                    while ($m < $n && $isWs($toks[$m])) { $m++; }
+                    $label = (is_array($toks[$m] ?? null) && $toks[$m][0] === T_CONSTANT_ENCAPSED_STRING)
+                        ? trim($toks[$m][1], "'\"")
+                        : $keyStr;
+                    $entries[$keyStr] = $label;
                 }
             }
         }
-        return array_values(array_diff($keys, ['auto']));
+        unset($entries['auto']);
+        return $entries;
     }
     return [];
 }
@@ -787,7 +809,8 @@ $IMPORT_ONLY_EXEMPTIONS = [
     'easyworship' => 'path/archive-based (a SQLite Songs.db) — no format-export.js exporter; test-import-format-coverage.php names the same exemption for its own fixture-parses-clean check',
 ];
 
-$uiImportFormats = ihymnsInterchangeUiImportFormats();
+$uiImportFormatLabels = ihymnsInterchangeUiImportFormats();
+$uiImportFormats = array_keys($uiImportFormatLabels);
 ok('vacuity check: import2.php $formats extraction found a non-trivial list (' . count($uiImportFormats) . ' entries)',
     count($uiImportFormats) >= 10);
 
@@ -802,6 +825,388 @@ foreach ($closureImportFormats as $fmt) {
 }
 foreach (array_keys($IMPORT_ONLY_EXEMPTIONS) as $fmt) {
     ok("reverse: exempted importer format '{$fmt}' is still offered in import2.php (exemption not stale)", in_array($fmt, $uiImportFormats, true));
+}
+
+/* ================================================================================================
+ * (6) `--matrix` MODE (Slice 2) — render the fidelity matrix (machine JSON + human wiki page)
+ *     from THIS SAME file's data (the $FORMATS expected dicts above + the hand-authored
+ *     $FIELD_VERDICTS qualitative labels below) and byte-compare the result against the
+ *     committed copies, so the two rendered artifacts can never silently rot relative to the
+ *     source they claim to summarise — the same "keep two things in sync via a MECHANISM, not
+ *     a comment" discipline test-schema-coverage.php enforces for migrations vs schema.sql
+ *     (rule #35). Every DEFECT / lossy claim in $FIELD_VERDICTS restates a fact the closure
+ *     assertions in section (4) above ALREADY independently re-derive from the real parsers on
+ *     every run (a verdict here going stale relative to reality would first show up as a
+ *     section-(4) failure, long before anyone reads the matrix) — what section (6) additionally
+ *     guards against is a DIFFERENT failure mode: someone hand-editing the committed JSON/
+ *     markdown directly (or the generator code drifting from them) without either file noticing.
+ * ================================================================================================ */
+
+/**
+ * The 13 fields this matrix reports per format, in report-column order. Every field FIXTURE_SONG
+ * (tools/interchange-gen-samples.js) was specifically built to exercise, plus 'title' and
+ * 'components' (the lyric lines themselves) for completeness.
+ */
+$MATRIX_FIELDS = [
+    'title', 'writers', 'composers', 'copyright', 'ccli', 'tuneName',
+    'alternateTitle', 'chords', 'language', 'label', 'notes', 'arrangement', 'components',
+];
+
+/**
+ * Verdict vocabulary (kept deliberately small and load-bearing):
+ *   'held'     — round-trips losslessly through OUR own exporter -> OUR own importer.
+ *   'reshaped' — the VALUE survives but its ROLE/SHAPE changes (e.g. a composer relabelled a
+ *                writer; a positioned chord string collapsed to an ordered token list).
+ *   'dropped'  — the exporter WRITES this field, but the importer never reads it back (or reads
+ *                a DIFFERENT key than the exporter writes) — the value vanishes on our own round
+ *                trip. Includes the 5 confirmed defects.
+ *   'n/a'      — this format's exporter NEVER attempts to write this field at all (no channel,
+ *                or the input is simply never read) — there is nothing to lose because nothing
+ *                was ever sent. Distinct from 'dropped': 'n/a' is "never tried", 'dropped' is
+ *                "tried, then lost".
+ *
+ * PER-CELL EVIDENCE: every non-'held'/'n/a' cell below carries a file:line-anchored reason,
+ * hand-traced against the SAME exporter/importer source the $FORMATS expected dicts above were
+ * traced against — most are restatements of a comment already sitting next to that expected
+ * dict's own array literal, colocated here in the ONE shape (formatId => field => [verdict,
+ * reason]) the JSON/markdown renderers below both read from.
+ *
+ * @var array<string,array<string,array{0:string,1:string}>>
+ */
+$FIELD_VERDICTS = [
+    'opensong' => [
+        'title'          => ['held', ''],
+        'writers'        => ['reshaped', 'writers+composers joined into one <author> element, comma-split back on import — a composer returns indistinguishable from a writer (format-export.js:121-123,141; song_importers.php:2252)'],
+        'composers'      => ['dropped', 'always empty on import — no separate composer channel survives this format at all (song_importers.php:2277)'],
+        'copyright'      => ['held', ''],
+        'ccli'           => ['held', ''],
+        'tuneName'       => ['dropped', 'DEFECT (4) — <tune> is emitted (format-export.js:147) but never read back; the importer hardcodes tuneName to \'\' (song_importers.php:2269)'],
+        'alternateTitle' => ['n/a', 'buildOpenSong() never reads song.alternateTitle — never attempted'],
+        'chords'         => ['n/a', 'buildOpenSong() never reads comp.chords — OpenSong lyric rows have no chord channel in this exporter'],
+        'language'       => ['n/a', 'buildOpenSong() never reads comp.language'],
+        'label'          => ['n/a', 'buildOpenSong() never reads comp.label'],
+        'notes'          => ['n/a', 'buildOpenSong() never reads comp.notes (per-line)'],
+        'arrangement'    => ['n/a', 'this parser\'s return shape has no arrangement concept at all'],
+        'components'     => ['held', 'lyric lines + per-component type/number round-trip exactly'],
+    ],
+    'openlp' => [
+        'title'          => ['held', ''],
+        'writers'        => ['reshaped', 'writers+composers both become separate <author> elements, indistinguishable on import (format-export.js:403,408-411; song_importers.php:3251-3257)'],
+        'composers'      => ['n/a', 'this parser\'s return shape has no separate composers key at all'],
+        'copyright'      => ['held', ''],
+        'ccli'           => ['held', ''],
+        'tuneName'       => ['n/a', 'buildOpenLyrics() never reads song.tuneName'],
+        'alternateTitle' => ['n/a', 'buildOpenLyrics() never emits a second <title> — never attempted'],
+        'chords'         => ['n/a', 'buildOpenLyrics() never emits <chord> — though its OWN importer can read one from a genuine third-party file'],
+        'language'       => ['n/a', 'buildOpenLyrics() never emits a verse lang attribute — same caveat as chords'],
+        'label'          => ['n/a', 'no label channel in OpenLyrics at all'],
+        'notes'          => ['n/a', 'buildOpenLyrics() never emits <comment> — same caveat as chords'],
+        'arrangement'    => ['n/a', 'THE headline documented lesson (see file header): FIXTURE_SONG.arrangement is [2,0,1] but buildOpenLyrics() (format-export.js:419) always emits a natural-order <verseOrder> from component iteration order, never from song.arrangement; re-import resolves the identity permutation and correctly, deliberately OMITS the key (#2062 identity-suppression) rather than storing a no-op. Mutation-proven (m5).'],
+        'components'     => ['held', ''],
+    ],
+    'pro6' => [
+        'title'          => ['held', ''],
+        'writers'        => ['reshaped', 'CCLIAuthor is writers+composers joined with \' / \', slash-split back on import — composer folded into writer (format-export.js:575,579; song_importers.php:2283)'],
+        'composers'      => ['n/a', 'this parser\'s return shape has no composers key at all'],
+        'copyright'      => ['held', ''],
+        'ccli'           => ['held', ''],
+        'tuneName'       => ['n/a', 'no tune concept in .pro6'],
+        'alternateTitle' => ['n/a', 'no subtitle concept in .pro6'],
+        'chords'         => ['n/a', 'no chord channel — .pro6 slide text is plain RTF'],
+        'language'       => ['n/a', 'no language attribute in .pro6'],
+        'label'          => ['n/a', 'no label channel in .pro6'],
+        'notes'          => ['n/a', 'no per-line note channel in .pro6'],
+        'arrangement'    => ['n/a', 'this parser\'s return shape has no arrangement concept at all'],
+        'components'     => ['held', ''],
+    ],
+    'proclaim' => [
+        'title'          => ['held', ''],
+        'writers'        => ['n/a', 'Proclaim\'s .txt format has NO metadata channel at all — always empty regardless of input'],
+        'composers'      => ['n/a', 'same — no metadata channel'],
+        'copyright'      => ['n/a', 'same — no metadata channel'],
+        'ccli'           => ['n/a', 'same — no metadata channel'],
+        'tuneName'       => ['n/a', 'same — no metadata channel'],
+        'alternateTitle' => ['n/a', 'same — no metadata channel'],
+        'chords'         => ['n/a', 'same — lyrics text only'],
+        'language'       => ['n/a', 'same — no metadata channel'],
+        'label'          => ['n/a', 'same — no metadata channel'],
+        'notes'          => ['n/a', 'same — no metadata channel'],
+        'arrangement'    => ['n/a', 'same — no metadata channel'],
+        'components'     => ['held', 'lyric text + section labels are the ONLY thing Proclaim carries'],
+    ],
+    'videopsalm' => [
+        'title'          => ['held', ''],
+        'writers'        => ['dropped', 'DEFECT (1) — buildVideoPsalm() never emits an Author key at all (format-export.js:204-227); the importer reads sRaw[\'Author\'] (song_importers.php:2577)'],
+        'composers'      => ['dropped', 'DEFECT (1), continued — no composer channel either'],
+        'copyright'      => ['dropped', 'DEFECT (1) — written to Memo1 (format-export.js:224); the importer reads Copyright (song_importers.php:2596)'],
+        'ccli'           => ['dropped', 'DEFECT (1) — written to Memo2 as \'CCLI \'+ccli (format-export.js:225); the importer reads CCLI (song_importers.php:2593)'],
+        'tuneName'       => ['n/a', 'buildVideoPsalm() never reads song.tuneName'],
+        'alternateTitle' => ['n/a', 'buildVideoPsalm() never reads song.alternateTitle'],
+        'chords'         => ['n/a', 'no chord channel in VideoPsalm'],
+        'language'       => ['n/a', 'no per-component language channel in VideoPsalm'],
+        'label'          => ['n/a', 'no label channel in VideoPsalm'],
+        'notes'          => ['n/a', 'no per-line note channel in VideoPsalm'],
+        'arrangement'    => ['n/a', 'this parser\'s return shape has no arrangement concept at all'],
+        'components'     => ['held', 'lyric lines + Tag-derived type/number round-trip correctly; NOTE — songbookName also comes back as the SONG\'S OWN title, not the exported songbookName input, because VideoPsalm\'s native unit is a whole songbook and a single-song export reuses the title as the "book" name (format-export.js:230; song_importers.php:2504) — a real quirk, distinct from defect (1), not scored as its own field here'],
+    ],
+    'freeshow' => [
+        'title'          => ['held', ''],
+        'writers'        => ['reshaped', 'meta.author is writers+composers comma-joined, correctly comma-split back into 3 names on import — names intact, writer/composer ROLE distinction lost (format-export.js:308,316; song_importers.php:7925)'],
+        'composers'      => ['n/a', 'this parser\'s return shape has no composers key at all'],
+        'copyright'      => ['held', ''],
+        'ccli'           => ['held', 'unprefixed, unlike VideoPsalm\'s \'CCLI \'-prefixed Memo2 (format-export.js:318)'],
+        'tuneName'       => ['n/a', 'no tune concept in FreeShow'],
+        'alternateTitle' => ['n/a', 'no subtitle concept in FreeShow'],
+        'chords'         => ['n/a', 'no chord channel — plain slide text runs only'],
+        'language'       => ['n/a', 'no per-component language channel in FreeShow'],
+        'label'          => ['n/a', 'no label channel in FreeShow'],
+        'notes'          => ['n/a', 'no per-line note channel in FreeShow'],
+        'arrangement'    => ['n/a', 'this parser\'s return shape has no arrangement concept at all'],
+        'components'     => ['held', ''],
+    ],
+    'chordpro' => [
+        'title'          => ['held', ''],
+        'writers'        => ['dropped', 'DEFECT (2) — folded into the SAME {artist:} directive as composers (format-export.js:792,796); the importer\'s \'artist\'/\'composer\'/\'music\' arm keeps the whole string as ONE composer entry (song_importers.php:2866-2867) — writers comes back empty. Mutation-proven (m3).'],
+        'composers'      => ['reshaped', 'DEFECT (2), continued — holds the merged writers+composers string as a single un-split entry'],
+        'copyright'      => ['held', ''],
+        'ccli'           => ['held', ''],
+        'tuneName'       => ['n/a', 'buildChordPro() never reads song.tuneName at all'],
+        'alternateTitle' => ['dropped', 'DEFECT (3) — {subtitle:} IS emitted (format-export.js:795), but the importer\'s directive switch has no case for it; its documented default arm says outright "no target field in the song model" (song_importers.php:2889-2893)'],
+        'chords'         => ['held', 'the ONLY format-export.js builder that reads comp.chords at all; both the positioned-STRING cell and the word-aligned ARRAY cell collapse to the same space-joined ordered token list (chordless component correctly carries no \'chords\' key)'],
+        'language'       => ['n/a', 'buildChordPro() never reads comp.language'],
+        'label'          => ['n/a', 'buildChordPro() never reads comp.label'],
+        'notes'          => ['n/a', 'buildChordPro() never reads comp.notes (per-line)'],
+        'arrangement'    => ['n/a', 'this parser\'s return shape has no arrangement concept at all'],
+        'components'     => ['held', ''],
+    ],
+];
+
+/**
+ * Build the ONE in-memory matrix data structure both renderers below read from — never
+ * hand-typed twice. `$formatLabels` is import2.php's OWN dropdown labels (tree-derived, see
+ * `ihymnsInterchangeUiImportFormats()`'s doc-block), so a label can't drift from the live UI
+ * either.
+ *
+ * @param array<string,string> $exportKeyToImportFormat
+ * @param array<string,string> $importOnlyExemptions
+ * @param array<string,string> $formatLabels
+ * @param array<string,array<string,array{0:string,1:string}>> $fieldVerdicts
+ * @param array<int,string> $matrixFields
+ * @return array<string,mixed>
+ */
+function interchangeMatrixBuild(
+    array $exportKeyToImportFormat,
+    array $importOnlyExemptions,
+    array $formatLabels,
+    array $fieldVerdicts,
+    array $matrixFields
+): array {
+    $rows = [];
+
+    foreach ($exportKeyToImportFormat as $exportKey => $importFormatId) {
+        $fields = [];
+        foreach ($matrixFields as $field) {
+            [$verdict, $reason] = $fieldVerdicts[$importFormatId][$field] ?? ['n/a', ''];
+            $fields[$field] = $reason === '' ? ['verdict' => $verdict] : ['verdict' => $verdict, 'reason' => $reason];
+        }
+        $rows[$importFormatId] = [
+            'id'         => $importFormatId,
+            'label'      => $formatLabels[$importFormatId] ?? $importFormatId,
+            'exportKey'  => $exportKey,
+            'coverage'   => 'closure',
+            'fields'     => $fields,
+        ];
+    }
+
+    foreach ($importOnlyExemptions as $importFormatId => $reason) {
+        $rows[$importFormatId] = [
+            'id'        => $importFormatId,
+            'label'     => $formatLabels[$importFormatId] ?? $importFormatId,
+            'exportKey' => null,
+            'coverage'  => $importFormatId === 'pro7' ? 'closure-elsewhere' : 'import-only',
+            'reason'    => $reason,
+        ];
+    }
+
+    /* Stable order: the seven closure-tested formats first (matching $FORMATS's own
+       authoring order), then the exemptions in the order they were declared. */
+    $order = array_merge(array_values($exportKeyToImportFormat), array_keys($importOnlyExemptions));
+    $ordered = [];
+    foreach ($order as $id) {
+        $ordered[$id] = $rows[$id];
+    }
+
+    return [
+        'generatedBy' => 'php tests/php/test-interchange-roundtrip.php --matrix --write',
+        'fixture'     => 'tools/interchange-gen-samples.js FIXTURE_SONG',
+        'legend'      => [
+            'held'     => 'round-trips losslessly through our own exporter -> our own importer',
+            'reshaped' => 'the value survives but its role/shape changes (e.g. a composer relabelled a writer)',
+            'dropped'  => 'the exporter writes this field but the importer never reads it back — lost on our own round trip',
+            'n/a'      => 'this format\'s exporter never attempts to write this field at all — nothing was ever sent',
+        ],
+        'fields'  => array_values($matrixFields),
+        'formats' => array_values($ordered),
+    ];
+}
+
+function interchangeMatrixRenderJson(array $matrix): string
+{
+    return json_encode($matrix, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+}
+
+/** Short verdict glyph for the compact markdown table (the full word + reason live in the
+ *  per-format detail section below the table). */
+function interchangeMatrixGlyph(string $verdict): string
+{
+    return ['held' => '✓', 'reshaped' => '~', 'dropped' => '✗', 'n/a' => '·'][$verdict] ?? '?';
+}
+
+function interchangeMatrixRenderMarkdown(array $matrix): string
+{
+    $fields = $matrix['fields'];
+    $md = "# Import & Export Fidelity\n\n";
+    $md .= "> **Auto-generated — do not hand-edit.** Regenerate with `{$matrix['generatedBy']}`, "
+        . "then commit the diff.\n\n";
+    $md .= "This page is a CLOSURE report, not an external-correctness report: it shows whether "
+        . "iHymns' own exporters (`format-export.js`) and iHymns' own importers "
+        . "(`song_importers.php`) agree with EACH OTHER on one hand-built fixture song "
+        . "(`{$matrix['fixture']}`) — never whether either half is correct against a REAL file "
+        . "from another application. The mechanism behind this page is "
+        . "`tests/php/test-interchange-roundtrip.php`; read that file's header for the full "
+        . "doctrine (including why ProPresenter 7+ is deliberately excluded and tested "
+        . "separately by `tests/php/test-pp7-roundtrip.php`).\n\n";
+
+    $md .= "## Legend\n\n";
+    foreach ($matrix['legend'] as $verdict => $desc) {
+        $md .= '- `' . interchangeMatrixGlyph($verdict) . "` **{$verdict}** — {$desc}\n";
+    }
+    $md .= "\n";
+
+    $md .= "## Closure-tested formats\n\n";
+    $md .= "Every cell below is asserted, on every CI run, against the REAL exporter and REAL "
+        . "importer — this table is a rendering of `tests/php/test-interchange-roundtrip.php`'s "
+        . "own `\$FORMATS` expected dicts, not a separate hand-maintained claim.\n\n";
+    $md .= '| Format ' . implode(' ', array_map(static fn ($f) => "| {$f} ", $fields)) . "|\n";
+    $md .= '|---' . str_repeat('|---', count($fields)) . "|\n";
+    foreach ($matrix['formats'] as $row) {
+        if ($row['coverage'] !== 'closure') {
+            continue;
+        }
+        $md .= "| {$row['label']} ";
+        foreach ($fields as $field) {
+            $md .= '| ' . interchangeMatrixGlyph($row['fields'][$field]['verdict']) . ' ';
+        }
+        $md .= "|\n";
+    }
+    $md .= "\n";
+
+    $md .= "### Per-format notes\n\n";
+    foreach ($matrix['formats'] as $row) {
+        if ($row['coverage'] !== 'closure') {
+            continue;
+        }
+        $notes = [];
+        foreach ($fields as $field) {
+            $cell = $row['fields'][$field];
+            /* Include a 'held' cell's note too when it carries a reason (e.g. "held, but this is
+               the ONLY format that supports chords at all") — only a truly UNREMARKABLE cell
+               (no reason at all) is skipped. */
+            if (!isset($cell['reason']) || $cell['reason'] === '') {
+                continue;
+            }
+            $notes[] = "  - **{$field}** (" . interchangeMatrixGlyph($cell['verdict']) . " {$cell['verdict']}): {$cell['reason']}";
+        }
+        if (empty($notes)) {
+            continue;
+        }
+        $md .= "- **{$row['label']}**\n" . implode("\n", $notes) . "\n";
+    }
+    $md .= "\n";
+
+    $md .= "## Not closure-tested here\n\n";
+    $md .= "Formats `import2.php` accepts with no `format-export.js` exporter (or, for ProPresenter "
+        . "7+, tested by a dedicated closure test instead) — never scored above, each named so the "
+        . "absence is a documented decision, not a gap:\n\n";
+    foreach ($matrix['formats'] as $row) {
+        if ($row['coverage'] === 'closure') {
+            continue;
+        }
+        $md .= "- **{$row['label']}** (`{$row['id']}`) — {$row['reason']}\n";
+    }
+    $md .= "\n";
+
+    $md .= "## Confirmed defects\n\n";
+    $md .= "Frozen in the expected dicts above with file:line evidence — NOT fixed by this harness; "
+        . "see `tests/php/test-interchange-roundtrip.php`'s header for the full write-up of each:\n\n";
+    $md .= "1. **VideoPsalm** — copyright/ccli/writers all silently dropped on our own round trip "
+        . "(export writes `Memo1`/`Memo2`/no author; import reads `Copyright`/`CCLI`/`Author`).\n";
+    $md .= "2. **ChordPro** — writers+composers folded into one `{artist:}` directive; import keeps "
+        . "the whole string as a single composer, writers comes back empty.\n";
+    $md .= "3. **Dead exporter inputs** — `song.alternateTitle`/`.key`/`.capo` (ChordPro) and "
+        . "`song.notes` (ProPresenter 7+ export) are never supplied by `SongData::getSongById()`'s "
+        . "real row shape.\n";
+    $md .= "4. **OpenSong tune** — `<tune>` is exported but the importer never reads it back.\n";
+    $md .= "5. **v2 editor export menu** — has no ChordPro item despite its own comment assuming "
+        . "one, and despite the public export menu offering it.\n";
+
+    return $md;
+}
+
+if ($runMatrix) {
+    $matrix = interchangeMatrixBuild(
+        $EXPORT_KEY_TO_IMPORT_FORMAT,
+        $IMPORT_ONLY_EXEMPTIONS,
+        $uiImportFormatLabels,
+        $FIELD_VERDICTS,
+        $MATRIX_FIELDS
+    );
+
+    /* Mutation self-test that the vocabulary itself is meaningful (rule #34's vacuity check,
+       applied to a generator rather than a scanner): every closure-tested format must carry at
+       least one non-'held' cell — a matrix where every single field is claimed lossless would be
+       a suspiciously perfect result this feature's own "5 confirmed defects" prove false, and
+       would most likely mean $FIELD_VERDICTS was accidentally reset rather than genuinely clean. */
+    foreach ($matrix['formats'] as $row) {
+        if ($row['coverage'] !== 'closure') {
+            continue;
+        }
+        $anyLossy = false;
+        foreach ($row['fields'] as $cell) {
+            if ($cell['verdict'] !== 'held') { $anyLossy = true; break; }
+        }
+        ok("matrix vacuity check: '{$row['id']}' reports at least one non-held field (a suspiciously perfect row would suggest \$FIELD_VERDICTS was reset, not genuinely clean)", $anyLossy);
+    }
+
+    $jsonPath = $repoRoot . '/tests/fixtures/interchange-matrix.json';
+    $mdPath   = $repoRoot . '/wiki/Import-&-Export-Fidelity.md';
+
+    $freshJson = interchangeMatrixRenderJson($matrix);
+    $freshMd   = interchangeMatrixRenderMarkdown($matrix);
+
+    if ($writeMatrix) {
+        file_put_contents($jsonPath, $freshJson);
+        file_put_contents($mdPath, $freshMd);
+        echo "  ✍️  wrote {$jsonPath}\n";
+        echo "  ✍️  wrote {$mdPath}\n";
+    }
+
+    $committedJson = is_file($jsonPath) ? (string)file_get_contents($jsonPath) : null;
+    $committedMd   = is_file($mdPath) ? (string)file_get_contents($mdPath) : null;
+
+    ok('matrix: tests/fixtures/interchange-matrix.json exists', $committedJson !== null);
+    ok('matrix: wiki/Import-&-Export-Fidelity.md exists', $committedMd !== null);
+
+    if ($committedJson !== null) {
+        ok('matrix: tests/fixtures/interchange-matrix.json is byte-identical to a fresh regenerate '
+            . '(run with --write to update it, then commit the diff)',
+            $committedJson === $freshJson);
+    }
+    if ($committedMd !== null) {
+        ok('matrix: wiki/Import-&-Export-Fidelity.md is byte-identical to a fresh regenerate '
+            . '(run with --write to update it, then commit the diff)',
+            $committedMd === $freshMd);
+    }
 }
 
 /* ================================================================================================ */
