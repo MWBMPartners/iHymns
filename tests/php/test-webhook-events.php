@@ -62,6 +62,13 @@ check('webhook.verify is valid', webhookEventTypeValid('webhook.verify') === tru
 check('song.exploded is NOT valid', webhookEventTypeValid('song.exploded') === false);
 check('empty string is NOT valid', webhookEventTypeValid('') === false);
 
+echo "\n2a — ingest-lifecycle events (#1135) are registered\n";
+foreach (['ingest.linked', 'ingest.approved', 'ingest.rejected', 'ingest.conflicted'] as $ingestType) {
+    check("$ingestType is a valid registered type", webhookEventTypeValid($ingestType) === true);
+}
+check("'ingest.*' is a valid selector (family prefix derived from the map)", webhookEventSelectorValid('ingest.*') === true);
+check("'ingest.*' matches ingest.linked", webhookEventMatches('ingest.*', 'ingest.linked') === true);
+
 echo "\n3 — selector validation (mirrors tblApiKeys.Scope)\n";
 check("'*' is valid", webhookEventSelectorValid('*') === true);
 check("'song.updated' is valid", webhookEventSelectorValid('song.updated') === true);
@@ -120,6 +127,26 @@ $service = webhookBuildPayload('service.started', [
 ]);
 check('service.started carries org_id + venue_id + occurrence_date', $service['org_id'] === 3 && $service['venue_id'] === 5 && $service['occurrence_date'] === '2026-08-23');
 check('service.started NEVER carries the join code', !isset($service['join_code']) && !isset($service['code']));
+
+$ingestLinked = webhookBuildPayload('ingest.linked', [
+    'song_id' => 'MP-1008', 'submission_id' => 42, 'ingest_source' => 'applemusic-ttml',
+    'base_url' => 'https://ihymns.app',
+    /* banned: the actual lyric/TTML content must NEVER appear */
+    'lyrics' => 'Amazing grace how sweet the sound', 'ttml' => '<tt>…</tt>', 'secret' => 'x',
+]);
+check('ingest.linked carries song_id + submission_id + ingest_source + url', $ingestLinked['song_id'] === 'MP-1008' && $ingestLinked['submission_id'] === 42 && $ingestLinked['ingest_source'] === 'applemusic-ttml' && $ingestLinked['url'] === 'https://ihymns.app/song/MP-1008');
+$ingestFlat = _flatten($ingestLinked);
+$ingestLeak = false;
+foreach ($banned as $b) { if (isset($ingestLinked[$b]) || stripos($ingestFlat, $b) !== false) { $ingestLeak = true; echo "     LEAK: $b in ingest.linked payload\n"; } }
+check('ingest.linked payload contains NO banned content/capability/internal keys', $ingestLeak === false);
+check('ingest.linked payload NEVER carries the raw TTML markup passed as a fact', stripos($ingestFlat, '<tt>') === false);
+
+$ingestApproved = webhookBuildPayload('ingest.approved', ['song_id' => 'MP-1008', 'submission_id' => 42, 'ingest_source' => 'user-submission']);
+$ingestRejected = webhookBuildPayload('ingest.rejected', ['song_id' => 'MP-1008', 'submission_id' => 42, 'ingest_source' => 'user-submission']);
+check('ingest.approved carries ingest_source', $ingestApproved['ingest_source'] === 'user-submission');
+check('ingest.rejected carries ingest_source', $ingestRejected['ingest_source'] === 'user-submission');
+$ingestConflicted = webhookBuildPayload('ingest.conflicted', ['song_id' => 'MP-1008', 'submission_id' => null, 'ingest_source' => 'applemusic-ttml']);
+check('ingest.conflicted allows a null submission_id (registered but not yet emitted — #1135 follow-up)', $ingestConflicted['submission_id'] === null);
 
 echo "\n6 — envelope shape\n";
 $env = webhookBuildEnvelope('song.updated', 'evt_abc', 'production', '2026-08-23T12:00:00Z', $songData);

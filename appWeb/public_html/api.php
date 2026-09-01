@@ -2242,6 +2242,46 @@ if ($action !== null) {
                         'status'    => $status,
                     ]);
                 }
+                /* #1135 — partner webhook, notifying a fire-and-forget pusher
+                   (e.g. MeedyaDL) of this submission's outcome. Dormant no-op
+                   until webhooks are enabled + something is subscribed.
+                     - ingest.linked: the resolve ladder (lyricsIngest_resolveSong()
+                       above) ATTACHED this submission to an EXISTING song
+                       (matched=true) rather than minting a provisional one —
+                       the "linked" outcome (#1135's tblSongLinks-flavoured
+                       wording doesn't apply: nothing in the ingest/resolve
+                       path writes tblSongLinks, confirmed by grep — this is
+                       the genuine identity-resolution "linked to" commit
+                       point instead).
+                     - ingest.approved / ingest.rejected: the ONLY place
+                       tblLyrics.Status ever resolves to 'approved' or
+                       'rejected' today (confirmed by grep across the whole
+                       tree) — there is no separate moderation/review-queue UI
+                       yet (tblLyricsReviewQueue is dormant #1066 Theme B
+                       schema with zero live callers), so this caller-declared
+                       $status IS the transition. ingest.conflicted is NOT
+                       emitted here or anywhere — see the registry doc-block
+                       in includes/webhook_events.php for why. */
+                if ($resolved['matched']) {
+                    webhookEmit('ingest.linked', [
+                        'song_id'       => $songId,
+                        'submission_id' => $result['lyricsId'],
+                        'ingest_source' => $source ?: 'applemusic-ttml',
+                    ], ['source' => 'lyrics_ingest', 'entity_id' => $songId]);
+                }
+                if ($status === 'approved') {
+                    webhookEmit('ingest.approved', [
+                        'song_id'       => $songId,
+                        'submission_id' => $result['lyricsId'],
+                        'ingest_source' => $source ?: 'applemusic-ttml',
+                    ], ['source' => 'lyrics_ingest', 'entity_id' => $songId]);
+                } elseif ($status === 'rejected') {
+                    webhookEmit('ingest.rejected', [
+                        'song_id'       => $songId,
+                        'submission_id' => $result['lyricsId'],
+                        'ingest_source' => $source ?: 'applemusic-ttml',
+                    ], ['source' => 'lyrics_ingest', 'entity_id' => $songId]);
+                }
                 $ingestResponse = [
                     'ok'                => true,
                     'songId'            => $songId,

@@ -23159,7 +23159,11 @@ components:
             Dotted event type. v1 vocabulary: song.created / song.updated /
             song.deleted / song.restored / songbook.created / songbook.updated /
             songbook.deleted / songbook.import_completed / setlist.shared /
-            service.started / service.ended / webhook.verify / webhook.test.
+            service.started / service.ended / ingest.linked / ingest.approved /
+            ingest.rejected / ingest.conflicted / webhook.verify / webhook.test.
+            ingest.conflicted is registered but not yet emitted by any funnel
+            (#1135 follow-up — no conflict-detector exists yet); it may appear
+            in a subscription's selector today with no deliveries resulting.
         api_version:
           type: string
           example: "1"
@@ -23181,7 +23185,9 @@ components:
             only, updated), url}. songbook.*: {abbr, title, is_official, url}.
             setlist.shared: {setlist_title, scope, owner_org_id} (NEVER the
             token/URL). service.*: {session_kind, org_id, venue_id,
-            occurrence_date, ended_reason} (NEVER the join code).
+            occurrence_date, ended_reason} (NEVER the join code). ingest.*:
+            {song_id, submission_id, ingest_source, url} — the outcome of a
+            pushed lyrics submission (e.g. MeedyaDL); NEVER the lyric text/TTML.
 
     # -------------------------------------------------------------------------
     # Core domain models

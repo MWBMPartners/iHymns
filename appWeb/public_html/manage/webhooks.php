@@ -520,8 +520,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <h1 class="h3 mb-1"><i aria-hidden="true" class="bi bi-broadcast me-2"></i>Webhooks</h1>
         <p class="text-secondary small mb-0">
             Register a partner's URL to receive signed HTTP callbacks when
-            catalogue, sharing or live events happen — a song changes, a
-            songbook changes, a set-list is shared, a service starts or ends.
+            catalogue, sharing, live or ingest events happen — a song changes, a
+            songbook changes, a set-list is shared, a service starts or ends, a
+            pushed lyrics submission resolves.
             Each subscription must prove it controls its endpoint (Verify)
             before it receives anything, and its signing secret is shown in
             full only <strong>once</strong>. Lost the secret? Rotate it —

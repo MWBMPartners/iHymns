@@ -10,8 +10,11 @@ declare(strict_types=1);
  * Two things must always be true about webhook events: (1) every event we EMIT
  * somewhere in the code is a real, registered event type — never a typo the
  * registry doesn't know; and (2) every registered CONTENT event actually has at
- * least one place that emits it — never a dead entry nobody fires. Plus (3) the
- * admin page builds its event checkboxes FROM the registry, never a typed list.
+ * least one place that emits it — never a dead entry nobody fires, UNLESS it's
+ * on the small, commented `$deferredUnemitted` exception list (a type shipped
+ * ahead of the mechanism that will fire it — #1135's `ingest.conflicted` is the
+ * first). Plus (3) the admin page builds its event checkboxes FROM the
+ * registry, never a typed list.
  *
  * WHY IT IS DERIVED, NOT A HARDCODED LIST (rule #34)
  * ----------------------------------------------------
@@ -102,15 +105,44 @@ foreach ($unknownEmitted as $t) {
 ok('the scan found emitted types at all (sanity — >= 6 distinct)',
     count($emittedTypes) >= 6);
 
-/* ---- CHECK 2 — every CONTENT (non-platform) type has an emit site ---------- */
+/* ---- CHECK 2 — every CONTENT (non-platform) type has an emit site ----------
+   EXCEPTION: a type may be registered ahead of the mechanism that will commit
+   its transition — the SAME "additive, dormant vocabulary shipped ahead of
+   the feature" pattern rule #20 already sanctions for whole TABLES (#1066).
+   Each entry below must carry the reason + the tracking issue; remove the
+   line the moment a real emit site lands and CHECK 2 covers the type for
+   real from then on, automatically, with no other change needed here. */
+$deferredUnemitted = [
+    /* #1135 — tblLyricsConflicts is dormant #1066 Theme B schema; no code
+       anywhere in the tree detects an ingest conflict or writes that table
+       (confirmed by an exhaustive grep — its only references are its own
+       migration and an unrelated FK-cascade relocate list in
+       includes/song_relocate.php). Emitting this without a real detector
+       would be a guessed emit site (CLAUDE.md rule #35) — deferred until the
+       detector exists. See includes/webhook_events.php's registry doc-block
+       for the same note. */
+    'ingest.conflicted',
+];
 $uncovered = [];
 foreach ($contentTypes as $t) {
-    if (!isset($emittedTypes[$t])) { $uncovered[] = $t; }
+    if (!isset($emittedTypes[$t]) && !in_array($t, $deferredUnemitted, true)) { $uncovered[] = $t; }
 }
-ok('every non-platform registered event type has at least one emit site ('
-    . count($contentTypes) . ' content types)', $uncovered === []);
+ok('every non-platform registered event type has at least one emit site, or is a '
+    . 'documented deferred exception (' . count($contentTypes) . ' content types, '
+    . count($deferredUnemitted) . ' deferred)', $uncovered === []);
 foreach ($uncovered as $t) {
     echo "       registered '{$t}' has NO webhookEmit* call anywhere\n";
+}
+/* Guard the guard: a deferred entry that quietly GAINED a real emit site
+   should be surfaced, not silently masked forever — the fix is to delete it
+   from $deferredUnemitted (CHECK 2 above then covers it directly). This does
+   NOT fail the build (a stale-but-harmless entry is not a coverage gap); it's
+   a nudge so the exception list doesn't outlive its own reason. */
+foreach ($deferredUnemitted as $t) {
+    if (isset($emittedTypes[$t])) {
+        echo "  ℹ️  '{$t}' now HAS a real emit site (" . implode(', ', array_keys($emittedTypes[$t]))
+            . ") — remove it from \$deferredUnemitted in this file so CHECK 2 covers it directly.\n";
+    }
 }
 
 /* ---- CHECK 3 — the admin page renders events FROM the registry ------------- */
