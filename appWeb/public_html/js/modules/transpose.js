@@ -1,5 +1,6 @@
 /**
- * iHymns — Transpose / Capo Indicator Module (#101, capo+octave overlay #1271)
+ * iHymns — Transpose / Capo Indicator Module (#101, capo+octave overlay #1271,
+ * Nashville Number System + Do-Re-Mi chord-display notation #1265)
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
@@ -25,6 +26,19 @@
  * span shows, and its doc-block for why octave structurally CANNOT reach
  * that composition (it is display-only, by construction — rule #44: no
  * field/control gets wired into a computation it has no business in).
+ *
+ * #1265 — a chord-display NOTATION picker (Letters / Nashville Number
+ * System / Do-Re-Mi movable / Do-Re-Mi fixed), GLOBAL not per-song (a
+ * musician's preferred reading system doesn't change per song). The
+ * degree/syllable maths lives in the pure, DOM-free
+ * `js/utils/chord-notation.js` (chordToNashville()/chordToSolfege()) — this
+ * file only ADDS a dispatcher, renderChordToken(), that sits IN FRONT of
+ * composeChordDisplay() rather than replacing it: `composeChordDisplay()`
+ * itself is untouched (still exactly 3 params, still capo-applies-to-
+ * letters only) so `tests/test-transpose-capo.js`'s contract keeps holding.
+ * Nashville/movable-do need this song's stated key (`tblSongKeys`, mostly
+ * absent — see song-key.js) and are `disabled` in the picker until one
+ * exists; fixed-do never needs a key.
  */
 import { escapeHtml } from '../utils/html.js';
 import {
@@ -32,7 +46,9 @@ import {
     STORAGE_CHORD_COLUMNS,
     STORAGE_CAPO_PREFIX,
     STORAGE_OCTAVE_PREFIX,
+    STORAGE_CHORD_NOTATION,
 } from '../constants.js';
+import { chordToNashville, chordToSolfege } from '../utils/chord-notation.js';
 
 /* ============================================================================
  * MODULE-LEVEL PURE HELPERS (#1271)
@@ -135,6 +151,70 @@ export function composeChordDisplay(original, offset, capo) {
     return transposeChord(original, offset - capo);
 }
 
+/**
+ * THE notation dispatcher (#1265) — routes an immutable original chord
+ * through whichever display notation is active. `renderChords()` below
+ * calls this for every `[data-chord]` element; this is the ONE place
+ * notation branches, so a third/fourth notation is a new `else if` here,
+ * never a second DOM walker (rule #6, matching how #1271 grew this same
+ * seam for capo rather than forking renderChords()).
+ *
+ * `notationMode === 'letters'` (or falsy/unrecognised — fail safe to what
+ * shipped before #1265) delegates to composeChordDisplay() UNCHANGED, so
+ * capo keeps applying to letters exactly as before and
+ * tests/test-transpose-capo.js's assertions about composeChordDisplay's
+ * own 3-argument contract stay untouched.
+ *
+ * Every OTHER notation is movable by nature (a Nashville "1" or a solfège
+ * "Do" already means "the tonic", wherever a guitarist frets it) — so capo
+ * is a DELIBERATE no-op for them: the chord fed to the converters is the
+ * SOUNDING chord, `transposeChord(original, offset)` (offset alone, capo
+ * excluded), never the fretted SHAPE `composeChordDisplay()` computes for
+ * letters. `capo` is still accepted as a parameter (rather than dropped
+ * from the signature) so this dispatcher's shape stays uniform across all
+ * four modes and every call site passes the same five arguments regardless
+ * of which branch actually uses them.
+ *
+ * `soundingKey` is the TONIC the number/syllable converters compare each
+ * chord's root against — callers pass `transposeKey(originalKey, offset)`,
+ * computed ONCE per render pass (not once per chord), so this function
+ * itself never needs `originalKey` or `offset` for that purpose.
+ *
+ * @param {string} original      Immutable original chord text (el.dataset.chord)
+ * @param {number} offset        Pending transpose offset in semitones
+ * @param {number} capo          Capo fret, 0-11 (letters mode only — see above)
+ * @param {string} notationMode  'letters' | 'nashville' | 'solfege' | 'solfege-fixed'
+ * @param {string} soundingKey   Sounding tonic (transposeKey(originalKey, offset)),
+ *   '' when the song has no recorded key — chordToNashville()/chordToSolfege()
+ *   both degrade to returning the chord unchanged in that case (their own
+ *   passthrough), which in practice never fires because the UI disables the
+ *   key-dependent options until a key exists (see the notation <select> below).
+ * @returns {string} The chord text to display.
+ */
+export function renderChordToken(original, offset, capo, notationMode, soundingKey) {
+    if (!notationMode || notationMode === 'letters') {
+        return composeChordDisplay(original, offset, capo);
+    }
+
+    /* Sounding chord — offset only, capo deliberately excluded (see doc-block). */
+    const sounding = transposeChord(original, offset);
+
+    if (notationMode === 'nashville') {
+        return chordToNashville(sounding, soundingKey);
+    }
+    if (notationMode === 'solfege') {
+        return chordToSolfege(sounding, soundingKey, { fixed: false });
+    }
+    if (notationMode === 'solfege-fixed') {
+        return chordToSolfege(sounding, soundingKey, { fixed: true });
+    }
+
+    /* Unrecognised mode string (e.g. a future rollback reading a newer
+       value this build doesn't know) — fail safe to the pre-#1265 letters
+       behaviour rather than showing nothing. */
+    return composeChordDisplay(original, offset, capo);
+}
+
 export class Transpose {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -159,6 +239,20 @@ export class Transpose {
 
         /** @type {string} Storage key prefix for per-song octave overlay (#1271) */
         this.octaveStoragePrefix = STORAGE_OCTAVE_PREFIX;
+
+        /** @type {string} Active chord-display notation, GLOBAL not per-song (#1265).
+            'letters' | 'nashville' | 'solfege' | 'solfege-fixed'. */
+        this.notationMode = 'letters';
+
+        /** @type {string} Storage key for the notation preference (#1265) */
+        this.notationStorageKey = STORAGE_CHORD_NOTATION;
+
+        /** @type {string} This song's original (untransposed) key, '' when the
+            song has no `tblSongKeys` row (most songs — a 404 is normal, see
+            song-key.js). Cached on the instance so renderChords() can compute
+            the SOUNDING tonic for Nashville/solfège without re-reading the DOM
+            on every call (#1265). */
+        this.originalKey = '';
     }
 
     /** Initialise — nothing needed on startup */
@@ -186,10 +280,18 @@ export class Transpose {
         /* Nothing to show if no capo, no key and no chords */
         if (!capoAttr && !originalKey && !hasChords) return;
 
-        /* Restore saved transpose offset + capo/octave overlay for this song */
+        /* Restore saved transpose offset + capo/octave overlay for this song,
+           plus the GLOBAL chord-notation preference (#1265 — not per-song,
+           see notationStorageKey's doc-block in the constructor). Cache the
+           song's key too: renderChords() needs it to compute the SOUNDING
+           tonic for Nashville/solfège, and re-running initSongPage() (as
+           song-key.js does once its async fetch resolves) is the only time
+           this changes. */
         this.offset = this.loadOffset(songId);
         this.capo = this.loadCapo(songId, capoAttr);
         this.octave = this.loadOctave(songId);
+        this.notationMode = this.loadNotationMode();
+        this.originalKey = originalKey;
 
         /* Insert UI into the song meta area */
         const metaArea = songPage.querySelector('.song-meta') || songPage.querySelector('.card-song-header .card-body');
@@ -273,6 +375,37 @@ export class Transpose {
                         <i class="fa-solid fa-plus" aria-hidden="true"></i>
                     </button>
                 </div>`;
+
+            /* #1265 — chord-display notation picker. Rendered ONLY when
+               hasChords (a keyed-but-chordless song has nothing for these
+               converters to rewrite, so it gets the badge/steppers above
+               but not this). Nashville and movable-do NEED a stated key to
+               compute scale degrees against — most songs have no
+               `tblSongKeys` row at all (a 404 is normal, see song-key.js),
+               so those two options are `disabled` with an explanatory
+               `title` until one exists; fixed-do needs no key and is
+               ALWAYS enabled. Because song-key.js re-runs initSongPage()
+               once its async fetch resolves (setting `data-key` first),
+               these options self-enable on keyed songs with no extra
+               wiring here — this function reads `originalKey` fresh on
+               every call. */
+            if (hasChords) {
+                const keyless = !originalKey;
+                const keylessTitle = 'Available once this song has a recorded musical key';
+                const effectiveMode = this.effectiveNotationMode();
+                const opt = (value, label, disabled) => `
+                    <option value="${value}"${disabled ? ` disabled title="${keylessTitle}"` : ''}${effectiveMode === value ? ' selected' : ''}>${label}</option>`;
+                html += `
+                <div class="ms-2" role="group" aria-label="Chord notation">
+                    <label class="visually-hidden" for="chord-notation-select">Chord notation</label>
+                    <select class="form-select form-select-sm" id="chord-notation-select">
+                        ${opt('letters', 'Letters', false)}
+                        ${opt('nashville', 'Nashville Number System', keyless)}
+                        ${opt('solfege', 'Do-Re-Mi (movable)', keyless)}
+                        ${opt('solfege-fixed', 'Do-Re-Mi (fixed)', false)}
+                    </select>
+                </div>`;
+            }
         }
 
         container.innerHTML = html;
@@ -316,10 +449,32 @@ export class Transpose {
         this.bindChordColumnsToggle(songPage);
 
         /* Render chord shapes if the offset and/or capo overlay is non-zero
-           (#1271 — capo alone, with offset at 0, still changes what shows). */
-        if ((this.offset !== 0 || this.capo !== 0) && hasChords) {
+           (#1271 — capo alone, with offset at 0, still changes what shows),
+           OR the active notation isn't plain letters (#1265 — even at the
+           neutral offset/capo, a Nashville/solfège reader needs the server-
+           rendered LETTER text rewritten into degrees/syllables). Uses the
+           EFFECTIVE mode (falls back to letters when this song has no key),
+           so a keyless song with a stale "nashville" global pref does not
+           trigger a pointless re-render that would just reproduce the
+           server-rendered letters. */
+        if (hasChords && (this.offset !== 0 || this.capo !== 0 || this.effectiveNotationMode() !== 'letters')) {
             this.renderChords();
         }
+    }
+
+    /**
+     * The notation actually used for THIS song's render, falling back to
+     * 'letters' when the stored/selected preference needs a key this song
+     * doesn't have (#1265). Deliberately does NOT mutate or persist
+     * `this.notationMode` — the stored global preference is left exactly as
+     * the user set it, so it resumes on the next keyed song without the user
+     * having to re-pick it (see the notation `<select>`'s doc-comment above,
+     * "self-enable... with no extra wiring").
+     * @returns {string}
+     */
+    effectiveNotationMode() {
+        const needsKey = this.notationMode === 'nashville' || this.notationMode === 'solfege';
+        return (needsKey && !this.originalKey) ? 'letters' : this.notationMode;
     }
 
     /**
@@ -425,6 +580,19 @@ export class Transpose {
             this.octave = Math.min(2, this.octave + 1);
             this.updateDisplay(songId, originalKey, hasChords);
         });
+
+        /* #1265 — chord-notation picker. A disabled `<option>` cannot be
+           selected by the user in the first place, so this handler doesn't
+           need to re-check keylessness itself; it just records whatever the
+           browser allowed and re-renders. GLOBAL preference (see
+           notationStorageKey's doc-comment), so it's persisted immediately
+           rather than waiting for saveOffset()'s per-stepper batch below. */
+        const notationSelect = document.getElementById('chord-notation-select');
+        notationSelect?.addEventListener('change', (e) => {
+            this.notationMode = e.target.value;
+            this.saveNotationMode(this.notationMode);
+            if (hasChords) this.renderChords();
+        });
     }
 
     /**
@@ -485,17 +653,26 @@ export class Transpose {
     }
 
     /**
-     * Render every `[data-chord]` element's displayed shape from its
-     * IMMUTABLE `data-chord` original, via the ONE composed pure helper
-     * composeChordDisplay() (#1271 rename from applyTranspose() — this now
-     * composes the transpose offset AND the capo overlay, rather than the
-     * offset alone).
+     * Render every `[data-chord]` element's displayed text from its
+     * IMMUTABLE `data-chord` original, via the ONE dispatcher
+     * renderChordToken() (#1265 — this is still the ONE `[data-chord]` walk
+     * transpose.js has ever had; #1271 renamed it from applyTranspose() to
+     * compose transpose offset + capo, and #1265 widens what it composes
+     * again rather than adding a second walker, per this module's own
+     * doc-comment on renderChordToken()).
+     *
+     * The sounding tonic is computed ONCE per render pass (not once per
+     * chord token) — `transposeKey()` is a cheap pure function, but there's
+     * no reason to call it N times when every token in this render shares
+     * the same offset.
      */
     renderChords() {
+        const mode = this.effectiveNotationMode();
+        const soundingKey = this.originalKey ? transposeKey(this.originalKey, this.offset) : '';
         document.querySelectorAll('[data-chord]').forEach(el => {
             const original = el.dataset.chord;
             if (original) {
-                el.textContent = composeChordDisplay(original, this.offset, this.capo);
+                el.textContent = renderChordToken(original, this.offset, this.capo, mode, soundingKey);
             }
         });
     }
@@ -586,6 +763,38 @@ export class Transpose {
             localStorage.removeItem(this.octaveStoragePrefix + songId);
         } else {
             localStorage.setItem(this.octaveStoragePrefix + songId, String(octave));
+        }
+    }
+
+    /**
+     * Load the saved chord-notation preference (#1265). Unlike
+     * loadOffset()/loadCapo()/loadOctave() above, this is a single GLOBAL
+     * key — no songId is involved, matching STORAGE_CHORD_COLUMNS's shape,
+     * not STORAGE_TRANSPOSE_PREFIX's. Falls back to 'letters' both when
+     * nothing is stored yet AND when a stored value doesn't match a mode
+     * this build recognises (defensive against a future value an older
+     * build might read back).
+     * @returns {string}
+     */
+    loadNotationMode() {
+        const stored = localStorage.getItem(this.notationStorageKey);
+        const known = ['letters', 'nashville', 'solfege', 'solfege-fixed'];
+        return known.includes(stored) ? stored : 'letters';
+    }
+
+    /**
+     * Save the chord-notation preference (#1265). Mirrors
+     * STORAGE_CHORD_COLUMNS's own save shape (bindChordColumnsToggle()
+     * above): removed entirely at the neutral value ('letters') rather than
+     * stored as the string 'letters', keeping a fresh install's storage
+     * empty until a user actually picks something non-default.
+     * @param {string} mode
+     */
+    saveNotationMode(mode) {
+        if (!mode || mode === 'letters') {
+            localStorage.removeItem(this.notationStorageKey);
+        } else {
+            localStorage.setItem(this.notationStorageKey, mode);
         }
     }
 }

@@ -148,6 +148,16 @@ export const STORAGE_CHORD_COLUMNS      = 'ihymns_chord_columns';
 export const STORAGE_CAPO_PREFIX        = 'ihymns_capo_';
 export const STORAGE_OCTAVE_PREFIX      = 'ihymns_octave_';
 
+/* #1265 — chord-display notation. Deliberately GLOBAL (like
+   STORAGE_CHORD_COLUMNS above, NOT per-song like STORAGE_TRANSPOSE_PREFIX):
+   which notation a musician reads chords in ("I read Nashville numbers") is
+   a trait of the musician, not of any one song — stated explicitly in the
+   #1265 sub-decisions. Value 'letters' (default) | 'nashville' | 'solfege'
+   (movable-do) | 'solfege-fixed'. See js/utils/chord-notation.js for the
+   pure converters and transpose.js's renderChordToken() for the ONE
+   dispatcher that composes this pref with the existing offset/capo seam. */
+export const STORAGE_CHORD_NOTATION     = 'ihymns_chord_notation';
+
 /* #1770 §4.7 — Live Follow leader-idle timeout, the USER layer of the
    three-layer precedence chain (app default → org override → user
    preference; includes/service_mode.php's serviceMode_resolveIdleTimeoutMins()).
