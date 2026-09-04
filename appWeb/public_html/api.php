@@ -1173,6 +1173,8 @@ if ($action !== null) {
          * Parameters: songbook (required), number (required)
          * ----------------------------------------------------------------- */
         case 'search_num':
+            /* @lang-unfiltered: The reader typed an exact number in a named songbook — they asked for
+               that one slot, not for a pool to be narrowed on their behalf. */
             $bookId = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
             $number = isset($_GET['number'])   ? trim($_GET['number'])   : '';
 
@@ -1189,8 +1191,9 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
-         * Random song — get a random song (optionally from a songbook)
-         * Parameters: songbook (optional)
+         * Random song — get a random song (optionally from a songbook),
+         * narrowed to the reader's preferred languages (#736 / #2069).
+         * Parameters: songbook (optional), lang (optional)
          * ----------------------------------------------------------------- */
         case 'random':
             /* #1906 — `random` emits the SAME full song payload (lyric body +
@@ -1205,9 +1208,27 @@ if ($action !== null) {
                 $bookId = null;
             }
 
-            $song = $songData->getRandomSong($bookId);
+            /* #2069 — Shuffle honours the preferred-language filter, like every
+               other public read does. The SPA already sends the choice on every
+               same-origin call as `X-Preferred-Languages` (rule #31); this line
+               is the reader on THIS path, which never had one — so "shuffle from
+               all songbooks" handed back songs in languages the reader had
+               explicitly filtered out. Same resolver + same helper as search /
+               songs_list / song_of_the_day, so the four cannot drift (rule #35);
+               untagged songs still always pass. */
+            $rndLangs = resolvePreferredLanguagesForRequest(getAuthenticatedUser());
+
+            $song = $songData->getRandomSong($bookId, $rndLangs);
             if ($song === null) {
-                sendJson(['error' => 'No songs available.'], 404);
+                /* Deliberately NOT a silent unfiltered re-roll (see the
+                   getRandomSong doc-block). Say WHICH constraint emptied the
+                   pool, so "nothing happened" is never the whole answer the
+                   reader gets — the client shows this text verbatim. */
+                sendJson([
+                    'error' => $rndLangs === []
+                        ? 'No songs available.'
+                        : 'No songs available in your chosen languages.',
+                ], 404);
             } else {
                 /* #1353 — `random` emits the SAME full song payload (lyric body
                    + media) as song_detail, so it gets the SAME tier gate or it
@@ -1306,6 +1327,8 @@ if ($action !== null) {
            song_data is kept as an alias so existing clients keep working. */
         case 'song_detail':
         case 'song_data':
+            /* @lang-unfiltered: One song the reader named by id. Withholding it because of a language
+               preference would break every saved link, bookmark and shared URL. */
             /* #1354 — the per-song read. A native/casting client can pull many
                songs in a burst (a setlist preload), so 240/min ≈ 4 req/s is
                deliberately generous; it still stops a corpus-walking scraper.
@@ -1502,6 +1525,8 @@ if ($action !== null) {
          * the flag is off (the no-restriction default is allow).
          * ----------------------------------------------------------------- */
         case 'songbook_export':
+            /* @lang-unfiltered: An export must be the COMPLETE book. A file that had silently dropped
+               songs is data loss the reader only discovers long after the download. */
             /* #1571 — OWN 'export' budget, split out of the shared 'bulk'
                bucket (#1354). ELI5: a curator clicking "Export this songbook"
                must never have to wait behind a native app's background
@@ -1820,6 +1845,8 @@ if ($action !== null) {
          * Parameters: slug (or id) — required, one of the two
          * ----------------------------------------------------------------- */
         case 'work':
+            /* @lang-unfiltered: One named work; showing the work's full contents is the whole point of
+               the page. */
             enforceReadRateLimitKeyed('work', 120);
             $workSlug   = isset($_GET['slug']) ? trim($_GET['slug']) : '';
             $workIdRaw  = isset($_GET['id']) ? trim($_GET['id']) : '';
@@ -1920,6 +1947,8 @@ if ($action !== null) {
          * ----------------------------------------------------------------- */
         case 'credit_person':
         case 'musician':
+            /* @lang-unfiltered: One named musician; showing that person's complete output is the whole
+               point of the page. */
             $_isLegacyPersonAction = ($action === 'credit_person');
             enforceReadRateLimitKeyed($_isLegacyPersonAction ? 'credit_person' : 'musician', 120);
             $personSlug     = isset($_GET['slug']) ? trim($_GET['slug']) : '';
@@ -2072,6 +2101,9 @@ if ($action !== null) {
          * offline-only fallback. No pagination, no lyrics: one fetch.
          * ----------------------------------------------------------------- */
         case 'songs_index':
+            /* @lang-unfiltered: This IS the PWA's offline index — the client holds it and filters
+               locally (rule #17). Filtering it here would make "show all languages"
+               impossible offline, because the excluded songs would never be cached. */
             /* #1354 — the full slim corpus in one response (a few hundred KB).
                The SW precaches it once and rarely refetches, so 120/min is far
                above any real client yet caps a scraper polling it. Fail-open. */
@@ -2118,6 +2150,8 @@ if ($action !== null) {
          * Get collection statistics
          * ----------------------------------------------------------------- */
         case 'stats':
+            /* @lang-unfiltered: Corpus-wide counts. A per-reader count would make the same number mean
+               something different for every visitor. */
             sendJson($songData->getStats());
             break;
 
@@ -2315,6 +2349,8 @@ if ($action !== null) {
          * Requires: editor+ role (via bearer token or session)
          * ----------------------------------------------------------------- */
         case 'missing_songs':
+            /* @lang-unfiltered: Editor tool listing gaps in a book's numbering. Filtering the pool would
+               report songs that exist as missing — the opposite of what it is for. */
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['editor', 'admin', 'global_admin'])) {
                 sendJson(['error' => 'Editor access required.'], 403);
@@ -2344,6 +2380,9 @@ if ($action !== null) {
          * Response: { "songs": { "CP-0001": "<html>...", ... } }
          * ----------------------------------------------------------------- */
         case 'bulk_songs':
+            /* @lang-unfiltered: Offline sync of one named songbook. The cached copy must match the
+               online one, or a reader who later turns the filter off sees gaps they
+               cannot refetch while offline. */
             /* #1354 — renders an ENTIRE songbook's HTML; the heaviest read.
                60/min on the shared 'bulk' scope: the SW fetches one songbook at
                a time, so this caps a scraper looping every songbook without
@@ -2465,6 +2504,8 @@ if ($action !== null) {
          *   old "all if omitted" corpus scan was removed, #1010)
          * ----------------------------------------------------------------- */
         case 'bulk_audio':
+            /* @lang-unfiltered: The offline audio manifest for one named songbook — same reason as
+               bulk_songs above: the cached copy must match the online one. */
             /* #1354 — whole-songbook audio manifest. Shares the 'bulk' 60/min
                budget with bulk_songs/songbook_export (the SW fetches them
                together per songbook). Fail-open. */

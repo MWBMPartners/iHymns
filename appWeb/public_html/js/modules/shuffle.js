@@ -7,6 +7,13 @@
  * Provides random song selection. Users can pick a random song from
  * the entire collection or from a specific songbook. Uses the PHP
  * API's random endpoint for server-side randomness.
+ *
+ * LANGUAGE FILTER (#2069): nothing here sends the reader's language
+ * choice, and nothing here should. `apiFetch` attaches it to every
+ * same-origin call as `X-Preferred-Languages` (rule #31), and the server
+ * narrows the shuffle pool with it. Adding a `?lang=` parameter to the
+ * URLs below would be a SECOND copy of that decision — the exact
+ * duplication the shared client exists to prevent.
  */
 import { escapeHtml } from '../utils/html.js';
 import { STORAGE_DEFAULT_SONGBOOK } from '../constants.js';
@@ -122,7 +129,14 @@ export class Shuffle {
                 /* Navigate to the random song */
                 this.app.router.navigate('/song/' + data.song.id);
             } else {
-                this.app.showToast('No songs available', 'warning');
+                /* #2069 — show the server's own sentence rather than a fixed
+                   one. Shuffle now respects the reader's language choice, so an
+                   empty pool has two quite different causes ("this songbook is
+                   empty" vs "nothing here is in the languages you picked") and
+                   only the server knows which. `data.error` is the v1 bare
+                   payload (`apiFetch`, not `apiFetchJson`), and the fallback
+                   keeps the old wording if the field is ever absent. */
+                this.app.showToast(data.error || 'No songs available', 'warning');
             }
         } catch (error) {
             console.error('[Shuffle] Error:', error);

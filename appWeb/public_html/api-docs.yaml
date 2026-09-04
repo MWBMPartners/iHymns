@@ -1325,7 +1325,21 @@ paths:
       operationId: getRandomSong
       tags: [Songs]
       summary: Get a random song
-      description: Returns a random song, optionally restricted to a specific songbook.
+      description: |
+        Returns a random song, optionally restricted to a specific songbook.
+
+        Language filtering follows the standard rules (untagged songs pass;
+        empty filter = no filter), resolved from `lang` / the
+        X-Preferred-Languages header / the authenticated user (#2069). The
+        filter is applied to the selection POOL, not to the song afterwards —
+        the pick happens in the database, so a song outside the requested
+        languages is never chosen in the first place.
+
+        There is deliberately no fallback to an unfiltered pick: when the
+        requested languages hold no song, this returns 404 with a message
+        naming that cause, rather than quietly handing back a song the caller
+        filtered out. (`song_of_the_day` differs — it must yield a pick every
+        day, so it does fall back.)
       parameters:
         - name: action
           in: query
@@ -1340,6 +1354,16 @@ paths:
           schema:
             type: string
             example: CP
+        - name: lang
+          in: query
+          required: false
+          description: |
+            Comma-separated preferred-language primary subtags (e.g. en,es).
+            Overrides the X-Preferred-Languages header / user preference.
+            An empty value means "no filter" — i.e. show every language.
+          schema:
+            type: string
+            example: en,af
       responses:
         "200":
           description: Random song data
@@ -1351,13 +1375,22 @@ paths:
                   song:
                     $ref: "#/components/schemas/Song"
         "404":
-          description: No songs available
+          description: |
+            No songs available. When a language filter is active and it is what
+            emptied the pool, the message says so instead of the generic text.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
-              example:
-                error: No songs available.
+              examples:
+                noSongs:
+                  summary: Nothing available at all
+                  value:
+                    error: No songs available.
+                noSongsInLanguages:
+                  summary: Nothing in the requested languages
+                  value:
+                    error: No songs available in your chosen languages.
 
   /api.php?action=song_of_the_day:
     get:

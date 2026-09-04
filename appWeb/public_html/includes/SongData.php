@@ -4219,29 +4219,71 @@ class SongData
      * ===================================================================== */
 
     /**
-     * Get a random song, optionally from a specific songbook.
+     * Get a random song, optionally from a specific songbook and/or limited
+     * to the reader's preferred languages.
      *
-     * @param string|null $songbookId Limit to a specific songbook (null = all)
+     * ELI5: picks one song at random. If you have told the app which
+     * languages you read, it only picks from those.
+     *
+     * WHY THE LANGUAGE ARGUMENT EXISTS (#2069): every other public read
+     * surface — search, the paginated index, the songbook list, Song of the
+     * Day — already narrows to the reader's chosen languages, because the SPA
+     * sends `X-Preferred-Languages` on every same-origin call (rule #31,
+     * `js/utils/api-client.js`). Shuffle was the one read that ignored it, so
+     * a reader who had picked, say, English + Afrikaans still got handed songs
+     * in languages they had explicitly filtered out. The header was arriving
+     * all along; nothing on this path ever read it.
+     *
+     * The filter is pushed into the SQL rather than applied to the fetched
+     * row, because the pick happens IN the database (`ORDER BY RAND() LIMIT
+     * 1`). Filtering afterwards would mean re-rolling until a match turned up
+     * — unbounded work, and on a corpus where the chosen languages are rare it
+     * would usually give up and hand back nothing.
+     *
+     * Untagged songs (Language NULL or empty) always pass, exactly as they do
+     * everywhere else — that rule lives once, in applyLanguageFilterSql().
+     *
+     * NO SILENT FALLBACK: when the filtered pool is genuinely empty this
+     * returns null and the caller reports it, rather than quietly re-running
+     * unfiltered. Song of the Day does fall back, because it must produce a
+     * pick every day or the home page looks broken; Shuffle is a button the
+     * reader pressed on purpose, and answering it with a song in a language
+     * they filtered out is the very complaint this change fixes.
+     *
+     * @param string|null  $songbookId  Limit to a specific songbook (null = all)
+     * @param list<string> $langSubtags Lowercase primary subtags ([] = no filter),
+     *                                  from resolvePreferredLanguagesForRequest().
      * @return array|null Random song object or null if no songs available
      */
-    public function getRandomSong(?string $songbookId = null): ?array
+    public function getRandomSong(?string $songbookId = null, array $langSubtags = []): ?array
     {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'language_filter.php';
+
         if ($this->jsonMode) {
             $songs = $this->getSongs($songbookId);
+            $songs = array_values(array_filter($songs, makeLanguageFilterPredicate($langSubtags)));
             return empty($songs) ? null : $songs[random_int(0, count($songs) - 1)];
         }
+
+        /* ' AND (...)' when a filter is active, ' AND 1=1' when it is not, so
+           the two branches below concatenate blindly (helper's contract). */
+        [$langWhere, $langTypes, $langParams] = applyLanguageFilterSql('Language', $langSubtags);
+
         /* #1694 — the shuffle pool excludes hidden songs (a random pick that
            lands on one would 404 downstream when _fetchSongRow filters it). */
         if ($songbookId !== null) {
             $songbookId = strtoupper(trim($songbookId));
             $stmt = $this->db->prepare(
-                "SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND " . $this->_visible('') . " ORDER BY RAND() LIMIT 1"
+                "SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND " . $this->_visible('') . $langWhere . " ORDER BY RAND() LIMIT 1"
             );
-            $stmt->bind_param('s', $songbookId);
+            $stmt->bind_param('s' . $langTypes, $songbookId, ...$langParams);
         } else {
             $stmt = $this->db->prepare(
-                "SELECT SongId FROM tblSongs WHERE " . $this->_visible('') . " ORDER BY RAND() LIMIT 1"
+                "SELECT SongId FROM tblSongs WHERE " . $this->_visible('') . $langWhere . " ORDER BY RAND() LIMIT 1"
             );
+            if ($langTypes !== '') {
+                $stmt->bind_param($langTypes, ...$langParams);
+            }
         }
 
         $stmt->execute();
