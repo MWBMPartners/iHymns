@@ -12,6 +12,15 @@ with none of the behind-the-scenes technical detail.
 
 ## 1.3.0 — 30 August 2026
 
+- **Shuffle now respects your chosen languages** — If you've picked the
+  languages you read in Settings, the Shuffle button now only offers you
+  songs in those languages. Before, shuffling from "All songbooks" could
+  hand you a song in a language you'd filtered out. Songs that aren't
+  marked with a language still come up, just as they do everywhere else in
+  the app. If nothing at all matches the languages you've chosen, iHymns
+  now tells you that's the reason, rather than just saying nothing is
+  available.
+
 - **Clearer colours and better keyboard/screen-reader support** — A pass
   through the whole app to make it easier to use for people with low
   vision or who rely on a keyboard or screen reader. Some admin buttons
