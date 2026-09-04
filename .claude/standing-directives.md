@@ -24,17 +24,54 @@ correctness or quality.
 
 ## 2. One branch — no PR stacking
 
-- All work lands on the **single active feature branch** that will eventually target `alpha`
-  via **one** PR created later (currently `claude/ilyrics-identity-work-model`).
+- All work lands on the **single active working branch** that will eventually target `alpha`
+  via **one** PR created later.
 - **Do not create multiple/stacked PRs** — they cause merge‑race conditions. Commit every
   piece of work to that one branch; the PR to alpha is created once, later.
-- Never create a *new* branch without explicit owner permission.
+
+### When may a new branch be created? (owner‑clarified 2026‑09‑04)
+
+The rule is about avoiding a **second** working branch, not about branch creation as such.
+
+- A **working branch** is any branch that is not one of the long‑lived channel branches:
+  not `alpha`, not `beta`, not a release‑candidate branch, not `main`.
+- **If a working branch already exists → do not create another one.** Commit to the existing
+  one. A second working branch is what produces the merge races this section exists to
+  prevent, and it needs explicit owner permission.
+- **If no working branch exists → create one and get on with it.** No need to ask. Name it
+  for the work (`fix/…`, `feat/…`, `chore/…`), branch it from `alpha`, and open the single PR
+  to `alpha` when the work is done.
+
+Check before assuming, because the answer changes as branches are merged and deleted:
+
+```sh
+git ls-remote --heads origin \
+  | sed 's|.*refs/heads/||' \
+  | grep -vE '^(alpha|beta|main|release-.*|rc/.*|archive/.*)$'
+```
+
+Empty output = no working branch = create one. Any output = commit to that branch instead.
+
+The `archive/` exclusion is load‑bearing and was found by running the command rather than
+trusting it: `archive/alpha` is a parked copy of a channel branch, not somebody's work in
+progress, and without that term the check reports a working branch exists when none does —
+which would send the next session to commit onto an archive. Run the command and read its
+output before acting on it; do not assume a filter list is complete because it looks right.
+
+⚠️ **Do not hard‑code the current branch name into this file.** It used to name
+`claude/ilyrics-identity-work-model`, which was merged and deleted; a later session found the
+named branch gone, no replacement named, and the "never create a new branch" line still
+standing — so it had a rule it could not follow either way and had to stop and ask. A branch
+name is a fact that goes stale silently, which is precisely the class of thing this project
+puts behind a check rather than a written‑down value (rule #35: cross‑file agreement needs a
+mechanism, not a note). Derive the answer from the remote with the command above.
 
 ## 3. After every task (per‑task close‑out)
 
 The moment a piece of work is complete:
 
-1. **Commit + push** it to the active feature branch (atomic, well‑described, footer‑signed).
+1. **Commit + push** it to the active working branch (atomic, well‑described, footer‑signed).
+   If none exists, create one first — see §2.
 2. **Update its GitHub issue(s) individually** — SHAs + evidence; close/annotate/reopen as the
    real state requires; file follow‑ups at the moment of discovery.
 3. **Update Claude `.claude/`** — Memory (`MEMORY.md`/auto‑memory) + Context (`ProjectBrief.md`,
