@@ -130,18 +130,41 @@ function lyricLinesComponentsLangReady(\mysqli $db): bool
  * Find (or create) the primary `tblLyrics` version row for a song — the
  * `Source = 'ihymns'` canonical version, unique per song via uq_song_source —
  * and return its Id. Idempotent: re-runs return the existing row.
+ *
+ * ELI5: look up the row for "our own copy of the words" for this song, and
+ * make one if it has never had one before.
+ *
+ * DETAILED (#2076): the "find" half delegates to the ONE shared resolver
+ * `lyricLinesPrimaryLyricsId()` in `lyric_lines_read.php`, so this write-side
+ * lookup and every read-side one use the literal same SELECT — they cannot
+ * drift apart the way `SongData::_primaryLyricsId()` once did.
+ *
+ * ERROR POLICY (regression fix — an independent review caught this before
+ * ship): this is a find-OR-CREATE running INSIDE the caller's transaction
+ * (`lyricLinesApplyDesired()` calls it between that transaction's
+ * `begin_transaction()` and `commit()`), so it does TWO things the resolver
+ * doc-block's "ANSWER OR FAIL" contract exists to make possible:
+ *  1. It passes `$useCache = false` — a find-or-create must always see LIVE
+ *     database state. A cached "found" answer from earlier in this same
+ *     transaction could be a row that a later ROLLBACK undoes, and a cached
+ *     "found" answer would then be a lie for the rest of the request (see
+ *     the resolver's "WHY A FOUND ROW..." doc-block for the full reasoning).
+ *  2. It does NOT catch anything around the resolver call. A genuine DB
+ *     failure (deadlock, lock-wait timeout) must propagate — deliberately
+ *     UNCAUGHT here, exactly like the INSERT/UPDATE/DELETE statements
+ *     elsewhere in this file that have no try/catch of their own — so the
+ *     caller's own `catch (\Throwable $e) { $db->rollback(); throw $e; }`
+ *     runs, instead of this function silently treating "the transaction is
+ *     already dead" as "no row exists yet, create one": that swallow is
+ *     exactly what let a dead transaction survive into a duplicate INSERT
+ *     and a save that reported success over a partial write.
  */
 function lyricLinesEnsurePrimaryVersion(\mysqli $db, string $songId): int
 {
-    $sel = $db->prepare(
-        "SELECT Id FROM tblLyrics WHERE SongId = ? AND Source = 'ihymns' LIMIT 1"
-    );
-    $sel->bind_param('s', $songId);
-    $sel->execute();
-    $row = $sel->get_result()->fetch_row();
-    $sel->close();
-    if ($row !== null) {
-        return (int)$row[0];
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+    $id = lyricLinesPrimaryLyricsId($db, $songId, false);
+    if ($id > 0) {
+        return $id;
     }
     /* No 'ihymns' version yet — create the canonical primary one. Approved so it
        renders once reads switch in P2; the (SongId,'ihymns') unique makes this

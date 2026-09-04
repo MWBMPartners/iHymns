@@ -3161,9 +3161,68 @@ class SongData
         return $out;
     }
 
-    /** Resolve a song's primary (or sole approved) lyrics version Id, or 0. */
+    /**
+     * Resolve a song's primary (or sole approved) lyrics version Id, or 0.
+     *
+     * ELI5: work out which "copy of the words" the vocalParts/translations/
+     * annotations blocks below should read from — and ask it the SAME way
+     * every line reader in the app already asks it, so the answer matches up.
+     *
+     * DETAILED (#2076): the `lineId`s inside a song's component payload
+     * always come from the `Source = 'ihymns'` row (rule #25 — the ONE line
+     * read path keys on that, never `IsPrimary`). This method used to pick a
+     * DIFFERENT row here (`Status = 'approved' ORDER BY IsPrimary DESC`), so
+     * a song with both an `ihymns` row and an approved TTML import flagged
+     * `IsPrimary = 1` had its enrichment blocks silently reading against the
+     * WRONG version — the ids never matched, so a client could never anchor
+     * a translation or annotation to a line, and nothing ever errored to say
+     * so. Delegate to the shared resolver `lyricLinesPrimaryLyricsId()`
+     * first — its own doc-block explains the bug in full. The old
+     * Status='approved' query survives only as the fallback for a song that
+     * has NO 'ihymns' row at all yet (e.g. a TTML-only import nobody has
+     * opened in the editor) — there is no 'ihymns' line data for that case
+     * to disagree with, so picking the best approved row remains correct.
+     *
+     * ELI5 (regression fix, error handling): the shared resolver itself no
+     * longer decides what to do when the database has a problem — it just
+     * answers or fails, and leaves the "what now?" decision to whoever
+     * called it. This method is a READ, so ITS answer to "what now?" is the
+     * one it always gave: shrug and fall through to the legacy query below,
+     * exactly as if the song simply had no `ihymns` row yet.
+     *
+     * DETAILED: `lyricLinesPrimaryLyricsId()`'s own doc-block explains why it
+     * must not swallow a genuine DB failure into 0 itself — a find-or-create
+     * write path (`lyricLinesEnsurePrimaryVersion()`) relies on a real
+     * exception to know its transaction is dead, and a resolver that
+     * degrades every failure to "not found" would tell that caller to go
+     * ahead and INSERT a duplicate row instead. This call site is not that
+     * caller: it is a plain read for the song_detail API's optional
+     * enrichment blocks, so degrading a resolver failure to "treat it like
+     * no ihymns row" is exactly the fail-soft behaviour this method has
+     * always had — it just now happens here, at the call site, instead of
+     * being baked into the resolver for every caller whether they want it
+     * or not.
+     */
     private function _primaryLyricsId(string $songId): int
     {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+        /* @lyrics-version-cache-ok: a plain read outside any transaction —
+           this call never runs between a begin_transaction() and its
+           commit()/rollback(), so a cached "found" answer cannot be
+           invalidated by a rollback within this request (see
+           lyricLinesPrimaryLyricsId()'s own "WHY A FOUND ROW..." doc-block).
+           NOTE (placement, rule proven by this file's own test suite): this
+           marker must live INSIDE this function's body, never in the
+           doc-block above it — a comment above `function _primaryLyricsId`
+           belongs to the ENCLOSING (file scope) unit, not to this one. */
+        try {
+            $id = lyricLinesPrimaryLyricsId($this->db, $songId);
+        } catch (\Throwable $e) {
+            $id = 0;
+        }
+        if ($id > 0) {
+            return $id;
+        }
         try {
             $stmt = $this->db->prepare(
                 "SELECT Id FROM tblLyrics WHERE SongId = ? AND Status = 'approved' "

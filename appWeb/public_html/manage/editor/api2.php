@@ -2444,7 +2444,16 @@ try {
                (#1088/#1350) throws on its first statement → caught → the whole
                enrichment copy is skipped, never aborting the duplicate (a
                statement error does not roll back the tx; same contract as the
-               $copySql block above). Any single-row mapping miss skips that row. */
+               $copySql block above). Any single-row mapping miss skips that row.
+               EXCEPT a transaction-fatal one (regression fix — an independent
+               review caught this): the catch below re-throws when
+               songRelocateIsTransactionFatal() says so, exactly like every
+               other best-effort catch in this codebase that can run inside an
+               open transaction (#1679 A1, lines ~2190 and ~3480 of this same
+               file). Swallowing a deadlock/lock-wait-timeout here would let
+               execution fall through to ed2_touchRevision() + $db->commit()
+               over an already-dead transaction — a FALSE SUCCESS, not a
+               harmless skipped optional-table copy. */
             try {
                 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
                     . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
@@ -2459,13 +2468,29 @@ try {
                     for ($i = 0; $i < $n; $i++) {
                         $lineMap[(int)$srcLines[$i]['line_id']] = (int)$newLines[$i]['line_id'];
                     }
-                    $newLyricsId = null;
-                    $lq = $db->prepare("SELECT Id FROM tblLyrics WHERE SongId = ? AND Source = 'ihymns' LIMIT 1");
-                    $lq->bind_param('s', $newId);
-                    $lq->execute();
-                    $lr = $lq->get_result()->fetch_row();
-                    $lq->close();
-                    if ($lr) { $newLyricsId = (int)$lr[0]; }
+                    /* #2076 — ask the ONE shared resolver, never a second
+                       inline copy of "which lyrics row is this song's
+                       ihymns version" (lyric_lines_read.php, required just
+                       above). Returns 0 when there is none yet; this block
+                       treats that the same as "not found" (null) exactly
+                       like the query it replaces did.
+                       @lyrics-version-cache-ok: this call runs INSIDE the
+                       transaction begun above, but caching its answer is
+                       still safe here — $newId is a SongId this very
+                       request just minted (ed2_allocateSongId(), a few
+                       lines up) and never reuses, so no other request, and
+                       no LATER code in this one, can ever ask this resolver
+                       about $newId again. If this transaction rolls back
+                       (see the catch two blocks down), the outer `catch
+                       (\Throwable $e) { $db->rollback(); throw $e; }`
+                       rethrows and `ed2_respond()` exits before anything
+                       else in this request could read a stale memo entry
+                       for it — see lyricLinesPrimaryLyricsId()'s own "WHY A
+                       FOUND ROW..." doc-block for the general rule this is
+                       an instance of. Do NOT copy this reasoning to a call
+                       site whose SongId can be asked about again. */
+                    $newLyricsId = lyricLinesPrimaryLyricsId($db, $newId);
+                    if ($newLyricsId <= 0) { $newLyricsId = null; }
 
                     $srcIds = array_keys($lineMap);
                     /* Generic remap-copy: INSERT one row per source row, columns
@@ -2549,6 +2574,7 @@ try {
                     );
                 }
             } catch (\Throwable $_ee) {
+                if (songRelocateIsTransactionFatal($_ee)) { throw $_ee; }
                 error_log('[editor duplicate_song] enrichment/scripture copy skipped: ' . $_ee->getMessage());
             }
 

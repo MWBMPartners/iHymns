@@ -302,7 +302,14 @@ function lyricsIngest_writeToDb(\mysqli $db, string $songId, array $parsed, arra
     $db->begin_transaction();
     try {
         /* UPSERT tblLyrics on (SongId, Source). Delete the old row's lines
-           first (CASCADE → words → syllables) so a re-ingest is clean. */
+           first (CASCADE → words → syllables) so a re-ingest is clean.
+           @lyrics-version-exempt: (#2076) $source is whatever this ingest
+           call was given (e.g. 'ttml', a syllable-timing import), NOT
+           necessarily 'ihymns' — this is finding-or-creating THAT SOURCE's
+           own row to write into, not deciding which version is the song's
+           current/primary one. Nothing here disagrees with
+           lyricLinesPrimaryLyricsId(); it is simply answering a different
+           question. */
         $sel = $db->prepare('SELECT Id FROM tblLyrics WHERE SongId = ? AND Source = ? LIMIT 1');
         $sel->bind_param('ss', $songId, $source);
         $sel->execute();

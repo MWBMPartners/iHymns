@@ -2576,6 +2576,13 @@ return [
            via JSON_LENGTH, columnExists-gated below). Table-existence-gated so an un-mirrored
            install (no tblLyricLines/tblLyrics yet) reports not-pending, not a STRICT throw. */
         'probe' => static function (\mysqli $db): bool {
+            /* @lyrics-version-exempt: (#2076) this checks, across EVERY song
+               at once, whether one still has an 'ihymns' version with no
+               mirrored line — a set-wide existence probe, not "resolve the
+               version for song X". lyricLinesPrimaryLyricsId() answers a
+               per-song question and can't be called from inside a
+               correlated subquery, so the Source = 'ihymns' filter is
+               spelled out by hand here — kept byte-identical on purpose. */
             if (!_migProbe_tableExists($db, 'tblSongComponents')) return false;
             if (!_migProbe_tableExists($db, 'tblLyricLines'))     return false;
             if (!_migProbe_tableExists($db, 'tblLyrics'))         return false;

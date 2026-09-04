@@ -289,15 +289,152 @@ function lyricLinesAssembleFromRows(array $rows): array
 }
 
 /**
+ * ELI5: work out which "copy of the words" is THE copy for a song — the one
+ * everyone reads — and hand back its row number in `tblLyrics`, or 0 if the
+ * song does not have one of that kind yet.
+ *
+ * DETAILED (#2076 — the ONE shared lyrics-version resolver): every line
+ * reader in this file (`lyricLinesFetchPrimary()` right below, and its
+ * bulk/first-line/preview siblings further down) keys its JOIN on
+ * `Source = 'ihymns'` — never `IsPrimary` (#1235 R6/PF3, restated on
+ * `lyricLinesFetchPrimary()`'s own doc-block). Before #2076,
+ * `SongData::_primaryLyricsId()` used a DIFFERENT rule
+ * (`Status = 'approved' ORDER BY IsPrimary DESC`) to decide which version's
+ * enrichment to hand back for `?include=vocalParts|translations|annotations`.
+ * On a song that had BOTH an `ihymns` row and an approved TTML import with
+ * `IsPrimary = 1`, that meant the enrichment blocks were read against the
+ * TTML version while every `lineId` in the song's component payload came
+ * from the `ihymns` version — two arrays that never shared an id, so a
+ * client could never anchor a translation or annotation to a line. Nothing
+ * errored anywhere; the lists were just quietly unrelated. This function is
+ * now the ONE place that decision gets made, so a line reader and an
+ * enrichment reader can never disagree about which version they mean again.
+ *
+ * Returns 0 — never throws FOR THE NOT-FOUND CASE — when the song has no
+ * `ihymns` row yet (a TTML-only import nobody has opened in the editor), so
+ * a caller can fall back to its own rule for that one case
+ * (`SongData::_primaryLyricsId()` does exactly this).
+ *
+ * ERROR POLICY — ANSWER OR FAIL, NEVER GUESS (an independent review caught
+ * a regression here before this function's #2076 write-side use ever
+ * shipped): a genuine DB FAILURE (a deadlock, a lock-wait timeout, a lost
+ * connection) PROPAGATES out of this function — it does NOT degrade to 0.
+ * An earlier revision caught `\Throwable` here and returned 0, which reads
+ * to every caller EXACTLY like "no ihymns row yet" — indistinguishable
+ * from the real not-found case. That degrade is fine, even desirable, for
+ * a pure READ (a missing enrichment block is a harmless omission) — but
+ * `lyricLinesEnsurePrimaryVersion()` (`lyric_lines_sync.php`) uses this
+ * function's answer to decide whether to INSERT a brand-new `tblLyrics`
+ * row: a swallowed deadlock there turned into "no row found, create one"
+ * instead of "the transaction is already dead, stop" — risking a duplicate
+ * version row and a partial save that still reports success. This
+ * resolver cannot know which kind of caller is asking, so it does
+ * neither: it answers, or it lets the failure through, and each CALL SITE
+ * decides what a failure means for it — a read (`SongData::_primaryLyricsId()`)
+ * wraps this call in its own try/catch and degrades to its legacy fallback
+ * query; a write (`lyricLinesEnsurePrimaryVersion()`, the `duplicate_song`
+ * case in `manage/editor/api2.php`) lets it propagate so the surrounding
+ * transaction handling (`$db->rollback(); throw $e;`) runs — the same
+ * "a failing statement throws" contract every other write in this codebase
+ * already lives under (MYSQLI_REPORT_STRICT, see this file's header
+ * comment).
+ *
+ * CACHING — per CONNECTION and per SONG, read-safe, write-unsafe. Only a
+ * FOUND row is ever memoised: `lyricLinesEnsurePrimaryVersion()` calls this
+ * function to do its "find" half and, on a miss, immediately INSERTs the
+ * very row being looked for — caching a MISS would hide that brand-new row
+ * from this function for the rest of the request. The memo is keyed on
+ * `spl_object_id($db)` as well as `$songId` (mirrors `searchFoldReady()`'s
+ * per-connection memo in `search_fold.php`), so an answer cached for one
+ * `\mysqli` handle can never be handed back to a different one — concretely,
+ * `manage/setup-database.php`'s migration runner can close and reopen
+ * `getDbMysqli()`'s singleton mid-request, and a reconnect there mints a
+ * brand-new object id, so the old memo simply misses rather than silently
+ * answering for a connection it never ran on.
+ *
+ * WHY A FOUND ROW IS SAFE TO MEMOISE FOR A READ BUT NOT FOR A WRITE — the
+ * corrected version of a claim this doc-block used to make ("a found row
+ * cannot go stale within one request"). That is true for a plain READ: a
+ * request that only ever reads never deletes a song's 'ihymns' row, so a
+ * found answer stays true for the rest of it. It is NOT true in general —
+ * `lyricLinesEnsurePrimaryVersion()` runs INSIDE a transaction that can
+ * still ROLL BACK after this call returns. A row this call found (possibly
+ * one INSERTed moments earlier in that SAME transaction — InnoDB shows a
+ * connection its own uncommitted writes) can vanish the instant that
+ * transaction rolls back, while a memo entry would keep insisting it is
+ * still there for anything else in the same request that asks. So a
+ * find-or-create passes `$useCache = false`: it neither reads nor writes
+ * the memo, and always sees live database state — the one guarantee a
+ * find-or-create cannot do without.
+ *
+ * @param bool $useCache  Read AND write the per-connection/per-song memo
+ *      (default true, safe for a plain read). Pass `false` from inside a
+ *      transaction that could still roll back — see "WHY A FOUND ROW..."
+ *      above; `lyricLinesEnsurePrimaryVersion()` is the worked example.
+ *
+ * @see lyricLinesFetchPrimary()  the identical `Source = 'ihymns'` filter,
+ *      joined straight to line data instead of standing alone. Kept in
+ *      lockstep by making every OTHER version-resolving site in the
+ *      codebase call this function (or record why it can't) — see
+ *      tests/php/test-lyrics-version-resolver.php.
+ */
+function lyricLinesPrimaryLyricsId(\mysqli $db, string $songId, bool $useCache = true): int
+{
+    /* @lyrics-version-exempt: this function IS the shared resolver (#2076) —
+       there is nothing else for it to delegate to. */
+    static $cache = [];
+    /* Two dimensions on purpose (see the CACHING doc-block above): WHICH
+       connection asked, then WHICH song — never just the song, so an answer
+       cached for one \mysqli handle can never be handed back to another. */
+    $connId = spl_object_id($db);
+    if ($useCache && isset($cache[$connId][$songId])) {
+        return $cache[$connId][$songId];
+    }
+
+    /* Deliberately NO try/catch here — see the ERROR POLICY doc-block above.
+       A failing statement throws (MYSQLI_REPORT_STRICT); that throw is left
+       to propagate. Degrading it to 0 is each CALLER's decision, never this
+       resolver's — a read wraps this call in its own try/catch, a write
+       lets it reach its transaction's rollback handling. */
+    $stmt = $db->prepare(
+        "SELECT Id FROM tblLyrics WHERE SongId = ? AND Source = 'ihymns' LIMIT 1"
+    );
+    $stmt->bind_param('s', $songId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    $id = $row !== null ? (int)$row[0] : 0;
+
+    /* Only a FOUND row is remembered, and only when the caller wants the
+       memo at all (see the CACHING / WHY A FOUND ROW... doc-blocks above).
+       lyricLinesEnsurePrimaryVersion() (lyric_lines_sync.php) calls this
+       function to do its "find" half and, on a miss, immediately INSERTs
+       the very row being looked for — caching a MISS would hide that
+       brand-new row from this function for the rest of the request. */
+    if ($useCache && $id > 0) {
+        $cache[$connId][$songId] = $id;
+    }
+    return $id;
+}
+
+/**
  * Fetch one song's primary ('ihymns') lyric lines in global SortOrder, each joined to
  * its thin component metadata. Keyed on `Source='ihymns'` only (never IsPrimary —
  * #1235 R6/PF3). Returns [] for a song with no mirrored lines (the LEFT-JOIN-shaped
  * "0-line lyrics" case). One query.
  *
+ * #2076: deliberately does NOT call lyricLinesPrimaryLyricsId() — see the
+ * `@lyrics-version-exempt` note inside the function body for why.
+ *
  * @return list<array<string,mixed>>  rows shaped for lyricLinesAssembleFromRows()
  */
 function lyricLinesFetchPrimary(\mysqli $db, string $songId): array
 {
+    /* @lyrics-version-exempt: this reads the LINES themselves, not just the
+       version Id, so it needs its own JOIN rather than a call to
+       lyricLinesPrimaryLyricsId() first (that would be a second round trip
+       for no benefit). See the doc-block above for why the WHERE clause
+       below must stay byte-identical to that function's own filter (#2076). */
     /* #1860 Phase 5 §2.2 — sc.Label is added to the SELECT ONLY when the column
        exists (gated column list, never a bare reference — rule #19: it would
        throw under MYSQLI_REPORT_STRICT on an un-migrated install). SourceWorkId
@@ -340,6 +477,9 @@ function lyricLinesFetchPrimary(\mysqli $db, string $songId): array
  */
 function lyricLinesFetchPrimaryMap(\mysqli $db, array $songIds): array
 {
+    /* @lyrics-version-exempt: the bulk sibling of lyricLinesFetchPrimary() —
+       same reasoning (#2076): it reads lines for MANY songs in one chunked
+       query, so there is no single Id to hand back from a helper call. */
     $songIds = array_values(array_unique(array_filter($songIds, static fn($s) => $s !== '' && $s !== null)));
     if (empty($songIds)) { return []; }
 
@@ -419,6 +559,10 @@ function lyricLinesAssembleComponentsMap(\mysqli $db, array $songIds): array
  */
 function lyricLinesFirstLine(\mysqli $db, string $songId): ?string
 {
+    /* @lyrics-version-exempt: reads one line's TEXT straight off the correct
+       version in a single query (#2076) — resolving the Id first via
+       lyricLinesPrimaryLyricsId() and then querying again by that Id would
+       be two round trips to say the same thing this one WHERE clause says. */
     $stmt = $db->prepare(
         "SELECT ll.LineText
            FROM tblLyricLines ll
@@ -447,6 +591,8 @@ function lyricLinesFirstLine(\mysqli $db, string $songId): ?string
  */
 function lyricLinesFirstLineMap(\mysqli $db, array $songIds): array
 {
+    /* @lyrics-version-exempt: the bulk sibling of lyricLinesFirstLine() —
+       same reasoning (#2076), many songs at once via a chunked IN(). */
     $songIds = array_values(array_unique(array_filter($songIds, static fn($s) => $s !== '' && $s !== null)));
     if (empty($songIds)) { return []; }
 
@@ -541,6 +687,10 @@ function lyricLinesJoinPreview(array $lines, int $maxChars = 140, int $minChars 
  */
 function lyricLinesPreviewPhrase(\mysqli $db, string $songId, int $maxChars = 140, int $maxLines = 8): ?string
 {
+    /* @lyrics-version-exempt: same reasoning as lyricLinesFirstLine() (#2076)
+       — reads several lines' TEXT directly, so its own WHERE clause (kept
+       identical to lyricLinesPrimaryLyricsId()'s filter) does the same job a
+       resolve-then-requery pair would, in one query instead of two. */
     $stmt = $db->prepare(
         "SELECT ll.LineText
            FROM tblLyricLines ll

@@ -232,6 +232,11 @@ function userMarkupSongExists(\mysqli $db, string $songId): bool
  */
 function userMarkupResolveLine(\mysqli $db, int $lineId, string $songId): ?array
 {
+    /* @lyrics-version-exempt: (#2076) already filters on Source = 'ihymns'
+       directly, the identical rule lyricLinesPrimaryLyricsId() encodes —
+       but a specific $lineId is known here, so a single JOIN answers "does
+       this line belong to the song's current version" in one query instead
+       of resolving the version Id and then checking membership separately. */
     $stmt = $db->prepare(
         "SELECT ll.Id AS id
            FROM tblLyricLines ll
