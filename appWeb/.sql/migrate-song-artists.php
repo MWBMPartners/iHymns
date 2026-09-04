@@ -128,7 +128,7 @@ if (_migArtists_tableExists($mysqli, 'tblSongArtists')) {
         Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
         SongId      VARCHAR(20)     NOT NULL,
         Name        VARCHAR(255)    NOT NULL,
-        SortOrder   SMALLINT        NOT NULL DEFAULT 0,
+        SortOrder   SMALLINT        NOT NULL DEFAULT 0 COMMENT 'Display order when a song has multiple artists',
         CreatedAt   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_SongId (SongId),
         INDEX idx_Name   (Name),

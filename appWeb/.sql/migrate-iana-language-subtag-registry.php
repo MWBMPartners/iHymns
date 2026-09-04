@@ -270,9 +270,9 @@ if ($oldScriptsExists && !$newScriptsExists) {
 } else {
     /* Neither exists — fresh deployment. Create the new-named table. */
     $sql = "CREATE TABLE tblLanguageScripts (
-        Code        VARCHAR(4)   NOT NULL PRIMARY KEY COMMENT 'ISO 15924 four-letter code (Title Case)',
-        Name        VARCHAR(150) NOT NULL,
-        NativeName  VARCHAR(150) NOT NULL DEFAULT '',
+        Code        VARCHAR(4)   NOT NULL PRIMARY KEY COMMENT 'ISO 15924 four-letter code (Title Case: Latn, Cyrl, Hans, …)',
+        Name        VARCHAR(150) NOT NULL COMMENT 'English name (CLDR-polished where available)',
+        NativeName  VARCHAR(150) NOT NULL DEFAULT '' COMMENT 'Native or contextual name where useful (e.g. 简体)',
         IsActive    TINYINT(1)   NOT NULL DEFAULT 1,
         CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";
@@ -346,8 +346,8 @@ if (_migIana_tableExists($db, 'tblLanguageVariants')) {
     _migIana_out('[skip ] tblLanguageVariants already present.');
 } else {
     $sql = "CREATE TABLE tblLanguageVariants (
-        Code        VARCHAR(8)   NOT NULL PRIMARY KEY COMMENT 'IANA variant subtag (5-8 chars, e.g. 1996, fonipa, valencia)',
-        Name        VARCHAR(250) NOT NULL,
+        Code        VARCHAR(8)   NOT NULL PRIMARY KEY COMMENT 'IANA variant subtag (5-8 chars)',
+        Name        VARCHAR(250) NOT NULL COMMENT 'English name (CLDR-polished where available; raw IANA Description otherwise)',
         IsActive    TINYINT(1)   NOT NULL DEFAULT 1,
         CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";

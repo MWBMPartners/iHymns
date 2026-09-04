@@ -62,13 +62,18 @@ declare(strict_types=1);
  * SCHEMA MIRROR: the tblWorks column, tblSongIdentityMap and the view are all
  * mirrored in appWeb/.sql/schema.sql (what a FRESH install reads). Table and
  * column declarations must stay byte-identical, COMMENT text included
- * (CLAUDE.md rule #19). ⚠ Two COMMENT strings have already drifted from their
- * schema.sql mirrors (tblSongIdentityMap.SongId and .IsrcCode, plus
- * tblWorks.MusicBrainzWorkMBID) — schema.sql carries the longer wording.
- * test-schema-coverage.php compares column PRESENCE only, so CI cannot see
- * this; reconciling it is a paired schema+migration edit. Note also that
- * schema_audit.php does not parse VIEWS at all, so v_ChristianSongs is covered
- * by NO automated check — the two definitions have to be kept in step by hand.
+ * (CLAUDE.md rule #19). ⚠ tblWorks.MusicBrainzWorkMBID (added by the ALTER a
+ * little further down this file) still carries no COMMENT at all, while
+ * schema.sql's mirror has the full wording — test-schema-ddl-parity.php
+ * (#2077) cannot see this one because it only compares a full CREATE TABLE
+ * against schema.sql, and this column arrives via ADD COLUMN, not a CREATE;
+ * test-schema-coverage.php (which does run over ADD COLUMNs) checks column
+ * PRESENCE only, not COMMENT text, so neither guard catches it today.
+ * tblSongIdentityMap.SongId and .IsrcCode's own COMMENT drift (the CREATE
+ * TABLE below) WAS caught by test-schema-ddl-parity.php and has been
+ * reconciled to match schema.sql verbatim. Note also that schema_audit.php
+ * does not parse VIEWS at all, so v_ChristianSongs is covered by NO
+ * automated check — the two definitions have to be kept in step by hand.
  *
  * @migration-adds tblWorks.MusicBrainzWorkMBID
  *
@@ -173,11 +178,11 @@ try {
         $mysql->query(
             "CREATE TABLE tblSongIdentityMap (
                 Id                       INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                SongId                   VARCHAR(20)  NOT NULL COMMENT 'FK to tblSongs.SongId; NON-unique — a song may map to several recordings',
+                SongId                   VARCHAR(20)  NOT NULL COMMENT 'FK to tblSongs.SongId (the iHymns song); NON-unique — a song may map to several recordings',
                 MusicBrainzRecordingMBID VARCHAR(50)  NULL DEFAULT NULL COMMENT 'MusicBrainz recording MBID',
                 SpotifyTrackId           VARCHAR(50)  NULL DEFAULT NULL COMMENT 'Spotify track id/URI',
                 GeniusTrackId            VARCHAR(50)  NULL DEFAULT NULL COMMENT 'Genius track id',
-                IsrcCode                 VARCHAR(15)  NULL DEFAULT NULL COMMENT 'Denorm of tblSongs.Isrc for join-free lookups',
+                IsrcCode                 VARCHAR(15)  NULL DEFAULT NULL COMMENT 'Denorm of tblSongs.Isrc for join-free lookups (app keeps both in sync)',
                 SourceOfTruth            ENUM('ihymns','ilyricsdb','musicbrainz','spotify','genius','manual') NOT NULL DEFAULT 'ihymns',
                 MappingStatus            ENUM('pending','verified','conflict','deprecated') NOT NULL DEFAULT 'pending',
                 VerifiedAt               DATETIME     NULL DEFAULT NULL,

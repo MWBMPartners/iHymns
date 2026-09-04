@@ -155,7 +155,7 @@ if (_migSongLinks_tableExists($db, 'tblSongLinkSuggestions')) {
         Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         SongIdA         VARCHAR(20)  NOT NULL COMMENT 'Always lexicographically <= SongIdB',
         SongIdB         VARCHAR(20)  NOT NULL,
-        Score           DECIMAL(4,3) NOT NULL COMMENT 'Composite similarity, 0.000–1.000',
+        Score           DECIMAL(4,3) NOT NULL COMMENT 'Composite similarity, 0.000-1.000',
         TitleScore      DECIMAL(4,3) NOT NULL DEFAULT 0.000,
         LyricsScore     DECIMAL(4,3) NOT NULL DEFAULT 0.000,
         AuthorsScore    DECIMAL(4,3) NOT NULL DEFAULT 0.000,

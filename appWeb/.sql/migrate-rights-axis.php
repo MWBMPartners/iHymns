@@ -69,7 +69,7 @@ try {
             "CREATE TABLE tblSongRoyaltyIds (
                 Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 SongId      VARCHAR(20)  NOT NULL,
-                Authority   VARCHAR(40)  NOT NULL COMMENT 'ASCAP|BMI|PRS|SESAC|GEMA|… VARCHAR not ENUM',
+                Authority   VARCHAR(40)  NOT NULL COMMENT 'ASCAP|BMI|PRS|SESAC|GEMA|… VARCHAR not ENUM (growable)',
                 AuthorityId VARCHAR(100) NOT NULL COMMENT 'Society-assigned work/agreement id',
                 Note        VARCHAR(255) NULL DEFAULT NULL,
                 SortOrder   INT UNSIGNED NOT NULL DEFAULT 0,

@@ -89,9 +89,9 @@ try {
         $mysql->query(
             "CREATE TABLE tblBibleBooks (
                 Id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                Code           VARCHAR(12)  NOT NULL,
+                Code           VARCHAR(12)  NOT NULL COMMENT 'OSIS book code (Gen, Ps, Matt, …)',
                 Name           VARCHAR(60)  NOT NULL,
-                Testament      VARCHAR(12)  NOT NULL,
+                Testament      VARCHAR(12)  NOT NULL COMMENT 'old | new | apocrypha',
                 CanonicalOrder INT UNSIGNED NOT NULL,
                 UNIQUE KEY uq_Code (Code)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
@@ -178,8 +178,8 @@ try {
                 Chapter     INT UNSIGNED NULL DEFAULT NULL,
                 VerseStart  INT UNSIGNED NULL DEFAULT NULL,
                 VerseEnd    INT UNSIGNED NULL DEFAULT NULL,
-                OsisRef     VARCHAR(60)  NULL DEFAULT NULL COMMENT 'Versification-neutral OSIS ref',
-                Source      VARCHAR(40)  NOT NULL DEFAULT 'manual' COMMENT 'manual | hymnary | parsed',
+                OsisRef     VARCHAR(60)  NULL DEFAULT NULL COMMENT 'Versification-neutral OSIS ref e.g. Ps.23.1-Ps.23.6',
+                Source      VARCHAR(40)  NOT NULL DEFAULT 'manual' COMMENT 'manual | hymnary | parsed (VARCHAR not ENUM)',
                 SortOrder   INT UNSIGNED NOT NULL DEFAULT 0,
                 CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 INDEX idx_Song (SongId),

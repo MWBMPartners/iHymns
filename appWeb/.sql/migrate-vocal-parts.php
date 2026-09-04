@@ -12,7 +12,7 @@ declare(strict_types=1);
  * from lossless-only (tblLyricLines.MetaJson ttm:agent/ttm:role/background-vocal)
  * to a first-class, queryable model anchored on the normalized lyrics:
  *   - tblVocalParts          — per-lyrics-version part registry (decoded ttm:agent);
- *     PartKind VARCHAR (app-validated), named singer reuses tblCreditPeople,
+ *     PartKind VARCHAR (app-validated), named singer reuses tblMusicians,
  *     Gender orthogonal axis.
  *   - tblLyricLineVocalParts — MANY-to-MANY line assignment (true duet/unison).
  *   - tblLyricWordVocalParts — MANY-to-MANY word assignment (overrides line).
@@ -40,9 +40,41 @@ declare(strict_types=1);
  * is what a FRESH install reads. Rule #19 of .claude/CLAUDE.md requires the two
  * to stay byte-identical — including COMMENT text — so an install built by
  * migrations is structurally indistinguishable from one built from schema.sql.
- * CI (tests/php/test-schema-coverage.php) only checks that the tables/columns
- * are PRESENT in both, so drift in a COMMENT is invisible to it and shows up
- * later on /manage/schema-audit (#518) instead.
+ * CI (tests/php/test-schema-coverage.php, plus the structural
+ * tests/php/test-schema-ddl-parity.php added alongside this fix) checks
+ * presence and, for tblVocalParts, full column/index/FK/COMMENT shape.
+ *
+ * #2077 FIX (2026-09): tblVocalParts.CreditPersonId (FK to tblCreditPeople,
+ * index idx_Person, constraint fk_VocalParts_Person) had drifted from
+ * schema.sql's MusicianId (FK to tblMusicians, idx_Musician,
+ * fk_VocalParts_Musician) — three COMMENT strings (PartKind/Gender/MetaJson)
+ * had also drifted. Cause: migrate-musicians-rename.php (#1741 P2-A) renamed
+ * the column/index/constraint on a LIVE database via ALTER, and schema.sql +
+ * SongData.php were updated to match, but this file's own CREATE statement
+ * — the thing that runs on an install that has NEVER had tblVocalParts —
+ * was missed, so it went on minting the pre-rename shape. This file's own
+ * DDL now matches schema.sql directly; a fresh table build no longer needs
+ * the rename migration to fix it up afterwards.
+ * ORDERING IS SAFE: manage/includes/migration-registry.php's array order
+ * (which IS execution order — setup-database.php does
+ * `$migrationOrder = array_keys($MIGRATIONS)`) lists 'musicians-rename'
+ * BEFORE 'vocal-parts', so on "Apply all" tblMusicians already exists as a
+ * base table by the time this CREATE's `REFERENCES tblMusicians(Id)` runs.
+ * migrate-musicians-rename.php's own rename helpers
+ * (_migMusRename_renameColumn/_renameIndex/_renameFk) are ALL guarded to
+ * SKIP (not fatal) when the new name is already present, and to WARN-skip
+ * (not fatal) when neither the old nor the new name exists yet — so running
+ * musicians-rename BEFORE this file now creates tblVocalParts (table absent
+ * at that point) is a silent, harmless no-op for the three tblVocalParts
+ * steps it contains, and running this file AFTER musicians-rename (the
+ * registry's actual order) needs no rename at all since the column is
+ * already named MusicianId. The only remaining edge case — manually running
+ * the "Vocal / singing parts" card BEFORE "Musicians rename" on an install
+ * that has neither applied — would fail this file's own CREATE (FK to a
+ * not-yet-existing tblMusicians) with a caught, reported [ERROR] line (see
+ * the try/catch below); it is not fatal to the request and is recoverable
+ * by running musicians-rename first and re-running this card, but "Apply
+ * all" and the registry's documented order never hit it.
  *
  * USAGE:
  *   CLI:  php appWeb/.sql/migrate-vocal-parts.php
@@ -112,7 +144,7 @@ try {
 
        3. The two foreign keys deliberately differ on delete. Losing the lyrics
           version must take its parts with it (CASCADE) — a part has no meaning
-          without the lines it annotates. Losing a person must NOT: SET NULL
+          without the lines it annotates. Losing a musician must NOT: SET NULL
           demotes a named-singer row back to an anonymous one, leaving SingerName
           and the line assignments intact. */
     if (_migVP_tableExists($mysql, 'tblVocalParts')) {
@@ -122,23 +154,23 @@ try {
             "CREATE TABLE tblVocalParts (
                 Id             INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
                 LyricsId       INT UNSIGNED    NOT NULL COMMENT 'FK to tblLyrics.Id — parts are per lyrics version',
-                PartKind       VARCHAR(30)     NOT NULL DEFAULT 'lead' COMMENT 'lead|main|backing|soloist|male|female|duet|group|unison|choir|congregation|cantor|descant|narrator|spoken|named-singer (app-validated). VARCHAR not ENUM',
+                PartKind       VARCHAR(30)     NOT NULL DEFAULT 'lead' COMMENT 'lead|main|backing|soloist|male|female|duet|group|unison|choir|congregation|cantor|descant|narrator|spoken|named-singer (app-validated vs a central map -> badge). VARCHAR not ENUM',
                 Label          VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Editor display override (Soprano, Worship Leader, …)',
-                CreditPersonId INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblCreditPeople.Id — typed named-singer link (reuses the person registry, NOT a new tblArtists)',
+                MusicianId     INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblMusicians.Id — typed named-singer link (reuses the musician registry, NOT a new tblArtists)',
                 SingerName     VARCHAR(255)    NULL DEFAULT NULL COMMENT 'Free-text named singer when no registry row',
-                Gender         VARCHAR(16)     NULL DEFAULT NULL COMMENT 'male|female|neutral — orthogonal axis',
+                Gender         VARCHAR(16)     NULL DEFAULT NULL COMMENT 'male|female|neutral — orthogonal axis (a named soloist may also be female)',
                 TtmlAgentId    VARCHAR(64)     NULL DEFAULT NULL COMMENT 'Source <ttm:agent> handle (v1,v2) — loss-free re-export + idempotent back-fill key',
                 Source         VARCHAR(100)    NOT NULL DEFAULT 'ihymns' COMMENT 'applemusic-ttml | manual | … (mirrors tblLyrics.Source)',
                 SortOrder      INT UNSIGNED    NOT NULL DEFAULT 0,
-                MetaJson       JSON            NULL DEFAULT NULL COMMENT 'Lossless TTML <head> agent def attrs',
+                MetaJson       JSON            NULL DEFAULT NULL COMMENT 'Lossless TTML <head> agent def attrs (ttm:agent type, ttm:name)',
                 CreatedAt      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UpdatedAt      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 UNIQUE KEY uq_Lyrics_Agent (LyricsId, TtmlAgentId),
                 INDEX idx_Lyrics (LyricsId),
                 INDEX idx_Kind   (PartKind),
-                INDEX idx_Person (CreditPersonId),
-                CONSTRAINT fk_VocalParts_Lyrics FOREIGN KEY (LyricsId)       REFERENCES tblLyrics(Id)       ON DELETE CASCADE  ON UPDATE CASCADE,
-                CONSTRAINT fk_VocalParts_Person FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id) ON DELETE SET NULL ON UPDATE CASCADE
+                INDEX idx_Musician (MusicianId),
+                CONSTRAINT fk_VocalParts_Lyrics   FOREIGN KEY (LyricsId)   REFERENCES tblLyrics(Id)     ON DELETE CASCADE  ON UPDATE CASCADE,
+                CONSTRAINT fk_VocalParts_Musician FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id) ON DELETE SET NULL ON UPDATE CASCADE
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
               COMMENT='Per-version singing-part registry — first-class vocal parts (#1137).'"
         );
