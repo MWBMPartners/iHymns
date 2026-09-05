@@ -530,9 +530,13 @@ export function printCss(pageOptions) {
        own; the chip's WORDS + the reply icon + italics/dashes carry the
        "echo" meaning, never colour alone (WCAG 1.4.1) — matching
        css/app.css's on-screen .lyric-voice-* rules this template mirrors.
-       `.print-voice-run` is a plain block wrapper (a SIBLING of each
-       `.print-line`, never wrapped around it — see
-       includes/voice_parts_render.php's file header for why that matters). */
+       .print-voice-run is a plain block wrapper (a SIBLING of each
+       .print-line, never wrapped around it — see
+       includes/voice_parts_render.php's file header for why that matters).
+       NOTE: no backticks in this comment. It sits inside a template literal,
+       so a backtick here would END the string early and the rest of the CSS
+       would be parsed as JavaScript — which is exactly what happened, and is
+       why `voice`, `run` and `line` were being read as undefined variables. */
     .print-voice-run { margin: 0.15em 0; }
     .print-voice-chips { display: block; margin-bottom: 0.1em; }
     .print-voice-chip { display: inline-block; font-size: ${Math.max(7, fontPt - 5)}pt; font-weight: bold;
