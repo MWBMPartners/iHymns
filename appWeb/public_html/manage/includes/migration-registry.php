@@ -2301,7 +2301,7 @@ return [
             'title'  => 'Vocal / singing parts (#1137)',
             'body'   => 'Creates <code>tblVocalParts</code> (per-version singing-part'
                       . ' registry — lead/backing/soloist/duet/named-singer, reusing'
-                      . ' <code>tblCreditPeople</code>) + <code>tblLyricLineVocalParts</code>'
+                      . ' <code>tblMusicians</code>) + <code>tblLyricLineVocalParts</code>'
                       . ' + <code>tblLyricWordVocalParts</code> (many-to-many for'
                       . ' duet/unison) — first-class queryable vocal parts vs the'
                       . ' lossless-only MetaJson today. Additive + idempotent.',
@@ -4871,5 +4871,45 @@ return [
         ],
         /* Single-object probe (rule #19) — never `=> true`. */
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblLoginAttempts', 'Action'),
+    ],
+
+    /* #2073 commit 2 — voice parts: echo spans, rounds/canon, review queue.
+       Four dormant, additive tables extending the #1137 vocal-parts trio
+       (ZERO ALTERs to that trio — it is sufficient as-is). Appended at the
+       END of $MIGRATIONS (per the plan of record's "Design pass 7" §2,
+       which is authoritative over an earlier draft's "insert directly
+       after 'vocal-parts'" placement) — array order IS execution order,
+       and every FK target these four tables need (tblVocalParts,
+       tblLyricLines, tblLyrics, tblSongs, tblMusicians) already precedes
+       this entry regardless of exactly where after them it sits, so the
+       END is a safe, simple place for it. Nothing in the app calls any of
+       these tables yet (dormant — the read-only core in
+       includes/vocal_parts.php that commit 1 shipped has no caller
+       either); a later commit of the same feature wires them up. */
+    'vocal-parts-rounds' => [
+        'script' => 'migrate-vocal-parts-rounds.php',
+        'card' => [
+            'title'  => 'Vocal parts: echo spans, rounds/canon, review queue (#2073)',
+            'body'   => 'Creates <code>tblLyricLineVocalSpans</code> (sub-line echo /'
+                      . ' mid-line voice-switch spans, code-point anchored),'
+                      . ' <code>tblLyricRounds</code> + <code>tblLyricRoundVoices</code>'
+                      . ' (round / canon / partner-song definitions with per-voice entry'
+                      . ' offsets in lines, beats or ms — drives a future staggered'
+                      . ' projection view) and <code>tblVocalPartSuggestions</code> (the'
+                      . ' curator review queue a future voice-marker backfill batch will'
+                      . ' write into). Requires the <code>Vocal / singing parts (#1137)</code>'
+                      . ' card to have run first. Additive + idempotent; tables ship'
+                      . ' empty — nothing reads or writes them yet.',
+            'button' => 'Run Voice Parts (Rounds) Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until ALL FOUR objects
+           exist, so a partial apply (the migration dying between its four
+           independently-guarded CREATE TABLEs) never shows this card
+           green while one or more tables are still missing. */
+        'probe' => static fn(\mysqli $db): bool =>
+               !_migProbe_tableExists($db, 'tblLyricLineVocalSpans')
+            || !_migProbe_tableExists($db, 'tblLyricRounds')
+            || !_migProbe_tableExists($db, 'tblLyricRoundVoices')
+            || !_migProbe_tableExists($db, 'tblVocalPartSuggestions'),
     ],
 ];
