@@ -23322,6 +23322,255 @@ if ($action !== null) {
         }
 
         /* -----------------------------------------------------------------
+         * #2073 commit 15 — Voice-part suggestions review queue (mirrors
+         * manage/vocal-parts-review.php). A batch scan (#2073 commit 14)
+         * already found old plain-text voice markers ("WOMEN",
+         * "MEN: You are holy,", "(echo)") sitting in songs' lyric TEXT and
+         * queued each one into tblVocalPartSuggestions as a SUGGESTION — a
+         * guess, never an applied change. These five actions are the ONLY
+         * way that queue is read or acted on; every one of them delegates
+         * to the ONE shared core, includes/vocal_part_review.php (rule
+         * #22 — no forked SQL, no re-implemented Accept/Undo logic here),
+         * exactly the functions the sibling manage/*.php page calls, so a
+         * native app reaches the identical capability. Gate = edit_songs
+         * for every action — the SAME entitlement the page itself checks
+         * (rule #1587): there is no admin-only tier here because nothing
+         * this queue does is irreversible (Undo always exists for an
+         * Accept). No per-action validateCsrfRequest() — like every other
+         * admin_* action in this switch (admin_song_merge/_link/_unlink/
+         * _auto_link immediately above), getAuthenticatedUser() here is
+         * Bearer-token-only (never a cookie session), which is already
+         * immune to CSRF by construction, and this file's own top-of-file
+         * X-Requested-With gate (~L470) covers every POST regardless.
+         * ----------------------------------------------------------------- */
+
+        /* GET query string: status?, confidence?, form?, songbook?, song_id?,
+           limit? (default 50, max 200), offset? (default 0). */
+        case 'admin_vocal_suggestion_list': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_songs entitlement is required.'], 403);
+                break;
+            }
+            $db = getDbMysqli();
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'vocal_part_review.php';
+
+            if (!vocalPartReviewReady($db)) {
+                sendJson(['error' => 'The voice-part suggestions queue is not migrated on this install yet.'], 409);
+                break;
+            }
+
+            $filter = [];
+            foreach (['status', 'confidence', 'form', 'songbook', 'songId'] as $key) {
+                $raw = $_GET[$key] ?? ($key === 'songId' ? ($_GET['song_id'] ?? '') : '');
+                if (is_string($raw) && $raw !== '' && $raw !== 'all') {
+                    $filter[$key] = $raw;
+                }
+            }
+            $limit  = max(1, min(200, (int)($_GET['limit'] ?? 50)));
+            $offset = max(0, (int)($_GET['offset'] ?? 0));
+
+            try {
+                $rows = vocalPartReviewList($db, $filter, $limit + 1, $offset);
+                $hasMore = count($rows) > $limit;
+                if ($hasMore) {
+                    array_pop($rows);
+                }
+                sendJson(['ok' => true, 'suggestions' => $rows, 'hasMore' => $hasMore]);
+            } catch (\InvalidArgumentException $e) {
+                sendJson(['error' => $e->getMessage()], 400);
+            } catch (\Throwable $e) {
+                error_log('[admin_vocal_suggestion_list] ' . $e->getMessage());
+                sendJson(['error' => 'Could not load the queue.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { song_id, id, overrides?: { kind?, label?, isBackground? } } */
+        case 'admin_vocal_suggestion_accept': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_songs entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'vocal_part_review.php';
+
+            if (!vocalPartReviewReady($db)) {
+                sendJson(['error' => 'The voice-part suggestions queue is not migrated on this install yet.'], 409);
+                break;
+            }
+
+            $songId = trim((string)($body['song_id'] ?? ''));
+            $id     = (int)($body['id'] ?? 0);
+            $overrides = is_array($body['overrides'] ?? null) ? $body['overrides'] : [];
+            if ($songId === '' || $id <= 0) {
+                sendJson(['error' => 'song_id and id are required.'], 400);
+                break;
+            }
+
+            $userId = (int)($authUser['Id'] ?? 0) ?: null;
+            $db->begin_transaction();
+            try {
+                $result = vocalPartReviewAccept($db, $songId, $id, $userId, $overrides);
+                $db->commit();
+                logActivity('api.vocal.suggestion_accepted', 'song', $songId, ['suggestionId' => $id]);
+                sendJson(['ok' => true, 'suggestion' => $result]);
+            } catch (VocalPartReviewConflictException $e) {
+                $db->rollback();
+                sendJson(['error' => $e->getMessage(), 'reason' => $e->reason], 409);
+            } catch (\InvalidArgumentException $e) {
+                $db->rollback();
+                sendJson(['error' => $e->getMessage()], 400);
+            } catch (\RuntimeException $e) {
+                $db->rollback();
+                sendJson(['error' => $e->getMessage()], 404);
+            } catch (\Throwable $e) {
+                $db->rollback();
+                logActivityError('api.vocal.suggestion_accepted', 'song', $songId, $e);
+                error_log('[admin_vocal_suggestion_accept] ' . $e->getMessage());
+                sendJson(['error' => 'Accept failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { song_id, id } */
+        case 'admin_vocal_suggestion_dismiss': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_songs entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'vocal_part_review.php';
+
+            if (!vocalPartReviewReady($db)) {
+                sendJson(['error' => 'The voice-part suggestions queue is not migrated on this install yet.'], 409);
+                break;
+            }
+
+            $songId = trim((string)($body['song_id'] ?? ''));
+            $id     = (int)($body['id'] ?? 0);
+            if ($songId === '' || $id <= 0) {
+                sendJson(['error' => 'song_id and id are required.'], 400);
+                break;
+            }
+
+            $userId = (int)($authUser['Id'] ?? 0) ?: null;
+            try {
+                $result = vocalPartReviewDismiss($db, $songId, $id, $userId);
+                logActivity('api.vocal.suggestion_dismissed', 'song', $songId, ['suggestionId' => $id]);
+                sendJson(['ok' => true, 'suggestion' => $result]);
+            } catch (VocalPartReviewConflictException $e) {
+                sendJson(['error' => $e->getMessage(), 'reason' => $e->reason], 409);
+            } catch (\RuntimeException $e) {
+                sendJson(['error' => $e->getMessage()], 404);
+            } catch (\Throwable $e) {
+                logActivityError('api.vocal.suggestion_dismissed', 'song', $songId, $e);
+                error_log('[admin_vocal_suggestion_dismiss] ' . $e->getMessage());
+                sendJson(['error' => 'Dismiss failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { song_id, id } */
+        case 'admin_vocal_suggestion_undo': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_songs entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'vocal_part_review.php';
+
+            if (!vocalPartReviewReady($db)) {
+                sendJson(['error' => 'The voice-part suggestions queue is not migrated on this install yet.'], 409);
+                break;
+            }
+
+            $songId = trim((string)($body['song_id'] ?? ''));
+            $id     = (int)($body['id'] ?? 0);
+            if ($songId === '' || $id <= 0) {
+                sendJson(['error' => 'song_id and id are required.'], 400);
+                break;
+            }
+
+            $userId = (int)($authUser['Id'] ?? 0) ?: null;
+            $db->begin_transaction();
+            try {
+                $result = vocalPartReviewUndo($db, $songId, $id, $userId);
+                $db->commit();
+                logActivity('api.vocal.suggestion_undone', 'song', $songId, ['suggestionId' => $id]);
+                sendJson(['ok' => true, 'suggestion' => $result]);
+            } catch (VocalPartReviewConflictException $e) {
+                $db->rollback();
+                sendJson(['error' => $e->getMessage(), 'reason' => $e->reason], 409);
+            } catch (\RuntimeException $e) {
+                $db->rollback();
+                sendJson(['error' => $e->getMessage()], 404);
+            } catch (\Throwable $e) {
+                $db->rollback();
+                logActivityError('api.vocal.suggestion_undone', 'song', $songId, $e);
+                error_log('[admin_vocal_suggestion_undo] ' . $e->getMessage());
+                sendJson(['error' => 'Undo failed.'], 500);
+            }
+            break;
+        }
+
+        /* POST body: { song_id } — re-scan ONE song right now (mirrors the
+           page's per-row "Rescan" button; the whole-catalogue batch stays
+           web-only, appWeb/.sql/migrate-backfill-vocal-part-suggestions.php). */
+        case 'admin_vocal_suggestion_refresh_song': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_songs entitlement is required.'], 403);
+                break;
+            }
+            $db   = getDbMysqli();
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'vocal_part_review.php';
+
+            if (!vocalPartReviewReady($db)) {
+                sendJson(['error' => 'The voice-part suggestions queue is not migrated on this install yet.'], 409);
+                break;
+            }
+
+            $songId = trim((string)($body['song_id'] ?? ''));
+            if ($songId === '') {
+                sendJson(['error' => 'song_id is required.'], 400);
+                break;
+            }
+
+            try {
+                $counts = vocalPartReviewRefreshSong($db, $songId);
+                sendJson(['ok' => true, 'counts' => $counts]);
+            } catch (\Throwable $e) {
+                error_log('[admin_vocal_suggestion_refresh_song] ' . $e->getMessage());
+                sendJson(['error' => 'Rescan failed.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
          * A11 — Deleted songs restore/purge (mirrors manage/deleted-songs.php)
          * Gates: restore = delete_songs (the page's own gate); purge =
          * purge_songs (the page's separate, stricter per-action gate —

@@ -150,6 +150,19 @@ $sections = [
         'title' => 'Find Duplicates',
         'group' => 'Content',
     ],
+    /* #2073 commit 15 — the curator review queue for old plain-text voice
+       markers ("WOMEN" / "MEN: You are holy," / "(echo)") a one-off scan
+       found sitting in songs' lyric TEXT. Icon + Content placement mirror
+       the admin-links.php nav entry ('bi-people', edit_songs); sits right
+       after Find Duplicates — the OTHER curator review-queue page in this
+       group, and the closest sibling in shape (guess, never applied on its
+       own, until a person says yes or no). */
+    [
+        'id'    => 'vocal-parts-review',
+        'icon'  => 'bi-people',
+        'title' => 'Voice-part Suggestions',
+        'group' => 'Content',
+    ],
     [
         'id'    => 'works',
         'icon'  => 'bi-diagram-3',
@@ -1229,6 +1242,28 @@ foreach ($sections as $s) {
                     </dl>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Link and Dismiss are reversible bookkeeping; Merge is not. Use Link when both copies should stay (e.g. the same hymn in two hymnals); reserve Merge for genuine accidental duplicates.
+                    </div>
+                </section>
+
+                <section id="vocal-parts-review" class="help-section card-admin mb-4">
+                    <h2><i aria-hidden="true" class="bi bi-people me-2"></i>Voice-part Suggestions</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-primary">editor</span>
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">Global Admin</span>
+                    </p>
+                    <p>
+                        A lot of OLD lyrics have a line like <span class="font-monospace">WOMEN</span> or <span class="font-monospace">MEN: You are holy,</span> typed straight into the words, because whoever typed the song up years ago had no other way to say &ldquo;the women sing this bit&rdquo;. A one-off scan already read every song and listed each marker it found here as a <strong>suggestion</strong> &mdash; a guess, never a change made on its own. This page is where a curator looks at each guess, with the song's own lines shown alongside it, and decides.
+                    </p>
+                    <h3 class="h6">Per-action what it does</h3>
+                    <dl class="actions">
+                        <dt>Accept</dt><dd>Really assigns the voice part to the lines shown, and tidies the marker text: removes a stand-alone marker line, strips a prefix (e.g. &ldquo;MEN:&rdquo;) off the front of a line, or leaves a bracketed cue's own text untouched (it's simply marked as an echo). The <strong>Proposal</strong> column lets a curator correct the guessed part, its label, or the echo flag before clicking Accept.</dd>
+                        <dt>Dismiss</dt><dd>Throws the suggestion away. Nothing about the song changes either way &mdash; use it when the guess was wrong (e.g. &ldquo;SOLO&rdquo; was really a section heading, not a singer).</dd>
+                        <dt>Undo</dt><dd>Only shown after an Accept. Puts the marker text back and clears the voice assignment Accept made &mdash; reverses that ONE Accept exactly, using its own record of what it did.</dd>
+                        <dt>Rescan</dt><dd>Re-runs the same scan on just this one song right now &mdash; handy straight after hand-editing its lyrics elsewhere, rather than waiting for the next whole-catalogue pass.</dd>
+                    </dl>
+                    <div class="gotcha small">
+                        <strong>Why Undo lives here, not in <a href="#revisions">Edit History</a>:</strong> restoring an old revision only knows about the song's TEXT &mdash; it would put the marker line back but has no idea a voice-part assignment was ever made, so the song would end up with <em>both</em> the old marker line and the (now wrong) voice assignment. Undo on this page reverses exactly what Accept did, so the song always ends up exactly how it was before &mdash; a half-undo is worse than either change on its own.
                     </div>
                 </section>
 

@@ -489,7 +489,10 @@ $exemptions = [
                   . 'never a rendered page. #2006 (epic #2002) added the content-gating activation wizard\'s '
                   . 'wizard_flip_gating action: a JSON-only 409 body listing the precondition blockers/warnings '
                   . '(gatingWizardEvaluatePreconditions()) when the flip is refused — same JSON-only, no-render '
-                  . 'shape as every other site in this exemption.',
+                  . 'shape as every other site in this exemption. #2073 commit 15 added manage/vocal-parts-'
+                  . 'review.php\'s Accept/Dismiss/Undo/Rescan actions: a not-pending suggestion, a marker line '
+                  . 'that has since moved/vanished (VocalPartReviewConflictException), or the review tables not '
+                  . 'yet migrated all return the same JSON-only 409 shape, never a rendered page.',
         'paths' => [
             'api.php', 'includes/api_keys.php', 'includes/duplicate_song_admin.php',
             'includes/musician_duplicates.php', 'includes/song_link_admin.php',
@@ -497,6 +500,7 @@ $exemptions = [
             'manage/duplicate-songs.php', 'manage/editor/api.php', 'manage/editor/api2.php',
             'manage/external-link-types.php', 'manage/gating.php', 'manage/languages.php', 'manage/musician-duplicates.php',
             'manage/organisations.php', 'manage/setup-database.php', 'manage/songbooks.php', 'manage/tags.php',
+            'manage/vocal-parts-review.php',
         ],
     ],
     412 => [

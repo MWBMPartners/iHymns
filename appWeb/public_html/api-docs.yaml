@@ -15479,6 +15479,266 @@ paths:
         "403":
           description: The manage_duplicate_songs entitlement is required
 
+  # ===========================================================================
+  # ADMIN — VOICE-PART SUGGESTIONS (#2073 commit 15)
+  # Mirrors manage/vocal-parts-review.php: the curator review queue for old
+  # plain-text voice markers ("WOMEN" / "MEN: You are holy," / "(echo)") a
+  # batch scan found sitting in songs' lyric TEXT. Every action delegates to
+  # includes/vocal_part_review.php (rule #22) — no forked SQL here either.
+  # Gate = edit_songs for all five, the SAME entitlement the page checks.
+  # ===========================================================================
+
+  /api.php?action=admin_vocal_suggestion_list:
+    get:
+      operationId: adminVocalSuggestionList
+      tags: [Admin — Voice-part Suggestions]
+      summary: List voice-part marker suggestions (the review queue)
+      description: |
+        Mirrors `/manage/vocal-parts-review`'s GET list
+        (`vocalPartReviewList()`). Each row is a SUGGESTION found by the
+        shared plain-text detector — never a change already made — until a
+        curator calls `admin_vocal_suggestion_accept`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_vocal_suggestion_list] }
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, accepted, dismissed, undone, stale] }
+          description: Omit (or 'all') to list every status.
+        - name: confidence
+          in: query
+          schema: { type: string, enum: [high, medium, low] }
+        - name: form
+          in: query
+          schema: { type: string, enum: [standalone, prefix, paren] }
+          description: Where the marker sat in the lyric text.
+        - name: songbook
+          in: query
+          schema: { type: string }
+          description: Songbook abbreviation prefix (e.g. `MP`).
+        - name: song_id
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: Suggestions page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:          { type: boolean, example: true }
+                  suggestions: { type: array, items: { type: object, description: "vocalPartReviewShape() row" } }
+                  hasMore:     { type: boolean }
+        "400":
+          description: An unrecognised status/confidence/form value
+        "403":
+          description: The edit_songs entitlement is required
+        "409":
+          description: The voice-part suggestions queue is not migrated on this install yet
+
+  /api.php?action=admin_vocal_suggestion_accept:
+    post:
+      operationId: adminVocalSuggestionAccept
+      tags: [Admin — Voice-part Suggestions]
+      summary: Accept a suggestion — assign the voice part and tidy the marker text
+      description: |
+        Mirrors `/manage/vocal-parts-review`'s `accept` action
+        (`vocalPartReviewAccept()`). Removes a stand-alone marker line,
+        strips a prefix off the front of a line, or leaves a bracketed
+        cue's own text untouched (marked as an echo) — then assigns the
+        real voice part to the affected lines. Records exactly what it did
+        so `admin_vocal_suggestion_undo` can reverse it precisely.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_vocal_suggestion_accept] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [song_id, id]
+              properties:
+                song_id: { type: string }
+                id:      { type: integer, description: tblVocalPartSuggestions.Id }
+                overrides:
+                  type: object
+                  description: A curator may correct the proposed kind/label/echo flag before accepting. Every key is omitted-means-keep.
+                  properties:
+                    kind:         { type: string, nullable: true }
+                    label:        { type: string, nullable: true }
+                    isBackground: { type: boolean }
+      responses:
+        "200":
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  suggestion: { type: object, description: "vocalPartReviewShape() row" }
+        "400":
+          description: Missing song_id/id, or an override names an unknown kind
+        "403":
+          description: The edit_songs entitlement is required
+        "404":
+          description: Suggestion not found for this song
+        "409":
+          description: "Not pending, or the marker line has vanished/moved since it was queued (reason: not_pending|stale_line)"
+
+  /api.php?action=admin_vocal_suggestion_dismiss:
+    post:
+      operationId: adminVocalSuggestionDismiss
+      tags: [Admin — Voice-part Suggestions]
+      summary: Dismiss a suggestion (the song is not changed either way)
+      description: |
+        Mirrors `/manage/vocal-parts-review`'s `dismiss` action
+        (`vocalPartReviewDismiss()`).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_vocal_suggestion_dismiss] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [song_id, id]
+              properties:
+                song_id: { type: string }
+                id:      { type: integer }
+      responses:
+        "200":
+          description: Dismissed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  suggestion: { type: object, description: "vocalPartReviewShape() row" }
+        "400":
+          description: Missing song_id/id
+        "403":
+          description: The edit_songs entitlement is required
+        "404":
+          description: Suggestion not found for this song
+        "409":
+          description: "Only a pending suggestion can be dismissed (reason: not_pending)"
+
+  /api.php?action=admin_vocal_suggestion_undo:
+    post:
+      operationId: adminVocalSuggestionUndo
+      tags: [Admin — Voice-part Suggestions]
+      summary: Undo an Accept — put the marker text back, clear the assignment
+      description: |
+        Mirrors `/manage/vocal-parts-review`'s `undo` action
+        (`vocalPartReviewUndo()`). Queue-native undo — NOT the same thing
+        as restoring an old revision from Edit History, which has no idea a
+        voice-part assignment exists at all and would leave the song with
+        both the old marker line AND the (now wrong) assignment behind.
+        This reverses exactly what Accept did, using its own recorded steps.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_vocal_suggestion_undo] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [song_id, id]
+              properties:
+                song_id: { type: string }
+                id:      { type: integer }
+      responses:
+        "200":
+          description: Undone
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  suggestion: { type: object, description: "vocalPartReviewShape() row" }
+        "400":
+          description: Missing song_id/id
+        "403":
+          description: The edit_songs entitlement is required
+        "404":
+          description: Suggestion not found for this song
+        "409":
+          description: "Only an accepted suggestion can be undone (reason: not_accepted)"
+
+  /api.php?action=admin_vocal_suggestion_refresh_song:
+    post:
+      operationId: adminVocalSuggestionRefreshSong
+      tags: [Admin — Voice-part Suggestions]
+      summary: Re-scan one song's lyrics right now
+      description: |
+        Mirrors `/manage/vocal-parts-review`'s per-row "Rescan" button
+        (`vocalPartReviewRefreshSong()`). Refreshes anything still
+        pending/stale for this ONE song and flags a no-longer-findable
+        pending row as `stale`; never touches a row a curator already
+        Accepted/Dismissed. The whole-catalogue batch stays web-only
+        (`appWeb/.sql/migrate-backfill-vocal-part-suggestions.php`).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_vocal_suggestion_refresh_song] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [song_id]
+              properties:
+                song_id: { type: string }
+      responses:
+        "200":
+          description: Rescanned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:     { type: boolean, example: true }
+                  counts: { type: object, description: "found/inserted/updated/staled counts" }
+        "400":
+          description: Missing song_id
+        "403":
+          description: The edit_songs entitlement is required
+        "409":
+          description: The voice-part suggestions queue is not migrated on this install yet
+
   /api.php?action=admin_song_restore:
     post:
       operationId: adminSongRestore
