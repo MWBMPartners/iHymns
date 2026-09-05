@@ -231,15 +231,19 @@ const _BULK_IMPORT_MAX_TOTAL_UNCOMPRESSED = 500 * 1024 * 1024;     // 500 MiB
 const _BULK_IMPORT_IHYMNS_MAX_BYTES = 8 * 1024 * 1024;             // 8 MiB
 
 /**
- * Section-marker → component-type map. Anything not in the map (e.g.
- * non-English refrain labels like "Coro", "Ciindululo", "Pripev") is
- * treated as a refrain section — refrain labels are language-specific
- * and the editor has a single 'refrain' / 'chorus' component type
- * regardless of the surface label.
+ * The .txt / plain-text importer's own section-word vocabulary, factored
+ * out of `_bulkImport_componentTypeFor()` below (#2075) so a caller can
+ * ask "do we ACTUALLY recognise this word as a structural section?"
+ * without re-typing the same eight words a second time (rule #22 / #35 —
+ * one list, reused, never a hand-typed duplicate that could drift). This
+ * is the ONLY thing `_bulkImport_classifyMarker()` (also below) needs from
+ * this format to do its job — the function's own behaviour is completely
+ * unchanged by this extraction.
+ *
+ * @return array<string,string>  lower-cased word => iHymns component type
  */
-function _bulkImport_componentTypeFor(string $marker): string
+function _bulkImport_sectionWordMap(): array
 {
-    $m = strtolower(trim($marker));
     return [
         'verse'      => 'verse',
         'refrain'    => 'refrain',
@@ -249,7 +253,98 @@ function _bulkImport_componentTypeFor(string $marker): string
         'prechorus'  => 'pre-chorus',
         'intro'      => 'intro',
         'outro'      => 'outro',
-    ][$m] ?? 'refrain';
+    ];
+}
+
+/**
+ * Section-marker → component-type map. Anything not in the map (e.g.
+ * non-English refrain labels like "Coro", "Ciindululo", "Pripev") is
+ * treated as a refrain section — refrain labels are language-specific
+ * and the editor has a single 'refrain' / 'chorus' component type
+ * regardless of the surface label.
+ */
+function _bulkImport_componentTypeFor(string $marker): string
+{
+    $m = strtolower(trim($marker));
+    return _bulkImport_sectionWordMap()[$m] ?? 'refrain';
+}
+
+/**
+ * ELI5 (#2075 — "Four importers turn an unrecognised marker line into a
+ * fake 'refrain' section and discard the word"): before ANY of the four
+ * importer sites below fall back to guessing a structural type, ask
+ * whether the word is actually something else entirely — a plain-text
+ * VOICE cue ("WOMEN", "SOLO", "ALL", …) that isn't a section at all — so
+ * the caller never fabricates one from it, and never silently throws the
+ * word away either way.
+ *
+ * DETAIL — an unrecognised marker resolves in exactly one of two ways:
+ *   - a plain-text VOICE cue, per the shared, PURE
+ *     `includes/vocal_part_detect.php` classifier (#2073's own detector,
+ *     also consumed by the future #1260 catalogue clean-up sweep — rule
+ *     #22, one shared core). This is a text HEURISTIC, so per #2073's own
+ *     rule it may only ever produce a SUGGESTION, never auto-apply a
+ *     voice assignment — this function does not write anything and the
+ *     caller must not either; it only tells the caller "this is not a
+ *     section", so the caller can do whatever ITS format's equivalent of
+ *     "treat it as an ordinary lyric line" is (Paste & Reflow's own rule
+ *     for an unrecognised marker — `manage/editor/v2/reflow.js`).
+ *   - genuinely UNKNOWN (neither a known structural word nor a voice cue
+ *     — most often a non-English section label the small structural map
+ *     doesn't carry, e.g. "Coro", "Strophe"). This still needs SOME
+ *     structural home in a format where every block requires a header, so
+ *     `$fallbackType` is returned exactly as the pre-#2075 code always
+ *     returned — but the raw word now survives as a display `label`
+ *     rather than vanishing outright (the ProPresenter-7 importer's own
+ *     established `_bulkImport_pro7GroupType()` pattern, rule #45 — see
+ *     that function's doc-block for the precedent this one-for-one
+ *     mirrors: "carries extra information worth preserving as a display
+ *     label").
+ *
+ * @param array<string,string> $knownMap    the FORMAT's OWN fold-key =>
+ *                                          type map (e.g.
+ *                                          `_bulkImport_sectionWordMap()`)
+ * @param string                $foldedKey  `$rawToken` folded EXACTLY the
+ *                                          way that format's own
+ *                                          pre-#2075 lookup already folded
+ *                                          it (lower-case for .txt/verse
+ *                                          names, upper-case single-letter
+ *                                          tags for OpenSong/VideoPsalm)
+ * @param string                $rawToken   the untransformed marker text
+ *                                          — read for the voice-cue check
+ *                                          and preserved verbatim as the
+ *                                          label when it is kept
+ * @return array{isSection:bool, type:string, isVoiceCue:bool, label:?string}
+ */
+function _bulkImport_classifyMarker(array $knownMap, string $foldedKey, string $rawToken, string $fallbackType = 'refrain'): array
+{
+    if (array_key_exists($foldedKey, $knownMap)) {
+        return ['isSection' => true, 'type' => $knownMap[$foldedKey], 'isVoiceCue' => false, 'label' => null];
+    }
+
+    /* Lazy require (matches this file's own established convention — see
+       e.g. `text_encoding.php` inside `_bulkImport_parseTxt()`): every
+       call site here already reached the "not a known word" branch, which
+       is the rare path, so nothing pays for loading the pure detector on
+       an ordinary, fully-recognised import. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'vocal_part_detect.php';
+    $found      = vocalPartDetectClassifyLine($rawToken);
+    /* A standalone whole-word/whole-tag voice cue has `rest === ''` — the
+       PREFIX form (a marker glued to real lyric text on the SAME line,
+       `rest !== ''`) never applies here: every call site already isolated
+       a clean marker token (a bracketed tag, a JSON field, an XML
+       attribute, or — for the one plain-text .txt caller — a line the
+       surrounding parser already treats as header-only, never containing
+       trailing lyric text of its own). */
+    $isVoiceCue = ($found !== null && $found['form'] !== 'prefix');
+
+    $label = trim($rawToken);
+    return [
+        'isSection'  => false,
+        'type'       => $fallbackType,
+        'isVoiceCue' => $isVoiceCue,
+        'label'      => ($label !== '') ? $label : null,
+    ];
 }
 
 /**
@@ -319,16 +414,51 @@ function _bulkImport_parseTxt(string $body, string $abbrev, string $songbook, in
             if ($trim === '') { $i++; continue; }
 
             /* A bare integer is a verse with that number. Any other
-               non-empty token is a labelled section (Refrain, Chorus,
-               Bridge, or a non-English equivalent). */
+               non-empty token is EITHER a labelled section (Refrain,
+               Chorus, Bridge, or a non-English equivalent) OR — #2075 —
+               a plain-text voice cue like "WOMEN"/"MEN"/"ALL" that is not
+               a section at all and must never be turned into one. */
             if (preg_match('/^\d{1,3}$/', $trim)) {
                 $current = ['type' => 'verse', 'number' => (int)$trim, 'lines' => []];
-            } else {
-                $current = [
-                    'type'   => _bulkImport_componentTypeFor($trim),
-                    'number' => 0,
-                    'lines'  => [],
-                ];
+                $i++;
+                continue;
+            }
+
+            $marker = _bulkImport_classifyMarker(_bulkImport_sectionWordMap(), strtolower($trim), $trim);
+            if ($marker['isVoiceCue']) {
+                /* #2075 — NOT a section: reopen whatever came right
+                   before it (or start a fresh, unlabelled verse when this
+                   is the very first block in the file) and treat the
+                   WHOLE line — the marker word itself, verbatim — as an
+                   ordinary continuing lyric line, exactly the way Paste &
+                   Reflow already handles an unrecognised marker
+                   (`manage/editor/v2/reflow.js`'s `REFLOW_LABEL_RE`
+                   miss-case). This is what stops "WOMEN" / "He who
+                   dwells…" / "MEN" / … from becoming THREE separate
+                   "refrain #0" components with the voice words silently
+                   deleted (#2075's own worked example) — and, because
+                   nothing here decides who actually sings the line, it
+                   never auto-applies a voice assignment either (#2073's
+                   own "heuristics only ever suggest" rule). */
+                $current = !empty($components)
+                    ? array_pop($components)
+                    : ['type' => 'verse', 'number' => 0, 'lines' => []];
+                $current['lines'][] = rtrim($line);
+                $i++;
+                continue;
+            }
+
+            /* Genuinely unrecognised (not a known section word, not a
+               voice cue either — most often a non-English section label
+               the small structural map above doesn't carry). Still needs
+               a structural home, so this keeps the pre-#2075 'refrain'
+               fallback — but now preserves the raw word as a display
+               `label` (rule #45, the ProPresenter-7 importer's own
+               `_bulkImport_pro7GroupType()` pattern) instead of
+               discarding it outright. */
+            $current = ['type' => $marker['type'], 'number' => 0, 'lines' => []];
+            if ($marker['label'] !== null) {
+                $current['label'] = $marker['label'];
             }
             $i++;
             continue;
@@ -2146,13 +2276,14 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
  * =========================================================================== */
 
 /**
- * Map OpenSong section letters to iHymns component types.
+ * OpenSong's own single-letter tag vocabulary, factored out (#2075) so
+ * `_bulkImport_classifyMarker()` can ask "do we recognise this letter" —
+ * see `_bulkImport_sectionWordMap()`'s doc-block just above for why this
+ * is a pure extraction, not a behaviour change.
  *
- * Falls back to 'refrain' for anything we don't recognise (e.g. a
- * non-English label slipped into the section marker), matching the
- * fallback _bulkImport_componentTypeFor() uses for the TXT parser.
+ * @return array<string,string>  UPPER-CASE letter => iHymns component type
  */
-function _bulkImport_openSongComponentTypeFor(string $letter): string
+function _bulkImport_openSongLetterMap(): array
 {
     return [
         'V' => 'verse',
@@ -2162,7 +2293,19 @@ function _bulkImport_openSongComponentTypeFor(string $letter): string
         'T' => 'outro',
         'E' => 'outro',
         'I' => 'intro',
-    ][strtoupper($letter)] ?? 'refrain';
+    ];
+}
+
+/**
+ * Map OpenSong section letters to iHymns component types.
+ *
+ * Falls back to 'refrain' for anything we don't recognise (e.g. a
+ * non-English label slipped into the section marker), matching the
+ * fallback _bulkImport_componentTypeFor() uses for the TXT parser.
+ */
+function _bulkImport_openSongComponentTypeFor(string $letter): string
+{
+    return _bulkImport_openSongLetterMap()[strtoupper($letter)] ?? 'refrain';
 }
 
 /**
@@ -2309,18 +2452,36 @@ function _bulkImport_parseOpenSongLyrics(string $lyrics): array
             continue;
         }
 
-        /* Section marker, e.g. "[V1]", "[C]", "[B]". The optional
-           trailing digits become the verse number; bare "[V]" implies
-           the next sequential verse. */
+        /* Section marker, e.g. "[V1]", "[C]", "[B]" — or, per #2075, a
+           bracketed VOICE tag like "[Women]" the regex's own `[A-Za-z]+`
+           happily also matches (OpenSong places no restriction on the
+           letters between the brackets, only on there being no digits
+           mixed in). The optional trailing digits become the verse
+           number; bare "[V]" implies the next sequential verse. */
         if (preg_match('/^\[([A-Za-z]+)(\d*)\]$/', $trim, $m)) {
             if ($current !== null && !empty($current['lines'])) {
                 $components[] = $current;
             }
+            /* #2075 — never silently discard an unrecognised tag. A
+               known letter (V/C/B/P/T/E/I) behaves exactly as before;
+               anything else — a voice cue like "Women", or a genuinely
+               unrecognised word — keeps the pre-#2075 'refrain' fallback
+               but now carries its own raw tag text as a display `label`
+               (rule #45's ProPresenter-7 pattern) instead of vanishing.
+               Unlike the free-text .txt importer, an OpenSong tag is
+               ALWAYS a clean, isolated marker on its own line (never
+               glued to real lyric text) — there is no risk of losing a
+               lyric line by keeping this simple "label, don't merge"
+               fix here. */
+            $marker  = _bulkImport_classifyMarker(_bulkImport_openSongLetterMap(), strtoupper($m[1]), $m[1]);
             $current = [
-                'type'   => _bulkImport_openSongComponentTypeFor($m[1]),
+                'type'   => $marker['type'],
                 'number' => $m[2] !== '' ? (int)$m[2] : 0,
                 'lines'  => [],
             ];
+            if ($marker['label'] !== null) {
+                $current['label'] = $marker['label'];
+            }
             continue;
         }
 
@@ -2406,14 +2567,18 @@ function _bulkImport_nextSongNumberFor(\mysqli $db, string $abbr): int
  * =========================================================================== */
 
 /**
- * Map a VideoPsalm verse Tag (e.g. "V1", "C", "B2") to an iHymns
- * component type. Trailing digits are stripped before the lookup; an
- * unknown letter falls through to 'refrain' to mirror the OpenSong
- * fallback behaviour.
+ * VideoPsalm's own single-letter Tag vocabulary, factored out (#2075) so
+ * `_bulkImport_classifyMarker()` can ask "do we recognise this letter" —
+ * see `_bulkImport_sectionWordMap()`'s doc-block for why this is a pure
+ * extraction, not a behaviour change. Shares the same seven letters as
+ * OpenSong's own map (`_bulkImport_openSongLetterMap()`) by convention,
+ * not by code reuse — VideoPsalm and OpenSong are unrelated file formats
+ * that both happen to use the V/C/B/P/T/E/I shorthand.
+ *
+ * @return array<string,string>  UPPER-CASE letter => iHymns component type
  */
-function _bulkImport_videopsalmComponentTypeFor(string $tag): string
+function _bulkImport_videopsalmLetterMap(): array
 {
-    $letter = strtoupper((string)preg_replace('/\d+$/', '', trim($tag)));
     return [
         'V' => 'verse',
         'C' => 'chorus',
@@ -2422,7 +2587,31 @@ function _bulkImport_videopsalmComponentTypeFor(string $tag): string
         'T' => 'outro',
         'E' => 'outro',
         'I' => 'intro',
-    ][$letter] ?? 'refrain';
+    ];
+}
+
+/**
+ * Fold a raw VideoPsalm Tag ("V1", "C", "B2", "Women") down to the letter
+ * key `_bulkImport_videopsalmLetterMap()` looks up — trailing digits
+ * stripped, upper-cased. Factored out so both
+ * `_bulkImport_videopsalmComponentTypeFor()` and the #2075 classifier at
+ * the call site apply the IDENTICAL fold (rule #35 — one fold, not two
+ * that could quietly diverge).
+ */
+function _bulkImport_videopsalmFoldTag(string $tag): string
+{
+    return strtoupper((string)preg_replace('/\d+$/', '', trim($tag)));
+}
+
+/**
+ * Map a VideoPsalm verse Tag (e.g. "V1", "C", "B2") to an iHymns
+ * component type. Trailing digits are stripped before the lookup; an
+ * unknown letter falls through to 'refrain' to mirror the OpenSong
+ * fallback behaviour.
+ */
+function _bulkImport_videopsalmComponentTypeFor(string $tag): string
+{
+    return _bulkImport_videopsalmLetterMap()[_bulkImport_videopsalmFoldTag($tag)] ?? 'refrain';
 }
 
 /**
@@ -2549,7 +2738,6 @@ function _bulkImport_parseVideoPsalmSongbook(string $body, ?string $abbrevHint =
             if (preg_match('/(\d+)$/', $tag, $vm)) {
                 $vNum = (int)$vm[1];
             }
-            $type    = $tag !== '' ? _bulkImport_videopsalmComponentTypeFor($tag) : 'verse';
             $rawText = (string)($v['Text'] ?? '');
             if (trim($rawText) === '') continue;
             $rawText = str_replace(["\r\n", "\r"], "\n", $rawText);
@@ -2560,11 +2748,27 @@ function _bulkImport_parseVideoPsalmSongbook(string $body, ?string $abbrevHint =
                 array_pop($lines);
             }
             if (empty($lines)) continue;
-            $components[] = [
-                'type'   => $type,
-                'number' => $vNum,
-                'lines'  => $lines,
-            ];
+
+            if ($tag === '') {
+                $components[] = ['type' => 'verse', 'number' => $vNum, 'lines' => $lines];
+                continue;
+            }
+
+            /* #2075 — a Tag like "Women" is a voice cue, not a section;
+               a Tag the small V/C/B/P/T/E/I map genuinely doesn't
+               recognise still needs SOME type, so it keeps the pre-#2075
+               'refrain' fallback but now carries the raw Tag text as a
+               display `label` (rule #45) rather than losing it. Each
+               Verse entry already carries its OWN Text — unlike the
+               free-text .txt importer there is no separate "marker
+               line" whose lyric content could be destroyed here, so the
+               simple "label, don't merge" fix is complete on its own. */
+            $marker = _bulkImport_classifyMarker(_bulkImport_videopsalmLetterMap(), _bulkImport_videopsalmFoldTag($tag), $tag);
+            $comp   = ['type' => $marker['type'], 'number' => $vNum, 'lines' => $lines];
+            if (!$marker['isSection'] && $marker['label'] !== null) {
+                $comp['label'] = $marker['label'];
+            }
+            $components[] = $comp;
         }
         if (empty($components)) {
             $perSongErrors[] = ['entry' => $entryTag, 'error' => 'no usable Verses[] entries'];
@@ -3057,8 +3261,36 @@ function _bulkImport_looksLikeOpenLyrics(string $body): bool
 }
 
 /**
+ * OpenLyrics' own verse-name letter vocabulary, factored out (#2075) so
+ * `_bulkImport_classifyMarker()` can ask "do we recognise this letter" —
+ * see `_bulkImport_sectionWordMap()`'s doc-block for why this is a pure
+ * extraction, not a behaviour change.
+ *
+ * @return array<string,string>  lower-case letter => iHymns component type
+ */
+function _bulkImport_openLyricsLetterMap(): array
+{
+    return [
+        'v' => 'verse', 'c' => 'chorus', 'b' => 'bridge', 'p' => 'pre-chorus',
+        'r' => 'refrain', 'e' => 'outro', 'i' => 'intro', 'o' => 'outro',
+        't' => 'outro',
+    ];
+}
+
+/**
  * Map an OpenLyrics verse `name` (v1, c, c2, b, p, e, i, o, …) to an
- * [iHymns component type, number] pair.
+ * [iHymns component type, number, label] triple. #2075: `$label` is null
+ * for every recognised letter (unchanged from before this fix); for an
+ * unrecognised `name` — most often a voice cue like "women", or a
+ * genuinely unknown word — it carries the RAW `name` verbatim (rule #45's
+ * ProPresenter-7 pattern) instead of the word vanishing into an anonymous
+ * 'refrain'. This function stays LOSSY in the one sense it always was
+ * (several distinctly-named verses can still fold to the same
+ * [type, num] pair, which is exactly why `<verseOrder>` resolution below
+ * deliberately keys on the RAW name instead of this function's output) —
+ * #2075 only stops it being lossy about the WORD ITSELF.
+ *
+ * @return array{0:string, 1:int, 2:?string}
  */
 function _bulkImport_openLyricsVerseType(string $name): array
 {
@@ -3068,12 +3300,8 @@ function _bulkImport_openLyricsVerseType(string $name): array
         $letter = strtolower($m[1]);
         $num    = $m[2] !== '' ? (int)$m[2] : 0;
     }
-    $map = [
-        'v' => 'verse', 'c' => 'chorus', 'b' => 'bridge', 'p' => 'pre-chorus',
-        'r' => 'refrain', 'e' => 'outro', 'i' => 'intro', 'o' => 'outro',
-        't' => 'outro',
-    ];
-    return [$map[$letter] ?? 'refrain', $num];
+    $marker = _bulkImport_classifyMarker(_bulkImport_openLyricsLetterMap(), $letter, $name);
+    return [$marker['type'], $num, $marker['isSection'] ? null : $marker['label']];
 }
 
 /**
@@ -3284,11 +3512,26 @@ function _bulkImport_parseOpenLyrics(string $body): array
        and verseOrder must resolve against exactly what the document wrote. */
     $nameToIndices = [];
 
+    /* #2062 Part A's own warnings[] (skipped verseOrder tokens, below) and
+       #2075's (an unrecognised verse `name` kept as a label instead of
+       discarded) share ONE list — declared here, before the verse loop,
+       so the #2075 note can be pushed as each verse is read rather than
+       only after the loop finishes. */
+    $warnings = [];
+
     $components = [];
     if (isset($xml->lyrics->verse)) {
         foreach ($xml->lyrics->verse as $verse) {
             $rawName = (string)($verse['name'] ?? 'v');
-            [$type, $num] = _bulkImport_openLyricsVerseType($rawName);
+            /* #2075 — an unrecognised `name` ("women", "strophe", …) no
+               longer silently becomes an anonymous 'refrain': $label
+               carries the raw text verbatim (rule #45's ProPresenter-7
+               pattern) so it survives as a display label instead. This
+               does NOT touch `<verseOrder>` resolution just below, which
+               deliberately keys on `$rawName` itself, never on this
+               function's [type,num] output — see that code's own
+               doc-block for why. */
+            [$type, $num, $label] = _bulkImport_openLyricsVerseType($rawName);
             /* Per-verse language = the translation/transliteration signal (#1130):
                OpenLyrics models a translated verse as a separate <verse lang="…">. */
             $verseLang = isset($verse['lang']) ? trim((string)$verse['lang']) : '';
@@ -3305,6 +3548,10 @@ function _bulkImport_parseOpenLyrics(string $body): array
             }
             if (!empty($lines)) {
                 $comp = ['type' => $type, 'number' => $num, 'lines' => $lines];
+                if ($label !== null) {
+                    $comp['label'] = $label;
+                    $warnings[] = "verse name \"{$rawName}\" was not recognised — kept as a label";
+                }
                 /* Carry enrichment only when present (chordless/noteless/mono-lingual
                    verses stay byte-identical to the pre-#1130 component shape). */
                 if ($verseLang !== '') { $comp['language'] = $verseLang; }
@@ -3322,7 +3569,6 @@ function _bulkImport_parseOpenLyrics(string $body): array
     /* #2062 Part A — resolve <properties><verseOrder> (whitespace-separated
        verse-name tokens) into component indices. See this function's
        doc-block for the expand-all + identity-suppression rules. */
-    $warnings    = [];
     $arrangement = null;
     $orderRaw    = $props ? trim((string)($props->verseOrder ?? '')) : '';
     if ($orderRaw !== '') {
