@@ -496,7 +496,19 @@ ok('lyricLinesWriteComponents() exists and was found as its own analysis unit', 
 $posSavepoint = strpos($writeComponentsCode, "savepoint('ihymns_vp_apply')");
 $posApplyCall = strpos($writeComponentsCode, 'vocalPartsApplyComponentVoices(');
 $posRelease   = strpos($writeComponentsCode, "release_savepoint('ihymns_vp_apply')");
-$posRollback  = strpos($writeComponentsCode, "rollback(0, 'ihymns_vp_apply')");
+/* ⚠️ The check below deliberately looks for the SQL statement, not for
+   `rollback(0, 'ihymns_vp_apply')`. That method call was what the code used to
+   do and it was WRONG: in mysqli, rollback()'s second argument names a
+   TRANSACTION, not a savepoint, so it rolled back the whole song save while the
+   caller went on reporting success. Unwinding to a savepoint can only be done
+   with the SQL statement. This assertion is therefore also a guard against
+   somebody "tidying" the raw query back into the method call. (#2073) */
+/* The SQL text lives in the unit's `strings` view, not `code` — the tokenizer
+   renders string literals opaquely in `code` so that a statement merely
+   MENTIONED in prose can never satisfy a check. */
+$writeComponentsStrings = implode("\n", $llsUnits['lyricLinesWriteComponents']['strings'] ?? []);
+$posRollback  = strpos($writeComponentsStrings, 'ROLLBACK TO SAVEPOINT ihymns_vp_apply');
+$posBadRollback = strpos($writeComponentsCode, "rollback(0, 'ihymns_vp_apply')");
 
 ok('a savepoint is set BEFORE vocalPartsApplyComponentVoices() is called',
     $posSavepoint !== false && $posApplyCall !== false && $posSavepoint < $posApplyCall,
@@ -506,11 +518,18 @@ ok('the SAME savepoint is released only AFTER a successful apply',
     "release at $posRelease, apply call at " . var_export($posApplyCall, true));
 ok('a caught failure rolls back TO the same savepoint — the unit is atomic, not silently partial',
     $posRollback !== false);
+ok('it does NOT use mysqli rollback(0, name), which would discard the whole transaction',
+    $posBadRollback === false,
+    'found rollback(0, ...) at ' . var_export($posBadRollback, true)
+    . ' — that names a TRANSACTION, not a savepoint, and would throw away the song save');
 
-/* MUTATION PROOF: removing either the savepoint(), the release_savepoint(),
-   or the rollback(0, …) call — or reordering the savepoint to AFTER the
-   apply call — flips the corresponding check above red; each check anchors
-   on a real, load-bearing token sequence, not a comment or a nearby name. */
+/* MUTATION PROOF: removing the savepoint(), the release_savepoint() or the
+   ROLLBACK TO SAVEPOINT statement — or reordering the savepoint to AFTER the
+   apply call — flips the corresponding check above red; each anchors on a real,
+   load-bearing token sequence, not a comment or a nearby name. Swapping the SQL
+   statement back for mysqli's rollback(0, name) trips BOTH the positive and the
+   negative check, which is the point: that swap is the actual bug this pair was
+   written to prevent recurring. */
 
 /* ====================================================================== *
  * 15 — STRUCTURAL IDOR GUARD (tree-derived from the file's OWN function
@@ -676,6 +695,135 @@ ok('on a match, the found row is RE-RESOLVED so the rest of the function edits t
         to PASS, and no other section's pass/fail count moved.
    This proves the checks are load-bearing (they fail without the fix) and
    scoped (they touch nothing else the fix didn't). */
+
+/* ====================================================================== *
+ * 18 — vocalPartsClearLines() OPTIONAL PART FILTER (independent-review
+ *      BUG 1 fix, 2026-09 — data loss). `vocalPartReviewUndo()` used to
+ *      clear EVERY assignment of a background class on a set of lines,
+ *      with no way to say "only the ONE part I created" — so undoing one
+ *      accepted suggestion could wipe a curator's own hand-made
+ *      assignment, or one from a different accepted suggestion, on the
+ *      very same lines. This is the write-core half of that fix: an
+ *      optional `$partId` that, when given, scopes the DELETE to that one
+ *      part and leaves every other part on the same lines untouched.
+ *      Structural, like sections 15/17 above (this needs a live mysqli to
+ *      run end to end; not reachable in this DB-less test image) — over
+ *      the `strings` view for the query's literal text (the SQL is built
+ *      by conditional `.=` appends across several statements, so the
+ *      fragment never begins with a SQL verb and `sqlOnly` alone would
+ *      never see it — confirmed by hand: the append literal really does
+ *      land in `strings`, not just `code`, before writing this assertion
+ *      against it) plus a positional check that the new filter is
+ *      genuinely CONDITIONAL, mirroring the existing IsBackground filter
+ *      right above it rather than replacing it.
+ * ====================================================================== */
+echo "\n18 — vocalPartsClearLines() optional VocalPartId filter (bug 1)\n";
+
+$clearLinesCode    = $vpUnits['vocalPartsClearLines']['code'] ?? '';
+$clearLinesStrings = $vpUnits['vocalPartsClearLines']['strings'] ?? [];
+ok('vocalPartsClearLines() exists and was found as its own analysis unit', $clearLinesCode !== '');
+
+/* The parameter list belongs to the ENCLOSING scope in phpSourceUnits()'s
+   own model (a unit's `code` starts at the function's opening `{`, not
+   its `(`), so the signature itself is checked against the raw source
+   directly rather than the per-function `code` view. */
+ok('the function signature accepts an optional $partId (defaulting to null, so every existing caller is unaffected)',
+    (bool)preg_match('/function\s+vocalPartsClearLines\s*\([^{]*\?int\s+\$partId\s*=\s*null/', $vpSrc));
+ok('the DELETE conditionally appends "AND VocalPartId = ?" — mirroring the existing IsBackground filter\'s own shape',
+    str_contains($clearLinesCode, '$partId !== null') && in_array(' AND VocalPartId = ?', $clearLinesStrings, true));
+ok('the bound $partId value is the caller\'s own parameter, not a hard-coded stand-in',
+    str_contains($clearLinesCode, '$params[] = $partId;'));
+
+/* MUTATION PROOF (rule #34 — a guard must be able to fail): a synthetic
+   copy of the OLD (pre-fix) function shape, with no part filter at all,
+   must be caught by the SAME checks the real (fixed) function passes
+   above. */
+$oldClearSrc = "<?php function fakeOldClearLines(\\mysqli \$db, string \$songId, array \$lineIds, ?bool \$isBackground = null): int {
+    \$sql = 'DELETE FROM tblLyricLineVocalParts WHERE LineId IN (?)';
+    if (\$isBackground !== null) { \$sql .= ' AND IsBackground = ?'; }
+    return 0;
+}";
+$oldClearUnits   = phpSourceUnits($oldClearSrc);
+$oldClearStrings = $oldClearUnits['fakeOldClearLines']['strings'] ?? [];
+ok('mutation-proof: the "$partId parameter exists" check correctly FAILS the old (pre-fix) shape',
+    !(bool)preg_match('/function\s+fakeOldClearLines\s*\([^{]*\?int\s+\$partId\s*=\s*null/', $oldClearSrc));
+ok('mutation-proof: the "AND VocalPartId = ?" check correctly FAILS the old (pre-fix) shape',
+    !in_array(' AND VocalPartId = ?', $oldClearStrings, true));
+
+/* MANUAL MUTATION PROOF, performed by hand against the real file while
+   writing this fix (same posture as section 17's own note above):
+     1. Removed the `?int $partId = null` parameter and the trailing
+        `if ($partId !== null) { … }` block from the real
+        vocalPartsClearLines() in appWeb/public_html/includes/vocal_parts.php.
+     2. Ran `php tests/php/test-vocal-parts-core.php` — this section's
+        three checks failed RED; no other section's pass/fail count moved.
+     3. Restored the block from source control and re-ran — all three back
+        to PASS. */
+
+/* ====================================================================== *
+ * 19 — vocalPartsUpsert() PRESERVES AN EXISTING DUPLICATE'S DETAILS
+ *      (independent-review BUG 4 fix, 2026-09 — the reviewer's own words:
+ *      "my own duplicate-part fix erases existing details", referring to
+ *      section 17's dedupe guard above). BEFORE this fix, $label /
+ *      $singerName / $musicianId were all worked out BEFORE the dedupe
+ *      lookup ran — at that point $existing was still null (this is a
+ *      CREATE call), so any field the caller did not explicitly supply
+ *      was locked in as null. Once the dedupe lookup found a match and
+ *      pointed $existing at that REAL row, the function fell into the
+ *      "edit an existing part" branch below and would overwrite that
+ *      part's saved label/singer/musician with those already-computed
+ *      nulls — silently blanking details a curator never touched.
+ *      Structural, same posture as section 17 (no live mysqli here): the
+ *      fix re-runs each field's OWN "caller omitted it -> keep $existing's
+ *      value" fallback a second time, now that $existing points at the
+ *      duplicate — so each `array_key_exists('<field>', $input)` check
+ *      appears TWICE in the function (once for the ordinary $id>0 edit
+ *      path, once again inside the dedupe-hit branch), and the SECOND
+ *      occurrence of each sits AFTER the dedupe lookup, not before it.
+ * ====================================================================== */
+echo "\n19 — vocalPartsUpsert() re-derives label/singerName/musicianId after a dedupe hit (bug 4)\n";
+
+$posDupeHit = strpos($upsertCode, '$dupeRow !== null');
+ok('vocalPartsUpsert() still has its dedupe-hit branch (section 17\'s own fix, untouched by this one)', $posDupeHit !== false);
+
+foreach (['label', 'singerName', 'musicianId'] as $field) {
+    $needle = "array_key_exists('$field', \$input)";
+    ok("the '$field' caller-omitted fallback is checked TWICE — once for an ordinary edit, once again after a dedupe hit",
+        substr_count($upsertCode, $needle) === 2);
+    ok("the SECOND '$field' check sits AFTER the dedupe-hit branch starts (it re-derives from the FOUND duplicate, not the pre-lookup nulls)",
+        $posDupeHit !== false && strrpos($upsertCode, $needle) > $posDupeHit);
+}
+
+/* MUTATION PROOF (rule #34): a synthetic copy of the OLD (pre-fix) shape —
+   the caller-omitted fallback computed only ONCE, before any dedupe check
+   — must be caught by the SAME "checked twice" assertion the real (fixed)
+   function passes above. */
+$oldUpsertSrc = "<?php function fakeOldUpsert(\\mysqli \$db, string \$songId, array \$input): array {
+    \$label = array_key_exists('label', \$input) ? \$input['label'] : null;
+    if (\$dupeRow !== null) {
+        \$existing = 1;
+    }
+    return [];
+}";
+$oldUpsertUnits = phpSourceUnits($oldUpsertSrc);
+$oldUpsertCode  = $oldUpsertUnits['fakeOldUpsert']['code'] ?? '';
+ok("mutation-proof: the 'checked twice' check correctly FAILS a synthetic function that only computes the fallback once (the old shape)",
+    substr_count($oldUpsertCode, "array_key_exists('label', \$input)") !== 2);
+
+/* MANUAL MUTATION PROOF, performed by hand against the real file while
+   writing this fix:
+     1. Removed the `if ($existing !== null) { … }` re-derivation block
+        (the one guarded by the "BUG FIX (independent review, 2026-09)"
+        comment) from the real vocalPartsUpsert() in
+        appWeb/public_html/includes/vocal_parts.php, restoring the
+        pre-fix shape where $label/$singerName/$musicianId are only ever
+        computed before the dedupe lookup.
+     2. Ran `php tests/php/test-vocal-parts-core.php` — every "checked
+        twice" and "sits AFTER" assertion in this section failed RED
+        (each field's fallback was back down to a single occurrence);
+        no other section's pass/fail count moved.
+     3. Restored the block from source control and re-ran — all back to
+        PASS. */
 
 /* ====================================================================== */
 echo "\n";

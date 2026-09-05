@@ -2197,6 +2197,32 @@ function vocalPartsUpsert(\mysqli $db, string $songId, array $input, ?int $userI
         if ($dupeRow !== null) {
             $id = (int)$dupeRow['Id'];
             $existing = vocalPartsResolvePart($db, $songId, $id);
+
+            /* BUG FIX (independent review, 2026-09): $label / $singerName /
+               $musicianId above were all worked out BEFORE this duplicate
+               lookup ran, back when `$existing` was still null (this is a
+               CREATE call — `$id` starts at 0) — so any field the caller
+               did not explicitly supply was already locked in as null.
+               Now that a duplicate has been found and $existing points at
+               its REAL saved row, re-derive exactly those same
+               caller-omitted fields from it — otherwise the code below
+               falls into the "edit an existing part" branch and would
+               overwrite that part's saved label/singer/musician with the
+               nulls computed for a brand-new row, silently blanking
+               details that were never meant to change. This mirrors the
+               EXACT fallback each field already has for a normal `id>0`
+               edit call, just run again now that $existing exists. */
+            if ($existing !== null) {
+                if (!array_key_exists('label', $input)) {
+                    $label = $existing['Label'] !== null ? (string)$existing['Label'] : null;
+                }
+                if (!array_key_exists('singerName', $input)) {
+                    $singerName = $existing['SingerName'] !== null ? (string)$existing['SingerName'] : null;
+                }
+                if (!array_key_exists('musicianId', $input)) {
+                    $musicianId = $existing['MusicianId'] !== null ? (int)$existing['MusicianId'] : null;
+                }
+            }
         }
     }
 
@@ -2447,12 +2473,21 @@ function vocalPartsAssignLines(
  * `'replace'` mode uses, exposed here as its own action for a curator who
  * wants to clear WITHOUT immediately re-assigning something else.
  *
+ * `$partId` (added for `vocalPartReviewUndo()`, independent review 2026-09):
+ * `null` clears every part on these lines (the original behaviour,
+ * everything below is unaffected for every EXISTING caller, which all
+ * omit it); a real id scopes the DELETE to that ONE part, leaving any
+ * other part assigned to the same lines — hand-made or from a different
+ * suggestion — completely untouched. This is what lets Undo remove
+ * exactly what Accept created instead of every assignment of that
+ * background class on those lines.
+ *
  * IDOR via `vocalPartsResolveLines()`.
  *
  * @param list<int> $lineIds
  * @return int  rows deleted
  */
-function vocalPartsClearLines(\mysqli $db, string $songId, array $lineIds, ?bool $isBackground = null): int
+function vocalPartsClearLines(\mysqli $db, string $songId, array $lineIds, ?bool $isBackground = null, ?int $partId = null): int
 {
     $lines = vocalPartsResolveLines($db, $songId, $lineIds);
     $lineIdList = array_keys($lines);
@@ -2468,6 +2503,11 @@ function vocalPartsClearLines(\mysqli $db, string $songId, array $lineIds, ?bool
         $sql .= ' AND IsBackground = ?';
         $types .= 'i';
         $params[] = $isBackground ? 1 : 0;
+    }
+    if ($partId !== null) {
+        $sql .= ' AND VocalPartId = ?';
+        $types .= 'i';
+        $params[] = $partId;
     }
     $stmt = $db->prepare($sql);
     bindParamSafe(__FUNCTION__, $stmt, $types, ...$params);

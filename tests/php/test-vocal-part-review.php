@@ -380,6 +380,158 @@ assertEq(vocalPartReviewShouldStale($storedRow['status'], $stillDetected4), true
    only ever fires from 'pending'. */
 assertEq(vocalPartReviewShouldStale('stale', false), false, 'pass 5: an already-stale row is not re-flagged (nothing left to do until a curator or a fresh finding revives it)');
 
+/* ====================================================================== *
+ * 13 — vocalPartReviewTextStillMatches() (independent-review BUG 3 fix,
+ *      2026-09): Accept used to check only that the marker line's ID
+ *      still existed, never that its WORDS still matched what the
+ *      suggestion was built from — so a curator editing a line's text
+ *      (while its id survived) would still get it deleted or overwritten
+ *      as if nothing had changed. This is a genuine PURE function (it
+ *      only calls the already-proven `vocalPartDetectClassifyLine()`), so
+ *      unlike Accept/Undo themselves it gets a real functional truth
+ *      table, not a structural guard.
+ * ====================================================================== */
+echo "\n13 — vocalPartReviewTextStillMatches() (marker text re-validation, bug 3)\n";
+
+ok('standalone: unchanged text still matches',
+    vocalPartReviewTextStillMatches('standalone', 'WOMEN', 'WOMEN', ''));
+ok('standalone: text edited to a DIFFERENT marker word -> stale',
+    !vocalPartReviewTextStillMatches('standalone', 'MEN', 'WOMEN', ''));
+ok('standalone: text edited into an ordinary lyric (no longer reads as any marker at all) -> stale',
+    !vocalPartReviewTextStillMatches('standalone', 'Women and children', 'WOMEN', ''));
+
+ok('prefix: unchanged marker AND unchanged leftover lyric still matches',
+    vocalPartReviewTextStillMatches('prefix', 'WOMEN: alleluia', 'WOMEN', 'alleluia'));
+ok('prefix: THE BUG 3 CASE — marker unchanged but the lyric AFTER it was edited -> stale (the old code never checked this at all, and would have pasted the STALE "alleluia" back over the curator\'s real new words)',
+    !vocalPartReviewTextStillMatches('prefix', 'WOMEN: hosanna now', 'WOMEN', 'alleluia'));
+ok('prefix: the marker word itself edited -> stale',
+    !vocalPartReviewTextStillMatches('prefix', 'MEN: alleluia', 'WOMEN', 'alleluia'));
+
+ok('paren: unchanged parenthetical still matches',
+    vocalPartReviewTextStillMatches('paren', '(echo)', 'echo', ''));
+ok('paren: edited to a different word -> stale',
+    !vocalPartReviewTextStillMatches('paren', '(shout)', 'echo', ''));
+ok('paren: edited into a stage-direction shape the detector refuses outright -> stale',
+    !vocalPartReviewTextStillMatches('paren', '(repeat verse 2)', 'echo', ''));
+
+ok('form mismatch: the exact same word now reads as a DIFFERENT form ("WOMEN: hi" is prefix, not standalone) -> stale',
+    !vocalPartReviewTextStillMatches('standalone', 'WOMEN: hi', 'WOMEN', ''));
+
+/* MUTATION PROOF (rule #34): a check that always says "yes" would pass
+   every case above by accident — prove the negative cases really do
+   depend on the comparison, not on the function always returning false. */
+ok('mutation-proof: a genuinely unchanged prefix line legitimately returns true (the function is not just always-false)',
+    vocalPartReviewTextStillMatches('prefix', 'WOMEN: alleluia', 'WOMEN', 'alleluia') === true);
+
+/* ====================================================================== *
+ * 14 — vocalPartReviewAccept() 'standalone' BRANCH: IDENTITY, NEVER A
+ *      POSITION COUNT (independent-review BUG 2 fix, 2026-09 — the SAME
+ *      mistake CLAUDE.md rule #51 names, a FOURTH time on this branch:
+ *      "#2072 notes, #2087 chords, and the voice marks that prompted this
+ *      rule" — this is that fourth voice-marks instance, found again by a
+ *      later review). Structural, like sections 11/15/17 of this file and
+ *      its sibling test-vocal-parts-core.php: `vocalPartReviewAccept()` is
+ *      a `\mysqli`-typed function this DB-less CI image cannot run end to
+ *      end, so this proves the SOURCE no longer contains the
+ *      counting-forward arithmetic and instead reads the exact line ids
+ *      ProposedJson recorded at build time, revalidating each one exists
+ *      before trusting it.
+ * ====================================================================== */
+echo "\n14 — vocalPartReviewAccept() standalone branch: identity, not position (bug 2)\n";
+
+$acceptCode = $vprUnits['vocalPartReviewAccept']['code'] ?? '';
+ok('vocalPartReviewAccept() exists and was found as its own analysis unit', $acceptCode !== '');
+
+ok('the OLD run-length re-derivation (from Start/EndLineId) is GONE',
+    !str_contains($acceptCode, 'runLen'));
+ok('the OLD counting-forward arithmetic ($li + $k, used to index a freshly re-read component) is GONE',
+    !str_contains($acceptCode, '$li + $k'));
+ok('the FIX reads the exact ids ProposedJson\'s own "assign-lines" action recorded ($proposedLineIds)',
+    str_contains($acceptCode, '$proposedLineIds'));
+ok('every recorded id is revalidated for EXISTENCE (by identity, via vocalPartReviewLocateLine) before being trusted',
+    str_contains($acceptCode, 'vocalPartReviewLocateLine($edit, $lid)'));
+
+/* MUTATION PROOF: a synthetic copy of the OLD, buggy shape must fail the
+   SAME two "is this gone" checks the real (fixed) function passes above —
+   proving those checks can actually go red, not just vacuously pass
+   because the search string was misspelled. */
+$oldShapeSrc = '<?php function fakeOldAccept($db, $songId, $id) {
+    $runLen = 3;
+    for ($k = 0; $k < $runLen; $k++) {
+        if (isset($freshIds[$li + $k])) { $targetLineIds[] = (int)$freshIds[$li + $k]; }
+    }
+}';
+$oldShapeUnits = phpSourceUnits($oldShapeSrc);
+$oldShapeCode  = $oldShapeUnits['fakeOldAccept']['code'] ?? '';
+ok('mutation-proof: the "runLen gone" check correctly FAILS a synthetic function still shaped the old way',
+    str_contains($oldShapeCode, 'runLen'));
+ok('mutation-proof: the "$li + $k gone" check correctly FAILS a synthetic function still shaped the old way',
+    str_contains($oldShapeCode, '$li + $k'));
+
+/* ====================================================================== *
+ * 15 — vocalPartReviewAccept()/…Undo() RECORD + REUSE THE REAL APPLIED
+ *      PART AND BACKGROUND CLASS (independent-review BUG 1 fix, 2026-09 —
+ *      the WORST of the four: data loss). Undo used to clear every
+ *      assignment of the suggestion's ORIGINAL background class on its
+ *      lines, with no filter for WHICH voice part — wiping a curator's own
+ *      hand-made assignment, or one from an unrelated accepted suggestion,
+ *      on the very same lines. The fix is two-part: (a) Accept now records
+ *      the isBackground value it ACTUALLY used (an accept-time override
+ *      can differ from the suggestion's own stored column) into
+ *      AppliedJson, and (b) Undo passes the exact partId Accept created
+ *      into `vocalPartsClearLines()`'s new optional filter, so only that
+ *      one part's rows on those lines are ever touched.
+ * ====================================================================== */
+echo "\n15 — vocalPartReviewAccept()/…Undo() undo exactly what accept did (bug 1)\n";
+
+ok('Accept records the ACTUALLY-APPLIED isBackground into AppliedJson (not just the suggestion\'s own column)',
+    str_contains($acceptCode, "\$applied['isBackground'] = \$isBackground"));
+
+$undoCode = $vprUnits['vocalPartReviewUndo']['code'] ?? '';
+ok('vocalPartReviewUndo() exists and was found as its own analysis unit', $undoCode !== '');
+ok('Undo prefers the APPLIED isBackground over the suggestion\'s own row column',
+    str_contains($undoCode, "array_key_exists('isBackground', \$applied)"));
+
+/**
+ * Pull out the ACTUAL vocalPartsClearLines(...) CALL, not just "does the
+ * function mention both these substrings somewhere" — Undo's own step 2
+ * (deleting an unused part) ALSO reads `(int)$applied['partId']`, so a
+ * bare str_contains() of the whole function body would stay green even
+ * after reverting the call itself to its old 4-argument shape (caught
+ * live while writing this test — see the mutation-proof note below).
+ * Anchoring on the call's own `(...)ARGS...);` slice is what makes this
+ * assertion actually about the call, not the function as a bag of words.
+ */
+function vprClearLinesCallArgs(string $code): ?string
+{
+    return preg_match('/vocalPartsClearLines\([^;]*\);/', $code, $m) ? $m[0] : null;
+}
+
+$undoClearCall = vprClearLinesCallArgs($undoCode);
+ok('Undo passes the accepted part\'s OWN id into ITS vocalPartsClearLines() call — scoping the clear to that ONE part, never every part on those lines',
+    $undoClearCall !== null && str_contains($undoClearCall, "(int)\$applied['partId']"));
+
+/* MUTATION PROOF: the OLD, buggy Undo call had exactly FOUR arguments (no
+   part filter). A first draft of the assertion above checked the WHOLE
+   function body for both substrings and stayed GREEN even after this
+   exact mutation, because step 2 (deleting an unused part) separately
+   reads `(int)$applied['partId']` — the check was vacuously true, not
+   actually testing the call. Anchoring on the call's own slice (via
+   vprClearLinesCallArgs()) is what makes it a real test; this proves it
+   now genuinely goes red for the old shape. */
+$oldUndoSrc = "<?php function fakeOldUndo(\$db, \$songId, \$id) {
+    \$isBg = (int)\$row['IsBackground'] === 1;
+    vocalPartsClearLines(\$db, \$songId, array_map('intval', \$applied['assignedLineIds']), \$isBg);
+    if ((\$applied['partId'] ?? null) !== null) {
+        \$partId = (int)\$applied['partId'];
+    }
+}";
+$oldUndoUnits   = phpSourceUnits($oldUndoSrc);
+$oldUndoCode    = $oldUndoUnits['fakeOldUndo']['code'] ?? '';
+$oldUndoClearCall = vprClearLinesCallArgs($oldUndoCode);
+ok('mutation-proof: anchored on the CALL itself, the check correctly FAILS the old (4-argument, no part filter) shape even though "(int)$applied[\'partId\']" still appears elsewhere in the same function',
+    $oldUndoClearCall !== null && !str_contains($oldUndoClearCall, "(int)\$applied['partId']"));
+
 /* ====================================================================== */
 echo "\n";
 if ($failed > 0) {

@@ -423,6 +423,57 @@ function vocalPartReviewShouldStale(string $status, bool $keyStillDetected): boo
     return $status === 'pending' && !$keyStillDetected;
 }
 
+/**
+ * ELI5: before Accept is allowed to delete or rewrite a marker line, make
+ * sure the WORDS on that line are still what the suggestion thinks they
+ * are — not just that the line's id still exists. An id can survive an
+ * edit even though every word on the line changed (identity is not
+ * content — the same lesson rule #51 states for lines in general): a
+ * curator could type something completely different into the line and,
+ * without this check, Accept would still delete it (standalone) or paste
+ * the OLD leftover lyric text back over it (prefix), because all it used
+ * to check was "does this id still exist".
+ *
+ * Re-runs the SAME detector this whole file exists to call rather than
+ * re-implement (`vocalPartDetectClassifyLine()`) against the line's
+ * CURRENT text, and requires it to report the IDENTICAL finding: the same
+ * form, the same marker word, and — for `prefix`, the one form where the
+ * marker is only part of the line — the same leftover text after the
+ * marker. Anything else (the line no longer reads as a marker at all, a
+ * different word, or different words after the colon) means the line has
+ * genuinely changed since detection, so the caller must treat the
+ * suggestion as stale instead of acting on a snapshot that no longer
+ * matches reality.
+ *
+ * @param string $form           the suggestion's own recorded Form
+ * @param string $currentText    the marker line's CURRENT text, read fresh
+ * @param string $expectedMarker the suggestion's own recorded MarkerText
+ * @param string $expectedRest   `prefix` only: the lyric text ProposedJson
+ *        recorded as following the marker at detection time; '' for every
+ *        other form (a `standalone` line and a `paren` line have no
+ *        "rest" — the whole line, or the whole parenthetical, IS the
+ *        marker, so nothing follows it to compare)
+ */
+function vocalPartReviewTextStillMatches(string $form, string $currentText, string $expectedMarker, string $expectedRest): bool
+{
+    $finding = vocalPartDetectClassifyLine($currentText);
+    if ($finding === null) {
+        return false;
+    }
+    if ((string)($finding['form'] ?? '') !== $form) {
+        return false;
+    }
+    /* Mirrors how MarkerText itself was built at detection time
+       (`vocalPartReviewBuildRow()`) so a marker at the storage column's
+       own 120-char cap still compares equal rather than false-flagging
+       every long marker as "changed". */
+    $currentMarker = mb_substr((string)($finding['marker'] ?? ''), 0, 120, 'UTF-8');
+    if ($currentMarker !== $expectedMarker) {
+        return false;
+    }
+    return (string)($finding['rest'] ?? '') === $expectedRest;
+}
+
 /* =====================================================================
  * PURE — line-content edits Accept/Undo apply through the ONE write path
  * (`lyricLinesWriteComponents()`, rule #25). Every function below only
@@ -1055,31 +1106,84 @@ function vocalPartReviewAccept(\mysqli $db, string $songId, int $suggestionId, ?
         'partCreated'     => false,
         'markerRemoved'   => false,
         'markerRewrittenFrom' => null,
+        /* BUG FIX (independent review, 2026-09): Undo used to read the
+           SUGGESTION's original IsBackground column, not what Accept
+           actually used — an `overrides['isBackground']` at accept time
+           made Undo remove the wrong voice class. Recording the value
+           Accept genuinely applied here (set below, once assignment
+           actually happens) is what lets Undo reverse the real thing that
+           was done instead of re-deriving a guess. */
+        'isBackground'    => null,
     ];
 
     $targetLineIds = [];
 
-    if ($form === 'standalone') {
-        $edit   = lyricLinesEditableComponents($db, $songId);
-        $before = vocalPartReviewLocateLine($edit, $markerLineId);
-        if ($before === null) {
-            throw new VocalPartReviewConflictException('stale_line', 'The marker line has moved or been deleted since this was detected — refresh to update it.');
+    /* BUG-FIX (independent review, 2026-09): a `prefix` row's rewrite text
+       is needed both for the text-match check just below AND for the
+       actual rewrite further down, so it is pulled out of ProposedJson
+       once, up front, for every form. */
+    $rewriteText = null;
+    if ($form === 'prefix') {
+        foreach ($proposed as $act) {
+            if (($act['action'] ?? '') === 'rewrite-marker-line') {
+                $rewriteText = (string)($act['text'] ?? '');
+                break;
+            }
         }
-        [$ci, $li] = $before;
+        if ($rewriteText === null) {
+            throw new \RuntimeException('This suggestion has no recorded rewrite text.');
+        }
+    }
 
-        /* The run length is re-derived from the STORED start/end ids
-           against the CURRENT read, never assumed from detection time —
-           if either endpoint has since moved out of this component the
-           run is treated as "nothing left to assign", not guessed at. */
-        $runLen = 0;
-        $startLineId = $row['StartLineId'] !== null ? (int)$row['StartLineId'] : null;
-        $endLineId   = $row['EndLineId'] !== null ? (int)$row['EndLineId'] : null;
-        if ($startLineId !== null && $endLineId !== null) {
-            $ids = $edit[$ci]['lineIds'] ?? [];
-            $si  = array_search($startLineId, $ids, true);
-            $ei  = array_search($endLineId, $ids, true);
-            if ($si !== false && $ei !== false && $ei >= $si) {
-                $runLen = $ei - $si + 1;
+    $edit   = lyricLinesEditableComponents($db, $songId);
+    $before = vocalPartReviewLocateLine($edit, $markerLineId);
+    if ($before === null) {
+        throw new VocalPartReviewConflictException('stale_line', 'The marker line has moved or been deleted since this was detected — refresh to update it.');
+    }
+    [$ci, $li] = $before;
+    $currentMarkerLineText = (string)($edit[$ci]['lines'][$li] ?? '');
+
+    /* BUG FIX (independent review, 2026-09): the OLD code checked only
+       that the marker line's ID still existed, never that its WORDS still
+       matched what the suggestion was built from — so an edit that kept
+       the id but changed the text (or, for `prefix`, changed only the
+       lyric AFTER the marker) still got deleted or overwritten as if
+       nothing had happened. Re-check the CURRENT text, for every form,
+       before doing anything destructive. */
+    $expectedRest = $form === 'prefix' ? (string)$rewriteText : '';
+    if (!vocalPartReviewTextStillMatches($form, $currentMarkerLineText, (string)$row['MarkerText'], $expectedRest)) {
+        _vocalPartReviewMarkStale($db, $suggestionId);
+        throw new VocalPartReviewConflictException('stale_text', 'This line’s wording has changed since the suggestion was made — refresh to update it.');
+    }
+
+    if ($form === 'standalone') {
+        /* BUG FIX (independent review, 2026-09 — the SAME positional-
+           identity mistake CLAUDE.md rule #51 names, a fourth time on
+           this branch): the OLD code re-derived the run's LENGTH from
+           Start/EndLineId and then picked target lines by COUNTING
+           FORWARD from the marker's position in a freshly-re-read
+           component. If a line had been inserted, or the marker had
+           moved, that count landed on whatever lines happened to sit at
+           those positions NOW — not the lines the suggestion actually
+           meant — and silently assigned the voice to the wrong lyrics.
+           The fix trusts IDENTITY instead: ProposedJson's own
+           `assign-lines` action already recorded the EXACT line ids this
+           suggestion proposed, at the time it was built. Every one of
+           those ids is revalidated against the read taken BEFORE the
+           marker line is touched (so a missing id is caught before
+           anything is deleted, never after), and the recorded ids are
+           used verbatim — no recount, no guess. */
+        $proposedLineIds = [];
+        foreach ($proposed as $act) {
+            if (($act['action'] ?? '') === 'assign-lines') {
+                $proposedLineIds = array_map('intval', $act['lineIds'] ?? []);
+                break;
+            }
+        }
+        foreach ($proposedLineIds as $lid) {
+            if (vocalPartReviewLocateLine($edit, $lid) === null) {
+                _vocalPartReviewMarkStale($db, $suggestionId);
+                throw new VocalPartReviewConflictException('stale_line', 'The lines this suggestion targets have changed since it was made — refresh to update it.');
             }
         }
 
@@ -1091,40 +1195,9 @@ function vocalPartReviewAccept(\mysqli $db, string $songId, int $suggestionId, ?
         $applied['markerRemoved'] = true;
         $applied['actions'][] = ['action' => 'remove-marker-line', 'lineId' => $markerLineId];
 
-        if ($runLen > 0) {
-            /* Removing the marker shifts every following line up by one —
-               the run that WAS at [li+1 .. li+runLen] now sits at
-               [li .. li+runLen-1]. Read fresh rather than trust the shift
-               arithmetic alone: any index missing from the fresh read
-               (a curator edit landed mid-scan, however unlikely) is simply
-               skipped rather than guessed. */
-            $fresh    = lyricLinesEditableComponents($db, $songId);
-            $freshIds = $fresh[$ci]['lineIds'] ?? [];
-            for ($k = 0; $k < $runLen; $k++) {
-                if (isset($freshIds[$li + $k])) {
-                    $targetLineIds[] = (int)$freshIds[$li + $k];
-                }
-            }
-        }
+        $targetLineIds = $proposedLineIds;
     } elseif ($form === 'prefix') {
-        $rewriteText = null;
-        foreach ($proposed as $act) {
-            if (($act['action'] ?? '') === 'rewrite-marker-line') {
-                $rewriteText = (string)($act['text'] ?? '');
-                break;
-            }
-        }
-        if ($rewriteText === null) {
-            throw new \RuntimeException('This suggestion has no recorded rewrite text.');
-        }
-
-        $edit   = lyricLinesEditableComponents($db, $songId);
-        $before = vocalPartReviewLocateLine($edit, $markerLineId);
-        if ($before === null) {
-            throw new VocalPartReviewConflictException('stale_line', 'The marker line has moved or been deleted since this was detected — refresh to update it.');
-        }
-        [$ci, $li] = $before;
-        $oldText = $edit[$ci]['lines'][$li] ?? null;
+        $oldText = $currentMarkerLineText;
 
         $newComponents = vocalPartReviewApplyLineOp($edit, ['type' => 'rewrite-line', 'lineId' => $markerLineId, 'text' => $rewriteText]);
         if ($newComponents === null) {
@@ -1162,6 +1235,7 @@ function vocalPartReviewAccept(\mysqli $db, string $songId, int $suggestionId, ?
            made on the same lines by some other route. */
         vocalPartsAssignLines($db, $songId, $targetLineIds, [$partId], 'add', $isBackground);
         $applied['assignedLineIds'] = $targetLineIds;
+        $applied['isBackground']    = $isBackground;
         $applied['actions'][] = ['action' => 'assign-lines', 'lineIds' => $targetLineIds, 'partId' => $partId, 'isBackground' => $isBackground];
     }
 
@@ -1239,10 +1313,34 @@ function vocalPartReviewUndo(\mysqli $db, string $songId, int $suggestionId, ?in
         $applied = [];
     }
 
-    /* 1 — undo the assignment. */
+    /* 1 — undo the assignment.
+       BUG FIX (independent review, 2026-09 — data loss): this used to
+       clear EVERY assignment of the suggestion's background class on
+       these lines, with no filter for WHICH voice part — so undoing one
+       suggestion could wipe a hand-made assignment, or one from a
+       DIFFERENT accepted suggestion, on the very same lines. Undo must
+       remove only what Accept itself created: the one part it assigned,
+       on the exact lines it assigned it to. Passing `$partId` scopes the
+       clear to that part alone (vocalPartsClearLines()'s new optional
+       filter), so a curator's own manual work on those same lines is left
+       untouched.
+       This also fixes a second bug from the same review: `$isBg` used to
+       read the SUGGESTION's original IsBackground column, not what Accept
+       actually used — if an override at accept time flipped it, Undo
+       cleared the wrong voice class. `$applied['isBackground']` is what
+       was genuinely applied; the row's own column is kept only as a
+       fallback for a suggestion accepted before this field existed. */
     if (!empty($applied['assignedLineIds']) && ($applied['partId'] ?? null) !== null) {
-        $isBg = (int)$row['IsBackground'] === 1;
-        vocalPartsClearLines($db, $songId, array_map('intval', $applied['assignedLineIds']), $isBg);
+        $isBg = array_key_exists('isBackground', $applied) && $applied['isBackground'] !== null
+            ? (bool)$applied['isBackground']
+            : ((int)$row['IsBackground'] === 1);
+        vocalPartsClearLines(
+            $db,
+            $songId,
+            array_map('intval', $applied['assignedLineIds']),
+            $isBg,
+            (int)$applied['partId']
+        );
     }
 
     /* 2 — remove the part Accept minted, but ONLY if nothing else needs it
