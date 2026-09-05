@@ -239,6 +239,15 @@ function lyricLinesProjectSong(\mysqli $db, string $songId): int
  * cutover write path (lyricLinesWriteComponents, desired ← edit payload), so the
  * diff/dirty-check/PF2-snapshot logic can never diverge between them.
  *
+ * #2072 — for a MATCHED (UPDATE) line, lyricLinesMergePreserved() is spent on
+ * the desired row BEFORE either the dirty-check (lyricLinesRowClean) or the
+ * UPDATE bind reads it, so a per-line field the caller's payload never
+ * mentioned (Note/ChordsJson `_preserve`, set by
+ * lyricLinesBuildDesiredFromComponents()) reclaims its currently-stored value
+ * instead of being silently NULLed by this function's otherwise-unconditional
+ * full-row UPDATE. See lyricLinesMergePreserved()'s own doc-block for the full
+ * reasoning.
+ *
  * @param list<array<string,mixed>> $desired  lyricLinesBuildDesired()-shaped entries
  * @return int  number of lines now stored for the version (== desired count)
  */
@@ -308,6 +317,15 @@ function lyricLinesApplyDesired(\mysqli $db, string $songId, array $desired): in
     $count = 0;
     foreach ($desired as $di => $d) {
         $matchId = $plan['matchedIds'][$di];   // existing Id to reuse, or null
+        if ($matchId !== null) {
+            /* #2072 — merge the currently-stored Note/ChordsJson back onto $d
+               wherever the caller's payload stayed silent about them, BEFORE
+               either lyricLinesRowClean() (the dirty-check, right below) or
+               the UPDATE bind sees this row. An INSERT (matchId === null) has
+               no existing row to reclaim from — a brand-new line has nothing
+               to preserve, so it is left untouched. */
+            $d = lyricLinesMergePreserved($d, $existingById[$matchId] ?? null);
+        }
         if ($matchId === null) {
             $ins->bind_param(
                 'iissiissssi',
@@ -513,7 +531,13 @@ function lyricLinesShadowColumnsPresent(\mysqli $db): array
  * line's ComponentId), shadow-writing the JSON columns that still exist; (2) build
  * the desired line list from the payload + the upserted ComponentIds (NEVER reading
  * LinesJson); (3) apply it to tblLyricLines via the shared Id-preserving diff
- * (lyricLinesApplyDesired) so per-line enrichment survives. SortOrder is kept
+ * (lyricLinesApplyDesired) so per-line enrichment survives; (4) — #2072 finding 4 —
+ * re-derive the ChordsJson/NotesJson SHADOW columns from the now-authoritative
+ * tblLyricLines for any component whose payload omitted chords/notes
+ * (lyricLinesResyncChordsNotesShadow()), because step (1)'s shadow write ran
+ * BEFORE step (3)'s identity-based preserve knew the real per-line value — see
+ * that function's doc-block for why a stale shadow is a live data-loss path via
+ * the legacy re-projector, not merely a cosmetic mismatch. SortOrder is kept
  * contiguous 0..n-1 (so the #1066 ArrangementJson ordinal arrays stay valid).
  *
  * Each component entry: { type, number, language?, lines:string[], chords?:array,
@@ -554,6 +578,27 @@ function lyricLinesWriteComponents(\mysqli $db, string $songId, array $component
             'lines'         => $lines,
             'chords'        => (isset($c['chords']) && is_array($c['chords'])) ? array_values($c['chords']) : null,
             'notes'         => (isset($c['notes'])  && is_array($c['notes']))  ? array_values($c['notes'])  : null,
+            /* #2072 — ELI5: did the caller say ANYTHING about this component's
+               per-line chords/notes, even "clear them"? A funnel that never
+               mentions the key at all (array_key_exists false) means "I have
+               nothing to say about this — leave whatever is already stored
+               alone"; a funnel that sends the key, even as an explicit `null`,
+               means "this IS the value now, even if that value is empty".
+               DETAILED: this generalises rule #45's exact `labelProvided` /
+               `sourceWorkIdProvided` idiom (a few lines below, for the
+               component-level Label/SourceWorkId columns) down to the per-LINE
+               Note/ChordsJson columns that lyricLinesApplyDesired() UPDATEs
+               UNCONDITIONALLY otherwise (it writes every projected column on
+               every matched line — there is no partial SET). Deliberately
+               array_key_exists, NOT isset(): isset() treats an explicit `null`
+               the same as "absent", which would make "send notes:null to clear
+               the note" silently degrade back into "preserve" — defeating the
+               whole point of the flag and reproducing the exact #2072 bug one
+               level down. Spent by lyricLinesBuildDesiredFromComponents()'s
+               `_preserve` flag below and, ultimately, by
+               lyricLinesMergePreserved() inside lyricLinesApplyDesired(). */
+            'notesProvided'  => array_key_exists('notes',  $c),
+            'chordsProvided' => array_key_exists('chords', $c),
             'languagesJson' => $langsJson,                                                  // shadow string (or null)
             'validatedLangs'=> $langsJson !== null ? json_decode($langsJson, true) : null,  // null-padded validated array
             /* #1860 Phase 5 §3.1 — THIN-ROW metadata siblings of 'language' above
@@ -586,7 +631,49 @@ function lyricLinesWriteComponents(\mysqli $db, string $songId, array $component
 
     /* (2) Desired lines from the payload (never LinesJson). (3) Diff into tblLyricLines. */
     $desired = lyricLinesBuildDesiredFromComponents($norm, static fn(?string $t): ?string => lyricLinesPartTypeSlug($db, $t));
-    return lyricLinesApplyDesired($db, $songId, $desired);
+    $count   = lyricLinesApplyDesired($db, $songId, $desired);
+
+    /* (4) #2072 finding 4 — MUST run AFTER (3): only once lyricLinesApplyDesired()
+       has resolved the per-line identity-based preserve does tblLyricLines hold the
+       TRUE final Note/ChordsJson for a component that omitted them in step (1)'s
+       shadow write. Fixing up the shadow before this point would just encode
+       another guess. */
+    lyricLinesResyncChordsNotesShadow($db, $songId, $norm);
+
+    return $count;
+}
+
+/**
+ * #2072 finding 4 — collapse a null-padded per-line cell array (one entry per
+ * line, `null` where that line has nothing to say) into the shadow-JSON
+ * encoding this codebase uses for `ChordsJson`/`NotesJson`: `null` when EVERY
+ * cell is null (nothing worth storing), else the whole array JSON-encoded.
+ * **PURE** — no DB, no I/O.
+ *
+ * ELI5: turn a row of per-line boxes, most of them empty, into either "there's
+ * genuinely nothing here" (null) or "here's the whole row, empty boxes and
+ * all" (a JSON array) — the one rule both places that write this kind of
+ * column need to agree on.
+ *
+ * DETAILED: extracted so the ORIGINAL shadow write in
+ * `lyricLinesUpsertComponents()` (below, encoding the RAW/pre-merge payload)
+ * and the POST-MERGE resync in `lyricLinesResyncChordsNotesShadow()` (which
+ * re-derives the shadow from the now-authoritative `tblLyricLines` AFTER the
+ * identity-based preserve has run) share the exact same "any non-null cell ⇒
+ * encode the array, else null" rule — one encoding, never two divergent
+ * copies of it (rule #35).
+ *
+ * @param list<mixed> $cells
+ * @return string|null
+ */
+function lyricLinesShadowCellsToJson(array $cells): ?string
+{
+    foreach ($cells as $v) {
+        if ($v !== null) {
+            return json_encode($cells, JSON_UNESCAPED_UNICODE);
+        }
+    }
+    return null;
 }
 
 /**
@@ -653,22 +740,31 @@ function lyricLinesUpsertComponents(\mysqli $db, string $songId, array $norm): a
             if ($sc === 'LinesJson') {
                 $out[] = json_encode($c['lines'], JSON_UNESCAPED_UNICODE);
             } elseif ($sc === 'ChordsJson') {
-                $cells = []; $any = false;
+                /* #2072 finding 4 — NOTE: these are the RAW/pre-merge per-line values
+                   ($c['chords'] on $norm, straight from the caller's payload, possibly
+                   null/omitted). When the caller OMITTED chords for this component
+                   (chordsProvided false), THIS write is only a placeholder — the
+                   correct, identity-based MERGED value isn't known until step (3)
+                   below (lyricLinesApplyDesired()'s per-line diff has run), so
+                   lyricLinesResyncChordsNotesShadow() re-derives and overwrites this
+                   column from the authoritative tblLyricLines right after. See that
+                   function's doc-block for the full reasoning. */
+                $cells = [];
                 for ($k = 0; $k < $lineCount; $k++) {
-                    $v = (is_array($c['chords']) && array_key_exists($k, $c['chords'])) ? $c['chords'][$k] : null;
-                    $cells[] = $v;
-                    if ($v !== null) { $any = true; }
+                    $cells[] = (is_array($c['chords']) && array_key_exists($k, $c['chords'])) ? $c['chords'][$k] : null;
                 }
-                $out[] = $any ? json_encode($cells, JSON_UNESCAPED_UNICODE) : null;
+                $out[] = lyricLinesShadowCellsToJson($cells);
             } elseif ($sc === 'NotesJson') {
-                $cells = []; $any = false;
+                /* #2072 finding 4 — same placeholder caveat as ChordsJson immediately
+                   above: resynced from tblLyricLines by
+                   lyricLinesResyncChordsNotesShadow() when notesProvided is false. */
+                $cells = [];
                 for ($k = 0; $k < $lineCount; $k++) {
                     $v = (is_array($c['notes']) && array_key_exists($k, $c['notes']) && $c['notes'][$k] !== null && $c['notes'][$k] !== '')
                         ? $c['notes'][$k] : null;
                     $cells[] = $v;
-                    if ($v !== null) { $any = true; }
                 }
-                $out[] = $any ? json_encode($cells, JSON_UNESCAPED_UNICODE) : null;
+                $out[] = lyricLinesShadowCellsToJson($cells);
             } else { /* LanguagesJson — already clamped to line-count by lineEnrichmentBuildLanguagesJson */
                 $out[] = $c['languagesJson'];
             }
@@ -767,6 +863,122 @@ function lyricLinesUpsertComponents(\mysqli $db, string $songId, array $norm): a
 }
 
 /**
+ * #2072 finding 4 — re-derive the `ChordsJson`/`NotesJson` SHADOW columns on
+ * `tblSongComponents` from the now-authoritative `tblLyricLines`, for every
+ * component whose payload OMITTED chords/notes (`chordsProvided`/
+ * `notesProvided` false on its `$norm` entry). Call this AFTER
+ * `lyricLinesApplyDesired()` has run — never before.
+ *
+ * ELI5: the shadow copy gets written a little too early, before we've figured
+ * out which notes/chords actually survived onto which line. This function
+ * comes back afterwards and corrects the shadow copy to match what really
+ * ended up stored, for exactly the components where that could have gone wrong.
+ *
+ * DETAILED (why this exists — the bug): `lyricLinesWriteComponents()` writes
+ * the `ChordsJson`/`NotesJson` shadow INSIDE `lyricLinesUpsertComponents()`
+ * (step 1), using the RAW payload value for each component — which is `null`
+ * whenever the caller omitted the field. Only AFTER that, in step (3)
+ * (`lyricLinesApplyDesired()`), does the per-LINE identity-based preserve
+ * (`lyricLinesMergePreserved()`, matched by content-diffed line Id) decide the
+ * REAL final value for each line — reclaiming a surviving line's stored Note/
+ * ChordsJson from the database when the payload said nothing about it. So for
+ * an omitted field, the shadow written in step 1 is at best a guess and is
+ * frequently wrong (`null`, even though the authoritative `tblLyricLines.Note`
+ * the merge just preserved is very much NOT null).
+ *
+ * This is not cosmetic: the LEGACY re-projector `lyricLinesProjectSong()` (run
+ * by the backfill migration's "safe to re-run" button, or any future caller)
+ * reads `NotesJson`/`ChordsJson` as ITS source of truth
+ * (`lyricLinesBuildDesired()`, above) — so a stale `null` shadow would get
+ * re-projected back onto `tblLyricLines`, silently ERASING the very value the
+ * per-line merge just went to the trouble of preserving. That is a strictly
+ * WORSE outcome than the original #2072 bug: instead of losing a note on ONE
+ * save, a later re-projection loses it PERMANENTLY, with no payload anywhere
+ * that ever asked for that.
+ *
+ * Scope: only components where `chordsProvided`/`notesProvided` is false are
+ * touched — a component that explicitly provided the value already has the
+ * correct shadow from step 1 (it wrote the caller's own authoritative value),
+ * so re-deriving it here would be redundant work, never a correctness fix.
+ *
+ * @param \mysqli                    $db
+ * @param string                     $songId
+ * @param list<array<string,mixed>> $norm     the SAME normalised components
+ *                                             lyricLinesWriteComponents() built,
+ *                                             each carrying 'cid' (from the
+ *                                             upsert) + 'chordsProvided' +
+ *                                             'notesProvided'
+ * @return void
+ */
+function lyricLinesResyncChordsNotesShadow(\mysqli $db, string $songId, array $norm): void
+{
+    $cols = lyricLinesShadowColumnsPresent($db);
+    if (!$cols['ChordsJson'] && !$cols['NotesJson']) {
+        return;   // post-C6 drop (or never migrated) — nothing to resync.
+    }
+
+    /* Only resolve/query when there is genuinely a component to fix — the
+       common case (every field explicitly provided) does zero extra work. */
+    $lyricsId = null;
+    $sel = null;
+
+    foreach ($norm as $c) {
+        $needChords = $cols['ChordsJson'] && empty($c['chordsProvided']);
+        $needNotes  = $cols['NotesJson']  && empty($c['notesProvided']);
+        if (!$needChords && !$needNotes) {
+            continue;
+        }
+        $cid = (int)($c['cid'] ?? 0);
+        if ($cid <= 0) {
+            continue;   // no upserted row to correlate to (shouldn't happen; defensive)
+        }
+        if ($lyricsId === null) {
+            $lyricsId = lyricLinesEnsurePrimaryVersion($db, $songId);
+            $sel = $db->prepare(
+                "SELECT ChordsJson, Note FROM tblLyricLines
+                  WHERE LyricsId = ? AND ComponentId = ?
+                  ORDER BY SortOrder, Id"
+            );
+        }
+
+        $sel->bind_param('ii', $lyricsId, $cid);
+        $sel->execute();
+        $rows = $sel->get_result()->fetch_all(MYSQLI_ASSOC);
+
+        $setCols = [];
+        $vals    = [];
+        $types   = '';
+        if ($needChords) {
+            $cells = [];
+            foreach ($rows as $r) {
+                $cells[] = ($r['ChordsJson'] !== null) ? json_decode((string)$r['ChordsJson'], true) : null;
+            }
+            $setCols[] = 'ChordsJson = ?';
+            $vals[]    = lyricLinesShadowCellsToJson($cells);
+            $types    .= 's';
+        }
+        if ($needNotes) {
+            $cells = [];
+            foreach ($rows as $r) {
+                $cells[] = ($r['Note'] !== null && $r['Note'] !== '') ? (string)$r['Note'] : null;
+            }
+            $setCols[] = 'NotesJson = ?';
+            $vals[]    = lyricLinesShadowCellsToJson($cells);
+            $types    .= 's';
+        }
+        $vals[]  = $cid;
+        $types  .= 'i';
+        $upd = $db->prepare('UPDATE tblSongComponents SET ' . implode(', ', $setCols) . ' WHERE Id = ?');
+        $upd->bind_param($types, ...$vals);
+        $upd->execute();
+        $upd->close();
+    }
+    if ($sel !== null) {
+        $sel->close();
+    }
+}
+
+/**
  * Build the ordered DESIRED line list from the in-memory normalised components
  * (each carrying its upserted `cid`), NEVER reading tblSongComponents.LinesJson.
  * **PURE** — no DB, no I/O (the part-type→slug lookup is injected as $slugResolver
@@ -795,6 +1007,16 @@ function lyricLinesBuildDesiredFromComponents(array $norm, callable $slugResolve
         $chords     = is_array($c['chords'] ?? null) ? array_values($c['chords']) : null;
         $notes      = is_array($c['notes']  ?? null) ? array_values($c['notes'])  : null;
         $langs      = is_array($c['validatedLangs'] ?? null) ? array_values($c['validatedLangs']) : null;
+        /* #2072 — the writer-level "did the caller mention this field at all"
+           signal (see the long comment on lyricLinesWriteComponents()'s
+           normalisation, above, for the full reasoning). Defaulted to `true`
+           ("yes, provided") when a caller's normalised array happens not to
+           carry the flag at all, so this PURE function degrades to TODAY's
+           behaviour (never preserve) for anything other than the ONE real
+           caller (lyricLinesWriteComponents(), which always sets both) —
+           never a silent PHP "Undefined array key" warning. */
+        $notesProvided  = $c['notesProvided']  ?? true;
+        $chordsProvided = $c['chordsProvided'] ?? true;
 
         foreach ($c['lines'] as $i => $line) {
             $text     = (string)$line;
@@ -820,9 +1042,80 @@ function lyricLinesBuildDesiredFromComponents(array $norm, callable $slugResolve
                 'Note'           => $noteVal,
                 'LanguageCode'   => $lineLang,
                 'IsInstrumental' => $isInst,
+                /* #2072 — writer-level layer of the per-line preserve-on-omit
+                   defence: `true` on a field means "the in-memory payload
+                   never mentioned it, so lyricLinesMergePreserved() must
+                   reclaim whatever is already stored" for a MATCHED (UPDATE)
+                   line, BEFORE either the dirty-check or the UPDATE bind sees
+                   this row. The legacy LinesJson-sourced lyricLinesBuildDesired()
+                   (the backfill/re-projection path, which re-reads what is
+                   ALREADY stored rather than an in-memory edit payload) emits
+                   NO `_preserve` key at all — lyricLinesMergePreserved()
+                   treats a missing key as "nothing to merge", so that path's
+                   behaviour stays byte-identical to before this fix. */
+                '_preserve' => ['Note' => !$notesProvided, 'ChordsJson' => !$chordsProvided],
             ];
             $sort++;
         }
+    }
+    return $desired;
+}
+
+/**
+ * #2072 — general per-line "omitted means preserve, explicit null means clear"
+ * merge, spent by lyricLinesApplyDesired() for every MATCHED (UPDATE) line,
+ * BEFORE either the dirty-check (lyricLinesRowClean) or the UPDATE bind reads
+ * the row. **PURE** — no DB, no I/O — so it is unit-tested directly
+ * (tests/php/test-lyric-lines-diff.php).
+ *
+ * ELI5: if nobody said anything new about this line's note or chords, keep
+ * whatever is already sitting in the database for it, instead of letting the
+ * next save silently blank it out.
+ *
+ * DETAILED: `lyricLinesApplyDesired()`'s UPDATE writes EVERY projected column
+ * on every matched line (rule #25 — the ONE write path does a full-row column
+ * list, never a partial SET) — so a caller that built its desired row without
+ * knowing a per-line field exists (an importer that has never heard of Notes,
+ * a stale-cached editor, a re-ingest over an existing song) would otherwise
+ * NULL that field on every save. That is exactly the bug #2072 reported for
+ * `tblLyricLines.Note`: the OpenLyrics importer WRITES it, nothing reads it
+ * back, and the next whole-song save destroys it because the save payload
+ * never carried a `notes` key at all.
+ *
+ * `_preserve` is set by lyricLinesBuildDesiredFromComponents() ONLY (never by
+ * the legacy LinesJson-sourced lyricLinesBuildDesired() backfill projector,
+ * which re-reads what is already stored rather than an in-memory edit
+ * payload) from the `notesProvided` / `chordsProvided` flags computed with
+ * `array_key_exists` — so an explicit `null` ("clear this") is distinguishable
+ * from an absent key ("I have nothing to say about this"), the same
+ * distinction rule #45 already draws for `tblSongComponents.Label` /
+ * `SourceWorkId`, generalised here to per-LINE columns.
+ *
+ * A desired row with NO `_preserve` key (the legacy path, or any future
+ * caller that has not opted in) is returned COMPLETELY UNCHANGED — this is
+ * what keeps the legacy backfill projector byte-identical to its pre-#2072
+ * behaviour, and what keeps this helper safe to call unconditionally.
+ *
+ * @param array<string,mixed>      $desired      one lyricLinesBuildDesiredFromComponents() entry
+ * @param array<string,mixed>|null $existingRow  the CURRENT tblLyricLines row for the SAME
+ *                                                matched Id (from $existingById in
+ *                                                lyricLinesApplyDesired()), or null when there
+ *                                                is nothing to reclaim (an INSERT, or a matched
+ *                                                Id this call somehow can't find the row for)
+ * @return array<string,mixed>  $desired, with Note/ChordsJson swapped back to the
+ *                               currently-stored value wherever `_preserve` says the
+ *                               caller stayed silent about that field
+ */
+function lyricLinesMergePreserved(array $desired, ?array $existingRow): array
+{
+    if ($existingRow === null || empty($desired['_preserve'])) {
+        return $desired;
+    }
+    if (!empty($desired['_preserve']['Note'])) {
+        $desired['Note'] = $existingRow['Note'] ?? null;
+    }
+    if (!empty($desired['_preserve']['ChordsJson'])) {
+        $desired['ChordsJson'] = $existingRow['ChordsJson'] ?? null;
     }
     return $desired;
 }

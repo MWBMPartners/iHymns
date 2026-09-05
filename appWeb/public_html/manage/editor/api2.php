@@ -1550,7 +1550,7 @@ function ed2_writeComponentLanguages(\mysqli $db, int $compId, string $songId, ?
 
 /**
  * #1235 P4/C5 — a song's components in the editor shape
- * ({id,type,number,sortOrder,lines,chords,language,languages,label,sourceWorkId}),
+ * ({id,type,number,sortOrder,lines,chords,notes,language,languages,label,sourceWorkId}),
  * drop-safely. The ONE read for the v2 mutators' read-modify-write +
  * ed2_buildSongSnapshot. Sourced from the authoritative tblLyricLines (assembler)
  * when the mirror exists; the legacy LinesJson read is the un-migrated-install
@@ -1559,6 +1559,16 @@ function ed2_writeComponentLanguages(\mysqli $db, int $compId, string $songId, ?
  * treatment) — without this, an install with the Label column but no
  * tblLyricLines mirror yet would silently no-op the Structure-tab Label input
  * (rule #30's silent-partial class).
+ *
+ * #2072 — on the mirrored branch this now ALSO carries `notes` (always-present
+ * key, null default), because lyricLinesEditableComponents() emits it; no code
+ * change was needed HERE for that branch, since this function already returns
+ * that shape verbatim. The legacy (un-migrated) fallback branch below does NOT
+ * carry `notes` — `tblLyricLines.Note` (the column #2072 is about) is part of
+ * the SAME mirror migration this fallback exists to work around, so an install
+ * old enough to be on this branch has no Note column to read from either;
+ * fixing that column's own long-standing sibling gap (`NotesJson` shadow on
+ * `tblSongComponents`, never re-read anywhere) is out of scope for this fix.
  *
  * @return list<array<string,mixed>>
  */
@@ -3404,6 +3414,17 @@ try {
         if ($sourceWorkId !== null && function_exists('workExists') && workAdminReady($db) && !workExists($db, $sourceWorkId)) {
             $sourceWorkId = null; $srcWorkIgnored = true;   /* SD1 — coerce, never fail the save */
         }
+        /* #2072 — accept per-line `notes`. Deliberately the SAME array_key_exists
+           idiom as `label`/`sourceWorkId` immediately above, NOT the isset()-based
+           test `chords`/`languages` use a few lines down: this handler patches
+           ONE already-known component (compId, when > 0), so it CAN tell "the
+           caller addressed this field" from "the caller said nothing" — and the
+           whole point of #2072 is that an explicit `notes: null` must genuinely
+           CLEAR a stored note, which isset() cannot express (it treats an
+           explicit null the same as "absent"). `chords`/`languages` keep their
+           older isset()-based test unchanged here — this fix does not touch
+           their existing (looser) behaviour. */
+        $hasNotes = array_key_exists('notes', $comp);
 
         $db->begin_transaction();
         try {
@@ -3430,6 +3451,20 @@ try {
                provided" -> NULL on INSERT (exactly right for a fresh section). */
             if ($hasLabel)   { $entry['label']        = $label; }
             if ($hasSrcWork) { $entry['sourceWorkId'] = $sourceWorkId; }
+            /* #2072 — KEY-PRESENT-ONLY, no target-preserve read-back (an independent
+               review caught this before ship — see the long comment on the
+               `$hasNotes` assignment above for the full reasoning). Unlike
+               `label`/`sourceWorkId` immediately above, `notes` deliberately does
+               NOT get a "!$hasNotes -> $entry['notes'] = $c['notes'] ?? null"
+               companion line below: that positional read-back copies the OLD
+               component's notes array VERBATIM onto whatever NEW `lines` this
+               request sends, which is wrong the instant lines are added,
+               removed, or reordered WITHIN this one component — the note ends
+               up on the wrong line, silently. Omitting the key here instead lets
+               `lyricLinesWriteComponents()`'s own IDENTITY-based preserve
+               (`lyricLinesMergePreserved()`, matched by content-diffed line Id,
+               not array position) do the reclaim correctly, line by line. */
+            if ($hasNotes)   { $entry['notes'] = (isset($comp['notes']) && is_array($comp['notes'])) ? array_values($comp['notes']) : null; }
             $found = false;
             foreach ($comps as $idx => $c) {
                 if ($compId > 0 && (int)($c['id'] ?? 0) === $compId) {
@@ -3441,6 +3476,10 @@ try {
                        ed2_currentComponents()) rather than letting it default to null. */
                     if (!$hasLabel)   { $entry['label']        = $c['label']        ?? null; }
                     if (!$hasSrcWork) { $entry['sourceWorkId'] = $c['sourceWorkId'] ?? null; }
+                    /* #2072 — deliberately NO `notes` companion line here (see the
+                       comment above `if ($hasNotes)` a few lines up) — leaving the
+                       key absent on $entry is what lets the writer's identity-based
+                       preserve take over instead of this positional one. */
                     $comps[$idx] = $entry;
                     $found = true;
                     break;
@@ -5554,6 +5593,18 @@ try {
                (layer 2 of §3's three-layer silent-wipe defence — this funnel's own
                FIFO carry, distinct from the generic handler/writer preserve layers,
                because it REPLACES the whole set rather than patching one row). */
+            /* #2072 — deliberately NO 'n' (notes) in this carry tuple (an independent
+               review caught this before ship). A FIFO keyed by (type, number,
+               lineCount) is the exact positional/key-based hazard rule #45's
+               labelProvided/sourceWorkIdProvided idiom exists to avoid one level
+               down: Paste & Reflow legitimately changes a component's line count
+               (that IS the "reflow"), which misses this key's lookup entirely, and
+               two components sharing a key can hand the SECOND one the FIRST's old
+               note. `lyricLinesWriteComponents()` already has an IDENTITY-based
+               preserve (`lyricLinesMergePreserved()`, matched by content-diffed
+               line Id, not position) — so `notes` is handled below by simply
+               OMITTING the key when this incoming row doesn't carry one, not by
+               hand-carrying a guessed value. */
             $carry = [];   // "type\x1fnumber\x1flineCount" => FIFO of ['c'=>chords array|null,'l'=>languages array|null,'lb'=>label|null,'sw'=>sourceWorkId|null]
             if ($mode === 'replace') {
                 foreach ($existing as $pc) {
@@ -5591,7 +5642,7 @@ try {
                 $sourceWorkId = (isset($comp['sourceWorkId']) && (int)$comp['sourceWorkId'] > 0)
                     ? (int)$comp['sourceWorkId']
                     : ($carried !== null ? $carried['sw'] : null);
-                $incoming[] = [
+                $incomingEntry = [
                     'type'      => $type,
                     'number'    => $number,
                     'language'  => (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null,
@@ -5601,6 +5652,18 @@ try {
                     'label'         => $label,
                     'sourceWorkId'  => $sourceWorkId,
                 ];
+                /* #2072 — notes: KEY-PRESENT-ONLY, no carry (see the long comment
+                   on the $carry declaration above for why). Only set the key when
+                   THIS incoming row actually carries one; an omitted key lets
+                   `lyricLinesWriteComponents()`'s own identity-based preserve
+                   reclaim each surviving line's stored note correctly, even
+                   across a reflow that changes the component's line count. An
+                   explicit `notes: null` still reaches the writer as null (via
+                   array_key_exists rather than isset) and genuinely clears. */
+                if (array_key_exists('notes', $comp)) {
+                    $incomingEntry['notes'] = is_array($comp['notes'] ?? null) ? array_values($comp['notes']) : null;
+                }
+                $incoming[] = $incomingEntry;
             }
             $count = count($incoming);
 

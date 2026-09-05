@@ -792,6 +792,21 @@ function editorSaveSongCore(): array
             $ll_syncReady = lyricLinesSyncReady($db);
             $carryChords  = [];   // "type\x1fnumber\x1flineCount" => FIFO list (arrays when mirrored; JSON strings legacy)
             $carryLangs   = [];
+            /* #2072 — deliberately NO $carryNotes FIFO here (an independent review
+               caught this before ship). A FIFO keyed by (type, number, lineCount)
+               is a POSITIONAL/key-based guess — adding a line to a component
+               changes its lineCount and misses the lookup entirely (silently
+               NULLing a surviving line's note), and two components sharing a key
+               can hand the SECOND one the FIRST's old note. Both are worse than
+               the bug being fixed: a note attached to the wrong lyric is
+               plausible-looking corruption, not an absence anyone would notice.
+               `lyricLinesWriteComponents()` already has an IDENTITY-based
+               preserve (`lyricLinesMergePreserved()`, keyed off the content-diff-
+               matched line Id, not position) — so the correct fix here is simply
+               to OMIT the `notes` key on $writeComps[] below when this funnel has
+               nothing to say about it, and let the writer's own per-line merge
+               reclaim the right value for the right line. See the `notes` handling
+               a little further down (search for "array_key_exists('notes'"). */
             /* #1860 Phase 5 §3.4 — the same FIFO carry, for the two new thin-metadata
                columns. This whole-song save REBUILDS a fixed component shape below
                ($writeComps[] / the legacy re-INSERT), so without a carry a save from a
@@ -839,7 +854,17 @@ function editorSaveSongCore(): array
                 }
             } else {
                 /* lines-json-fallback (#1235 P4): un-migrated install (no mirror).
-                   Column names are hardcoded constants (rule #5). */
+                   Column names are hardcoded constants (rule #5).
+                   #2072 note: `notes` is deliberately never carried here (or on the
+                   mirrored branch above) — see the doc-comment on `$carryChords`'s
+                   declaration above for why a hand-carry is the wrong fix for this
+                   field. An install old enough to be on this legacy branch has no
+                   `tblLyricLines.Note` column to preserve from either way (it ships
+                   in the same migration as the mirror this branch works around).
+                   `NotesJson` (the older shadow column on tblSongComponents) has
+                   its own separate, pre-existing gap — this legacy re-INSERT never
+                   wrote it even before this fix — and fixing that is out of scope
+                   here. */
                 try {
                     $pf1Probe = $db->prepare(
                         "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
@@ -1055,7 +1080,7 @@ function editorSaveSongCore(): array
                     } else {
                         $cSourceWorkId = !empty($carrySourceWorks[$pf1Key]) ? array_shift($carrySourceWorks[$pf1Key]) : null;
                     }
-                    $writeComps[] = [
+                    $writeCompEntry = [
                         'type'      => $cType,
                         'number'    => $cNum,
                         'language'  => (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null,
@@ -1065,6 +1090,22 @@ function editorSaveSongCore(): array
                         'label'         => $cLabel,
                         'sourceWorkId'  => $cSourceWorkId,
                     ];
+                    /* #2072 — notes: KEY-PRESENT-ONLY, no hand-carry (an independent
+                       review caught the carried version before ship — see the
+                       doc-comment on $carryChords's declaration above for the full
+                       reasoning). This editor never sent `notes` at all before
+                       #2072, so every save omits the key here — which is exactly
+                       right: `lyricLinesWriteComponents()`'s own IDENTITY-based
+                       preserve (`lyricLinesMergePreserved()`, matched by content-
+                       diffed line Id, not position) reclaims each surviving line's
+                       stored note for free, correctly, even across an added/
+                       removed/reordered line. Only set the key when THIS payload
+                       actually carries one (a future notes-aware editor UI), so an
+                       explicit `null` still reaches the writer as null and clears. */
+                    if (array_key_exists('notes', $comp)) {
+                        $writeCompEntry['notes'] = is_array($comp['notes'] ?? null) ? array_values($comp['notes']) : null;
+                    }
+                    $writeComps[] = $writeCompEntry;
                 }
                 lyricLinesWriteComponents($db, $songId, $writeComps);
             } else {

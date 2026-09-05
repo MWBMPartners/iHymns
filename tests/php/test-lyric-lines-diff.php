@@ -238,7 +238,14 @@ assertEq(lyricLinesRowClean($row, ['ComponentId' => 5, 'PartType' => 'verse', 'P
 /* Slug resolver stub: 'verse'/'chorus' map to themselves, else null. */
 $slug = static fn(?string $t): ?string => in_array($t, ['verse', 'chorus'], true) ? $t : null;
 
-/* One verse, two lines, no chords/notes/languages → inherits component language. */
+/* One verse, two lines, no chords/notes/languages → inherits component language.
+   #2072 — no notesProvided/chordsProvided key in the input here (a caller from
+   before this fix, or a hand-rolled test fixture): the PURE function defaults
+   both to `true` ("provided") so this stays TODAY's behaviour — every desired
+   line gets `_preserve => ['Note' => false, 'ChordsJson' => false]`, i.e.
+   "nothing to preserve, the values above are authoritative" — see the
+   dedicated notesProvided/chordsProvided=false block further down for the
+   preserve-TRIGGERING case. */
 assertEq(
     lyricLinesBuildDesiredFromComponents([
         ['cid' => 5, 'type' => 'verse', 'number' => 1, 'language' => 'en',
@@ -248,10 +255,12 @@ assertEq(
     [
         ['ComponentId' => 5, 'PartType' => 'verse', 'PartTypeSlug' => 'verse', 'PartNumber' => 1,
          'SortOrder' => 0, 'LineText' => 'Amazing grace', 'ChordsJson' => null, 'Note' => null,
-         'LanguageCode' => 'en', 'IsInstrumental' => 0],
+         'LanguageCode' => 'en', 'IsInstrumental' => 0,
+         '_preserve' => ['Note' => false, 'ChordsJson' => false]],
         ['ComponentId' => 5, 'PartType' => 'verse', 'PartTypeSlug' => 'verse', 'PartNumber' => 1,
          'SortOrder' => 1, 'LineText' => 'how sweet the sound', 'ChordsJson' => null, 'Note' => null,
-         'LanguageCode' => 'en', 'IsInstrumental' => 0],
+         'LanguageCode' => 'en', 'IsInstrumental' => 0,
+         '_preserve' => ['Note' => false, 'ChordsJson' => false]],
     ],
     'fromComponents: simple verse, lang inherited, contiguous SortOrder'
 );
@@ -266,10 +275,12 @@ assertEq(
     [
         ['ComponentId' => 9, 'PartType' => 'chorus', 'PartTypeSlug' => 'chorus', 'PartNumber' => null,
          'SortOrder' => 0, 'LineText' => 'Praise him', 'ChordsJson' => '["C","G"]', 'Note' => null,
-         'LanguageCode' => null, 'IsInstrumental' => 0],
+         'LanguageCode' => null, 'IsInstrumental' => 0,
+         '_preserve' => ['Note' => false, 'ChordsJson' => false]],
         ['ComponentId' => 9, 'PartType' => 'chorus', 'PartTypeSlug' => 'chorus', 'PartNumber' => null,
          'SortOrder' => 1, 'LineText' => 'Praise him', 'ChordsJson' => null, 'Note' => 'softly',
-         'LanguageCode' => null, 'IsInstrumental' => 0],
+         'LanguageCode' => null, 'IsInstrumental' => 0,
+         '_preserve' => ['Note' => false, 'ChordsJson' => false]],
     ],
     'fromComponents: per-line chords + notes; number 0 → PartNumber null'
 );
@@ -284,13 +295,16 @@ assertEq(
     [
         ['ComponentId' => 2, 'PartType' => 'verse', 'PartTypeSlug' => 'verse', 'PartNumber' => 2,
          'SortOrder' => 0, 'LineText' => 'Gloria', 'ChordsJson' => null, 'Note' => null,
-         'LanguageCode' => 'la', 'IsInstrumental' => 0],
+         'LanguageCode' => 'la', 'IsInstrumental' => 0,
+         '_preserve' => ['Note' => false, 'ChordsJson' => false]],
         ['ComponentId' => 2, 'PartType' => 'verse', 'PartTypeSlug' => 'verse', 'PartNumber' => 2,
          'SortOrder' => 1, 'LineText' => '', 'ChordsJson' => null, 'Note' => null,
-         'LanguageCode' => 'en', 'IsInstrumental' => 1],
+         'LanguageCode' => 'en', 'IsInstrumental' => 1,
+         '_preserve' => ['Note' => false, 'ChordsJson' => false]],
         ['ComponentId' => 2, 'PartType' => 'verse', 'PartTypeSlug' => 'verse', 'PartNumber' => 2,
          'SortOrder' => 2, 'LineText' => 'in excelsis', 'ChordsJson' => null, 'Note' => null,
-         'LanguageCode' => 'la', 'IsInstrumental' => 0],
+         'LanguageCode' => 'la', 'IsInstrumental' => 0,
+         '_preserve' => ['Note' => false, 'ChordsJson' => false]],
     ],
     'fromComponents: per-line language override + blank-line instrumental'
 );
@@ -306,6 +320,468 @@ assertEq(
         ], $slug)),
     [[0, 'verse', 'verse', 1], [1, 'verse', 'verse', 1], [2, 'prechorus', null, 2]],
     'fromComponents: global SortOrder spans components; unknown type → null slug'
+);
+
+/* ==================================================================== */
+/* #2072 — `_preserve` flag computation: notesProvided/chordsProvided     */
+/* (array_key_exists at the lyricLinesWriteComponents() normalisation      */
+/* layer) flow through as `_preserve => ['Note' => !notesProvided,         */
+/* 'ChordsJson' => !chordsProvided]` on every desired line of that         */
+/* component. This is the WRITER-LEVEL half of the general per-line        */
+/* preserve-on-omit mechanism; lyricLinesMergePreserved() (tested below)   */
+/* is what actually SPENDS these flags.                                   */
+/* ==================================================================== */
+
+/* A component whose payload never mentioned `notes` at all (notesProvided
+   false) → every one of its desired lines must carry `_preserve.Note = true`
+   ("reclaim whatever is stored"), regardless of the line's own Note value. */
+assertEq(
+    array_column(
+        lyricLinesBuildDesiredFromComponents([
+            ['cid' => 30, 'type' => 'verse', 'number' => 1, 'language' => null,
+             'lines' => ['a', 'b'], 'chords' => null, 'notes' => null,
+             'validatedLangs' => null, 'notesProvided' => false, 'chordsProvided' => true],
+        ], $slug),
+        '_preserve'
+    ),
+    [['Note' => true, 'ChordsJson' => false], ['Note' => true, 'ChordsJson' => false]],
+    '_preserve: notesProvided=false -> Note preserved, chords authoritative'
+);
+
+/* The mirror image — chordsProvided false, notesProvided true. */
+assertEq(
+    array_column(
+        lyricLinesBuildDesiredFromComponents([
+            ['cid' => 31, 'type' => 'verse', 'number' => 1, 'language' => null,
+             'lines' => ['a'], 'chords' => null, 'notes' => null,
+             'validatedLangs' => null, 'notesProvided' => true, 'chordsProvided' => false],
+        ], $slug),
+        '_preserve'
+    ),
+    [['Note' => false, 'ChordsJson' => true]],
+    '_preserve: chordsProvided=false -> ChordsJson preserved, notes authoritative'
+);
+
+/* Both explicitly provided (even though both values are null — an explicit
+   "clear both") → neither field is preserved; the null values are authoritative. */
+assertEq(
+    array_column(
+        lyricLinesBuildDesiredFromComponents([
+            ['cid' => 32, 'type' => 'verse', 'number' => 1, 'language' => null,
+             'lines' => ['a'], 'chords' => null, 'notes' => null,
+             'validatedLangs' => null, 'notesProvided' => true, 'chordsProvided' => true],
+        ], $slug),
+        '_preserve'
+    ),
+    [['Note' => false, 'ChordsJson' => false]],
+    '_preserve: both explicitly provided (even as null) -> neither preserved'
+);
+
+/* ==================================================================== */
+/* lyricLinesMergePreserved (#2072) — the PURE per-line preserve-on-omit  */
+/* merge that lyricLinesApplyDesired() spends for every MATCHED (UPDATE)  */
+/* line, before the dirty-check or the UPDATE bind sees the row.          */
+/* ==================================================================== */
+
+/* No existing row (an INSERT, or a matchId this call can't resolve) — $desired
+   is returned COMPLETELY unchanged, `_preserve` and all. */
+assertEq(
+    lyricLinesMergePreserved(
+        ['Note' => null, 'ChordsJson' => null, '_preserve' => ['Note' => true, 'ChordsJson' => true]],
+        null
+    ),
+    ['Note' => null, 'ChordsJson' => null, '_preserve' => ['Note' => true, 'ChordsJson' => true]],
+    'mergePreserved: null existingRow -> $desired unchanged (nothing to reclaim)'
+);
+
+/* No `_preserve` key at all (the legacy lyricLinesBuildDesired() shape) —
+   unchanged even though a real existing row is available, so the legacy
+   backfill/re-projection path stays byte-identical to before #2072. */
+assertEq(
+    lyricLinesMergePreserved(
+        ['Note' => null, 'ChordsJson' => null],
+        ['Note' => 'stored note', 'ChordsJson' => '"C"']
+    ),
+    ['Note' => null, 'ChordsJson' => null],
+    'mergePreserved: no _preserve key (legacy shape) -> unchanged'
+);
+
+/* Note preserved (omitted), ChordsJson authoritative (provided) — the exact
+   #2072 scenario: an importer/funnel that never learned about `notes` must not
+   wipe a stored note when it saves a genuine chord change. */
+assertEq(
+    lyricLinesMergePreserved(
+        ['Note' => null, 'ChordsJson' => '"G"', '_preserve' => ['Note' => true, 'ChordsJson' => false]],
+        ['Note' => 'sing softly', 'ChordsJson' => '"C"']
+    ),
+    ['Note' => 'sing softly', 'ChordsJson' => '"G"', '_preserve' => ['Note' => true, 'ChordsJson' => false]],
+    'mergePreserved: Note reclaimed from storage, ChordsJson stays the new authoritative value'
+);
+
+/* An EXPLICIT null (Note provided as null, i.e. `_preserve.Note = false`) must
+   genuinely CLEAR the stored value, not reclaim it — this is the whole point
+   of computing the flag with array_key_exists rather than isset. */
+assertEq(
+    lyricLinesMergePreserved(
+        ['Note' => null, 'ChordsJson' => null, '_preserve' => ['Note' => false, 'ChordsJson' => false]],
+        ['Note' => 'sing softly', 'ChordsJson' => '"C"']
+    ),
+    ['Note' => null, 'ChordsJson' => null, '_preserve' => ['Note' => false, 'ChordsJson' => false]],
+    'mergePreserved: explicit null (not preserved) genuinely clears, never reclaims'
+);
+
+/* Both preserved at once, and the existing row's own value is itself null
+   (nothing to reclaim) — resolves to null, not a PHP notice. */
+assertEq(
+    lyricLinesMergePreserved(
+        ['Note' => 'ignored', 'ChordsJson' => 'ignored', '_preserve' => ['Note' => true, 'ChordsJson' => true]],
+        ['Note' => null, 'ChordsJson' => null]
+    ),
+    ['Note' => null, 'ChordsJson' => null, '_preserve' => ['Note' => true, 'ChordsJson' => true]],
+    'mergePreserved: both preserved, stored values are null -> resolves to null cleanly'
+);
+
+/* An existing row missing the Note/ChordsJson keys entirely (defensive —
+   should never happen in practice, since lyricLinesApplyDesired()'s own SELECT
+   always names both columns) still resolves to null rather than a PHP notice. */
+assertEq(
+    lyricLinesMergePreserved(
+        ['Note' => 'ignored', 'ChordsJson' => 'ignored', '_preserve' => ['Note' => true, 'ChordsJson' => true]],
+        ['SomeOtherColumn' => 'x']
+    ),
+    ['Note' => null, 'ChordsJson' => null, '_preserve' => ['Note' => true, 'ChordsJson' => true]],
+    'mergePreserved: existing row missing Note/ChordsJson keys -> defaults to null, no notice'
+);
+
+/* ==================================================================== */
+/* #2072 STRUCTURAL guard (rule #34) — lyricLinesApplyDesired() must       */
+/* actually CALL lyricLinesMergePreserved() for a matched line, not just    */
+/* have the helper sitting unused nearby. Mutation-proven: comment out the */
+/* call below and this assertion goes red (verified during development,   */
+/* see the session report).                                               */
+/* ==================================================================== */
+$syncSrc  = (string)file_get_contents(
+    dirname(__DIR__, 2) . '/appWeb/public_html/includes/lyric_lines_sync.php'
+);
+$syncCode = preg_replace('#/\*[\s\S]*?\*/#', '', $syncSrc) ?? $syncSrc;   // strip block comments (prose mentions the name too)
+
+$applyFnStart = strpos($syncCode, 'function lyricLinesApplyDesired(');
+$applyFnBody  = '';
+if ($applyFnStart !== false) {
+    $nextFn      = strpos($syncCode, "\nfunction ", $applyFnStart + 10);
+    $applyFnBody = substr($syncCode, $applyFnStart, $nextFn === false ? null : $nextFn - $applyFnStart);
+}
+assertEq($applyFnBody !== '', true, 'lyricLinesApplyDesired() found in the ONE write path');
+assertEq(
+    str_contains($applyFnBody, 'lyricLinesMergePreserved('),
+    true,
+    '#2072: lyricLinesApplyDesired() actually calls lyricLinesMergePreserved() for a matched line'
+);
+
+/* ==================================================================== */
+/* #2072 STRUCTURAL guard — the two *Provided flags MUST be computed with */
+/* array_key_exists, never isset(). isset() treats an explicit `null` the  */
+/* same as "absent", which would make "send notes:null to clear the note"  */
+/* silently degrade back into "preserve" — the exact regression this fix   */
+/* exists to prevent. Mutation-proven: change either to isset($c[...]) and */
+/* this assertion goes red (verified during development, see the session  */
+/* report).                                                                */
+/* ==================================================================== */
+$writeFnStart = strpos($syncCode, 'function lyricLinesWriteComponents(');
+$writeFnBody  = '';
+if ($writeFnStart !== false) {
+    $nextFn3     = strpos($syncCode, "\nfunction ", $writeFnStart + 10);
+    $writeFnBody = substr($syncCode, $writeFnStart, $nextFn3 === false ? null : $nextFn3 - $writeFnStart);
+}
+assertEq($writeFnBody !== '', true, 'lyricLinesWriteComponents() found in the ONE write path');
+assertEq(
+    (bool)preg_match("/'notesProvided'\\s*=>\\s*array_key_exists\\(\\s*'notes'\\s*,\\s*\\\$c\\s*\\)/", $writeFnBody),
+    true,
+    "#2072: notesProvided is computed with array_key_exists — an explicit null must still count " .
+    "as \"provided\" so it can genuinely CLEAR the note, not silently degrade into \"preserve\""
+);
+assertEq(
+    (bool)preg_match("/'chordsProvided'\\s*=>\\s*array_key_exists\\(\\s*'chords'\\s*,\\s*\\\$c\\s*\\)/", $writeFnBody),
+    true,
+    '#2072: chordsProvided is computed with array_key_exists (same reasoning as notesProvided)'
+);
+
+/* ==================================================================== */
+/* #2072 REVIEW FOLLOW-UP — the writer-level merge above is identity-based */
+/* (matched by content-diff, not position), so it is correct by             */
+/* construction. What was NOT correct, before this follow-up, was the       */
+/* CALLER side: save_song_core.php / api2.php's component_upsert /          */
+/* components_replace each hand-carried an omitted `notes` value by         */
+/* POSITION or by a (type, number, lineCount) key — which OVERRODE the      */
+/* writer's identity-based preserve with a guessed value, and could do so   */
+/* WRONGLY. The tests below prove two things: (1) the CORE mechanism        */
+/* (lyricLinesDiff + lyricLinesMergePreserved, exactly as                  */
+/* lyricLinesApplyDesired() calls them) gives the RIGHT answer for the      */
+/* scenarios the caller-level carries got wrong, using a small test-only    */
+/* simulation of the read-only match+merge half of                         */
+/* lyricLinesApplyDesired() — the DB write half is deliberately not         */
+/* reproduced, only the two pure functions that decide VALUES; and (2) the  */
+/* callers were actually fixed to OMIT the key rather than hand-carry one,  */
+/* via source-level structural guards (this test has no DB, so it cannot    */
+/* run a real save — see the session report for why that is an honest      */
+/* limit, not a shortcut).                                                 */
+/* ==================================================================== */
+
+/**
+ * Test-only simulation of the MATCH + MERGE half of lyricLinesApplyDesired()
+ * — deliberately calls the SAME production functions the real writer calls
+ * (lyricLinesDiff, lyricLinesMergePreserved), not a re-implementation, so a
+ * regression in either production function fails this test too.
+ *
+ * @param list<array<string,mixed>> $existing  tblLyricLines-shaped rows
+ * @param list<array<string,mixed>> $desired   lyricLinesBuildDesiredFromComponents() output
+ * @return list<array<string,mixed>>
+ */
+function ihymnsTestSimulateMergedDesired(array $existing, array $desired): array
+{
+    $plan = lyricLinesDiff($existing, $desired);
+    $existingById = [];
+    foreach ($existing as $e) { $existingById[(int)$e['Id']] = $e; }
+    $out = [];
+    foreach ($desired as $di => $d) {
+        $matchId = $plan['matchedIds'][$di];
+        if ($matchId !== null) {
+            $d = lyricLinesMergePreserved($d, $existingById[$matchId] ?? null);
+        }
+        $out[] = $d;
+    }
+    return $out;
+}
+
+/* --- Finding 1 (first half): omit notes + ADD a line -> surviving matched
+       lines keep their notes. Before the caller-level fix, save_song_core.php's
+       $carryNotes FIFO was keyed by "type\x1fnumber\x1flineCount" — adding a
+       line changes the line count, the key lookup misses, and the omitted
+       notes became an explicit `null` that wiped line 1's note even though
+       line 1's own content never changed. --- */
+$existingAdd = [
+    ['Id' => 1, 'ComponentId' => 100, 'PartType' => 'verse', 'PartNumber' => 1, 'SortOrder' => 0,
+     'LineText' => 'Amazing grace', 'ChordsJson' => null, 'Note' => 'sing softly',
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+    ['Id' => 2, 'ComponentId' => 100, 'PartType' => 'verse', 'PartNumber' => 1, 'SortOrder' => 1,
+     'LineText' => 'how sweet the sound', 'ChordsJson' => null, 'Note' => null,
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+];
+$normAdd = [
+    ['cid' => 100, 'type' => 'verse', 'number' => 1, 'language' => null,
+     'lines' => ['Amazing grace', 'how sweet the sound', 'that saved a wretch like me'],
+     'chords' => null, 'notes' => null, 'validatedLangs' => null,
+     'notesProvided' => false, 'chordsProvided' => true],
+];
+$mergedAdd = ihymnsTestSimulateMergedDesired($existingAdd, lyricLinesBuildDesiredFromComponents($normAdd, $slug));
+assertEq(count($mergedAdd), 3, '#2072 finding 1 (add a line): 3 desired lines (2 matched + 1 new)');
+assertEq($mergedAdd[0]['Note'], 'sing softly',
+    '#2072 finding 1 (add a line): surviving matched line 1 KEEPS its note despite the component growing by one line');
+assertEq($mergedAdd[1]['Note'], null,
+    '#2072 finding 1 (add a line): surviving matched line 2 stays null (it never had a note) — not corrupted either way');
+assertEq($mergedAdd[2]['Note'], null,
+    '#2072 finding 1 (add a line): the brand-new third line has no existing row to reclaim from — null, not an error');
+
+/* --- Finding 1 (second half): omit notes + REORDER lines -> the note
+       follows the LINE (matched by content), not the array index. A
+       position/key-based carry would have left "sing softly" sitting at
+       index 0 regardless of which line moved there. --- */
+$existingReorder = [
+    ['Id' => 1, 'ComponentId' => 100, 'PartType' => 'verse', 'PartNumber' => 1, 'SortOrder' => 0,
+     'LineText' => 'Amazing grace', 'ChordsJson' => null, 'Note' => 'sing softly',
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+    ['Id' => 2, 'ComponentId' => 100, 'PartType' => 'verse', 'PartNumber' => 1, 'SortOrder' => 1,
+     'LineText' => 'how sweet the sound', 'ChordsJson' => null, 'Note' => null,
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+];
+$normReorder = [
+    ['cid' => 100, 'type' => 'verse', 'number' => 1, 'language' => null,
+     'lines' => ['how sweet the sound', 'Amazing grace'],   // SWAPPED order
+     'chords' => null, 'notes' => null, 'validatedLangs' => null,
+     'notesProvided' => false, 'chordsProvided' => true],
+];
+$mergedReorder = ihymnsTestSimulateMergedDesired($existingReorder, lyricLinesBuildDesiredFromComponents($normReorder, $slug));
+assertEq($mergedReorder[0]['Note'], null,
+    "#2072 finding 1 (reorder): 'how sweet the sound' (no note) is now at index 0 and correctly has no note");
+assertEq($mergedReorder[1]['Note'], 'sing softly',
+    "#2072 finding 1 (reorder): 'Amazing grace' carried its note to its NEW index 1 — the note followed the LINE, not the index");
+
+/* --- Finding 3: two components sharing a (type, number) bucket — a chorus
+       reprised verbatim later in the song. The FIRST occurrence explicitly
+       changes its own note; the SECOND says nothing about notes at all. The
+       old FIFO-by-key carry queued both occurrences' OLD notes together and
+       handed the SECOND incoming component whichever queue entry the FIRST
+       incoming component didn't consume — i.e. the FIRST occurrence's OLD
+       note, not the SECOND's. The identity-based (content-matched) mechanism
+       must give the second occurrence back its OWN prior value, not the
+       first's. --- */
+$existingShared = [
+    ['Id' => 201, 'ComponentId' => 10, 'PartType' => 'chorus', 'PartNumber' => null, 'SortOrder' => 0,
+     'LineText' => 'Praise the Lord', 'ChordsJson' => null, 'Note' => 'was quiet',
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+    ['Id' => 202, 'ComponentId' => 10, 'PartType' => 'chorus', 'PartNumber' => null, 'SortOrder' => 1,
+     'LineText' => 'Alleluia', 'ChordsJson' => null, 'Note' => null,
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+    ['Id' => 203, 'ComponentId' => 11, 'PartType' => 'chorus', 'PartNumber' => null, 'SortOrder' => 2,
+     'LineText' => 'Praise the Lord', 'ChordsJson' => null, 'Note' => 'echo',
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+    ['Id' => 204, 'ComponentId' => 11, 'PartType' => 'chorus', 'PartNumber' => null, 'SortOrder' => 3,
+     'LineText' => 'Alleluia', 'ChordsJson' => null, 'Note' => null,
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+];
+$normShared = [
+    /* First occurrence — EXPLICITLY provides notes (a genuine change). */
+    ['cid' => 10, 'type' => 'chorus', 'number' => 0, 'language' => null,
+     'lines' => ['Praise the Lord', 'Alleluia'], 'chords' => null, 'notes' => ['forte', null],
+     'validatedLangs' => null, 'notesProvided' => true, 'chordsProvided' => true],
+    /* Reprise — says NOTHING about notes. */
+    ['cid' => 11, 'type' => 'chorus', 'number' => 0, 'language' => null,
+     'lines' => ['Praise the Lord', 'Alleluia'], 'chords' => null, 'notes' => null,
+     'validatedLangs' => null, 'notesProvided' => false, 'chordsProvided' => true],
+];
+$mergedShared = ihymnsTestSimulateMergedDesired($existingShared, lyricLinesBuildDesiredFromComponents($normShared, $slug));
+assertEq($mergedShared[0]['Note'], 'forte',
+    '#2072 finding 3: first occurrence — explicit note wins over its own old value');
+assertEq($mergedShared[1]['Note'], null,
+    '#2072 finding 3: first occurrence, second line — explicit null in the provided array, stays null');
+assertEq($mergedShared[2]['Note'], 'echo',
+    "#2072 finding 3: SECOND occurrence (omitted notes) reclaims its OWN prior value ('echo') — " .
+    "NOT the first occurrence's old note ('was quiet'). A regression here means a reprised chorus " .
+    "would silently inherit its first occurrence's note."
+);
+assertEq($mergedShared[3]['Note'], null,
+    '#2072 finding 3: second occurrence, second line — also correctly null, not cross-contaminated');
+
+/* ==================================================================== */
+/* #2072 finding 4 — the shadow-JSON write. lyricLinesShadowCellsToJson()   */
+/* is the PURE "any non-null cell -> encode; else null" rule shared by      */
+/* BOTH the original (pre-merge) shadow write in                           */
+/* lyricLinesUpsertComponents() and the POST-MERGE resync in                */
+/* lyricLinesResyncChordsNotesShadow() — extracted specifically so the two  */
+/* can never encode the same cell array two different ways.                */
+/* ==================================================================== */
+assertEq(lyricLinesShadowCellsToJson([null, null, null]), null,
+    'shadowCellsToJson: every cell null -> null (nothing worth storing)');
+assertEq(lyricLinesShadowCellsToJson([]), null,
+    'shadowCellsToJson: empty array -> null');
+assertEq(lyricLinesShadowCellsToJson([null, 'sing softly', null]), json_encode([null, 'sing softly', null], JSON_UNESCAPED_UNICODE),
+    'shadowCellsToJson: one non-null cell -> the WHOLE array JSON-encoded, nulls and all (null-padded shape preserved)');
+assertEq(lyricLinesShadowCellsToJson([['C', 'G'], null]), json_encode([['C', 'G'], null], JSON_UNESCAPED_UNICODE),
+    'shadowCellsToJson: works for chord cells (arrays) the same as note cells (strings)');
+
+/* --- STRUCTURAL guards (rule #34): the resync step must exist, must be     */
+/* wired in AFTER lyricLinesApplyDesired() (not before — the whole point is  */
+/* the resync sees the MERGED values), must read the correction from the     */
+/* AUTHORITATIVE tblLyricLines (never from the pre-merge $norm payload), and */
+/* both shadow-writing call sites must funnel through the ONE shared         */
+/* lyricLinesShadowCellsToJson() encoder rather than re-deriving the         */
+/* any-null-collapse rule twice. --- */
+assertEq(
+    str_contains($syncCode, 'function lyricLinesResyncChordsNotesShadow('),
+    true,
+    '#2072 finding 4: lyricLinesResyncChordsNotesShadow() exists'
+);
+$writeCompsCallOrder = [
+    'apply'  => strpos($writeFnBody, 'lyricLinesApplyDesired('),
+    'resync' => strpos($writeFnBody, 'lyricLinesResyncChordsNotesShadow('),
+];
+assertEq($writeCompsCallOrder['apply'] !== false, true, '#2072 finding 4: lyricLinesWriteComponents() calls lyricLinesApplyDesired()');
+assertEq($writeCompsCallOrder['resync'] !== false, true, '#2072 finding 4: lyricLinesWriteComponents() calls lyricLinesResyncChordsNotesShadow()');
+assertEq(
+    $writeCompsCallOrder['resync'] > $writeCompsCallOrder['apply'],
+    true,
+    '#2072 finding 4: the resync call comes AFTER lyricLinesApplyDesired() — fixing the shadow before the ' .
+    'merge has run would just encode another guess, not the merged truth'
+);
+
+$resyncFnStart = strpos($syncCode, 'function lyricLinesResyncChordsNotesShadow(');
+$resyncFnBody  = '';
+if ($resyncFnStart !== false) {
+    $nextFn4      = strpos($syncCode, "\nfunction ", $resyncFnStart + 10);
+    $resyncFnBody = substr($syncCode, $resyncFnStart, $nextFn4 === false ? null : $nextFn4 - $resyncFnStart);
+}
+assertEq($resyncFnBody !== '', true, 'lyricLinesResyncChordsNotesShadow() body found');
+assertEq(
+    str_contains($resyncFnBody, 'FROM tblLyricLines'),
+    true,
+    '#2072 finding 4: the resync reads its correction FROM tblLyricLines (the now-authoritative, ' .
+    'post-merge store) — reading from $norm/$c[\'notes\'] again would just repeat the same stale guess'
+);
+assertEq(
+    str_contains($resyncFnBody, 'lyricLinesShadowCellsToJson('),
+    true,
+    '#2072 finding 4: the resync encodes via the SAME shared lyricLinesShadowCellsToJson() the ' .
+    'original shadow write uses — one encoding rule, not two that could drift apart'
+);
+$upsertFnStart = strpos($syncCode, 'function lyricLinesUpsertComponents(');
+$upsertFnBody  = '';
+if ($upsertFnStart !== false) {
+    $nextFn5      = strpos($syncCode, "\nfunction ", $upsertFnStart + 10);
+    $upsertFnBody = substr($syncCode, $upsertFnStart, $nextFn5 === false ? null : $nextFn5 - $upsertFnStart);
+}
+assertEq(
+    str_contains($upsertFnBody, 'lyricLinesShadowCellsToJson('),
+    true,
+    '#2072 finding 4: the ORIGINAL (pre-merge) shadow write also goes through lyricLinesShadowCellsToJson()'
+);
+
+/* ==================================================================== */
+/* #2072 REVIEW FOLLOW-UP — caller-level structural guards. The writer's    */
+/* identity-based merge only protects a caller that actually OMITS the key  */
+/* it has nothing to say about. These guards prove each of the three        */
+/* funnels was changed to do that, and that the specific defect shapes the  */
+/* review named (positional carry, positional target-preserve, isset()-vs-  */
+/* array_key_exists on the explicit-null path) are gone from the source —   */
+/* not merely that SOME code runs, since none of this can be exercised      */
+/* end-to-end without a live DB in this environment.                       */
+/* ==================================================================== */
+$saveCoreSrc  = (string)file_get_contents(dirname(__DIR__, 2) . '/appWeb/public_html/manage/editor/save_song_core.php');
+$saveCoreCode = preg_replace('#/\*[\s\S]*?\*/#', '', $saveCoreSrc) ?? $saveCoreSrc;
+
+assertEq(str_contains($saveCoreCode, 'carryNotes'), false,
+    '#2072 caller guard (save_song_core.php): the $carryNotes FIFO is GONE, not merely unused');
+assertEq(
+    (bool)preg_match("/array_key_exists\\('notes',\\s*\\\$comp\\)/", $saveCoreCode),
+    true,
+    '#2072 caller guard (save_song_core.php): notes is included on $writeComps[] only when ' .
+    'array_key_exists(\'notes\', $comp) — key-present-only, no hand-carried fallback'
+);
+
+$api2Src  = (string)file_get_contents(dirname(__DIR__, 2) . '/appWeb/public_html/manage/editor/api2.php');
+$api2Code = preg_replace('#/\*[\s\S]*?\*/#', '', $api2Src) ?? $api2Src;
+
+$cuStart = strpos($api2Code, "case 'component_upsert':");
+$cuEnd   = strpos($api2Code, "case 'component_delete':", $cuStart === false ? 0 : $cuStart);
+$cuBlock = ($cuStart !== false && $cuEnd !== false) ? substr($api2Code, $cuStart, $cuEnd - $cuStart) : '';
+assertEq($cuBlock !== '', true, "component_upsert handler found in api2.php");
+assertEq(
+    (bool)preg_match("/\\\$hasNotes\\s*=\\s*array_key_exists\\('notes',\\s*\\\$comp\\);/", $cuBlock),
+    true,
+    '#2072 caller guard (component_upsert): $hasNotes is array_key_exists-based, so an explicit ' .
+    'null still counts as "provided" and can genuinely clear a stored note'
+);
+assertEq(
+    str_contains($cuBlock, '!$hasNotes'),
+    false,
+    '#2072 caller guard (component_upsert): NO "!$hasNotes -> $entry[\'notes\'] = $c[\'notes\']" ' .
+    'positional target-preserve — that line copied the OLD component\'s notes array onto whatever ' .
+    'NEW lines this request sent, misaligning the moment lines were added/removed/reordered WITHIN ' .
+    'this one component. Omitting the key instead lets the writer\'s identity-based preserve do it right.'
+);
+
+$crStart = strpos($api2Code, "case 'components_replace':");
+$crEnd   = strpos($api2Code, "case 'import_file':", $crStart === false ? 0 : $crStart);
+$crBlock = ($crStart !== false && $crEnd !== false) ? substr($api2Code, $crStart, $crEnd - $crStart) : '';
+assertEq($crBlock !== '', true, "components_replace handler found in api2.php");
+assertEq(str_contains($crBlock, "'n' =>"), false,
+    "#2072 caller guard (components_replace): the carry tuple no longer has an 'n' (notes) slot");
+assertEq(str_contains($crBlock, "carried['n']"), false,
+    "#2072 caller guard (components_replace): nothing reads a carried 'n' value any more");
+assertEq(
+    (bool)preg_match("/array_key_exists\\('notes',\\s*\\\$comp\\)/", $crBlock),
+    true,
+    '#2072 caller guard (components_replace): notes is included on the incoming entry only when ' .
+    'array_key_exists(\'notes\', $comp) — key-present-only, no FIFO carry'
 );
 
 /* -------------------------------------------------------------------- */

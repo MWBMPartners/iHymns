@@ -444,12 +444,24 @@ function lyricLinesFetchPrimary(\mysqli $db, string $songId): array
        it. */
     $extras   = lyricLinesComponentExtrasPresent($db);
     $labelCol = $extras['Label'] ? ",\n                sc.Label       AS comp_label" : '';
+    /* #2072 — ll.Note is selected UNCONDITIONALLY, mirroring ll.ChordsJson right
+       above it: lyricLinesMirrorPresent() (the ONE gate every caller of this
+       function checks before calling it) already requires BOTH ChordsJson AND
+       Note to exist (rule #25's aligned read/write gate), so there is no
+       un-migrated-install case where ChordsJson is safe to name here but Note
+       is not. lyricLinesAssembleFromRows() (the PUBLIC/export shape) does NOT
+       read this new `line_note` key — only lyricLinesEditableComponents() (the
+       EDITOR shape, below) does — so adding the column here changes NOTHING
+       about the public shape a caller like SongData::getSongById() sees; it
+       only makes the value available to the ONE reader that is being taught to
+       use it. See lyricLinesEditableComponents() for where it is spent. */
     $stmt = $db->prepare(
         "SELECT ll.Id        AS line_id,
                 ll.ComponentId AS cid,
                 ll.LineText    AS text,
                 ll.LanguageCode AS line_lang,
                 ll.ChordsJson  AS line_chords,
+                ll.Note        AS line_note,
                 ll.PartType    AS line_parttype,
                 ll.PartNumber  AS line_partnum,
                 sc.Type        AS comp_type,
@@ -492,6 +504,9 @@ function lyricLinesFetchPrimaryMap(\mysqli $db, array $songIds): array
     foreach (array_chunk($songIds, LYRIC_LINES_READ_CHUNK) as $chunk) {
         $place = implode(',', array_fill(0, count($chunk), '?'));
         $types = str_repeat('s', count($chunk));
+        /* #2072 — ll.Note, same unconditional add as the single-song sibling
+           lyricLinesFetchPrimary() above (see its doc-comment for why: the ONE
+           mirror-present gate already requires it alongside ChordsJson). */
         $stmt  = $db->prepare(
             "SELECT ly.SongId   AS song_id,
                     ll.Id        AS line_id,
@@ -499,6 +514,7 @@ function lyricLinesFetchPrimaryMap(\mysqli $db, array $songIds): array
                     ll.LineText    AS text,
                     ll.LanguageCode AS line_lang,
                     ll.ChordsJson  AS line_chords,
+                    ll.Note        AS line_note,
                     ll.PartType    AS line_parttype,
                     ll.PartNumber  AS line_partnum,
                     sc.Type        AS comp_type,
@@ -712,9 +728,9 @@ function lyricLinesPreviewPhrase(\mysqli $db, string $songId, int $maxChars = 14
 
 /**
  * Assemble one song's components in the EDITOR/SNAPSHOT shape
- * `[{id,type,number,sortOrder,lines,chords,language,languages,label,sourceWorkId}]` —
+ * `[{id,type,number,sortOrder,lines,chords,notes,language,languages,label,sourceWorkId}]` —
  * the shape the v2 editor's load + revision snapshot (`ed2_buildSongSnapshot`) speak.
- * Sourced from the authoritative `tblLyricLines` (lines/chords/per-line language)
+ * Sourced from the authoritative `tblLyricLines` (lines/chords/notes/per-line language)
  * JOINed to the THIN `tblSongComponents` metadata
  * (Id/Type/Number/SortOrder/Language/Label/SourceWorkId) — reads NO doomed JSON
  * payload column, so it survives the #1235 P4/C6 drop (R2).
@@ -725,14 +741,27 @@ function lyricLinesPreviewPhrase(\mysqli $db, string $songId, int $maxChars = 14
  * null-padded per-line `languages` OVERRIDE array (effective ≠ component default →
  * the override; else null) byte-equal to the retired `LanguagesJson` (`chords` is the
  * null-padded parallel array, null when no line carries one, as `ChordsJson` held it),
- * and (d), since #1860 Phase 5, ALWAYS emits `label` (the curator display override,
+ * (d), since #1860 Phase 5, ALWAYS emits `label` (the curator display override,
  * REQ 3b) and `sourceWorkId` (the medley/work-identity link, REQ 2) — never sparse
  * here, unlike the public shape's SD3 sparse `label`: the editor is the one place
  * that must be able to distinguish "unset" from "not yet loaded", so both keys are
  * present with a `null` default on every install, migrated or not (gated per-column
- * via `lyricLinesComponentExtrasPresent()` exactly like the SELECT below).
+ * via `lyricLinesComponentExtrasPresent()` exactly like the SELECT below), and (e),
+ * since #2072, ALSO always emits `notes` — the SAME always-present-key treatment as
+ * `chords` (a key is always there; its VALUE is the null-padded parallel array, or
+ * null when no line in the component has one). `notes` is added HERE ONLY — the
+ * public/export shape (lyricLinesAssembleFromRows(), above) is DELIBERATELY left
+ * untouched (it is hashed per-song by tools/export-fidelity-snapshot.php and
+ * compared with strict `===` by tests/php/test-lyric-lines-read.php, so a new
+ * always-present key there would change ~16k stored hashes for no user-visible
+ * gain right now); a value that a curator or an importer WRITES via this editor
+ * shape can now also be READ BACK through it, which is the entire #2072 fix —
+ * before this, `tblLyricLines.Note` was written by the OpenLyrics importer and
+ * read by NOTHING, so the next whole-song save silently wiped it (see
+ * lyricLinesMergePreserved() in lyric_lines_sync.php for the writer-level half
+ * of this fix, which protects a save that never learned about `notes` at all).
  *
- * @return list<array{id:int,type:string,number:int,sortOrder:int,lines:list<string>,chords:?array,language:?string,languages:?array,label:?string,sourceWorkId:?int}>
+ * @return list<array{id:int,type:string,number:int,sortOrder:int,lines:list<string>,chords:?array,notes:?array,language:?string,languages:?array,label:?string,sourceWorkId:?int}>
  */
 function lyricLinesEditableComponents(\mysqli $db, string $songId): array
 {
@@ -760,6 +789,13 @@ function lyricLinesEditableComponents(\mysqli $db, string $songId): array
         $byCid[$cid]['lines'][]  = (string)$r['text'];
         $byCid[$cid]['chords'][] = ($r['line_chords'] !== null && $r['line_chords'] !== '')
             ? (json_decode((string)$r['line_chords'], true) ?? null) : null;
+        /* #2072 — the per-line presenter/slide note, straight off tblLyricLines.Note
+           (line_note, from the SELECT lyricLinesFetchPrimary() now carries). This is
+           the READ half of the fix: the note was already being WRITTEN by the
+           OpenLyrics importer, but nothing anywhere read it back, so it was
+           invisible in the editor and the next whole-song save destroyed it. */
+        $byCid[$cid]['notes'][]  = ($r['line_note'] !== null && $r['line_note'] !== '')
+            ? (string)$r['line_note'] : null;
         $byCid[$cid]['langs'][]  = ($r['line_lang'] !== null && $r['line_lang'] !== '')
             ? (string)$r['line_lang'] : null;
         /* #1627 — carry the tblLyricLines PK through to the editor shape.
@@ -783,10 +819,14 @@ function lyricLinesEditableComponents(\mysqli $db, string $songId): array
         $compLang = ($c['Language'] !== null && $c['Language'] !== '') ? (string)$c['Language'] : null;
         $lines    = $byCid[$cid]['lines']  ?? [];
         $chords   = $byCid[$cid]['chords'] ?? [];
+        $notes    = $byCid[$cid]['notes']  ?? [];
         $langs    = $byCid[$cid]['langs']  ?? [];
 
         $anyChord = false;
         foreach ($chords as $cv) { if ($cv !== null) { $anyChord = true; break; } }
+        /* #2072 — same always-present-key / sparse-value rule as chords above. */
+        $anyNote = false;
+        foreach ($notes as $nv) { if ($nv !== null) { $anyNote = true; break; } }
 
         /* Per-line override = effective language when it differs from the component
            default (mirrors the retired LanguagesJson; effective ≡ override under the
@@ -806,6 +846,13 @@ function lyricLinesEditableComponents(\mysqli $db, string $songId): array
             'sortOrder' => (int)$c['SortOrder'],
             'lines'     => $lines,
             'chords'    => $anyChord ? $chords : null,
+            /* #2072 — ALWAYS-present key (mirrors 'chords' immediately above,
+               not the sparse-KEY rule the public shape uses for 'label'): the
+               editor needs a stable place to read a per-line note back from,
+               even on a component where nobody has set one yet. Value is the
+               null-padded parallel array, or null when no line in this
+               component carries a note. */
+            'notes'     => $anyNote ? $notes : null,
             'language'  => $compLang,
             'languages' => $anyLang ? $langOut : null,
             /* #1860 Phase 5 §2.3 — ALWAYS-present (null default), never sparse

@@ -276,6 +276,59 @@ assertEq(
     "#1860 Phase 5 §2.3 — editor shape emits 'sourceWorkId' (REQ 2, always-present)"
 );
 
+/* ==================================================================== */
+/* #2072 — the EDITOR shape now ALSO carries `notes` (always-present,     */
+/* mirroring `chords`), so a per-line note that is WRITTEN (the OpenLyrics */
+/* importer) can also be READ BACK — before this fix, tblLyricLines.Note   */
+/* was write-only and the next whole-song save silently destroyed it.     */
+/* Same "source assertion" caveat as the block above: lyricLinesEditable-  */
+/* Components() takes a live \mysqli, so it can't be exercised as a pure   */
+/* function here.                                                         */
+/* ==================================================================== */
+assertEq(
+    str_contains($editableFn, "'notes'"),
+    true,
+    "#2072 — editor shape emits 'notes' (always-present, mirroring 'chords')"
+);
+assertEq(
+    str_contains($editableFn, 'line_note'),
+    true,
+    '#2072 — editor shape reads line_note (ll.Note AS line_note from lyricLinesFetchPrimary())'
+);
+
+/* ==================================================================== */
+/* #2072 — PROVE the PUBLIC/export shape is untouched. lyricLinesFetchPrimary() */
+/* now selects `ll.Note AS line_note` (needed by the EDITOR shape above), but  */
+/* the PUBLIC assembler lyricLinesAssembleFromRows() — the function every one   */
+/* of the pure-function tests above exercises, and the one                     */
+/* tools/export-fidelity-snapshot.php hashes per song — must NOT read that key: */
+/* it is hashed byte-for-byte across ~16,083 songs and compared with strict     */
+/* `===` by this very file's cases 1-10 above, so a new always-present key      */
+/* there would silently change every one of those hashes. This is the          */
+/* MUTATION-PROVABLE version of that promise: teach the assembler to read       */
+/* `line_note` (e.g. by sparsely emitting a public `notes` key) and this        */
+/* assertion goes red immediately, without needing a live DB or the fidelity    */
+/* snapshot tool to catch it.                                                   */
+/* ==================================================================== */
+$assembleFn = '';
+$assembleFnStart = strpos($readerCode, 'function lyricLinesAssembleFromRows');
+if ($assembleFnStart !== false) {
+    $nextFn2    = strpos($readerCode, "\nfunction ", $assembleFnStart + 10);
+    $assembleFn = substr($readerCode, $assembleFnStart, $nextFn2 === false ? null : $nextFn2 - $assembleFnStart);
+}
+assertEq($assembleFn !== '', true, 'lyricLinesAssembleFromRows() found in the ONE read path');
+assertEq(
+    str_contains($assembleFn, 'line_note'),
+    false,
+    "#2072 — the PUBLIC shape (lyricLinesAssembleFromRows) must NOT read line_note; " .
+    "'notes' is an EDITOR-shape-only addition (pass 7 C7) so the hashed public shape stays byte-identical"
+);
+assertEq(
+    str_contains($assembleFn, "'notes'"),
+    false,
+    "#2072 — the PUBLIC shape must NOT emit a 'notes' key (would change ~16k stored fidelity hashes)"
+);
+
 echo "\n  ----------------------------------------\n";
 echo "  {$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);
