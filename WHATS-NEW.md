@@ -12,6 +12,18 @@ with none of the behind-the-scenes technical detail.
 
 ## 1.3.0 — 30 August 2026
 
+- **Songs where different groups sing different lines** — Hymns and worship songs
+  often mark parts for different groups: the women sing two lines, then the men,
+  then everyone together. Until now those markings were stored as if they were
+  words of the song, so screen readers read them out as lyrics and projectors
+  displayed them as though they were sung. They are now recorded properly as who
+  sings what, shown as a clear label above each group's lines, and announced
+  correctly to screen readers. Songs with an echo — a short phrase answered back
+  by another group — are handled too, as are songs sung in a round, where groups
+  sing the same words starting at different times. If you import a song from
+  OpenLP or a similar program that already records these markings, they now come
+  across instead of being quietly dropped.
+
 - **Shuffle now respects your chosen languages** — If you've picked the
   languages you read in Settings, the Shuffle button now only offers you
   songs in those languages. Before, shuffling from "All songbooks" could
