@@ -147,8 +147,8 @@ if (_migBcp47_tableExists($mysqli, 'tblRegions')) {
     _migBcp47_out('[skip] tblRegions already present.');
 } else {
     $sql = "CREATE TABLE tblRegions (
-        Code        VARCHAR(3)   NOT NULL PRIMARY KEY,
-        Name        VARCHAR(150) NOT NULL,
+        Code        VARCHAR(3)   NOT NULL PRIMARY KEY COMMENT 'ISO 3166-1 alpha-2 (uppercase) or M.49 numeric area code',
+        Name        VARCHAR(150) NOT NULL COMMENT 'English name (CLDR-polished where available)',
         IsActive    TINYINT(1)   NOT NULL DEFAULT 1,
         CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci";

@@ -34,8 +34,10 @@ npm install
 # deliberately-deleted branch.
 git config core.hooksPath tools/githooks
 
-# Parse song data (generates data/songs.json — a one-time DB migration
-# input, not a runtime file; the app itself reads live MySQL)
+# Parse song data (writes a gitignored tmp/songs.json local build artefact
+# only — not a runtime file, and not something a fresh install needs; the
+# app itself reads live MySQL, and new song content goes in through the
+# Song Editor's bulk importers instead, #1617)
 npm run parse-songs
 
 # Run unit tests
@@ -78,13 +80,13 @@ Ensure `appWeb/.auth/db_credentials.php` is configured (see [[Database & Migrati
 
 - PHP 8.5+ with `declare(strict_types=1)` in every file
 - Modern syntax: `str_contains()`, `match` expressions, named arguments
-- Modular architecture: components in `includes/components/`, pages in `includes/pages/`
+- Modular architecture: page fragments in `includes/pages/`, small reusable chunks of markup in `includes/partials/`, and shared PHP logic (data access, validators, admin cores, …) as individual files directly under `includes/` — there is no separate `includes/components/` directory
 - Direct-access prevention at top of every include file
 - Content Security Policy with per-request nonces
 
 ### JavaScript
 
-- ES modules architecture (25+ modules in `js/modules/`, utilities in `js/utils/`)
+- ES modules architecture (well over 70 modules in `js/modules/`, plus more in `js/utils/` — the count grows with every feature, so run `find appWeb/public_html/js/modules -maxdepth 1 -name '*.js' | wc -l` for the live number rather than trusting a written-down one)
 - No build step required — native ES module loading
 - `import`/`export` syntax, no CommonJS
 - All state in the central `iHymnsApp` class
@@ -173,16 +175,14 @@ The MINOR bump is committed back to the branch as a normal push (`[skip ci]`), *
 
 | File | Purpose |
 |---|---|
-| `data/songs.json` | One-time migration input for `appWeb/.sql/migrate-json.php`; MySQL is canonical at runtime |
-| `data/songs.schema.json` | JSON Schema (draft 2020-12) for validation |
-| `tools/parse-songs.js` | Parses `.SourceSongData/` into songs.json |
+| `tests/fixtures/songs.schema.json` | JSON Schema (draft 2020-12) the interchange shape is validated against (moved out of `data/` in #1617) |
+| `tools/parse-songs.js` | Parses `.SourceSongData/` into a gitignored `tmp/songs.json` local build artefact — not a runtime file, and `data/songs.json` itself was retired (#1617) |
 | `tools/build-web.js` | Web build/packaging script |
 | `appWeb/public_html/includes/infoAppVer.php` | App version metadata |
 | `appWeb/public_html/includes/config.php` | App configuration |
 | `appWeb/public_html/api.php` | Server-side API |
 | `appWeb/public_html/index.php` | SPA shell |
-| `appWeb/public_html/manage/includes/auth.php` | Auth middleware + roles |
-| `appWeb/public_html/manage/includes/db.php` | Database + migrations |
+| `appWeb/public_html/manage/includes/auth.php` | Auth middleware + roles (requires `includes/db_mysql.php` directly — there is no separate `manage/includes/db.php`) |
 | `appWeb/public_html/js/app.js` | Main app entry point |
 | `appWeb/public_html/js/constants.js` | localStorage key constants |
-| `tests/test-song-parser.js` | 33 unit tests |
+| `tests/test-song-fixture-shape.js` | 25 unit tests validating the interchange-format *shape* against a synthetic fixture (renamed from `test-song-parser.js` in #1617, once the real `data/songs.json` corpus it used to check against was retired) |

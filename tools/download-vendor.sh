@@ -287,7 +287,7 @@ download "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui-standa
 # rather than compute the right hash. With a local fallback in place, a hash
 # mismatch now degrades to this file instead of to a dead feature.
 # ---------------------------------------------------------------------------
-echo "[10/10] SortableJS 1.15.2"
+echo "[10/11] SortableJS 1.15.2"
 download "https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js" \
          "$VENDOR_DIR/sortablejs/Sortable.min.js" \
          "Sortable.min.js"
@@ -313,6 +313,35 @@ download "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/fonts/bootstr
 download "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/fonts/bootstrap-icons.woff" \
          "$VENDOR_DIR/bootstrap-icons/fonts/bootstrap-icons.woff" \
          "bootstrap-icons.woff"
+
+# ---------------------------------------------------------------------------
+# protobuf.js 8.8.0 — the ProPresenter 7 export/import runtime
+#
+# ELI5: the code that reads and writes ProPresenter's own file format. It used
+# to be copied in by hand, so nothing ever updated it and it quietly fell years
+# behind.
+#
+# WHY IT IS HERE NOW (2026-09-05). This file is NOT under $VENDOR_DIR like
+# everything else above — it lives at manage/editor/vendor/protobuf.min.js,
+# because the PP7 exporter loads it from there by an absolute path
+# (js/modules/export-ui.js loadPP7(), and the same chain in js/modules/setlist.js).
+# It was committed by hand in #1160 and NOTHING refreshed it afterwards, so it
+# sat at v8.0.3 while package.json moved on to ^8.8.0 — inside the range of a
+# published protobufjs advisory, and loaded by PUBLIC pages (the SPA export and
+# set-list surfaces), not just the admin editor.
+#
+# That is rule #35 in miniature: two things had to agree — the pinned npm
+# version and the vendored copy — with no mechanism holding them together, so
+# they drifted. `npm audit` could never see it, because a hand-copied file in
+# the docroot is invisible to the lockfile. Vendoring it HERE is the mechanism.
+#
+# Keep the version below in step with package.json's protobufjs pin.
+# ---------------------------------------------------------------------------
+echo "[11/11] protobuf.js 8.8.0 (ProPresenter 7 runtime)"
+mkdir -p "$PUB_DIR/manage/editor/vendor"
+download "https://cdn.jsdelivr.net/npm/protobufjs@8.8.0/dist/protobuf.min.js" \
+         "$PUB_DIR/manage/editor/vendor/protobuf.min.js" \
+         "protobuf.min.js"
 
 echo ""
 echo "=== Done. Vendor libraries downloaded to: $VENDOR_DIR ==="

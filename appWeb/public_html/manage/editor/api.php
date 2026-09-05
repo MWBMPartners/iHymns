@@ -126,6 +126,21 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    overrides and load_song surfaces them — the SAME shared layer api2.php uses. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'line_enrichment.php';
+/* #2073 — vocalPartsForSong(), the "who sings what" read-back load_song
+   attaches below, next to lineTranslations/lineAnnotations. ELI5: this one
+   function already knows how to fetch every vocal-part fact about a song
+   (parts, which lines they're on, echo spans, rounds) and hand it back as
+   one tidy bundle — we just need its function definition loaded before the
+   load_song case below can call it. Detail: same file line_enrichment.php
+   models its own doc-block on (both throw \InvalidArgumentException/
+   \RuntimeException the same way and both fold to an empty/false shape on
+   an un-migrated install instead of throwing — see vocal_parts.php's own
+   header). Required here, ABOVE the switch, for the same reason as its
+   neighbours on this line: a require's effect (the function becoming
+   callable) only has to happen before the CALL runs, but every other
+   shared-core include in this file already lives up here, so a new one
+   joins the same list rather than starting a second convention. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'vocal_parts.php';
 require_once dirname(dirname(__DIR__)) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
 /* _ewExport_rtfEscape() / _ewExport_buildRtf() / _ewExport_writeDb() — the
    EasyWorship Songs.db builder (#1059) the `easyworship_export` case below
@@ -385,6 +400,32 @@ switch ($action) {
                     $enr = lineEnrichmentForSong(getDbMysqli(), $songId);
                     $song['lineTranslations'] = $enr['translations'];
                     $song['lineAnnotations']  = $enr['annotations'];
+
+                    /* #2073 — the "who sings what" sidecar: the SAME
+                       whole-song read-back (`vocalPartsForSong()`) that
+                       manage/editor/api2.php's `load_song` attaches as
+                       `vocalParts`, added in the SAME place, under the SAME
+                       key, right after the sibling sidecar two lines up
+                       (rule #35 — two payloads that must agree need to
+                       actually agree, not just both look plausible).
+                       READ-ONLY here on purpose: the "Who sings" panel that
+                       WRITES this data (assign a part to a run of lines,
+                       mark an echo span, build a round) is a v2-only
+                       Editor2 control — this classic (v1) API has no
+                       matching UI and gains none of the eight write actions
+                       (`vocal_part_upsert`, `round_upsert`, and the rest,
+                       all api2.php-only). But v1's load_song has
+                       always carried v2-only sidecars for READING regardless
+                       (lineTranslations/lineAnnotations, two lines up, are
+                       the same shape: no v1 panel edits them either) so a
+                       script, report, or future v1 screen that reads a song
+                       through the classic API sees the complete picture
+                       instead of a silent gap. `vocalPartsForSong()` never
+                       throws — it folds to `ready:false` with empty
+                       lists/maps on an un-migrated install (see its own
+                       doc-block in includes/vocal_parts.php), so nothing
+                       here needs its own try/catch or 409 branch. */
+                    $song['vocalParts'] = vocalPartsForSong(getDbMysqli(), $songId);
                 }
                 echo json_encode(['song' => $song]);
             }

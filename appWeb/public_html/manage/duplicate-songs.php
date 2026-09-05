@@ -609,6 +609,10 @@ foreach (array_chunk($candidateIds, 200) as $chunk) {
         : ", (SELECT cmp.LinesJson FROM tblSongComponents cmp
               WHERE cmp.SongId = s.SongId ORDER BY cmp.SortOrder ASC LIMIT 1) AS FirstLines";
 
+    /* @lyrics-version-exempt: (#2076) LyricsCount below is a raw COUNT(*) of
+       every tblLyrics row a song has, regardless of Source — an admin
+       "how many versions exist" signal, not a pick of WHICH one is current.
+       There is nothing here for lyricLinesPrimaryLyricsId() to resolve. */
     $stmt = $db->prepare(
         "SELECT s.SongId,
                 COALESCE(GROUP_CONCAT(DISTINCT w.Name SEPARATOR '|'), '') AS Writers,

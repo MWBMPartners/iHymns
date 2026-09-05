@@ -1709,6 +1709,150 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
     margin-top: 0.2rem;
 }
 
+/* ---------------------------------------------------------------------------
+   VOICE PARTS / ECHO (#2073 commit 8) — "who sings this line".
+   Rendered by includes/voice_parts_render.php (server) and
+   js/modules/voice-parts-render.js (browser JSON re-render, held byte-
+   identical to the server version by tests/test-voice-render-lockstep.js).
+
+   🔴 STRUCTURE: `.lyric-voice-run` is a SIBLING WRAPPER around one or more
+   `.lyric-line` elements — it is never a descendant of a `.lyric-line`, and
+   `.lyric-voice-chips` (the visible badge row) is its FIRST CHILD, not
+   nested inside any `.lyric-line`. See includes/voice_parts_render.php's
+   file header for the full "why" (five other modules read a `.lyric-line`'s
+   textContent and must never see a chip's text mixed into it).
+
+   ACCESSIBILITY (WCAG 2.1, https://www.w3.org/TR/WCAG21/):
+     - 1.3.1 Info and Relationships — the run wrapper carries role="group" +
+       aria-label (in the markup, not here); `.lyric-voice-chips` is
+       aria-hidden so the group's own name is announced once, not twice.
+     - 1.4.1 Use of Colour — deliberately NO hue is used anywhere below to
+       distinguish "who sings this" from "this is an echo". The cue is the
+       chip's WORDS ("Women", "Backing (echo)"), the reply-arrow ICON on an
+       echo chip, and — for a whole-line echo — italics + a dashed left rule
+       + extra indent on `.lyric-line--bg`. A colour-blind reader, or this
+       same page printed on a black-and-white photocopier, loses nothing.
+     - Colours: NONE. Every value below is one of this file's own EXISTING,
+       already-contrast-audited theme tokens (--surface-elevated,
+       --text-primary, --text-secondary, --card-border — the same ones
+       `.lyric-label` already uses, a few lines above) — not a new
+       "--voice-*" palette that would need its own separate light/dark/
+       high-contrast overrides. Because [data-bs-theme="dark"] and
+       [data-ihymns-theme="high-contrast"] already redefine those FOUR
+       tokens elsewhere in this file, this whole section needs NO theme-
+       specific override block of its own to work correctly in light, dark
+       AND high-contrast — reusing an audited token is doing the "theme-
+       aware" job, not re-deriving it. */
+.lyric-voice-run {
+    border-left: 2px solid var(--card-border);
+    padding-left: 0.6rem;
+    margin: 0.35rem 0 0.5rem;
+}
+.lyric-voice-run--bg {
+    border-left-style: dashed;
+}
+.lyric-voice-chips {
+    display: block;
+    margin-bottom: 0.2rem;
+}
+.lyric-voice-chip {
+    display: inline-block;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-primary);
+    background: var(--surface-elevated);
+    border: 1px solid var(--card-border);
+    padding: 0.1em 0.55em;
+    border-radius: 999px;
+    margin-right: 0.3rem;
+}
+/* A background/echo chip: dashed border + italics carry the SAME "this is
+   an echo" meaning the reply icon does, in TEXT-independent form (so it
+   still reads correctly if a future change ever drops the icon font). */
+.lyric-voice-chip--bg {
+    border-style: dashed;
+    font-style: italic;
+    text-transform: none;
+}
+.lyric-voice-chip--bg .fa-reply {
+    margin-right: 0.3em;
+}
+/* A whole-line echo (every part on the run is background) — italic,
+   indented and coloured with the muted text token, mirroring how this
+   codebase already treats a chorus/refrain as visually distinct
+   (app.css's `.lyric-chorus,.lyric-refrain { font-style: italic }`, #1337)
+   rather than inventing a new visual language for "this is different". */
+.lyric-line--bg {
+    font-style: italic;
+    padding-left: 1.25rem;
+    color: var(--text-secondary);
+}
+/* A sub-line echo/voice-switch span — underlined (dotted, so it never reads
+   as a hyperlink) in addition to the italic a `--bg` span gets from its
+   surrounding rules; a NON-bg span (a different lead voice takes over
+   mid-line) still gets the dotted underline as its own, independent cue. */
+.lyric-voice-span {
+    text-decoration: underline dotted;
+    text-underline-offset: 0.2em;
+}
+.lyric-voice-span--bg {
+    font-style: italic;
+}
+/* A small "return arrow" glyph before an echoed sub-line span — CSS
+   generated content is NEVER part of an element's textContent/innerText
+   (https://developer.mozilla.org/en-US/docs/Web/CSS/content), so this
+   cannot pollute the five modules that read `.lyric-line`'s text (rule
+   #22's "chip is a sibling" guarantee only had to protect textContent in
+   the first place because ::before content does NOT count as a risk here). */
+.lyric-voice-span--bg::before {
+    content: "\21A9";  /* ↩ — a return arrow, purely decorative */
+    font-size: 0.8em;
+    margin-right: 0.15em;
+}
+/* The small note above a round's first line ("Round · 2 voices · Voice 2
+   enters after 2 lines") — a dashed card, matching `.lyric-line-note-body`'s
+   left-border-panel idiom just above but horizontal, since a round note
+   sits BEFORE a lyric line rather than after it. */
+.lyric-round-note {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    border: 1px dashed var(--card-border);
+    border-radius: var(--radius-sm);
+    padding: 0.25rem 0.6rem;
+    margin: 0.25rem 0 0.5rem;
+}
+/* Presentation-mode overlay (js/modules/display.js's practice-mode /
+   presentation clone, `.presentation-lyrics`) — this surface is entirely
+   FREE (no JS change in this commit): display.js clones `.lyricsEl.innerHTML`
+   wholesale, so a chip built as a sibling of `.lyric-line` rides along
+   automatically. Only the on-dark-overlay colour needs adjusting here,
+   since the clone sits on a near-black backdrop rather than a card surface. */
+.presentation-lyrics .lyric-voice-chip {
+    font-size: 0.5em;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.35);
+}
+.presentation-lyrics .lyric-line--bg {
+    color: inherit;
+    opacity: 0.85;
+}
+/* CVD mode (protanopia/deuteranopia/tritanopia/achromatopsia, set via
+   [data-ihymns-cvd] on <html> — see css/accessibility.css's own header for
+   the full mechanism) — nothing above uses colour as its ONLY cue to begin
+   with (WCAG 1.4.1 is already satisfied by the chip's TEXT + the echo
+   chip's ICON + `.lyric-line--bg`'s italics/indent/dashed rule), so there is
+   no colour-dependent meaning to compensate for. This still thickens the
+   border a touch, purely to raise the shapes' contrast for a low-vision
+   viewer — the SAME small, additive touch [data-ihymns-cvd] .songbook-badge
+   already gets in css/accessibility.css. */
+[data-ihymns-cvd] .lyric-voice-chip,
+[data-ihymns-cvd] .lyric-voice-run {
+    border-width: 2px;
+}
+
 /* Song-level note(s) — rendered as a small panel immediately above
    .song-lyrics (song-markup.js inserts it via insertAdjacentElement, no
    server markup for it — this is entirely per-user data). */

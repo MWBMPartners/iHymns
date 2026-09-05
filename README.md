@@ -162,16 +162,17 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 
 ## Admin Portal
 
-Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. 48 destinations registered in the shared admin nav (`manage/includes/admin-links.php`), organised as Dashboard + 6 groups.
+Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. 48 destinations registered in the shared admin nav (`manage/includes/admin-links.php`), organised as Dashboard + 7 groups (the #1822 reorg split the live-service pages into their own group and gave every group a plain-English name).
 
 | Group | Surfaces |
 | --- | --- |
 | **Dashboard** | Library + activity snapshot, quick-links |
-| **Songs** | Song Editor · Song Requests · Revisions Audit · Missing Numbers · Duplicates & Links (`/manage/duplicate-songs`) · Deleted Songs (`/manage/deleted-songs`, #1694) |
-| **Catalogue** | Songbooks · Songbook Series · Works (`/manage/works`) · Collections (`/manage/catalogues`) · Tunes (`/manage/tunes`, #1748) · Publishers (`/manage/publishers`) · IA Reconcile (`/manage/ia-reconcile`) · External-Link Types (`/manage/external-link-types`) · Print templates · Musicians (`/manage/musicians`, incl. Add in Bulk + a registry-duplicate review companion at `/manage/musician-duplicates`, #1785) · Languages · Tags & Themes (`/manage/tags`) |
-| **Access** | Content Restrictions · Access Tiers · Licence Types (`/manage/licence-types`) · Feature Gating · Gating Hub (`/manage/gating`) · Entitlements |
-| **People** | Users · User Groups · Organisations · Venues (`/manage/venues`) · Service Projection (`/manage/service-projection`) · Lead a Service (`/manage/service-lead`) · My Organisations |
-| **Operations** | Analytics · CCLI Usage Report · My CCLI Report (`/manage/my-ccli-report`, #1861) · Data Health · Activity Log · Schema Audit · SQL Diagnostics · Database Setup · Configuration · Connected Apps (`/manage/intapps-status`) · Content-Gating No-Op Verifier · Notifications · API Keys · Outbound Webhooks (`/manage/webhooks`, #1909) |
+| **Songs** | Song Editor · Song Requests · Edit History (`/manage/revisions`) · Missing Numbers · Find Duplicates (`/manage/duplicate-songs`) · Deleted Songs (`/manage/deleted-songs`, #1694) |
+| **Song Library** | Songbooks · Songbook Series · Collections (`/manage/catalogues`) · Works (`/manage/works`) · Tunes (`/manage/tunes`, #1748) · Publishers (`/manage/publishers`) · Musicians (`/manage/musicians`, incl. Add in Bulk + a registry-duplicate review companion at `/manage/musician-duplicates`, #1785) · Languages · Tags & Themes (`/manage/tags`) · Link Types (`/manage/external-link-types`) · Print Templates · Scan Import (`/manage/ia-reconcile`) |
+| **Live Services** | Venues (`/manage/venues`) · Projector Screen (`/manage/service-projection`) · Lead a Service (`/manage/service-lead`) |
+| **People** | Users · User Groups · Organisations · My Organisations · My CCLI Report (`/manage/my-ccli-report`, #1861) |
+| **Access & Permissions** | Content Access (`/manage/gating`) · Content Restrictions · Membership Tiers (`/manage/tiers`) · Licence Types (`/manage/licence-types`) · Feature Access (`/manage/feature-gating`) · Role Permissions (`/manage/entitlements`) |
+| **System & Reports** | Analytics · CCLI Usage Report · Data Health · Activity Log · Database Structure Check (`/manage/schema-audit`) · Database Query Tool (`/manage/diagnostics`) · Database Setup · Settings (`/manage/configuration`) · Connected Apps (`/manage/intapps-status`) · Content Lock Safety Check (`/manage/gating-noop-verify`) · Notifications · API Keys · Webhooks (`/manage/webhooks`, #1909) |
 | **Help** | Help / Guides · API Docs (Swagger UI) |
 
 Every write on these pages is CSRF-protected via `validateCsrfRequest()` — a robust same-origin check (requires `X-Requested-With`, validates any present `Origin`/`Referer` host) that also accepts a valid session token, so writes never fail on a stale baked token (#1352-family). DB error messages are never leaked to clients (see server error log).
@@ -195,35 +196,32 @@ npm install
 git config core.hooksPath tools/githooks
 ```
 
-### 2. Generate song-import data
+### 2. Set up the database
 
 ```bash
-npm run parse-songs    # data/songs.json from .SourceSongData/
-```
-
-`songs.json` is a **migration input only** — it is parsed once to seed MySQL. At runtime the app reads songs **live from MySQL** (DB-direct, epic #1010); there is no server-side `songs.json` corpus cache.
-
-### 3. Set up the database
-
-```bash
-# Interactive installer — prompts for MySQL credentials, creates tables
+# Interactive installer — prompts for MySQL credentials, creates all base tables
 php appWeb/.sql/install.php
-
-# Import song data from songs.json into MySQL (one-time seed)
-php appWeb/.sql/migrate-json.php
 ```
 
-Or use the **web-based installer** at `/manage/setup-database.php` (accessible during initial setup or as a global admin) and click each migration card in turn.
+Or use the **web-based installer** at `/manage/setup-database.php` (accessible during initial setup or as a global admin): run **Install Tables**, then click **Apply all pending** to bring every migration up to date.
 
-**One-shot alternative** (schema + all data in one command):
+**One-shot alternative** (a point-in-time schema + sample-song snapshot, handy for local dev):
 
 ```bash
 mysql -u user -p ihymns < appWeb/.sql/.fulldata/ihymns-full.sql
 ```
 
-### 4. Create admin user
+This file is a manually-refreshed export, not auto-regenerated — always follow it with **Apply all pending** on `/manage/setup-database` afterwards to bring the schema up to the current `schema.sql`.
+
+### 3. Create admin user
 
 Visit `/manage/setup` in the browser to create the initial admin account. The first account becomes the **Global Admin**.
+
+### 4. Add song content
+
+There is no `songs.json` corpus feeding the database any more — song reads are live MySQL end to end (epic #1010; see rule #17 in `.claude/CLAUDE.md`). Import real song content straight into the database through the Song Editor's bulk importer at **`/manage/editor/import2.php`** — upload a `.zip` of song files (OpenSong, OpenLyrics/OpenLP, ProPresenter, VideoPsalm, ChordPro, iHymns interchange JSON, and more) and it inserts everything as a background job; or restore a real backup via `/manage/setup-database`'s restore-upload flow.
+
+`npm run parse-songs` still exists as a local convenience for eyeballing `.SourceSongData/` raw text files — it writes a `tmp/songs.json` file (gitignored) that nothing else in the app reads any more; it is not part of the setup path.
 
 ### 5. Start dev server
 
@@ -235,7 +233,7 @@ npm run dev    # PHP dev server at http://localhost:8000
 
 ## Database Setup
 
-iHymns uses MySQL with a `tblCamelCase` schema spanning 160 tables (`CREATE TABLE` statements in `appWeb/.sql/schema.sql`). The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](iHymns.wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
+iHymns uses MySQL with a `tblCamelCase` schema spanning 166 tables (`CREATE TABLE` statements in `appWeb/.sql/schema.sql`). The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](iHymns.wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
 
 ### Database prerequisites
 
@@ -284,9 +282,8 @@ For shared hosting:
 1. Copy `appWeb/.auth/db_credentials.example.php` to `db_credentials.php` and edit with your MySQL details.
 2. Navigate to `/manage/setup-database.php`.
 3. Run **Install** to create base tables.
-4. Run each **migration** card in order (the dashboard shows pending migrations above the fold).
-5. Run **Song Migration** to import song data from `songs.json`.
-6. Visit `/manage/setup` to create the admin account.
+4. Click **Apply all pending** (or run each migration card in order — the dashboard shows pending migrations above the fold).
+5. Visit `/manage/setup` to create the admin account, then sign in and use the Song Editor's bulk importer (`/manage/editor/import2.php`) to bring in song content.
 
 ---
 
@@ -310,9 +307,9 @@ Versioning is **tag-free and Conventional-Commit-driven** (#1963 → #1965 → t
 iHymns/
 ├── .claude/              Claude AI context, ProjectBrief.md, project-rules.md
 ├── .github/workflows/    CI/CD: deploy, changelog, test/lint, Apple/Android (15 workflows)
-├── .SourceSongData/      Raw song text files (source of truth)
+├── .SourceSongData/      Raw song text files (local-only, gitignored; historical import source — the live database is the source of truth)
 ├── tools/                Build tools & song-data parser
-├── data/                 Generated song data (songs.json, schema)
+├── data/                 Empty placeholder (kept in git via .gitkeep) — the old tracked songs.json corpus was retired; songs live in MySQL only
 ├── appWeb/               Web PWA application
 │   ├── .auth/                Database credentials (NOT in git)
 │   ├── .sql/                 Schema, installers, migrations

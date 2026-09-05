@@ -125,7 +125,18 @@ function accessApplySong(array $song, array $viewer): array
             || ($isCopyrighted && !$canViewCopyrighted)
             || $factRequiresLyricLicence;
         if ($denyLyricBody) {
-            foreach (['components', 'translations', 'annotations', 'vocalParts'] as $bodyKey) {
+            /* #2073 — 'rounds'/'vocalWords' joined this list alongside the
+               pre-existing 'translations'/'annotations'/'vocalParts': every
+               one of them shows "who sings which line" or "what a line
+               says", so they are lyric BODY facts and must be stripped
+               together. The per-line `voices`/`voiceSpans` keys a
+               component can carry ride INSIDE 'components' and need no
+               entry of their own — stripping 'components' already removes
+               them. `tests/php/test-lyric-body-strip-lockstep.php` asserts
+               this array is a superset of SongData::lyricBodyIncludeBlocks()
+               (rule #35 — a new block added to one side and not the other
+               is a silent content-gating leak, not a compile error). */
+            foreach (['components', 'translations', 'annotations', 'vocalParts', 'rounds', 'vocalWords'] as $bodyKey) {
                 if (array_key_exists($bodyKey, $song)) {
                     unset($song[$bodyKey]);
                 }

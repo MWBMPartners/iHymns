@@ -4574,6 +4574,118 @@ CREATE TABLE IF NOT EXISTS tblLyricWordVocalParts (
   COMMENT='Per-word vocal-part assignment (word-level overlap; overrides line) (#1137).';
 
 -- ----------------------------------------------------------------------------
+-- VOICE SPANS, ROUNDS/CANON + BACKFILL SUGGESTIONS (#2073) — line-anchored
+-- extension of the #1137 vocal-parts trio above. ZERO ALTERs to that trio;
+-- these four tables are additive + dormant (ship empty; nothing calls them
+-- until #2073's later commits land). Mirrors
+-- appWeb/.sql/migrate-vocal-parts-rounds.php byte-for-byte (rule #19).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblLyricLineVocalSpans (
+    Id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    LineId       BIGINT UNSIGNED NOT NULL,
+    VocalPartId  INT UNSIGNED    NOT NULL,
+    LyricsId     INT UNSIGNED    NOT NULL COMMENT 'Denorm of tblLyricLines.LyricsId; app derives from the line, never the caller. VocalPartId must also resolve to a tblVocalParts row on this SAME LyricsId (F5) — never a DB constraint, same convention as the #1137 trio''s own denorm LyricsId columns',
+    StartOffset  INT UNSIGNED    NOT NULL COMMENT '0-based UTF-8 code-point index, inclusive (rule #21: never byte/UTF-16)',
+    EndOffset    INT UNSIGNED    NOT NULL COMMENT 'Code-point index, exclusive; > StartOffset; a full-width span is rejected by the app (use the line assignment)',
+    IsBackground TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Echo / background voice for this span',
+    SortOrder    INT UNSIGNED    NOT NULL DEFAULT 0,
+    Source       VARCHAR(100)    NOT NULL DEFAULT 'ihymns' COMMENT 'ihymns | applemusic-ttml | openlyrics | import-marker | …',
+    MetaJson     JSON            NULL DEFAULT NULL,
+    CreatedAt    TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_Line (LineId, StartOffset), INDEX idx_Lyrics (LyricsId), INDEX idx_Part (VocalPartId),
+    CONSTRAINT fk_LineVS_Line   FOREIGN KEY (LineId)      REFERENCES tblLyricLines(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_LineVS_Part   FOREIGN KEY (VocalPartId) REFERENCES tblVocalParts(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_LineVS_Lyrics FOREIGN KEY (LyricsId)    REFERENCES tblLyrics(Id)     ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Sub-line vocal-part / echo span, code-point anchored on tblLyricLines.Id (#2073).';
+
+CREATE TABLE IF NOT EXISTS tblLyricRounds (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    LyricsId        INT UNSIGNED    NOT NULL COMMENT 'StartLineId/EndLineId/CodaStartLineId/CodaEndLineId must each resolve to a tblLyricLines row whose OWN LyricsId equals this column — app-enforced (F5), never a DB constraint; same convention as the #1137 trio''s denorm LyricsId columns',
+    Kind            VARCHAR(20)     NOT NULL DEFAULT 'round' COMMENT 'round | canon | partner-song (app-validated vs IHYMNS_ROUND_KINDS; VARCHAR not ENUM)',
+    Label           VARCHAR(120)    NULL DEFAULT NULL,
+    StartLineId     BIGINT UNSIGNED NOT NULL COMMENT 'First subject line (version order)',
+    EndLineId       BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Last subject line inclusive; NULL = the StartLineId line only. Deleting this line degrades a round to a single-line subject WITHOUT deleting the round (ON DELETE SET NULL is a well-defined state, not corruption) — but it is a silent semantic change nobody asked for, so the delete-time repair hook (extends lyricLinesSnapshotDeletedEnrichment() in lyric_lines_sync.php per the #2073 plan) must flip IntegrityStatus to ''needs-review'' when this happens (F4)',
+    TimesThrough    TINYINT UNSIGNED NOT NULL DEFAULT 2 COMMENT '1..8 — how many times the subject is sung by each voice',
+    EndingMode      VARCHAR(16)     NOT NULL DEFAULT 'complete' COMMENT 'complete | together | coda (app-validated vs IHYMNS_ROUND_ENDINGS)',
+    CodaStartLineId BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Coda span sung in unison after the round (EndingMode=coda). If EndingMode stays ''coda'' after this (or CodaEndLineId) goes NULL via a line delete, the round claims a coda it no longer has — the same repair hook flips IntegrityStatus to ''needs-review'' rather than leaving that silent (F4)',
+    CodaEndLineId   BIGINT UNSIGNED NULL DEFAULT NULL,
+    Bpm             DECIMAL(6,2)    NULL DEFAULT NULL COMMENT 'Tempo for the beats basis',
+    BeatsPerBar     TINYINT UNSIGNED NULL DEFAULT NULL,
+    BeatsPerLine    DECIMAL(6,2)    NULL DEFAULT NULL COMMENT 'Beats one subject line occupies (beats basis)',
+    IntegrityStatus VARCHAR(16)     NOT NULL DEFAULT 'ok' COMMENT 'ok | needs-review (app-validated, VARCHAR not ENUM, rule #20) — discoverability flag for the F4 "a line delete can silently change this round''s meaning" class of problem (see EndLineId / CodaStartLineId / tblLyricRoundVoices.EndLineId COMMENTs): a delete that degrades this round sets this instead of leaving the row looking healthy. Set by the future repair hook, not by this migration',
+    SortOrder       INT UNSIGNED    NOT NULL DEFAULT 0,
+    Source          VARCHAR(100)    NOT NULL DEFAULT 'ihymns',
+    MetaJson        JSON            NULL DEFAULT NULL,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_Lyrics (LyricsId, SortOrder), INDEX idx_Start (StartLineId), INDEX idx_Integrity (IntegrityStatus),
+    CONSTRAINT fk_Rounds_Lyrics    FOREIGN KEY (LyricsId)        REFERENCES tblLyrics(Id)     ON DELETE CASCADE  ON UPDATE CASCADE,
+    CONSTRAINT fk_Rounds_Start     FOREIGN KEY (StartLineId)     REFERENCES tblLyricLines(Id) ON DELETE CASCADE  ON UPDATE CASCADE,
+    CONSTRAINT fk_Rounds_End       FOREIGN KEY (EndLineId)       REFERENCES tblLyricLines(Id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_Rounds_CodaStart FOREIGN KEY (CodaStartLineId) REFERENCES tblLyricLines(Id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_Rounds_CodaEnd   FOREIGN KEY (CodaEndLineId)   REFERENCES tblLyricLines(Id) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='A round / canon / partner-song over a run of lyric lines, per lyrics version (#2073 D1).';
+
+CREATE TABLE IF NOT EXISTS tblLyricRoundVoices (
+    Id                INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    RoundId           INT UNSIGNED    NOT NULL,
+    VoiceNumber       TINYINT UNSIGNED NOT NULL COMMENT '1..N contiguous; voice 1 always enters at 0',
+    VocalPartId       INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Optional registry part singing this voice; NULL = an unnamed "Voice N". Must belong to the SAME LyricsId as this voice''s own round (tblLyricRounds.LyricsId) — app-enforced (F5), never a DB constraint',
+    Label             VARCHAR(120)    NULL DEFAULT NULL,
+    EntryBasis        VARCHAR(10)     NOT NULL DEFAULT 'lines' COMMENT 'lines | beats | ms — WHICH of EntryLines/EntryBeats/EntryMs is authoritative for this voice when more than one is populated (app-validated vs IHYMNS_ROUND_ENTRY_BASES, VARCHAR not ENUM, rule #20). EntryLines is always populated so ''lines'' never needs a null-check; when this is ''beats''/''ms'' the matching column below is authoritative INSTEAD and EntryLines'' own stored value (even 0, its default) is not meaningful — resolves the "0 vs not set" ambiguity (F3) by making the reader consult this column first rather than guessing from a bare 0',
+    EntryLines        SMALLINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Entry offset in subject LINES; authoritative only when EntryBasis=''lines'' (always true for voice 1, which enters at 0)',
+    EntryBeats        DECIMAL(8,3)    NULL DEFAULT NULL COMMENT 'Entry offset in beats; authoritative only when EntryBasis=''beats'' (needs round Bpm+BeatsPerLine). 3 decimal places, not 2 (F3): no finite decimal scale is ever EXACT for a triplet (1/3 beat repeats forever in base 10) — millibeat precision keeps that rounding error under half a millisecond even at a fast tempo, the real ceiling for a congregational display, not a DAW. Kept SIGNED, not UNSIGNED: MySQL deprecated the UNSIGNED attribute on DECIMAL/FLOAT/DOUBLE in 8.0.17, so a negative offset (musically invalid — no voice ever enters before voice 1''s beat 0) is rejected by the APP, not the column type (rule #20''s "VARCHAR + app-validated" discipline, applied to a numeric range instead of a vocabulary)',
+    EntryMs           INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Entry offset in ms; authoritative only when EntryBasis=''ms'' (needs timed subject lines)',
+    IntervalSemitones TINYINT         NULL DEFAULT NULL COMMENT 'Canon at an interval (e.g. 7 = at the fifth); NULL = unison',
+    StartLineId       BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Partner-song: this voice''s OWN subject span (both or neither — see EndLineId). Must resolve to the SAME LyricsId as this voice''s round (F5)',
+    EndLineId         BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Partner-song span end. If either this or StartLineId goes NULL via a line delete while the other survives, the "both or neither" invariant breaks silently — the repair hook (see tblLyricRounds.IntegrityStatus) must flip the PARENT round''s IntegrityStatus to ''needs-review'' (F4) rather than leave a half-span voice looking normal',
+    TimesThrough      TINYINT UNSIGNED NULL DEFAULT NULL COMMENT 'Per-voice override of the round''s TimesThrough',
+    SortOrder         INT UNSIGNED    NOT NULL DEFAULT 0,
+    UNIQUE KEY uq_Round_Voice (RoundId, VoiceNumber),
+    INDEX idx_Part (VocalPartId),
+    CONSTRAINT fk_RoundV_Round FOREIGN KEY (RoundId)     REFERENCES tblLyricRounds(Id) ON DELETE CASCADE  ON UPDATE CASCADE,
+    CONSTRAINT fk_RoundV_Part  FOREIGN KEY (VocalPartId) REFERENCES tblVocalParts(Id)  ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_RoundV_Start FOREIGN KEY (StartLineId) REFERENCES tblLyricLines(Id)  ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_RoundV_End   FOREIGN KEY (EndLineId)   REFERENCES tblLyricLines(Id)  ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='One row per voice of a round: entry offset in lines / beats / ms (#2073 D1).';
+
+CREATE TABLE IF NOT EXISTS tblVocalPartSuggestions (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    SongId          VARCHAR(20)     NOT NULL,
+    LyricsId        INT UNSIGNED    NOT NULL COMMENT 'Every one of MarkerLineId/StartLineId/EndLineId must resolve to a tblLyricLines row whose OWN LyricsId equals this column — app-enforced (F5), never a DB constraint; mirrors vocalPartsResolveLines()''s existing same-version guard and the #1137 trio''s own denorm-LyricsId convention',
+    MarkerLineId    BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'The LIVE FK to the line carrying the marker text; goes NULL once Accept deletes/rewrites that line (ON DELETE SET NULL). DetectionLineId below, not this column, is the finding''s STABLE identity (F2) — this column is for joining to the CURRENT line text while it still exists',
+    DetectionLineId BIGINT UNSIGNED NOT NULL COMMENT 'Plain snapshot of the marker line''s Id AT DETECTION TIME — deliberately NOT itself a foreign key, so it is unaffected once MarkerLineId (above) goes NULL. Combined with Form + MarkerOffset this is the finding''s STABLE detection identity (F2): a re-run of an improved detector against the SAME real occurrence supersedes (UPDATEs, via INSERT...ON DUPLICATE KEY) the SAME row instead of colliding with an unrelated one, while two markers of the same Form on the SAME line (distinguished by MarkerOffset) get two independent rows — the old uq_Marker_Form (MarkerLineId, Form) key was both too TIGHT (couldn''t tell those two apart) and too LOOSE (MySQL treats every NULL as distinct, so once MarkerLineId went NULL nothing stopped unlimited duplicate rows)',
+    MarkerOffset    INT UNSIGNED    NOT NULL COMMENT '0-based UTF-8 code-point offset of MarkerText''s start within the marker line at detection time (rule #21: never byte/UTF-16) — the discriminator (F2) that lets two same-Form markers on one line (e.g. two parenthetical asides) coexist as separate rows',
+    StartLineId     BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'First line the part applies to (standalone form: the run after the marker; prefix/paren: the marker line itself); must resolve to the SAME LyricsId as this row''s own LyricsId (F5)',
+    EndLineId       BIGINT UNSIGNED NULL DEFAULT NULL,
+    Form            VARCHAR(20)     NOT NULL COMMENT 'standalone | prefix | paren | canon-note (IHYMNS_VOCAL_DETECT_FORMS)',
+    MarkerText      VARCHAR(120)    NOT NULL,
+    PartKind        VARCHAR(30)     NOT NULL COMMENT 'Proposed IHYMNS_VOCAL_PART_KINDS key (the PRIMARY action in ProposedJson, projected here for cheap list filtering/display — see ProposedJson); canon-note rows use ''all'' and propose a round. A marker in IHYMNS_VOCAL_AMBIGUOUS_SECTION_MARKERS (e.g. SOLO) still proposes its voice-part kind here, never a section — see Confidence',
+    Label           VARCHAR(120)    NULL DEFAULT NULL,
+    IsBackground    TINYINT(1)      NOT NULL DEFAULT 0,
+    ProposedJson    JSON            NOT NULL COMMENT 'The ordered, COMPLETE list of actions Accept must run for this ONE finding (F1) — e.g. "assign the Women part to lines 3-4" AND "delete the marker line" are typically BOTH needed, which neither a single action nor PartKind/Label/IsBackground/StartLineId/EndLineId alone could represent. Each item is {action, ...detail}; "action" is app-validated against a central map, never a DB ENUM (rule #20). AppliedJson (below) mirrors this exact shape once Accept has actually run it — that symmetry is what lets Undo reverse it precisely',
+    Confidence      VARCHAR(10)     NOT NULL DEFAULT 'medium' COMMENT 'high | medium | low (VARCHAR, never the grandfathered ENUM shape). A marker word in IHYMNS_VOCAL_AMBIGUOUS_SECTION_MARKERS (e.g. SOLO, which also names a real tblSongPartTypes section) is always forced to ''low'' here — English text alone cannot tell the two apart, so only a curator can (the SOLO decision)',
+    Status          VARCHAR(20)     NOT NULL DEFAULT 'pending' COMMENT 'pending | accepted | dismissed | undone | stale — stale is set when re-validation finds the marker line changed or vanished out from under a still-pending row; this table''s own answer to the F4 "a line delete can silently invalidate a finding" problem, chosen over a DB-level FK trick because a suggestion must SURVIVE its marker line''s eventual deletion to keep its review history',
+    DetectorVersion SMALLINT UNSIGNED NOT NULL DEFAULT 1,
+    AppliedJson     JSON            NULL DEFAULT NULL COMMENT 'What accept did (part id, line ids, removed/rewritten marker) so Undo can reverse it exactly — the executed twin of ProposedJson above',
+    ReviewedBy      INT UNSIGNED    NULL DEFAULT NULL,
+    ReviewedAt      DATETIME        NULL DEFAULT NULL,
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_Detection (DetectionLineId, Form, MarkerOffset),
+    INDEX idx_Marker (MarkerLineId), INDEX idx_Song_Status (SongId, Status), INDEX idx_Status_Conf (Status, Confidence),
+    CONSTRAINT fk_VPS_Song   FOREIGN KEY (SongId)       REFERENCES tblSongs(SongId)  ON DELETE CASCADE  ON UPDATE CASCADE,
+    CONSTRAINT fk_VPS_Lyrics FOREIGN KEY (LyricsId)     REFERENCES tblLyrics(Id)     ON DELETE CASCADE  ON UPDATE CASCADE,
+    CONSTRAINT fk_VPS_Marker FOREIGN KEY (MarkerLineId) REFERENCES tblLyricLines(Id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_VPS_Start  FOREIGN KEY (StartLineId)  REFERENCES tblLyricLines(Id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_VPS_End    FOREIGN KEY (EndLineId)    REFERENCES tblLyricLines(Id) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Curator review queue for voice-part markers found in lyric text by the shared detector (#2073 D4 / #1260).';
+
+-- ----------------------------------------------------------------------------
 -- tblSongPartTypes (#1138) — controlled song-section vocabulary (the typed key
 -- tblLyricLines.PartTypeSlug references; tblSongComponents.Type stays free-text).
 -- ----------------------------------------------------------------------------

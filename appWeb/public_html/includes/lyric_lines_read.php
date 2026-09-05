@@ -30,6 +30,15 @@ declare(strict_types=1);
  * (present only when `tblSongComponents.Label` is set) — absent on every un-labelled
  * component, so the pre-Phase-5 byte parity holds verbatim for the whole un-labelled
  * corpus.
+ * Since #2073 ("who sings this line" — voice parts / echo / rounds) the shape carries
+ * two MORE optional sparse keys, appended AFTER `lineLanguages`: `voices` (consecutive
+ * same-part lines folded into a run — see `lyricLinesFoldVoiceRuns()` below) and
+ * `voiceSpans` (a mid-line echo/voice switch, code-point anchored — rule #21). The
+ * corpus stores ZERO voice rows today, so both are ABSENT on every existing song and
+ * the byte-parity claim above holds unchanged for the whole corpus; they only appear
+ * once a curator (or an importer) assigns a part to a line, which no write path does
+ * yet in this commit (#2073 commit 4 is READ-ONLY — see `includes/vocal_parts.php`'s
+ * own commit-scope note).
  *
  * The assembly CORE (lyricLinesAssembleFromRows) is PURE — no DB, no I/O — so it is
  * unit-tested directly (tests/php/test-lyric-lines-read.php). The DB wrappers fetch the
@@ -161,6 +170,112 @@ function lyricLinesComponentExtrasPresent(\mysqli $db): array
 }
 
 /**
+ * ELI5: turn "line 3 = Women, line 4 = Women, line 5 = Men" into "lines 3-4
+ * are a Women run, line 5 starts a Men run" — one wrapper per RUN, not one
+ * per line, so a renderer prints ONE "WOMEN" header over two lines instead
+ * of two.
+ *
+ * DETAILED (#2073 "Design pass 7" §5.1, the pure fold Pass 3 §1.1 designed —
+ * implemented here VERBATIM per that pass's own worked truth table): storage
+ * is one row per (line, part) — `tblLyricLineVocalParts`, read via
+ * `vocalPartsLinesMapForSongs()` — but the SUNG unit a renderer wants is a
+ * contiguous RUN of lines sharing the exact same set of parts, in the exact
+ * same order (order matters: it is the display order a duet's two chips
+ * print in). Folding that ONCE here means no consumer (the song page, the
+ * present-mode slide model, the print PDF, a future native client) re-derives
+ * runs its own way and risks disagreeing about where one starts (rule #22).
+ * PURE — no DB, no I/O — so it is unit-tested directly with plain arrays in
+ * `tests/php/test-lyric-lines-read.php` rather than needing a live song.
+ *
+ * ALGORITHM (exact — mirrors the worked table in the plan so a future reader
+ * can check this code against it line-by-line):
+ *   - Walk `$lineIds` in order, each with the (possibly empty) list of parts
+ *     `$voicesByLine` carries for it.
+ *   - A line with NO parts at all is a GAP: it closes whatever run was open
+ *     and resets adjacency — the run that starts again after a gap has every
+ *     part `enters:true`, because nothing on the immediately preceding line
+ *     was singing anything for it to continue FROM.
+ *   - A line whose parts (by id + background-ness, IN THE GIVEN ORDER — never
+ *     re-sorted, so a duet's two chips keep whichever order the SQL handed
+ *     back) exactly match the run currently open EXTENDS that run (`to`
+ *     moves forward); anything else STARTS a new run.
+ *   - `enters` on a NEW run's part is true unless that exact part id was
+ *     ALSO singing on the immediately preceding (adjacent) line — i.e. it was
+ *     part of the run that just closed. A part that drops out for one line
+ *     and comes straight back in is NOT a re-entry from this function's point
+ *     of view unless a GAP or a genuinely different set intervened — closing
+ *     ids are read from the run being replaced BEFORE it is overwritten, so
+ *     this reads correctly even when the SAME call is building run after run
+ *     in one pass.
+ *
+ * @param list<int> $lineIds  the component's line ids/positions, in order —
+ *      the assembler passes 0-based POSITION indexes (see `$flush` below),
+ *      matching the public shape's own "`from`/`to` are indexes into `lines`"
+ *      contract, but this function itself only ever compares entries for
+ *      equality, so it is agnostic to what the ints actually mean.
+ * @param array<int, list<array{id:int,kind:string,label:string,bg:bool}>> $voicesByLine
+ *      keyed by the SAME value `$lineIds` carries; each entry ALREADY ordered
+ *      (join SortOrder, then part SortOrder, then part Id — the order
+ *      `vocalPartsLinesMapForSongs()` returns).
+ * @return list<array{from:int,to:int,parts:list<array{id:int,kind:string,label:string,bg:bool,enters:bool}>}>
+ */
+function lyricLinesFoldVoiceRuns(array $lineIds, array $voicesByLine): array
+{
+    $runs    = [];   // list of run arrays, built in order
+    $curIdx  = null; // index into $runs of the run currently open, or null (no run open / a gap just happened)
+    $prevSig = null; // the "signature" (ordered id:bg pairs) of the run currently open
+
+    foreach (array_values($lineIds) as $i => $lineId) {
+        $parts = $voicesByLine[$lineId] ?? [];
+
+        if ($parts === []) {
+            /* A gap CLOSES the run and resets adjacency — the next run, if
+               any, starts fresh with every part "entering". */
+            $curIdx  = null;
+            $prevSig = null;
+            continue;
+        }
+
+        /* Order-preserving signature: two lines extend the SAME run only
+           when their parts are IDENTICAL in id, background-ness AND order —
+           never re-sorted, so a duet's chip order is a genuine part of what
+           "the same run" means. */
+        $sig = implode('|', array_map(
+            static fn(array $p): string => $p['id'] . ':' . ($p['bg'] ? '1' : '0'),
+            $parts
+        ));
+
+        if ($curIdx !== null && $sig === $prevSig) {
+            $runs[$curIdx]['to'] = $i;
+            continue;
+        }
+
+        /* Starting a NEW run. "enters" reads the ids of the run being
+           REPLACED (adjacent — it ended on line i-1) — computed BEFORE that
+           run is overwritten below, and empty when a gap just reset $curIdx
+           (every part in the new run "enters" after a gap, by definition). */
+        $closingIds = $curIdx !== null ? array_column($runs[$curIdx]['parts'], 'id') : [];
+
+        $newParts = [];
+        foreach ($parts as $p) {
+            $newParts[] = [
+                'id'     => $p['id'],
+                'kind'   => $p['kind'],
+                'label'  => $p['label'],
+                'bg'     => $p['bg'],
+                'enters' => !in_array($p['id'], $closingIds, true),
+            ];
+        }
+
+        $runs[]  = ['from' => $i, 'to' => $i, 'parts' => $newParts];
+        $curIdx  = count($runs) - 1;
+        $prevSig = $sig;
+    }
+
+    return $runs;
+}
+
+/**
  * Assemble ordered per-line rows (one song) into the component-shaped array
  * `SongData::_getComponents()` returns. **PURE** — no DB, no I/O.
  *
@@ -183,21 +298,44 @@ function lyricLinesComponentExtrasPresent(\mysqli $db): array
  * and the corpus-wide byte-parity claim stay literally true for the whole
  * un-labelled corpus.
  *
+ * #2073 ("who sings this line") §5.1-5.2: two MORE parameters, both defaulted
+ * so every existing call site (there are dozens across the app) that passes
+ * only `$rows` gets the exact byte-identical output it always did — this is
+ * what makes commit 4 a pure ADDITION rather than a behaviour change.
+ * `$voicesByLine` feeds the pure fold `lyricLinesFoldVoiceRuns()` (above) to
+ * emit a SPARSE `voices` key (one entry per RUN of consecutive lines sharing
+ * the same parts — never one per line); `$spansByLine` emits a SPARSE
+ * `voiceSpans` key for a mid-line echo/voice switch. Both are appended AFTER
+ * `lineLanguages` — resulting public key order:
+ * `type, number, lines, chords, language, [label], lineIds, [lineLanguages],
+ * [voices], [voiceSpans]`. Neither key is EVER emitted as an empty array —
+ * sparse means the key itself is absent, exactly like `label`/`lineLanguages`
+ * above, which is what keeps the ~16,083-song fidelity-snapshot hash
+ * byte-identical for the whole corpus today (it stores zero voice rows).
+ *
  * @param list<array{
  *   line_id:int|string, cid:int|string|null, text:string, line_lang:?string,
  *   line_chords:?string, comp_type:?string, comp_number:int|string|null,
  *   comp_lang:?string, line_parttype:?string, line_partnum:int|string|null,
  *   comp_label?:?string
  * }> $rows  one song's lines, already ordered by global SortOrder
- * @return list<array{type:string,number:int,lines:list<string>,chords:?array,language:?string,label?:string,lineIds?:list<int>,lineLanguages?:list<?string>}>
+ * @param array<int, list<array{id:int,kind:string,label:string,bg:bool}>> $voicesByLine
+ *   keyed by `line_id` (as carried in `$rows`) — one entry per part assigned
+ *   to that line, already ordered (join SortOrder, then part SortOrder, then
+ *   part Id). [] (the default) ⇒ no `voices` key is ever emitted.
+ * @param array<int, list<array{id:int,partId:int,kind:string,label:string,bg:bool,start:int,end:int}>> $spansByLine
+ *   keyed by `line_id`; `start`/`end` are 0-based UTF-8 CODE-POINT offsets
+ *   into that line's text (rule #21 — never byte/UTF-16), `end` exclusive.
+ *   [] (the default) ⇒ no `voiceSpans` key is ever emitted.
+ * @return list<array{type:string,number:int,lines:list<string>,chords:?array,language:?string,label?:string,lineIds?:list<int>,lineLanguages?:list<?string>,voices?:list<array{from:int,to:int,parts:list<array{id:int,kind:string,label:string,bg:bool,enters:bool}>}>,voiceSpans?:list<array{line:int,start:int,end:int,part:array{id:int,kind:string,label:string,bg:bool}}>}>
  */
-function lyricLinesAssembleFromRows(array $rows): array
+function lyricLinesAssembleFromRows(array $rows, array $voicesByLine = [], array $spansByLine = []): array
 {
     $components = [];
     $cur        = null;     // the component being built
     $curKey     = null;     // grouping key of the current run
 
-    $flush = static function (?array &$c) use (&$components): void {
+    $flush = static function (?array &$c) use (&$components, $voicesByLine, $spansByLine): void {
         if ($c === null) { return; }
         /* Reconstruct the chords parallel array: null when no line carried chords
            (the universal case today), else the per-line decoded values — byte-equal
@@ -227,6 +365,44 @@ function lyricLinesAssembleFromRows(array $rows): array
            component default (mirrors SongData::_getComponents). */
         foreach ($c['_lineLangs'] as $ll) {
             if ($ll !== $c['language']) { $out['lineLanguages'] = $c['_lineLangs']; break; }
+        }
+        /* #2073 §5.2 — voice RUNS (sparse: key present only when this component
+           has >=1 run — a component with no assigned parts folds to []
+           internally and lyricLinesFoldVoiceRuns() returns [], so the `!== []`
+           guard is what keeps this key ABSENT for the whole un-annotated
+           corpus, never present-but-empty). $voicesByLine is keyed by the raw
+           tblLyricLines.Id, exactly what `_lineIds` already carries. */
+        if ($voicesByLine !== []) {
+            $runs = lyricLinesFoldVoiceRuns($c['_lineIds'], $voicesByLine);
+            if ($runs !== []) {
+                $out['voices'] = $runs;
+            }
+        }
+        /* #2073 §5.2 — sub-line voice SPANS (sparse, same "absent not empty"
+           rule). `line` is the 0-based POSITION of the spanned line WITHIN
+           this component (an index into `lines`/`lineIds`) — not the raw
+           line id — so a renderer can address `lines[span.line]` directly
+           without a second lookup; offsets are CODE POINTS (rule #21). */
+        if ($spansByLine !== []) {
+            $spans = [];
+            foreach ($c['_lineIds'] as $pos => $lid) {
+                foreach ($spansByLine[$lid] ?? [] as $s) {
+                    $spans[] = [
+                        'line'  => $pos,
+                        'start' => (int)$s['start'],
+                        'end'   => (int)$s['end'],
+                        'part'  => [
+                            'id'    => (int)$s['partId'],
+                            'kind'  => (string)$s['kind'],
+                            'label' => (string)$s['label'],
+                            'bg'    => (bool)$s['bg'],
+                        ],
+                    ];
+                }
+            }
+            if ($spans !== []) {
+                $out['voiceSpans'] = $spans;
+            }
         }
         $components[] = $out;
         $c = null;
@@ -289,15 +465,152 @@ function lyricLinesAssembleFromRows(array $rows): array
 }
 
 /**
+ * ELI5: work out which "copy of the words" is THE copy for a song — the one
+ * everyone reads — and hand back its row number in `tblLyrics`, or 0 if the
+ * song does not have one of that kind yet.
+ *
+ * DETAILED (#2076 — the ONE shared lyrics-version resolver): every line
+ * reader in this file (`lyricLinesFetchPrimary()` right below, and its
+ * bulk/first-line/preview siblings further down) keys its JOIN on
+ * `Source = 'ihymns'` — never `IsPrimary` (#1235 R6/PF3, restated on
+ * `lyricLinesFetchPrimary()`'s own doc-block). Before #2076,
+ * `SongData::_primaryLyricsId()` used a DIFFERENT rule
+ * (`Status = 'approved' ORDER BY IsPrimary DESC`) to decide which version's
+ * enrichment to hand back for `?include=vocalParts|translations|annotations`.
+ * On a song that had BOTH an `ihymns` row and an approved TTML import with
+ * `IsPrimary = 1`, that meant the enrichment blocks were read against the
+ * TTML version while every `lineId` in the song's component payload came
+ * from the `ihymns` version — two arrays that never shared an id, so a
+ * client could never anchor a translation or annotation to a line. Nothing
+ * errored anywhere; the lists were just quietly unrelated. This function is
+ * now the ONE place that decision gets made, so a line reader and an
+ * enrichment reader can never disagree about which version they mean again.
+ *
+ * Returns 0 — never throws FOR THE NOT-FOUND CASE — when the song has no
+ * `ihymns` row yet (a TTML-only import nobody has opened in the editor), so
+ * a caller can fall back to its own rule for that one case
+ * (`SongData::_primaryLyricsId()` does exactly this).
+ *
+ * ERROR POLICY — ANSWER OR FAIL, NEVER GUESS (an independent review caught
+ * a regression here before this function's #2076 write-side use ever
+ * shipped): a genuine DB FAILURE (a deadlock, a lock-wait timeout, a lost
+ * connection) PROPAGATES out of this function — it does NOT degrade to 0.
+ * An earlier revision caught `\Throwable` here and returned 0, which reads
+ * to every caller EXACTLY like "no ihymns row yet" — indistinguishable
+ * from the real not-found case. That degrade is fine, even desirable, for
+ * a pure READ (a missing enrichment block is a harmless omission) — but
+ * `lyricLinesEnsurePrimaryVersion()` (`lyric_lines_sync.php`) uses this
+ * function's answer to decide whether to INSERT a brand-new `tblLyrics`
+ * row: a swallowed deadlock there turned into "no row found, create one"
+ * instead of "the transaction is already dead, stop" — risking a duplicate
+ * version row and a partial save that still reports success. This
+ * resolver cannot know which kind of caller is asking, so it does
+ * neither: it answers, or it lets the failure through, and each CALL SITE
+ * decides what a failure means for it — a read (`SongData::_primaryLyricsId()`)
+ * wraps this call in its own try/catch and degrades to its legacy fallback
+ * query; a write (`lyricLinesEnsurePrimaryVersion()`, the `duplicate_song`
+ * case in `manage/editor/api2.php`) lets it propagate so the surrounding
+ * transaction handling (`$db->rollback(); throw $e;`) runs — the same
+ * "a failing statement throws" contract every other write in this codebase
+ * already lives under (MYSQLI_REPORT_STRICT, see this file's header
+ * comment).
+ *
+ * CACHING — per CONNECTION and per SONG, read-safe, write-unsafe. Only a
+ * FOUND row is ever memoised: `lyricLinesEnsurePrimaryVersion()` calls this
+ * function to do its "find" half and, on a miss, immediately INSERTs the
+ * very row being looked for — caching a MISS would hide that brand-new row
+ * from this function for the rest of the request. The memo is keyed on
+ * `spl_object_id($db)` as well as `$songId` (mirrors `searchFoldReady()`'s
+ * per-connection memo in `search_fold.php`), so an answer cached for one
+ * `\mysqli` handle can never be handed back to a different one — concretely,
+ * `manage/setup-database.php`'s migration runner can close and reopen
+ * `getDbMysqli()`'s singleton mid-request, and a reconnect there mints a
+ * brand-new object id, so the old memo simply misses rather than silently
+ * answering for a connection it never ran on.
+ *
+ * WHY A FOUND ROW IS SAFE TO MEMOISE FOR A READ BUT NOT FOR A WRITE — the
+ * corrected version of a claim this doc-block used to make ("a found row
+ * cannot go stale within one request"). That is true for a plain READ: a
+ * request that only ever reads never deletes a song's 'ihymns' row, so a
+ * found answer stays true for the rest of it. It is NOT true in general —
+ * `lyricLinesEnsurePrimaryVersion()` runs INSIDE a transaction that can
+ * still ROLL BACK after this call returns. A row this call found (possibly
+ * one INSERTed moments earlier in that SAME transaction — InnoDB shows a
+ * connection its own uncommitted writes) can vanish the instant that
+ * transaction rolls back, while a memo entry would keep insisting it is
+ * still there for anything else in the same request that asks. So a
+ * find-or-create passes `$useCache = false`: it neither reads nor writes
+ * the memo, and always sees live database state — the one guarantee a
+ * find-or-create cannot do without.
+ *
+ * @param bool $useCache  Read AND write the per-connection/per-song memo
+ *      (default true, safe for a plain read). Pass `false` from inside a
+ *      transaction that could still roll back — see "WHY A FOUND ROW..."
+ *      above; `lyricLinesEnsurePrimaryVersion()` is the worked example.
+ *
+ * @see lyricLinesFetchPrimary()  the identical `Source = 'ihymns'` filter,
+ *      joined straight to line data instead of standing alone. Kept in
+ *      lockstep by making every OTHER version-resolving site in the
+ *      codebase call this function (or record why it can't) — see
+ *      tests/php/test-lyrics-version-resolver.php.
+ */
+function lyricLinesPrimaryLyricsId(\mysqli $db, string $songId, bool $useCache = true): int
+{
+    /* @lyrics-version-exempt: this function IS the shared resolver (#2076) —
+       there is nothing else for it to delegate to. */
+    static $cache = [];
+    /* Two dimensions on purpose (see the CACHING doc-block above): WHICH
+       connection asked, then WHICH song — never just the song, so an answer
+       cached for one \mysqli handle can never be handed back to another. */
+    $connId = spl_object_id($db);
+    if ($useCache && isset($cache[$connId][$songId])) {
+        return $cache[$connId][$songId];
+    }
+
+    /* Deliberately NO try/catch here — see the ERROR POLICY doc-block above.
+       A failing statement throws (MYSQLI_REPORT_STRICT); that throw is left
+       to propagate. Degrading it to 0 is each CALLER's decision, never this
+       resolver's — a read wraps this call in its own try/catch, a write
+       lets it reach its transaction's rollback handling. */
+    $stmt = $db->prepare(
+        "SELECT Id FROM tblLyrics WHERE SongId = ? AND Source = 'ihymns' LIMIT 1"
+    );
+    $stmt->bind_param('s', $songId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    $id = $row !== null ? (int)$row[0] : 0;
+
+    /* Only a FOUND row is remembered, and only when the caller wants the
+       memo at all (see the CACHING / WHY A FOUND ROW... doc-blocks above).
+       lyricLinesEnsurePrimaryVersion() (lyric_lines_sync.php) calls this
+       function to do its "find" half and, on a miss, immediately INSERTs
+       the very row being looked for — caching a MISS would hide that
+       brand-new row from this function for the rest of the request. */
+    if ($useCache && $id > 0) {
+        $cache[$connId][$songId] = $id;
+    }
+    return $id;
+}
+
+/**
  * Fetch one song's primary ('ihymns') lyric lines in global SortOrder, each joined to
  * its thin component metadata. Keyed on `Source='ihymns'` only (never IsPrimary —
  * #1235 R6/PF3). Returns [] for a song with no mirrored lines (the LEFT-JOIN-shaped
  * "0-line lyrics" case). One query.
  *
+ * #2076: deliberately does NOT call lyricLinesPrimaryLyricsId() — see the
+ * `@lyrics-version-exempt` note inside the function body for why.
+ *
  * @return list<array<string,mixed>>  rows shaped for lyricLinesAssembleFromRows()
  */
 function lyricLinesFetchPrimary(\mysqli $db, string $songId): array
 {
+    /* @lyrics-version-exempt: this reads the LINES themselves, not just the
+       version Id, so it needs its own JOIN rather than a call to
+       lyricLinesPrimaryLyricsId() first (that would be a second round trip
+       for no benefit). See the doc-block above for why the WHERE clause
+       below must stay byte-identical to that function's own filter (#2076). */
     /* #1860 Phase 5 §2.2 — sc.Label is added to the SELECT ONLY when the column
        exists (gated column list, never a bare reference — rule #19: it would
        throw under MYSQLI_REPORT_STRICT on an un-migrated install). SourceWorkId
@@ -307,12 +620,24 @@ function lyricLinesFetchPrimary(\mysqli $db, string $songId): array
        it. */
     $extras   = lyricLinesComponentExtrasPresent($db);
     $labelCol = $extras['Label'] ? ",\n                sc.Label       AS comp_label" : '';
+    /* #2072 — ll.Note is selected UNCONDITIONALLY, mirroring ll.ChordsJson right
+       above it: lyricLinesMirrorPresent() (the ONE gate every caller of this
+       function checks before calling it) already requires BOTH ChordsJson AND
+       Note to exist (rule #25's aligned read/write gate), so there is no
+       un-migrated-install case where ChordsJson is safe to name here but Note
+       is not. lyricLinesAssembleFromRows() (the PUBLIC/export shape) does NOT
+       read this new `line_note` key — only lyricLinesEditableComponents() (the
+       EDITOR shape, below) does — so adding the column here changes NOTHING
+       about the public shape a caller like SongData::getSongById() sees; it
+       only makes the value available to the ONE reader that is being taught to
+       use it. See lyricLinesEditableComponents() for where it is spent. */
     $stmt = $db->prepare(
         "SELECT ll.Id        AS line_id,
                 ll.ComponentId AS cid,
                 ll.LineText    AS text,
                 ll.LanguageCode AS line_lang,
                 ll.ChordsJson  AS line_chords,
+                ll.Note        AS line_note,
                 ll.PartType    AS line_parttype,
                 ll.PartNumber  AS line_partnum,
                 sc.Type        AS comp_type,
@@ -340,6 +665,9 @@ function lyricLinesFetchPrimary(\mysqli $db, string $songId): array
  */
 function lyricLinesFetchPrimaryMap(\mysqli $db, array $songIds): array
 {
+    /* @lyrics-version-exempt: the bulk sibling of lyricLinesFetchPrimary() —
+       same reasoning (#2076): it reads lines for MANY songs in one chunked
+       query, so there is no single Id to hand back from a helper call. */
     $songIds = array_values(array_unique(array_filter($songIds, static fn($s) => $s !== '' && $s !== null)));
     if (empty($songIds)) { return []; }
 
@@ -352,6 +680,9 @@ function lyricLinesFetchPrimaryMap(\mysqli $db, array $songIds): array
     foreach (array_chunk($songIds, LYRIC_LINES_READ_CHUNK) as $chunk) {
         $place = implode(',', array_fill(0, count($chunk), '?'));
         $types = str_repeat('s', count($chunk));
+        /* #2072 — ll.Note, same unconditional add as the single-song sibling
+           lyricLinesFetchPrimary() above (see its doc-comment for why: the ONE
+           mirror-present gate already requires it alongside ChordsJson). */
         $stmt  = $db->prepare(
             "SELECT ly.SongId   AS song_id,
                     ll.Id        AS line_id,
@@ -359,6 +690,7 @@ function lyricLinesFetchPrimaryMap(\mysqli $db, array $songIds): array
                     ll.LineText    AS text,
                     ll.LanguageCode AS line_lang,
                     ll.ChordsJson  AS line_chords,
+                    ll.Note        AS line_note,
                     ll.PartType    AS line_parttype,
                     ll.PartNumber  AS line_partnum,
                     sc.Type        AS comp_type,
@@ -384,28 +716,80 @@ function lyricLinesFetchPrimaryMap(\mysqli $db, array $songIds): array
 }
 
 /**
+ * ELI5: get every "who sings this line" row for a batch of songs, or nothing
+ * at all when the feature isn't migrated yet — so the two assembler wrappers
+ * below can pass it straight to `lyricLinesAssembleFromRows()` without caring
+ * which case they're in.
+ *
+ * DETAILED (#2073 §1.4): a thin, GATED adapter over the one voice core
+ * (`includes/vocal_parts.php`, rule #22) — never a second copy of the
+ * readiness check or the SQL. `[[], []]` on an un-migrated install (no extra
+ * SELECT issued at all) means the assembler's two `if ($x !== [])` guards
+ * skip entirely, so its output stays byte-identical to today for every song
+ * on every install until a curator (or an importer) assigns a part to a
+ * line. Lazy `require_once` mirrors the `line_enrichment.php` pattern already
+ * used elsewhere in this codebase for a cross-file dependency that must never
+ * force a DB connection merely by being loaded.
+ *
+ * @param list<string> $songIds
+ * @return array{0: array<string, array<int, list<array{id:int,kind:string,label:string,bg:bool}>>>, 1: array<string, array<int, list<array{id:int,partId:int,kind:string,label:string,bg:bool,start:int,end:int}>>>}
+ *   `[voicesBySong, spansBySong]` — each SongId => (lineId => list), matching
+ *   `lyricLinesAssembleFromRows()`'s own `$voicesByLine`/`$spansByLine` shape.
+ */
+function lyricLinesFetchVoices(\mysqli $db, array $songIds): array
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'vocal_parts.php';
+    if (!vocalPartsTablesReady($db)) {
+        return [[], []];
+    }
+    $voices = vocalPartsLinesMapForSongs($db, $songIds);
+    $spans  = vocalPartsSpansReady($db) ? vocalPartsSpansMapForSongs($db, $songIds) : [];
+    return [$voices, $spans];
+}
+
+/**
  * Assemble one song's components from the authoritative `tblLyricLines`. Byte-identical
  * to SongData::_getComponents(). Returns [] for a song with no mirrored lines.
+ *
+ * #2073 — also folds in that song's voice runs/spans (sparse `voices` /
+ * `voiceSpans` keys) via `lyricLinesFetchVoices()`; the early `[]` return for
+ * a lineless song is UNCHANGED (zero extra queries — there is nothing to
+ * assemble either way), which is what keeps this a pure addition rather than
+ * a behaviour change for every song that has no mirrored lines at all.
  *
  * @return list<array<string,mixed>>
  */
 function lyricLinesAssembleComponents(\mysqli $db, string $songId): array
 {
-    return lyricLinesAssembleFromRows(lyricLinesFetchPrimary($db, $songId));
+    $rows = lyricLinesFetchPrimary($db, $songId);
+    if ($rows === []) {
+        return [];
+    }
+    [$voices, $spans] = lyricLinesFetchVoices($db, [$songId]);
+    return lyricLinesAssembleFromRows($rows, $voices[$songId] ?? [], $spans[$songId] ?? []);
 }
 
 /**
  * Bulk component assembly keyed by SongId (the getSongs() path). Only songs that have
  * mirrored lines appear in the map; the caller LEFT-JOIN-defaults the rest to [].
  *
+ * #2073 — one chunked `lyricLinesFetchVoices()` call per BATCH (never per
+ * song — no N+1), same early `[]` short-circuit as the single-song sibling
+ * above when nothing in the batch has mirrored lines at all.
+ *
  * @param string[] $songIds
  * @return array<string,list<array<string,mixed>>>
  */
 function lyricLinesAssembleComponentsMap(\mysqli $db, array $songIds): array
 {
+    $rowsMap = lyricLinesFetchPrimaryMap($db, $songIds);
+    if ($rowsMap === []) {
+        return [];
+    }
+    [$voices, $spans] = lyricLinesFetchVoices($db, array_keys($rowsMap));
     $out = [];
-    foreach (lyricLinesFetchPrimaryMap($db, $songIds) as $sid => $rows) {
-        $out[$sid] = lyricLinesAssembleFromRows($rows);
+    foreach ($rowsMap as $sid => $rows) {
+        $out[$sid] = lyricLinesAssembleFromRows($rows, $voices[$sid] ?? [], $spans[$sid] ?? []);
     }
     return $out;
 }
@@ -419,6 +803,10 @@ function lyricLinesAssembleComponentsMap(\mysqli $db, array $songIds): array
  */
 function lyricLinesFirstLine(\mysqli $db, string $songId): ?string
 {
+    /* @lyrics-version-exempt: reads one line's TEXT straight off the correct
+       version in a single query (#2076) — resolving the Id first via
+       lyricLinesPrimaryLyricsId() and then querying again by that Id would
+       be two round trips to say the same thing this one WHERE clause says. */
     $stmt = $db->prepare(
         "SELECT ll.LineText
            FROM tblLyricLines ll
@@ -447,6 +835,8 @@ function lyricLinesFirstLine(\mysqli $db, string $songId): ?string
  */
 function lyricLinesFirstLineMap(\mysqli $db, array $songIds): array
 {
+    /* @lyrics-version-exempt: the bulk sibling of lyricLinesFirstLine() —
+       same reasoning (#2076), many songs at once via a chunked IN(). */
     $songIds = array_values(array_unique(array_filter($songIds, static fn($s) => $s !== '' && $s !== null)));
     if (empty($songIds)) { return []; }
 
@@ -541,6 +931,10 @@ function lyricLinesJoinPreview(array $lines, int $maxChars = 140, int $minChars 
  */
 function lyricLinesPreviewPhrase(\mysqli $db, string $songId, int $maxChars = 140, int $maxLines = 8): ?string
 {
+    /* @lyrics-version-exempt: same reasoning as lyricLinesFirstLine() (#2076)
+       — reads several lines' TEXT directly, so its own WHERE clause (kept
+       identical to lyricLinesPrimaryLyricsId()'s filter) does the same job a
+       resolve-then-requery pair would, in one query instead of two. */
     $stmt = $db->prepare(
         "SELECT ll.LineText
            FROM tblLyricLines ll
@@ -562,9 +956,9 @@ function lyricLinesPreviewPhrase(\mysqli $db, string $songId, int $maxChars = 14
 
 /**
  * Assemble one song's components in the EDITOR/SNAPSHOT shape
- * `[{id,type,number,sortOrder,lines,chords,language,languages,label,sourceWorkId}]` —
+ * `[{id,type,number,sortOrder,lines,chords,notes,language,languages,label,sourceWorkId}]` —
  * the shape the v2 editor's load + revision snapshot (`ed2_buildSongSnapshot`) speak.
- * Sourced from the authoritative `tblLyricLines` (lines/chords/per-line language)
+ * Sourced from the authoritative `tblLyricLines` (lines/chords/notes/per-line language)
  * JOINed to the THIN `tblSongComponents` metadata
  * (Id/Type/Number/SortOrder/Language/Label/SourceWorkId) — reads NO doomed JSON
  * payload column, so it survives the #1235 P4/C6 drop (R2).
@@ -575,14 +969,27 @@ function lyricLinesPreviewPhrase(\mysqli $db, string $songId, int $maxChars = 14
  * null-padded per-line `languages` OVERRIDE array (effective ≠ component default →
  * the override; else null) byte-equal to the retired `LanguagesJson` (`chords` is the
  * null-padded parallel array, null when no line carries one, as `ChordsJson` held it),
- * and (d), since #1860 Phase 5, ALWAYS emits `label` (the curator display override,
+ * (d), since #1860 Phase 5, ALWAYS emits `label` (the curator display override,
  * REQ 3b) and `sourceWorkId` (the medley/work-identity link, REQ 2) — never sparse
  * here, unlike the public shape's SD3 sparse `label`: the editor is the one place
  * that must be able to distinguish "unset" from "not yet loaded", so both keys are
  * present with a `null` default on every install, migrated or not (gated per-column
- * via `lyricLinesComponentExtrasPresent()` exactly like the SELECT below).
+ * via `lyricLinesComponentExtrasPresent()` exactly like the SELECT below), and (e),
+ * since #2072, ALSO always emits `notes` — the SAME always-present-key treatment as
+ * `chords` (a key is always there; its VALUE is the null-padded parallel array, or
+ * null when no line in the component has one). `notes` is added HERE ONLY — the
+ * public/export shape (lyricLinesAssembleFromRows(), above) is DELIBERATELY left
+ * untouched (it is hashed per-song by tools/export-fidelity-snapshot.php and
+ * compared with strict `===` by tests/php/test-lyric-lines-read.php, so a new
+ * always-present key there would change ~16k stored hashes for no user-visible
+ * gain right now); a value that a curator or an importer WRITES via this editor
+ * shape can now also be READ BACK through it, which is the entire #2072 fix —
+ * before this, `tblLyricLines.Note` was written by the OpenLyrics importer and
+ * read by NOTHING, so the next whole-song save silently wiped it (see
+ * lyricLinesMergePreserved() in lyric_lines_sync.php for the writer-level half
+ * of this fix, which protects a save that never learned about `notes` at all).
  *
- * @return list<array{id:int,type:string,number:int,sortOrder:int,lines:list<string>,chords:?array,language:?string,languages:?array,label:?string,sourceWorkId:?int}>
+ * @return list<array{id:int,type:string,number:int,sortOrder:int,lines:list<string>,chords:?array,notes:?array,language:?string,languages:?array,label:?string,sourceWorkId:?int}>
  */
 function lyricLinesEditableComponents(\mysqli $db, string $songId): array
 {
@@ -610,6 +1017,13 @@ function lyricLinesEditableComponents(\mysqli $db, string $songId): array
         $byCid[$cid]['lines'][]  = (string)$r['text'];
         $byCid[$cid]['chords'][] = ($r['line_chords'] !== null && $r['line_chords'] !== '')
             ? (json_decode((string)$r['line_chords'], true) ?? null) : null;
+        /* #2072 — the per-line presenter/slide note, straight off tblLyricLines.Note
+           (line_note, from the SELECT lyricLinesFetchPrimary() now carries). This is
+           the READ half of the fix: the note was already being WRITTEN by the
+           OpenLyrics importer, but nothing anywhere read it back, so it was
+           invisible in the editor and the next whole-song save destroyed it. */
+        $byCid[$cid]['notes'][]  = ($r['line_note'] !== null && $r['line_note'] !== '')
+            ? (string)$r['line_note'] : null;
         $byCid[$cid]['langs'][]  = ($r['line_lang'] !== null && $r['line_lang'] !== '')
             ? (string)$r['line_lang'] : null;
         /* #1627 — carry the tblLyricLines PK through to the editor shape.
@@ -633,10 +1047,14 @@ function lyricLinesEditableComponents(\mysqli $db, string $songId): array
         $compLang = ($c['Language'] !== null && $c['Language'] !== '') ? (string)$c['Language'] : null;
         $lines    = $byCid[$cid]['lines']  ?? [];
         $chords   = $byCid[$cid]['chords'] ?? [];
+        $notes    = $byCid[$cid]['notes']  ?? [];
         $langs    = $byCid[$cid]['langs']  ?? [];
 
         $anyChord = false;
         foreach ($chords as $cv) { if ($cv !== null) { $anyChord = true; break; } }
+        /* #2072 — same always-present-key / sparse-value rule as chords above. */
+        $anyNote = false;
+        foreach ($notes as $nv) { if ($nv !== null) { $anyNote = true; break; } }
 
         /* Per-line override = effective language when it differs from the component
            default (mirrors the retired LanguagesJson; effective ≡ override under the
@@ -656,6 +1074,13 @@ function lyricLinesEditableComponents(\mysqli $db, string $songId): array
             'sortOrder' => (int)$c['SortOrder'],
             'lines'     => $lines,
             'chords'    => $anyChord ? $chords : null,
+            /* #2072 — ALWAYS-present key (mirrors 'chords' immediately above,
+               not the sparse-KEY rule the public shape uses for 'label'): the
+               editor needs a stable place to read a per-line note back from,
+               even on a component where nobody has set one yet. Value is the
+               null-padded parallel array, or null when no line in this
+               component carries a note. */
+            'notes'     => $anyNote ? $notes : null,
             'language'  => $compLang,
             'languages' => $anyLang ? $langOut : null,
             /* #1860 Phase 5 §2.3 — ALWAYS-present (null default), never sparse

@@ -9,15 +9,13 @@
 ```text
 iHymns/
 ├── .claude/                  # Claude AI context & project brief
-├── .github/workflows/        # CI/CD: deploy, release, changelog, tests (14 workflows)
+├── .github/workflows/        # CI/CD: deploy, release, changelog, tests (15 workflows at last count — see the directory itself for the live number)
 ├── .SourceSongData/           # Raw song text files (original import source — DO NOT MODIFY)
 ├── tools/                    # Build tools & song data parser
-│   ├── parse-songs.js        #   Parses .SourceSongData/ → data/songs.json
-│   └── build-web.js          #   Web build/packaging script
-├── data/                     # Generated song data
-│   ├── songs.json            #   One-time migration input, NOT a runtime file (see Data Flow below)
-│   └── songs.schema.json     #   JSON Schema (draft 2020-12) for validation
-├── tests/                    # Unit + PHP test harnesses
+│   └── parse-songs.js        #   Parses .SourceSongData/ into tmp/songs.json — a gitignored LOCAL BUILD ARTEFACT only (#1617); nothing commits it and nothing in the app reads it
+├── data/                     # Empty except for a .gitkeep — the tracked data/songs.json this folder used to hold was retired in #1617 (it was ~4x stale against the live catalogue and unused at runtime)
+├── tests/
+│   └── fixtures/songs.schema.json  #   JSON Schema (draft 2020-12) the parser's output is validated against (moved here from data/ in #1617)
 ├── appWeb/                   # Web PWA application
 │   ├── public_html/          #   Deployed source (single source for all environments)
 │   │   ├── index.php         #     SPA shell — OG tags, CSP nonce, JSON-LD
@@ -170,15 +168,14 @@ Each wizard is pure client orchestration over the page's **existing** write acti
 
 ### Data Flow
 
-Every runtime read is **live MySQL** — this is the single biggest architectural fact about the current codebase (the DB-direct rewrite, epic #1010, June 2026). `songs.json` is a **one-time migration input**, not a runtime file, and nothing ships it to a client:
+Every runtime read is **live MySQL** — this is the single biggest architectural fact about the current codebase (the DB-direct rewrite, epic #1010, June 2026). The original migration from the `.SourceSongData/` text files into MySQL was a **one-time** event; the pipeline that did it (below) is now historical, not something a fresh install repeats — new/updated song text goes in through the Song Editor's bulk importers instead (#664):
 
 ```
 .SourceSongData/ (raw text files)
         │
-        ▼  tools/parse-songs.js
-data/songs.json (one-time migration input)
-        │
-        ▼  appWeb/.sql/migrate-json.php  (run once, confirm=1-gated)
+        ▼  tools/parse-songs.js  (historical — the JSON it wrote was a one-time
+        │                         seed; today it writes only a gitignored
+        │                         tmp/songs.json local build artefact, #1617)
 MySQL `ihymns` database (single shared DB across all 3 docroots)
         │
         ▼  scoped, live reads only — nothing materialises the whole corpus
@@ -186,6 +183,8 @@ MySQL `ihymns` database (single shared DB across all 3 docroots)
         ├── getSongs($abbr)      — one songbook
         └── getSongById()        — one full song record
 ```
+
+New content today skips the JSON step entirely: `/manage/editor`'s bulk importers (ZIP, OpenLyrics/OpenLP, ProPresenter, VideoPsalm, FreeShow, OpenSong, Proclaim, ChordPro, EasyWorship) write straight to MySQL, and `appWeb/.sql/restore.php` restores a real backup — see [[Database & Migrations]] § Data Migration. The one-time bootstrap script this diagram used to name, `appWeb/.sql/migrate-json.php`, no longer exists (retired #1614).
 
 Nothing loads the whole ~14,000-song catalogue into PHP memory at once — an earlier unscoped read caused an OOM (#929). If the database is unreachable, the app shows a themed 503 maintenance page; the **only** fallback is whatever a client previously downloaded into its own offline cache (browser Cache Storage for the PWA, GRDB for Apple) — there is no server-side JSON fallback mode.
 
@@ -270,7 +269,7 @@ See [[Native Apps (Apple & Android)]] for the fuller current-state breakdown.
 
 MySQL 5.7+ / MariaDB 10.3+ only — **PDO was fully removed from the codebase** (#554/#555). The single database access layer is `getDbMysqli()` in `includes/db_mysql.php`, running mysqli under `MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT` (a failing statement throws, it never silently returns `false`). Every value entering a SQL string is bound via `$stmt->bind_param(...)`.
 
-- **160 tables** (plus a handful of compat `VIEW`s, e.g. `tblCreditPeople` → `tblMusicians`), named `tblCamelCase` (`appWeb/.sql/schema.sql` is the canonical source of truth for a fresh install).
+- **166 tables** (plus 7 compat `VIEW`s, e.g. `tblCreditPeople` → `tblMusicians`), named `tblCamelCase`. New tables land often, so treat any written-down count — including this one — as a snapshot rather than gospel: `appWeb/.sql/schema.sql` is the canonical source of truth for a fresh install, and `grep -c '^CREATE TABLE' appWeb/.sql/schema.sql` (or `grep -c '^CREATE OR REPLACE VIEW\|^CREATE VIEW'` for the views) always gives the live number.
 - Migrations are **web-run**, not auto-applied on deploy — an admin applies pending migration cards from `/manage/setup-database`. This means "it's in `schema.sql`" does not imply "it exists on this environment yet."
 - Every migration that creates a table/column also updates `schema.sql` in the same commit (CI-enforced by `tests/php/test-schema-coverage.php`) and registers a completion probe (CI-enforced by `tests/php/test-migration-registry.php`).
 

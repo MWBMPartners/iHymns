@@ -151,6 +151,12 @@ function lineEnrichmentTablesReady(\mysqli $db): bool
  */
 function lineEnrichmentResolveLine(\mysqli $db, int $lineId, string $songId): ?array
 {
+    /* @lyrics-version-exempt: (#2076) deliberately does NOT filter by
+       Source — a specific $lineId is already known, so this only needs to
+       confirm it belongs to $songId at all (the ownership check the
+       doc-block describes), not decide which version is the "current" one.
+       It is not a version-resolution site, so there is nothing to disagree
+       with lyricLinesPrimaryLyricsId() about. */
     $stmt = $db->prepare(
         "SELECT ll.LyricsId AS lyricsId, ll.LineText AS text
            FROM tblLyricLines ll
@@ -564,6 +570,12 @@ function lineEnrichmentShapeAnnotation(?array $r): array
  */
 function lineEnrichmentForSong(\mysqli $db, string $songId): array
 {
+    /* @lyrics-version-exempt: (#2076) both SELECTs below already filter on
+       `ly.Source = 'ihymns'` directly — the identical rule
+       lyricLinesPrimaryLyricsId() encodes — because each one needs a JOIN
+       for its own translation/annotation rows anyway, not a bare Id. Calling
+       the shared resolver first and then querying again by LyricsId would
+       be an extra round trip to reach the same WHERE clause. */
     $out = ['translations' => [], 'annotations' => []];
     if (!lineEnrichmentTablesReady($db)) { return $out; }
 

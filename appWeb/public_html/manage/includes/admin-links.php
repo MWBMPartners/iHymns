@@ -65,6 +65,14 @@ $_adminLinks = [
        in-page (manage_duplicate_songs). Icon fixed #1822 — bi-git-compare is a
        GitHub Octicon, not a Bootstrap Icon, so it rendered as a blank box. */
     ['duplicate-songs',      '/manage/duplicate-songs',      'bi-files',             'Find Duplicates',          'edit_songs',                  'Songs'               ],
+    /* Voice-part suggestions (#2073 commit 15) — the review queue for the
+       "WOMEN" / "MEN: You are holy," / "(echo)" style markers the #2073
+       commit-14 backfill batch finds sitting in old lyric TEXT. A curator
+       says yes (Accept — really assigns the voice part and tidies the
+       marker) or no (Dismiss) per row; Undo reverses an Accept exactly.
+       Curator-visible (edit_songs) — same gate the page itself checks, so
+       test-admin-gate-parity.php's derived pairing holds (#1587 class). */
+    ['vocal-parts-review',   '/manage/vocal-parts-review',   'bi-people',            'Voice-part suggestions',   'edit_songs',                  'Songs'               ],
     /* Deleted Songs (#1694) — the soft-delete queue: restore or (admin-only,
        per-action purge_songs gate in-page) permanently remove. Nav entitlement
        matches the page's own gate — test-admin-gate-parity.php derives this

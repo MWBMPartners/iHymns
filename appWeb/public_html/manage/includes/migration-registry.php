@@ -2301,7 +2301,7 @@ return [
             'title'  => 'Vocal / singing parts (#1137)',
             'body'   => 'Creates <code>tblVocalParts</code> (per-version singing-part'
                       . ' registry — lead/backing/soloist/duet/named-singer, reusing'
-                      . ' <code>tblCreditPeople</code>) + <code>tblLyricLineVocalParts</code>'
+                      . ' <code>tblMusicians</code>) + <code>tblLyricLineVocalParts</code>'
                       . ' + <code>tblLyricWordVocalParts</code> (many-to-many for'
                       . ' duet/unison) — first-class queryable vocal parts vs the'
                       . ' lossless-only MetaJson today. Additive + idempotent.',
@@ -2576,6 +2576,13 @@ return [
            via JSON_LENGTH, columnExists-gated below). Table-existence-gated so an un-mirrored
            install (no tblLyricLines/tblLyrics yet) reports not-pending, not a STRICT throw. */
         'probe' => static function (\mysqli $db): bool {
+            /* @lyrics-version-exempt: (#2076) this checks, across EVERY song
+               at once, whether one still has an 'ihymns' version with no
+               mirrored line — a set-wide existence probe, not "resolve the
+               version for song X". lyricLinesPrimaryLyricsId() answers a
+               per-song question and can't be called from inside a
+               correlated subquery, so the Source = 'ihymns' filter is
+               spelled out by hand here — kept byte-identical on purpose. */
             if (!_migProbe_tableExists($db, 'tblSongComponents')) return false;
             if (!_migProbe_tableExists($db, 'tblLyricLines'))     return false;
             if (!_migProbe_tableExists($db, 'tblLyrics'))         return false;
@@ -4864,5 +4871,105 @@ return [
         ],
         /* Single-object probe (rule #19) — never `=> true`. */
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblLoginAttempts', 'Action'),
+    ],
+
+    /* #2073 commit 2 — voice parts: echo spans, rounds/canon, review queue.
+       Four dormant, additive tables extending the #1137 vocal-parts trio
+       (ZERO ALTERs to that trio — it is sufficient as-is). Appended at the
+       END of $MIGRATIONS (per the plan of record's "Design pass 7" §2,
+       which is authoritative over an earlier draft's "insert directly
+       after 'vocal-parts'" placement) — array order IS execution order,
+       and every FK target these four tables need (tblVocalParts,
+       tblLyricLines, tblLyrics, tblSongs, tblMusicians) already precedes
+       this entry regardless of exactly where after them it sits, so the
+       END is a safe, simple place for it. Nothing in the app calls any of
+       these tables yet (dormant — the read-only core in
+       includes/vocal_parts.php that commit 1 shipped has no caller
+       either); a later commit of the same feature wires them up. */
+    'vocal-parts-rounds' => [
+        'script' => 'migrate-vocal-parts-rounds.php',
+        'card' => [
+            'title'  => 'Vocal parts: echo spans, rounds/canon, review queue (#2073)',
+            'body'   => 'Creates <code>tblLyricLineVocalSpans</code> (sub-line echo /'
+                      . ' mid-line voice-switch spans, code-point anchored),'
+                      . ' <code>tblLyricRounds</code> + <code>tblLyricRoundVoices</code>'
+                      . ' (round / canon / partner-song definitions with per-voice entry'
+                      . ' offsets in lines, beats or ms — drives a future staggered'
+                      . ' projection view) and <code>tblVocalPartSuggestions</code> (the'
+                      . ' curator review queue a future voice-marker backfill batch will'
+                      . ' write into). Requires the <code>Vocal / singing parts (#1137)</code>'
+                      . ' card to have run first. Additive + idempotent; tables ship'
+                      . ' empty — nothing reads or writes them yet.',
+            'button' => 'Run Voice Parts (Rounds) Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until ALL FOUR objects
+           exist, so a partial apply (the migration dying between its four
+           independently-guarded CREATE TABLEs) never shows this card
+           green while one or more tables are still missing. */
+        'probe' => static fn(\mysqli $db): bool =>
+               !_migProbe_tableExists($db, 'tblLyricLineVocalSpans')
+            || !_migProbe_tableExists($db, 'tblLyricRounds')
+            || !_migProbe_tableExists($db, 'tblLyricRoundVoices')
+            || !_migProbe_tableExists($db, 'tblVocalPartSuggestions'),
+    ],
+
+    /* #2073 commit 14 (D4) — the backfill BATCH that scans every song's
+       lyrics for old-style plain-text voice markers ("WOMEN", "MEN: You
+       are holy,", "(echo)") and writes each one into the
+       tblVocalPartSuggestions review queue commit 2's migration created —
+       NEVER applying anything to a song's real lyrics itself (that only
+       happens once a curator clicks Accept on /manage/vocal-parts-review,
+       #2073 commit 15). DATA WRITE across the WHOLE catalogue, so — unlike
+       the schema-only 'vocal-parts-rounds' card right above — this one is
+       'manual' + 'dryRunnable', mirroring 'cleanup-zero-line-components'
+       (#2063) and 'reconcile-media-flags' (#1862): EXCLUDED from "Apply
+       all" and the pending counter, defaults to a REPORT-ONLY dry run, and
+       needs an explicit &confirm=1 to actually write a single row. */
+    'vocal-parts-backfill' => [
+        'script' => 'migrate-backfill-vocal-part-suggestions.php',
+        'manual' => true,
+        'dryRunnable' => true,
+        'card' => [
+            'title'  => 'Detect voice markers into a review queue (#2073)',
+            'body'   => 'DATA WRITE — scans every song&rsquo;s lyrics for old-style'
+                      . ' plain-text voice markers ("WOMEN", "MEN: You are holy,",'
+                      . ' "(echo)") and queues each one as a suggestion in'
+                      . ' <code>tblVocalPartSuggestions</code> for a curator to Accept,'
+                      . ' Dismiss or Undo on <code>/manage/vocal-parts-review</code>.'
+                      . ' NEVER changes a song&rsquo;s actual lyrics by itself — only a'
+                      . ' curator&rsquo;s Accept does that. Requires the'
+                      . ' <code>Vocal / singing parts (#1137)</code> and'
+                      . ' <code>Vocal parts: echo spans, rounds/canon, review queue'
+                      . ' (#2073)</code> cards to have run first. Do NOT run via'
+                      . ' &ldquo;Apply all&rdquo;. Defaults to <strong>dry-run</strong>'
+                      . ' (reports counts per form and per songbook); pass'
+                      . ' <code>&amp;confirm=1</code> to write the suggestions.'
+                      . ' Idempotent — a re-run refreshes still-open suggestions and'
+                      . ' never touches one a curator already reviewed.',
+            'button' => 'Detect Voice Markers (dry-run unless confirmed)',
+        ],
+        /* Sentinel-row probe (rule #19) — a data-only pass over pre-existing
+           lyrics has no schema signal of its own (the 'reconcile-media-flags'
+           / 'publishers-entity' idiom), so completion is a tblAppSettings row
+           the migration writes only on a CONFIRMED apply. Deliberately NOT a
+           "does >= 1 pending suggestion row exist" probe: a healthy, fully
+           reviewed queue would then show this card as pending forever, which
+           would invite someone to "fix" that by running it again — the
+           sentinel instead answers "has this backfill ever been run", which
+           only ever needs answering once. */
+        'probe' => static function (\mysqli $db): bool {
+            try {
+                $r = $db->query(
+                    "SELECT 1 FROM tblAppSettings WHERE SettingKey = 'vocal_parts_backfill_ran' LIMIT 1"
+                );
+                $applied = $r && $r->fetch_row() !== null;
+                if ($r) {
+                    $r->close();
+                }
+                return !$applied;
+            } catch (\Throwable $_e) {
+                return false;   /* tblAppSettings absent on a fresh pre-install DB → not pending. */
+            }
+        },
     ],
 ];

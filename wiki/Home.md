@@ -43,6 +43,7 @@ iHymns provides searchable hymn and worship song lyrics from multiple songbooks,
 - [[Development Setup]]
 - [[API Reference]]
 - [[Song Data Format]]
+- [[Import & Export Fidelity]]
 - [[Deployment & CI-CD]]
 - [[Native Apps (Apple & Android)]]
 - [[Database & Migrations]]

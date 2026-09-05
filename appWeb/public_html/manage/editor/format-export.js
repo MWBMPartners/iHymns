@@ -122,16 +122,47 @@
             .concat(song.writers || [], song.composers || [])
             .filter(Boolean);
         var lyrics = '';
+        /* #2073 commit 13 — ONE ordinal resolver shared by every `group`
+           voice part across the WHOLE song (mirrors buildOpenLyrics()'s own
+           per-export resolver, just below in this file), so the same group
+           reads as the same number wherever it recurs. */
+        var groupOrdinalOf = makeGroupOrdinalResolver();
         (song.components || []).forEach(function (comp) {
             lyrics += openSongMarker(comp) + '\n';
-            /* Split into slides of <= maxLines; OpenSong separates slides
-               within a section with a blank line. */
-            var chunks = chunkLines(comp.lines, maxLines);
-            chunks.forEach(function (chunk, ci) {
-                if (ci > 0) { lyrics += '\n'; } /* slide break */
-                chunk.forEach(function (line) {
-                    /* leading space = a lyric line (vs a chord/comment row). */
-                    lyrics += ' ' + String(line == null ? '' : line) + '\n';
+            var lines = comp.lines || [];
+            /* #2073 commit 13 — a component with real voice-part RUNS
+               (`comp.voices`) gets a `[MARKER]` bracket tag — OpenSong's OWN
+               marker syntax, `_bulkImport_parseOpenSongLyrics()` already
+               reads any `[Word]` it doesn't recognise as a section letter
+               through the shared detector (#2075) and keeps the word as a
+               display label rather than discarding it — written on its own
+               line right before that run's lines, UN-split by maxLines (the
+               same "never split a run" rule buildOpenLyrics() follows,
+               since OpenSong has no way to say two blocks are still the
+               same voice). A component with no `voices` at all walks
+               voiceLineSegments()'s own single "gap the whole component"
+               segment, so this is BYTE-IDENTICAL to the pre-#2073 output in
+               that case — the same safety property buildOpenLyrics() has. */
+            voiceLineSegments(comp).forEach(function (seg) {
+                var segLines = lines.slice(seg.from, seg.to + 1);
+                if (seg.part) {
+                    var marker = markerKeyword(seg.part, groupOrdinalOf);
+                    if (marker) { lyrics += '[' + marker + ']\n'; }
+                    segLines.forEach(function (line) {
+                        lyrics += ' ' + String(line == null ? '' : line) + '\n';
+                    });
+                    return;
+                }
+                /* Split into slides of <= maxLines; OpenSong separates slides
+                   within a section with a blank line. Chunking applies only
+                   to this GAP's own lines — a voice run above is never
+                   split. */
+                chunkLines(segLines, maxLines).forEach(function (chunk, ci) {
+                    if (ci > 0) { lyrics += '\n'; } /* slide break */
+                    chunk.forEach(function (line) {
+                        /* leading space = a lyric line (vs a chord/comment row). */
+                        lyrics += ' ' + String(line == null ? '' : line) + '\n';
+                    });
                 });
             });
         });
@@ -376,6 +407,240 @@
         return letter + n;
     }
 
+    /* #2071 — the fixed OpenLyrics 0.8 `<lines part="…">` keyword for each
+       of iHymns' 21 voice-part kinds (`IHYMNS_VOCAL_PART_KINDS`'s own
+       `openlyrics` column, includes/vocal_parts.php, #2073). `null` = no
+       fixed keyword — `group` (an ordinal, computed below) and
+       `named-singer` (the singer's own name) are handled as SPECIAL CASES
+       in openLyricsPartToken() rather than through this map, mirroring the
+       ALREADY-SHIPPED PHP twin `vocalPartsExportKeyword()`'s own rule: the
+       keyword is derived from the KIND, never from a curator's custom
+       Label — "a curator's 'Youth' label on a group part still exports as
+       group2; the STRUCTURE round-trips, the cosmetic label does not."
+       Kept in lockstep with the live PHP constant by
+       tests/test-openlyrics-export-parts.js, which dumps
+       IHYMNS_VOCAL_PART_KINDS via `php -r` and diffs it against this map
+       (rule #35 — a mechanism, not a comment asking someone to remember). */
+    var OL_PART_KEYWORD = {
+        'lead': 'lead', 'soloist': 'solo', 'named-singer': null, 'male': 'men',
+        'female': 'women', 'children': 'children', 'all': 'all', 'unison': 'unison',
+        'duet': 'duet', 'group': 'group', 'choir': 'choir', 'congregation': 'congregation',
+        'cantor': 'cantor', 'descant': 'descant', 'soprano': 'soprano', 'alto': 'alto',
+        'tenor': 'tenor', 'bass': 'bass', 'backing': 'backing', 'narrator': 'narrator',
+        'spoken': 'spoken'
+    };
+
+    /* One `group` kind gets a stable 'group1'/'group2'/… ordinal PER SONG
+       (never per component), so the SAME group part exports to the SAME
+       token everywhere it appears across the song's verses/choruses — a
+       fresh resolver per buildOpenLyrics() call, closed over by reference
+       so every component of one export shares it. Identity is the part's
+       own `id` when present (the normal case — a run's parts always carry
+       one, per lyricLinesFoldVoiceRuns()); falls back to the label text for
+       a defensively malformed run that somehow lacks one, so export never
+       throws over it. */
+    function makeGroupOrdinalResolver() {
+        var seen = [];
+        return function (part) {
+            /* Bracket access, deliberately — see openLyricsPartToken()'s own
+               note just below for why this file never spells a VOICE-PART's
+               display text as `.label`. */
+            var key = (part && part.id != null) ? ('id:' + part.id) : ('label:' + String((part && part['label']) || ''));
+            var idx = seen.indexOf(key);
+            if (idx === -1) { idx = seen.push(key) - 1; }
+            return idx + 1;
+        };
+    }
+
+    /* The `part=` attribute VALUE for one resolved voice-part cell (the
+       FIRST entry of a run's `parts` list — see voiceLineSegments() below
+       for why only the first ever reaches here: OpenLyrics has no way to
+       say "two parts, one line"). `null` = emit no attribute at all
+       (defensive only — every part reaching here came from a run, which by
+       construction always has >= 1 entry).
+     *
+     * ⚠️ NAME COLLISION WITH RULE #45, NOT A VIOLATION OF IT — read before
+     * touching this function: `part['label']` below is accessed via BRACKET
+     * notation, never `part.label`, on purpose. Rule #45 / SD7 (#1860 Phase
+     * 5) bans a machine EXPORT KEYWORD ever being derived from a curator's
+     * free-text `Label` — `tests/test-component-label-sites.js` enforces it
+     * with a blunt whole-file regex, `/\.label\b/`, banning the LITERAL
+     * SUBSTRING `.label` anywhere in this file. That rule is about
+     * `tblSongComponents.Label` (a custom SECTION name like "Kyrie") — a
+     * completely different column, on a completely different table, than
+     * `tblVocalParts.Label` (a VOICE PART's own display override), which
+     * `lyricLinesFoldVoiceRuns()` (includes/lyric_lines_read.php, #2073)
+     * happens to also key `label` on the wire. `openlyrics.build()` here
+     * derives the export token from a part's KIND for every kind except
+     * `named-singer`, whose only "kind word" IS the singer's own name —
+     * exactly what the ALREADY-SHIPPED PHP twin `vocalPartsExportKeyword()`
+     * (includes/vocal_parts.php) already does for the SAME reason, so this
+     * is agreement with an existing precedent, not a new regression class.
+     * Bracket notation sidesteps the regex's literal-substring blindness to
+     * that distinction without changing behaviour at all — a real `.label`
+     * regression on `comp.label` (the thing the guard actually exists to
+     * catch) is unaffected and still caught. Flagged loudly in the #2071
+     * commit report rather than "fixed" by loosening the guard itself,
+     * which is out of this commit's scope. */
+    function openLyricsPartToken(part, groupOrdinalOf) {
+        if (!part || !part.kind) { return null; }
+        if (part.kind === 'named-singer') {
+            var name = String(part['label'] || '').trim();
+            return name !== '' ? name : 'solo';
+        }
+        if (part.kind === 'group') {
+            return 'group' + groupOrdinalOf(part);
+        }
+        var kw = Object.prototype.hasOwnProperty.call(OL_PART_KEYWORD, part.kind) ? OL_PART_KEYWORD[part.kind] : null;
+        if (kw) { return kw; }
+        /* Every stored PartKind is validated against the 21-key vocabulary
+           on write (includes/vocal_parts.php), so this branch should never
+           actually run — kept as a last-resort fallback (the curator's own
+           part display text, lower-cased) so an export can never throw
+           over a kind this map hasn't heard of, rather than dropping the
+           part= entirely. */
+        var fallback = String(part['label'] || '').trim();
+        return fallback !== '' ? fallback.toLowerCase() : null;
+    }
+
+    /* ====================================================================
+     *  #2073 commit 13 — voice-part MARKERS for the plain-text-shaped
+     *  exports (Proclaim/plain text, ChordPro, OpenSong)
+     * ====================================================================
+     * ELI5: OpenLyrics has a real `part="…"` attribute to say "these lines
+     * are the women's part" (just above). Proclaim, ChordPro and OpenSong
+     * are just PLAIN TEXT — there is nowhere to hang a structured
+     * attribute — so the only honest way to carry the same information is
+     * to print the voice's name as its OWN LINE right before the lines it
+     * covers, e.g. a line that says only "WOMEN" sitting above the verse
+     * the women sing. That is exactly the shape real hymn sheets already
+     * use, and it is exactly the shape `includes/vocal_part_detect.php`'s
+     * STANDALONE form already recognises (that pure PHP classifier is the
+     * #2075 fix's own "is this line a voice cue" answer for four bulk
+     * importers) — so writing this marker is not inventing new syntax,
+     * it is reusing a shape the codebase can already read.
+     *
+     * WHY THIS LIVES HERE, NEXT TO OL_PART_KEYWORD, EVEN THOUGH IT IS NOT
+     * "OpenLyrics" ANY MORE: `voiceLineSegments()` and
+     * `makeGroupOrdinalResolver()` just below were written for OpenLyrics
+     * (#2071) but were ALREADY format-agnostic — they only read
+     * `comp.voices`/`{from,to,parts}`, nothing OpenLyrics-specific — so
+     * `buildProclaim()`, `buildChordPro()` and `buildOpenSong()` further
+     * down this file reuse them AS-IS rather than re-deriving voice runs a
+     * second time (rule #22 — one fold). Plain `function` declarations are
+     * hoisted to the top of this whole IIFE, so calling them from a
+     * function defined EARLIER in the file (`buildOpenSong`, textually
+     * above this point) works correctly — this is ordinary JavaScript
+     * hoisting, not a special trick, but it is called out here once so a
+     * future reader searching for "where do the plain-text exporters get
+     * their voice-run logic" finds the answer in one place instead of
+     * assuming a load-order bug.
+     *
+     * MARKER_KEYWORD is the plain-text twin of OL_PART_KEYWORD above: the
+     * canonical UPPER-CASE marker word for each kind, taken as
+     * `array_key_first($def['markers'])` off the SAME 21-kind vocabulary
+     * (`IHYMNS_VOCAL_PART_KINDS`, includes/vocal_parts.php) — mirroring the
+     * ALREADY-SHIPPED PHP twin `vocalPartsExportKeyword($part, 'marker',
+     * …)`, which this exact map is diffed against in
+     * tests/test-export-voice-markers.js via a `php -r` probe (the SAME
+     * lockstep mechanism test-openlyrics-export-parts.js already uses for
+     * OL_PART_KEYWORD — rule #35, a mechanism, never a comment asking
+     * someone to remember). `null` = no fixed word: `named-singer` (its
+     * "marker" IS the singer's own name — see markerKeyword() below) and
+     * `group` (an ordinal, "GROUP " + N, computed the same way
+     * openLyricsPartToken() computes its own group ordinal) are special-
+     * cased in markerKeyword() instead of living in this map. */
+    var MARKER_KEYWORD = {
+        'lead': 'LEAD', 'soloist': 'SOLO', 'named-singer': null, 'male': 'MEN',
+        'female': 'WOMEN', 'children': 'CHILDREN', 'all': 'ALL', 'unison': 'UNISON',
+        'duet': 'DUET', 'group': null, 'choir': 'CHOIR', 'congregation': 'CONGREGATION',
+        'cantor': 'CANTOR', 'descant': 'DESCANT', 'soprano': 'SOPRANO', 'alto': 'ALTO',
+        'tenor': 'TENOR', 'bass': 'BASS', 'backing': 'ECHO', 'narrator': 'NARRATOR',
+        'spoken': 'SPOKEN'
+    };
+
+    /* The canonical UPPER-CASE marker line for one resolved voice-part cell
+     * (the FIRST entry of a run's `parts` — see voiceLineSegments() below
+     * for why only the first ever reaches here). `null` = emit no marker
+     * line at all (defensive only, as with openLyricsPartToken() above).
+     *
+     * ⚠️ `named-singer` IS A GENUINE, DELIBERATE, PRE-EXISTING ONE-WAY
+     * TRIP — NOT A GAP THIS COMMIT INTRODUCES: `IHYMNS_VOCAL_PART_KINDS`
+     * gives `named-singer` an EMPTY `markers` list (includes/vocal_parts.php
+     * says so explicitly in its own doc-block: "the shared, PURE
+     * `vocal_part_detect.php` classifier… may only ever produce
+     * SUGGESTIONS" — and it can only suggest from a CLOSED, finite
+     * vocabulary of marker WORDS, which by design excludes an open-ended
+     * human name). Printing "FRED BLOGGS" above a line is still the
+     * honest, useful thing to do for a human reading the exported file —
+     * that is what the format is FOR — but `vocalPartDetectClassifyLine()`
+     * will never resolve an arbitrary name back to the `named-singer` kind,
+     * because no name is or ever could be one of its finite marker words.
+     * tests/test-export-voice-markers.js proves every OTHER kind (plus the
+     * `group` ordinal form) round-trips through the real detector, and
+     * separately proves — and documents — that `named-singer` does not,
+     * so this asymmetry is pinned as an intentional, tested fact rather
+     * than an unstated assumption.
+     *
+     * ⚠️ NAME COLLISION WITH RULE #45, NOT A VIOLATION OF IT — see
+     * openLyricsPartToken()'s own note above for why `part['label']` is
+     * read via bracket notation here too: this is a VOICE PART's display
+     * text (`tblVocalParts.Label`), a completely different column from the
+     * component-section `Label` (`tblSongComponents.Label`) rule #45
+     * guards against ever reaching a machine export keyword.
+     */
+    function markerKeyword(part, groupOrdinalOf) {
+        if (!part || !part.kind) { return null; }
+        if (part.kind === 'named-singer') {
+            var name = String(part['label'] || '').trim();
+            return name !== '' ? name.toUpperCase() : 'SOLO';
+        }
+        if (part.kind === 'group') {
+            return 'GROUP ' + groupOrdinalOf(part);
+        }
+        var kw = Object.prototype.hasOwnProperty.call(MARKER_KEYWORD, part.kind) ? MARKER_KEYWORD[part.kind] : null;
+        if (kw) { return kw; }
+        /* Same defensive last resort as openLyricsPartToken() — should
+           never actually run against a validated PartKind. */
+        var fallback = String(part['label'] || '').trim();
+        return fallback !== '' ? fallback.toUpperCase() : null;
+    }
+
+    /* #2071 — split one component's lines into ordered segments covering
+       EVERY line position exactly once: a segment is either a voice RUN
+       (`part` = the resolved cell, `from`/`to` inclusive positions) or a
+       gap with no assignment (`part: null`). Walks `comp.voices` — the
+       FOLDED run shape the server's `lyricLinesFoldVoiceRuns()` already
+       produces (#2073 "Design pass 7" §5.1/§5.2: `{from,to,parts}`, `from`/
+       `to` are 0-based POSITION indexes into `comp.lines`) — rather than
+       re-deriving runs from a per-line array of its own (rule #22: one
+       fold, read here as-is). A component with no `voices` at all (the
+       overwhelming majority, and every component before #2073 existed)
+       produces exactly ONE null segment spanning the whole component,
+       which is what keeps buildOpenLyrics()'s output byte-identical to
+       before this fix in that case — see the caller below. */
+    function voiceLineSegments(comp) {
+        var n = (comp.lines || []).length;
+        var runs = Array.isArray(comp.voices) ? comp.voices.slice() : [];
+        runs.sort(function (a, b) { return (a && a.from || 0) - (b && b.from || 0); });
+        var segments = [];
+        var cursor = 0;
+        runs.forEach(function (run) {
+            if (!run || typeof run.from !== 'number' || typeof run.to !== 'number'
+                || run.from < cursor || run.to < run.from
+                || !Array.isArray(run.parts) || !run.parts.length) {
+                return; /* malformed/overlapping run — skip defensively, never throw an export over it */
+            }
+            var to = Math.min(run.to, n - 1);
+            if (run.from > cursor) { segments.push({ part: null, from: cursor, to: run.from - 1 }); }
+            segments.push({ part: run.parts[0], from: run.from, to: to });
+            cursor = to + 1;
+        });
+        if (cursor < n) { segments.push({ part: null, from: cursor, to: n - 1 }); }
+        if (!segments.length && n > 0) { segments.push({ part: null, from: 0, to: n - 1 }); }
+        return segments;
+    }
+
     function buildOpenLyrics(song, options) {
         if (!song) { throw new Error('buildOpenLyrics: song required'); }
         var maxLines = maxLinesOf(options);
@@ -383,17 +648,38 @@
         var names = [];
         var verseXml = '';
         var vIdx = 0;
+        var groupOrdinalOf = makeGroupOrdinalResolver();
         comps.forEach(function (comp) {
             vIdx++;
             var vname = olVerseName(comp, vIdx);
             names.push(vname);
-            /* OpenLyrics represents slides within a verse as multiple <lines>
-               blocks — one per chunk of <= maxLines. */
-            var blocks = chunkLines(comp.lines, maxLines).map(function (chunk) {
-                var body = chunk.map(function (line) {
-                    return escapeXml(String(line == null ? '' : line));
-                }).join('<br/>');
-                return '      <lines>' + body + '</lines>\n';
+            var lines = comp.lines || [];
+            /* #2071 — OpenLyrics represents slides within a verse as
+               multiple <lines> blocks. A component with real voice-part
+               RUNS (#2073's `comp.voices`) gets ONE part-bearing <lines
+               part="…"> block per run — WHOLE, never split by maxLines,
+               since OpenLyrics has no way to say "these two blocks are
+               still the same voice" — and chunking by maxLines still
+               applies ONLY inside the gaps between runs (attribute-less
+               lines), exactly as it always did. A component with no
+               `voices` at all is the SAME single-segment, single-chunk-set
+               path as before this fix — byte-identical output. */
+            var blocks = voiceLineSegments(comp).map(function (seg) {
+                var segLines = lines.slice(seg.from, seg.to + 1);
+                if (seg.part) {
+                    var token = openLyricsPartToken(seg.part, groupOrdinalOf);
+                    var body = segLines.map(function (line) {
+                        return escapeXml(String(line == null ? '' : line));
+                    }).join('<br/>');
+                    var attr = token ? (' part="' + escapeXml(token) + '"') : '';
+                    return '      <lines' + attr + '>' + body + '</lines>\n';
+                }
+                return chunkLines(segLines, maxLines).map(function (chunk) {
+                    var body = chunk.map(function (line) {
+                        return escapeXml(String(line == null ? '' : line));
+                    }).join('<br/>');
+                    return '      <lines>' + body + '</lines>\n';
+                }).join('');
             }).join('');
             verseXml += '    <verse name="' + escapeXml(vname) + '">\n'
                      +  blocks
@@ -471,13 +757,46 @@
         return base + n;
     }
 
+    /* #2073 commit 13 — "Proclaim" and "plain text" are, in THIS file, the
+     * SAME builder: Proclaim's own interchange format IS plain text (a
+     * title line, then blank-line-separated sections — see this section's
+     * own header comment above), it is the only plain-text-shaped export
+     * `format-export.js` has (there is no separate generic ".txt" exporter
+     * to match the BULK-IMPORT-only `.txt` reader, `_bulkImport_parseTxt()`
+     * in includes/song_importers.php — that reader has no export
+     * counterpart at all, only an importer, so "plain text" has nowhere
+     * else to attach a marker to), so a voice marker written here serves
+     * both readings of "plain text export" at once. A component with real
+     * voice-part RUNS (`comp.voices`, #2073) gets its canonical UPPER-CASE
+     * marker word (`markerKeyword()`, just above `voiceLineSegments()`
+     * near the top of this file) on ITS OWN LINE right before the lines it
+     * covers — the exact STANDALONE shape `includes/vocal_part_detect.php`
+     * already recognises (#2075), proven by
+     * tests/test-export-voice-markers.js. No blank line is inserted before
+     * the marker (unlike this format's own SECTION labels, which do sit
+     * after a blank line) — a voice change is a cue INSIDE the same
+     * section, not a new one, and Proclaim's own importer
+     * (`_bulkImport_easyWorshipSplitComponents()`) only ever treats a
+     * BLANK line as ending a block, so this never fragments the section.
+     * A component with no `voices` at all walks voiceLineSegments()'s own
+     * single "gap the whole component" segment, so this is
+     * BYTE-IDENTICAL to the pre-#2073 output in that case. */
     function buildProclaim(song) {
         if (!song) { throw new Error('buildProclaim: song required'); }
         var out = String(song.title || 'Untitled') + '\n';
+        var groupOrdinalOf = makeGroupOrdinalResolver();
         (song.components || []).forEach(function (comp) {
             out += '\n' + pcLabel(comp) + '\n';
-            (comp.lines || []).forEach(function (line) {
-                out += String(line == null ? '' : line) + '\n';
+            var lines = comp.lines || [];
+            voiceLineSegments(comp).forEach(function (seg) {
+                var segLines = lines.slice(seg.from, seg.to + 1);
+                if (seg.part) {
+                    var marker = markerKeyword(seg.part, groupOrdinalOf);
+                    if (marker) { out += marker + '\n'; }
+                }
+                segLines.forEach(function (line) {
+                    out += String(line == null ? '' : line) + '\n';
+                });
             });
         });
         return out;
@@ -799,14 +1118,68 @@
         if (song.ccli)           { out += cpDirective('ccli', song.ccli); }
         if (song.copyright)      { out += cpDirective('copyright', song.copyright); }
         var chordAware = chordProSongHasChords(song);
+        var groupOrdinalOf = makeGroupOrdinalResolver();
         (song.components || []).forEach(function (comp) {
             /* Section label as a {comment:} (e.g. "Verse 1", "Chorus") —
                reuses the Proclaim label map so labelling stays consistent. */
             out += '\n' + cpDirective('comment', pcLabel(comp));
             var chords = Array.isArray(comp.chords) ? comp.chords : null;
-            (comp.lines || []).forEach(function (line, i) {
-                var cell = (chords && i < chords.length) ? chords[i] : null;
-                out += buildChordProLine(line, cell, chordAware) + '\n';
+            var lines = comp.lines || [];
+            /* #2073 commit 13 — a voice-part RUN (`comp.voices`) gets its
+               OWN `{comment: <MARKER>}` directive right before its lines —
+               ChordPro's `{comment:}` is the format's one general-purpose
+               "print this line of text, it isn't sung" directive, which is
+               exactly what a voice cue is. A component with no `voices` at
+               all walks voiceLineSegments()'s single "gap the whole
+               component" segment, so a chordless, voice-less song is
+               BYTE-IDENTICAL to the pre-#2073 output (the same safety
+               property chordProSongHasChords() already guarantees for
+               chords) — pinned in tests/test-export-voice-markers.js.
+               `i` still indexes the ORIGINAL `comp.lines`/`comp.chords`
+               arrays (voiceLineSegments() only ever reports POSITIONS into
+               them), so a chord cell still lines up correctly with its
+               lyric line inside a voiced run.
+             *
+             * ⚠️ A GENUINE GAP, FLAGGED HERE RATHER THAN WORKED AROUND (out
+             * of this commit's scope — `song_importers.php` is explicitly
+             * read-only for this commit; see this commit's own report):
+             * the {comment:}-driven SECTION label two lines above round-
+             * trips fine, because the importer's `case 'comment':` resolves
+             * it via `_bulkImport_chordProSectionFromLabel()`. That helper
+             * does NOT call the shared, #2075-fixed
+             * `_bulkImport_classifyMarker()` the way the four sites #2075
+             * touched (.txt, OpenSong, VideoPsalm, OpenLyrics) all do — it
+             * still calls the OLDER, un-fixed `_bulkImport_componentTypeFor()`
+             * directly. That makes ChordPro's `{comment:}` handling a FIFTH
+             * site with the exact bug #2075 fixed everywhere else, just
+             * never noticed there because a `{comment:}` line looks like an
+             * ordinary section label, not a voice cue. Concretely: re-
+             * importing THIS marker through iHymns' OWN ChordPro importer
+             * (`_bulkImport_parseChordPro()`) currently starts a fresh,
+             * UNLABELLED `refrain` component and silently drops the word —
+             * worse than a one-way trip, an outright loss, on the exact
+             * failure #2075 exists to prevent. The marker still round-trips
+             * through the shared PURE detector on its own,
+             * `vocalPartDetectClassifyLine()` (proven in
+             * tests/test-export-voice-markers.js), and still displays
+             * correctly in any REAL ChordPro reader (OnSong, Planning
+             * Center, WorshipTools, …) — which is what a ChordPro export is
+             * actually FOR — so writing the marker is still the right call;
+             * only iHymns' OWN reimport of its OWN export is affected. A
+             * follow-up issue should extend `_bulkImport_chordProSection
+             * FromLabel()` through `_bulkImport_classifyMarker()` exactly
+             * like the other four sites (a "fifth site" for #2075's own
+             * pattern) — not attempted here, since that file is out of
+             * this commit's scope. */
+            voiceLineSegments(comp).forEach(function (seg) {
+                if (seg.part) {
+                    var marker = markerKeyword(seg.part, groupOrdinalOf);
+                    if (marker) { out += cpDirective('comment', marker); }
+                }
+                for (var i = seg.from; i <= seg.to; i++) {
+                    var cell = (chords && i < chords.length) ? chords[i] : null;
+                    out += buildChordProLine(lines[i], cell, chordAware) + '\n';
+                }
             });
         });
         return out;
@@ -879,7 +1252,25 @@
             exportSong:      exportSongChordPro,
             exportSongbook:  exportSongbookChordPro
         },
-        _internal: { escapeXml: escapeXml, baseFilename: baseFilename, buildZip: buildZip, download: download }
+        _internal: {
+            escapeXml: escapeXml, baseFilename: baseFilename, buildZip: buildZip, download: download,
+            /* #2071 — exposed so tests/test-openlyrics-export-parts.js can
+               exercise the OpenLyrics part=/repeat= pieces directly (the
+               PHP<->JS lockstep diff against IHYMNS_VOCAL_PART_KINDS, and
+               the segment/token/ordinal unit table) without round-tripping
+               a whole XML document for every case. */
+            olPartKeyword: OL_PART_KEYWORD,
+            openLyricsPartToken: openLyricsPartToken,
+            voiceLineSegments: voiceLineSegments,
+            makeGroupOrdinalResolver: makeGroupOrdinalResolver,
+            /* #2073 commit 13 — exposed so tests/test-export-voice-markers.js
+               can exercise the plain-text-family marker pieces directly (the
+               PHP<->JS lockstep diff against IHYMNS_VOCAL_PART_KINDS, and a
+               unit table for markerKeyword()) the same way olPartKeyword /
+               openLyricsPartToken already are for OpenLyrics. */
+            markerKeyword: markerKeyword,
+            markerKeywordMap: MARKER_KEYWORD
+        }
     };
 
     if (typeof global !== 'undefined') { global.iHymnsFormatExport = api; }

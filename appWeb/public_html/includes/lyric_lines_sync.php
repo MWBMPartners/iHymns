@@ -12,6 +12,14 @@ declare(strict_types=1);
    neither of which reaches back here. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';
 
+/* #2073 commit 5 — the new carry-over write helpers below (only) call
+   bindParamSafe() (#928's bind_param count-guard) rather than the raw
+   mysqli method every OTHER function in this file has always used — added
+   here, unconditionally, rather than assumed-already-loaded, because this
+   file has never required db_mysql.php itself before now. Defines
+   functions only; opens no connection of its own on include. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
+
 /**
  * iHymns — tblLyricLines mirror/sync helper (#1235 P1, lyric-line normalisation)
  *
@@ -130,18 +138,41 @@ function lyricLinesComponentsLangReady(\mysqli $db): bool
  * Find (or create) the primary `tblLyrics` version row for a song — the
  * `Source = 'ihymns'` canonical version, unique per song via uq_song_source —
  * and return its Id. Idempotent: re-runs return the existing row.
+ *
+ * ELI5: look up the row for "our own copy of the words" for this song, and
+ * make one if it has never had one before.
+ *
+ * DETAILED (#2076): the "find" half delegates to the ONE shared resolver
+ * `lyricLinesPrimaryLyricsId()` in `lyric_lines_read.php`, so this write-side
+ * lookup and every read-side one use the literal same SELECT — they cannot
+ * drift apart the way `SongData::_primaryLyricsId()` once did.
+ *
+ * ERROR POLICY (regression fix — an independent review caught this before
+ * ship): this is a find-OR-CREATE running INSIDE the caller's transaction
+ * (`lyricLinesApplyDesired()` calls it between that transaction's
+ * `begin_transaction()` and `commit()`), so it does TWO things the resolver
+ * doc-block's "ANSWER OR FAIL" contract exists to make possible:
+ *  1. It passes `$useCache = false` — a find-or-create must always see LIVE
+ *     database state. A cached "found" answer from earlier in this same
+ *     transaction could be a row that a later ROLLBACK undoes, and a cached
+ *     "found" answer would then be a lie for the rest of the request (see
+ *     the resolver's "WHY A FOUND ROW..." doc-block for the full reasoning).
+ *  2. It does NOT catch anything around the resolver call. A genuine DB
+ *     failure (deadlock, lock-wait timeout) must propagate — deliberately
+ *     UNCAUGHT here, exactly like the INSERT/UPDATE/DELETE statements
+ *     elsewhere in this file that have no try/catch of their own — so the
+ *     caller's own `catch (\Throwable $e) { $db->rollback(); throw $e; }`
+ *     runs, instead of this function silently treating "the transaction is
+ *     already dead" as "no row exists yet, create one": that swallow is
+ *     exactly what let a dead transaction survive into a duplicate INSERT
+ *     and a save that reported success over a partial write.
  */
 function lyricLinesEnsurePrimaryVersion(\mysqli $db, string $songId): int
 {
-    $sel = $db->prepare(
-        "SELECT Id FROM tblLyrics WHERE SongId = ? AND Source = 'ihymns' LIMIT 1"
-    );
-    $sel->bind_param('s', $songId);
-    $sel->execute();
-    $row = $sel->get_result()->fetch_row();
-    $sel->close();
-    if ($row !== null) {
-        return (int)$row[0];
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+    $id = lyricLinesPrimaryLyricsId($db, $songId, false);
+    if ($id > 0) {
+        return $id;
     }
     /* No 'ihymns' version yet — create the canonical primary one. Approved so it
        renders once reads switch in P2; the (SongId,'ihymns') unique makes this
@@ -216,6 +247,15 @@ function lyricLinesProjectSong(\mysqli $db, string $songId): int
  * cutover write path (lyricLinesWriteComponents, desired ← edit payload), so the
  * diff/dirty-check/PF2-snapshot logic can never diverge between them.
  *
+ * #2072 — for a MATCHED (UPDATE) line, lyricLinesMergePreserved() is spent on
+ * the desired row BEFORE either the dirty-check (lyricLinesRowClean) or the
+ * UPDATE bind reads it, so a per-line field the caller's payload never
+ * mentioned (Note/ChordsJson `_preserve`, set by
+ * lyricLinesBuildDesiredFromComponents()) reclaims its currently-stored value
+ * instead of being silently NULLed by this function's otherwise-unconditional
+ * full-row UPDATE. See lyricLinesMergePreserved()'s own doc-block for the full
+ * reasoning.
+ *
  * @param list<array<string,mixed>> $desired  lyricLinesBuildDesired()-shaped entries
  * @return int  number of lines now stored for the version (== desired count)
  */
@@ -240,19 +280,61 @@ function lyricLinesApplyDesired(\mysqli $db, string $songId, array $desired): in
     /* Align pre→post by content, preserving Ids (and thus dependent FKs). */
     $plan = lyricLinesDiff($existing, $desired);
 
+    /* #2073 commit 5 cross-review (F5) — DELIBERATELY NO SAME-SLOT CARRY HERE.
+       An earlier version of this function paired an about-to-be-DELETED line
+       with "the unmatched insertion at the same component-local ordinal"
+       (`lyricLinesSameSlotCarryPairs()`, since REMOVED — do not re-add it,
+       fuzzy-similarity or otherwise) and replayed that deleted line's voice
+       marks / sub-line spans onto the pairing. That is a POSITIONAL GUESS
+       wearing an identity-shaped coat: `[A, B] -> [X, B]` would carry A's
+       voice marks onto X even when X is a completely unrelated new lyric
+       that merely happens to land in A's old slot — same component, same
+       ordinal, proves nothing about X actually BEING a rewrite of A. It
+       compounds for sub-line spans, where replaying code-point offsets onto
+       DIFFERENT words stays in-bounds, so a read-time clamp can never catch
+       the mis-attribution either.
+       This is the SAME bug class #2072 (and its still-open sibling #2087)
+       already found and removed one field over: a hand-carry of
+       Note/ChordsJson keyed by `(type, number, lineCount)` or by array
+       position attached the WRONG line's data to a surviving line the
+       instant a line was added, removed or reordered. Wrong enrichment is
+       WORSE than missing enrichment — the save still succeeds and the data
+       still looks plausible, so nobody ever notices until much later, if
+       ever.
+       The correct behaviour: when the content-matching diff above
+       (`lyricLinesDiff()`) no longer recognises a line as the same line,
+       that line is GONE — its voice marks and spans go with it. Nothing is
+       lost forever: `lyricLinesSnapshotDeletedEnrichment()` below logs them
+       to `tblActivityLog` BEFORE the DELETE runs, so a curator can recover
+       them BY HAND, with a human confirming the pairing a computer cannot.
+       Never replace this comment with a cleverer heuristic. */
+
     /* PF2 / R3 — before the deletes cascade away any per-line enrichment, snapshot it
        to tblActivityLog so a heavy edit (a rewrite scored below the pass-3 fuzzy floor,
        counted as delete+insert) or a genuine line removal never SILENTLY destroys a
        curated translation / annotation. No-op while enrichment is dormant; best-effort
        (never throws — a save must not fail because we couldn't snapshot). The fuller
-       enrichment-aware match + re-attach UX is tracked as a P3 follow-up (#1235). */
+       enrichment-aware match + re-attach UX is tracked as a P3 follow-up (#1235).
+       #2073 commit 5 — EXTENDED to also snapshot the vocal-parts family (voice/echo
+       line marks, sub-line spans, word timing, presentation slide overrides, and any
+       round — or round VOICE — pointing at a deleted line) for RECOVERY ONLY: the F5
+       fix above means nothing replays this snapshot automatically any more, so its
+       one remaining job is (a) leaving a complete, restorable trail in tblActivityLog
+       and (b) handing back which rounds need the 'needs-review' discoverability flip. */
+    $vocalSnapshot = ['roundsToFlag' => []];
     if (!empty($plan['deleteIds'])) {
         $textById = [];
         foreach ($existing as $e) { $textById[(int)$e['Id']] = (string)$e['LineText']; }
-        lyricLinesSnapshotDeletedEnrichment($db, $songId, array_map('intval', $plan['deleteIds']), $textById);
+        $vocalSnapshot = lyricLinesSnapshotDeletedEnrichment($db, $songId, array_map('intval', $plan['deleteIds']), $textById);
     }
 
-    /* DELETE removed lines first; CASCADE drops their orphaned enrichment. */
+    /* DELETE removed lines first; CASCADE drops their orphaned enrichment
+       (translations / annotations / vocal-part rows / sub-line spans / word
+       timing / presentation slide overrides — all already snapshotted above,
+       #2073 commit 5 cross-review F4 added the last two) AND cascades a
+       round whose OWN StartLineId is being deleted (also already
+       snapshotted, and deliberately excluded from
+       $vocalSnapshot['roundsToFlag'] — see that function's own note). */
     if (!empty($plan['deleteIds'])) {
         $del = $db->prepare("DELETE FROM tblLyricLines WHERE Id = ?");
         foreach ($plan['deleteIds'] as $delId) {
@@ -260,6 +342,18 @@ function lyricLinesApplyDesired(\mysqli $db, string $songId, array $desired): in
             $del->execute();
         }
         $del->close();
+
+        /* #2073 commit 5 — the F4 discoverability flip: a round that just
+           SURVIVED the delete above (its StartLineId untouched) but had its
+           End/CodaStart/CodaEnd line SET NULL by that same delete — or one of
+           its OWN VOICES' partner-song Start/EndLineId SET NULL the same way
+           — now means something quietly different than it did a moment ago.
+           Runs AFTER the delete so the NULLing has actually happened,
+           matching the order a reviewer would expect ("the delete changed
+           this round; here is where that gets flagged") even though the
+           flag's OWN logic only needed the BEFORE-delete snapshot to decide
+           which round ids qualify. Best-effort — its own try/catch. */
+        lyricLinesFlagRoundsAfterLineDelete($db, $vocalSnapshot['roundsToFlag']);
     }
 
     /* INSERT new lines + UPDATE matched ones. Prepared once, reused per row. */
@@ -285,7 +379,21 @@ function lyricLinesApplyDesired(\mysqli $db, string $songId, array $desired): in
     $count = 0;
     foreach ($desired as $di => $d) {
         $matchId = $plan['matchedIds'][$di];   // existing Id to reuse, or null
+        if ($matchId !== null) {
+            /* #2072 — merge the currently-stored Note/ChordsJson back onto $d
+               wherever the caller's payload stayed silent about them, BEFORE
+               either lyricLinesRowClean() (the dirty-check, right below) or
+               the UPDATE bind sees this row. An INSERT (matchId === null) has
+               no existing row to reclaim from — a brand-new line has nothing
+               to preserve, so it is left untouched. */
+            $d = lyricLinesMergePreserved($d, $existingById[$matchId] ?? null);
+        }
         if ($matchId === null) {
+            /* #2073 commit 5 cross-review (F5) — a brand-new line (nothing
+               matched it in the diff above) starts with NO voice marks and
+               NO sub-line spans, full stop. See the "DELIBERATELY NO
+               SAME-SLOT CARRY" comment above $plan's own computation for why
+               that is the correct behaviour, not a gap to fill in. */
             $ins->bind_param(
                 'iissiissssi',
                 $lyricsId, $d['ComponentId'], $d['PartType'], $d['PartTypeSlug'], $d['PartNumber'], $d['SortOrder'],
@@ -490,7 +598,13 @@ function lyricLinesShadowColumnsPresent(\mysqli $db): array
  * line's ComponentId), shadow-writing the JSON columns that still exist; (2) build
  * the desired line list from the payload + the upserted ComponentIds (NEVER reading
  * LinesJson); (3) apply it to tblLyricLines via the shared Id-preserving diff
- * (lyricLinesApplyDesired) so per-line enrichment survives. SortOrder is kept
+ * (lyricLinesApplyDesired) so per-line enrichment survives; (4) — #2072 finding 4 —
+ * re-derive the ChordsJson/NotesJson SHADOW columns from the now-authoritative
+ * tblLyricLines for any component whose payload omitted chords/notes
+ * (lyricLinesResyncChordsNotesShadow()), because step (1)'s shadow write ran
+ * BEFORE step (3)'s identity-based preserve knew the real per-line value — see
+ * that function's doc-block for why a stale shadow is a live data-loss path via
+ * the legacy re-projector, not merely a cosmetic mismatch. SortOrder is kept
  * contiguous 0..n-1 (so the #1066 ArrangementJson ordinal arrays stay valid).
  *
  * Each component entry: { type, number, language?, lines:string[], chords?:array,
@@ -531,6 +645,27 @@ function lyricLinesWriteComponents(\mysqli $db, string $songId, array $component
             'lines'         => $lines,
             'chords'        => (isset($c['chords']) && is_array($c['chords'])) ? array_values($c['chords']) : null,
             'notes'         => (isset($c['notes'])  && is_array($c['notes']))  ? array_values($c['notes'])  : null,
+            /* #2072 — ELI5: did the caller say ANYTHING about this component's
+               per-line chords/notes, even "clear them"? A funnel that never
+               mentions the key at all (array_key_exists false) means "I have
+               nothing to say about this — leave whatever is already stored
+               alone"; a funnel that sends the key, even as an explicit `null`,
+               means "this IS the value now, even if that value is empty".
+               DETAILED: this generalises rule #45's exact `labelProvided` /
+               `sourceWorkIdProvided` idiom (a few lines below, for the
+               component-level Label/SourceWorkId columns) down to the per-LINE
+               Note/ChordsJson columns that lyricLinesApplyDesired() UPDATEs
+               UNCONDITIONALLY otherwise (it writes every projected column on
+               every matched line — there is no partial SET). Deliberately
+               array_key_exists, NOT isset(): isset() treats an explicit `null`
+               the same as "absent", which would make "send notes:null to clear
+               the note" silently degrade back into "preserve" — defeating the
+               whole point of the flag and reproducing the exact #2072 bug one
+               level down. Spent by lyricLinesBuildDesiredFromComponents()'s
+               `_preserve` flag below and, ultimately, by
+               lyricLinesMergePreserved() inside lyricLinesApplyDesired(). */
+            'notesProvided'  => array_key_exists('notes',  $c),
+            'chordsProvided' => array_key_exists('chords', $c),
             'languagesJson' => $langsJson,                                                  // shadow string (or null)
             'validatedLangs'=> $langsJson !== null ? json_decode($langsJson, true) : null,  // null-padded validated array
             /* #1860 Phase 5 §3.1 — THIN-ROW metadata siblings of 'language' above
@@ -553,6 +688,24 @@ function lyricLinesWriteComponents(\mysqli $db, string $songId, array $component
             'labelProvided'        => array_key_exists('label', $c),
             'sourceWorkId'         => (isset($c['sourceWorkId']) && (int)$c['sourceWorkId'] > 0) ? (int)$c['sourceWorkId'] : null,
             'sourceWorkIdProvided' => array_key_exists('sourceWorkId', $c),
+            /* #2073 commit 5 — the IMPORTER VOICES TRANSPORT: a per-line
+               parallel array of {kind,label?,bg?} cells (or `null`/`[]` to
+               CLEAR every line in this component), mirroring the
+               notes/chords *Provided idiom above EXACTLY — an importer only
+               ever knows a line by its POSITION (no tblLyricLines.Id exists
+               yet), so it hands this over positionally and
+               vocalPartsApplyComponentVoices() (includes/vocal_parts.php,
+               called below, AFTER a real Id exists for every line) is the
+               ONE place position becomes an FK row. `voicesProvided` false
+               (the key was never mentioned at all) means every line in this
+               component is left UNTOUCHED — the same "say nothing, preserve
+               whatever is already stored" contract as notesProvided/
+               chordsProvided, extended one file over because unlike a
+               scalar column, a line's voice rows can pre-exist independently
+               of this write (see vocalPartsApplyComponentVoices()'s own
+               doc-block for the full three-state cell semantics). */
+            'voices'         => (isset($c['voices']) && is_array($c['voices'])) ? array_values($c['voices']) : null,
+            'voicesProvided' => array_key_exists('voices', $c),
         ];
     }
 
@@ -563,7 +716,157 @@ function lyricLinesWriteComponents(\mysqli $db, string $songId, array $component
 
     /* (2) Desired lines from the payload (never LinesJson). (3) Diff into tblLyricLines. */
     $desired = lyricLinesBuildDesiredFromComponents($norm, static fn(?string $t): ?string => lyricLinesPartTypeSlug($db, $t));
-    return lyricLinesApplyDesired($db, $songId, $desired);
+    $count   = lyricLinesApplyDesired($db, $songId, $desired);
+
+    /* (4) #2072 finding 4 — MUST run AFTER (3): only once lyricLinesApplyDesired()
+       has resolved the per-line identity-based preserve does tblLyricLines hold the
+       TRUE final Note/ChordsJson for a component that omitted them in step (1)'s
+       shadow write. Fixing up the shadow before this point would just encode
+       another guess. */
+    lyricLinesResyncChordsNotesShadow($db, $songId, $norm);
+
+    /* (5) #2073 commit 5 — the importer voices transport: bind
+       (component index, line index within it) -> tblLyricLines.Id, now that
+       step (3) has definitely minted one for every line, and hand that
+       position -> Id map to vocalPartsApplyComponentVoices() (the ONE seam
+       that turns positional `voices` cells into FK rows). Skipped entirely
+       — no extra SELECT, no extra require — unless at least one component
+       actually mentioned `voices` at all, so an ORDINARY save (the
+       overwhelming majority: no caller of this function sets `voices` yet)
+       pays zero cost for a capability it never asked for (rule #A's
+       "verified no-op" posture, applied to a feature rather than a whole
+       migration). Own try/catch: a bug in voice application must never fail
+       the section save it rides on (the SAME non-blocking posture rule #45
+       already established for the work-medley lockstep one feature over). */
+    $anyVoicesProvided = false;
+    foreach ($norm as $c) {
+        if (!empty($c['voicesProvided'])) { $anyVoicesProvided = true; break; }
+    }
+    if ($anyVoicesProvided) {
+        try {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'vocal_parts.php';
+            if (vocalPartsTablesReady($db)) {
+                /* #2073 commit 5 cross-review finding F6 — the savepoint is set
+                   as the FIRST statement inside this block, before anything
+                   that could throw (including the read below), so the catch's
+                   rollback-to-savepoint always has a real savepoint to unwind
+                   to — see the fuller reasoning on the call itself, below. */
+                $db->savepoint('ihymns_vp_apply');
+                $lineIdStmt = $db->prepare('SELECT Id FROM tblLyricLines WHERE LyricsId = ? ORDER BY SortOrder, Id');
+                $vLyricsId  = lyricLinesEnsurePrimaryVersion($db, $songId);
+                $lineIdStmt->bind_param('i', $vLyricsId);
+                $lineIdStmt->execute();
+                $allLineIds = array_map(static fn($r) => (int)$r['Id'], $lineIdStmt->get_result()->fetch_all(MYSQLI_ASSOC));
+                $lineIdStmt->close();
+
+                $lineIdsByPos = [];
+                $cursor = 0;
+                foreach ($norm as $ci => $c) {
+                    $n = count($c['lines']);
+                    for ($li = 0; $li < $n; $li++) {
+                        $lineIdsByPos[$ci][$li] = $allLineIds[$cursor] ?? 0;
+                        $cursor++;
+                    }
+                }
+
+                /* `_voiceSource` is an optional string key on the TOP-LEVEL
+                   $components array (not per-component) — read straight off
+                   the caller's original parameter, never off $norm (which
+                   never carries it): array_values($components), used to
+                   build $norm above, silently drops a string-keyed entry's
+                   KEY, but the VALUE would still have landed in $norm as an
+                   entry the `!is_array($c)` guard then skips — so this key
+                   is invisible to $norm either way, by construction, exactly
+                   as "Design pass 7" §4.2 specifies. */
+                $voiceSource = (isset($components['_voiceSource']) && is_string($components['_voiceSource']) && $components['_voiceSource'] !== '')
+                    ? $components['_voiceSource']
+                    : 'ihymns';
+                /* #2073 commit 5 cross-review finding F6 — SAVEPOINT-scoped
+                   (set above, as this block's first statement).
+                   vocalPartsApplyComponentVoices() performs several
+                   independent writes across potentially many lines
+                   (find-or-create a part, clear a line, assign a line); a
+                   bug or a genuine DB error partway through must not leave
+                   HALF of those writes committed while the catch below still
+                   reports the whole song save as an unqualified success —
+                   that is the exact "partial success reported as success"
+                   shape #2073's own cross-review already found (and removed)
+                   once today in the same-slot carry (F5). Releasing the
+                   savepoint only once the call returns without throwing, and
+                   rolling back TO it in the catch on any other outcome,
+                   makes this ONE unit atomic: either every voices write this
+                   call would have made lands, or none of them do — the
+                   lyric-line/component write already committed to above is
+                   untouched either way.
+                   @see https://dev.mysql.com/doc/refman/8.0/en/savepoint.html */
+                vocalPartsApplyComponentVoices($db, $songId, $norm, $lineIdsByPos, $voiceSource);
+                $db->release_savepoint('ihymns_vp_apply');
+            }
+        } catch (\Throwable $_e) {
+            if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
+            /* Best-effort: the section save itself already succeeded above;
+               a voice-application bug must not retroactively fail it. But an
+               honest "best-effort" means undoing whatever this failed unit
+               partially wrote, not leaving it in the database while claiming
+               nothing happened — roll back to the savepoint set above so the
+               voices step is genuinely all-or-nothing, exactly like every
+               other best-effort step in this file already is by virtue of
+               being a single atomic SQL statement. */
+            try {
+                /* ⚠️ NOT `$db->rollback(0, 'ihymns_vp_apply')`. In mysqli,
+                   rollback()'s second argument names a TRANSACTION, not a
+                   savepoint — that call would roll back the WHOLE transaction,
+                   throwing away the song save this step was only a small part
+                   of, while the caller still reported success. The only way to
+                   unwind to a savepoint is the SQL statement itself. Found by
+                   an independent review of this branch; the bug was in the very
+                   change that introduced the savepoint to make this atomic. */
+                $db->query('ROLLBACK TO SAVEPOINT ihymns_vp_apply');
+            } catch (\Throwable $_e2) {
+                if (songRelocateIsTransactionFatal($_e2)) { throw $_e2; }
+                /* The rollback-to-savepoint itself failed (e.g. the
+                   savepoint was never reached because vocalPartsTablesReady()
+                   returned false, so it doesn't exist) — nothing further a
+                   best-effort unit can do; the surrounding save still
+                   commits, exactly as it did before this fix. */
+            }
+        }
+    }
+
+    return $count;
+}
+
+/**
+ * #2072 finding 4 — collapse a null-padded per-line cell array (one entry per
+ * line, `null` where that line has nothing to say) into the shadow-JSON
+ * encoding this codebase uses for `ChordsJson`/`NotesJson`: `null` when EVERY
+ * cell is null (nothing worth storing), else the whole array JSON-encoded.
+ * **PURE** — no DB, no I/O.
+ *
+ * ELI5: turn a row of per-line boxes, most of them empty, into either "there's
+ * genuinely nothing here" (null) or "here's the whole row, empty boxes and
+ * all" (a JSON array) — the one rule both places that write this kind of
+ * column need to agree on.
+ *
+ * DETAILED: extracted so the ORIGINAL shadow write in
+ * `lyricLinesUpsertComponents()` (below, encoding the RAW/pre-merge payload)
+ * and the POST-MERGE resync in `lyricLinesResyncChordsNotesShadow()` (which
+ * re-derives the shadow from the now-authoritative `tblLyricLines` AFTER the
+ * identity-based preserve has run) share the exact same "any non-null cell ⇒
+ * encode the array, else null" rule — one encoding, never two divergent
+ * copies of it (rule #35).
+ *
+ * @param list<mixed> $cells
+ * @return string|null
+ */
+function lyricLinesShadowCellsToJson(array $cells): ?string
+{
+    foreach ($cells as $v) {
+        if ($v !== null) {
+            return json_encode($cells, JSON_UNESCAPED_UNICODE);
+        }
+    }
+    return null;
 }
 
 /**
@@ -630,22 +933,31 @@ function lyricLinesUpsertComponents(\mysqli $db, string $songId, array $norm): a
             if ($sc === 'LinesJson') {
                 $out[] = json_encode($c['lines'], JSON_UNESCAPED_UNICODE);
             } elseif ($sc === 'ChordsJson') {
-                $cells = []; $any = false;
+                /* #2072 finding 4 — NOTE: these are the RAW/pre-merge per-line values
+                   ($c['chords'] on $norm, straight from the caller's payload, possibly
+                   null/omitted). When the caller OMITTED chords for this component
+                   (chordsProvided false), THIS write is only a placeholder — the
+                   correct, identity-based MERGED value isn't known until step (3)
+                   below (lyricLinesApplyDesired()'s per-line diff has run), so
+                   lyricLinesResyncChordsNotesShadow() re-derives and overwrites this
+                   column from the authoritative tblLyricLines right after. See that
+                   function's doc-block for the full reasoning. */
+                $cells = [];
                 for ($k = 0; $k < $lineCount; $k++) {
-                    $v = (is_array($c['chords']) && array_key_exists($k, $c['chords'])) ? $c['chords'][$k] : null;
-                    $cells[] = $v;
-                    if ($v !== null) { $any = true; }
+                    $cells[] = (is_array($c['chords']) && array_key_exists($k, $c['chords'])) ? $c['chords'][$k] : null;
                 }
-                $out[] = $any ? json_encode($cells, JSON_UNESCAPED_UNICODE) : null;
+                $out[] = lyricLinesShadowCellsToJson($cells);
             } elseif ($sc === 'NotesJson') {
-                $cells = []; $any = false;
+                /* #2072 finding 4 — same placeholder caveat as ChordsJson immediately
+                   above: resynced from tblLyricLines by
+                   lyricLinesResyncChordsNotesShadow() when notesProvided is false. */
+                $cells = [];
                 for ($k = 0; $k < $lineCount; $k++) {
                     $v = (is_array($c['notes']) && array_key_exists($k, $c['notes']) && $c['notes'][$k] !== null && $c['notes'][$k] !== '')
                         ? $c['notes'][$k] : null;
                     $cells[] = $v;
-                    if ($v !== null) { $any = true; }
                 }
-                $out[] = $any ? json_encode($cells, JSON_UNESCAPED_UNICODE) : null;
+                $out[] = lyricLinesShadowCellsToJson($cells);
             } else { /* LanguagesJson — already clamped to line-count by lineEnrichmentBuildLanguagesJson */
                 $out[] = $c['languagesJson'];
             }
@@ -744,6 +1056,122 @@ function lyricLinesUpsertComponents(\mysqli $db, string $songId, array $norm): a
 }
 
 /**
+ * #2072 finding 4 — re-derive the `ChordsJson`/`NotesJson` SHADOW columns on
+ * `tblSongComponents` from the now-authoritative `tblLyricLines`, for every
+ * component whose payload OMITTED chords/notes (`chordsProvided`/
+ * `notesProvided` false on its `$norm` entry). Call this AFTER
+ * `lyricLinesApplyDesired()` has run — never before.
+ *
+ * ELI5: the shadow copy gets written a little too early, before we've figured
+ * out which notes/chords actually survived onto which line. This function
+ * comes back afterwards and corrects the shadow copy to match what really
+ * ended up stored, for exactly the components where that could have gone wrong.
+ *
+ * DETAILED (why this exists — the bug): `lyricLinesWriteComponents()` writes
+ * the `ChordsJson`/`NotesJson` shadow INSIDE `lyricLinesUpsertComponents()`
+ * (step 1), using the RAW payload value for each component — which is `null`
+ * whenever the caller omitted the field. Only AFTER that, in step (3)
+ * (`lyricLinesApplyDesired()`), does the per-LINE identity-based preserve
+ * (`lyricLinesMergePreserved()`, matched by content-diffed line Id) decide the
+ * REAL final value for each line — reclaiming a surviving line's stored Note/
+ * ChordsJson from the database when the payload said nothing about it. So for
+ * an omitted field, the shadow written in step 1 is at best a guess and is
+ * frequently wrong (`null`, even though the authoritative `tblLyricLines.Note`
+ * the merge just preserved is very much NOT null).
+ *
+ * This is not cosmetic: the LEGACY re-projector `lyricLinesProjectSong()` (run
+ * by the backfill migration's "safe to re-run" button, or any future caller)
+ * reads `NotesJson`/`ChordsJson` as ITS source of truth
+ * (`lyricLinesBuildDesired()`, above) — so a stale `null` shadow would get
+ * re-projected back onto `tblLyricLines`, silently ERASING the very value the
+ * per-line merge just went to the trouble of preserving. That is a strictly
+ * WORSE outcome than the original #2072 bug: instead of losing a note on ONE
+ * save, a later re-projection loses it PERMANENTLY, with no payload anywhere
+ * that ever asked for that.
+ *
+ * Scope: only components where `chordsProvided`/`notesProvided` is false are
+ * touched — a component that explicitly provided the value already has the
+ * correct shadow from step 1 (it wrote the caller's own authoritative value),
+ * so re-deriving it here would be redundant work, never a correctness fix.
+ *
+ * @param \mysqli                    $db
+ * @param string                     $songId
+ * @param list<array<string,mixed>> $norm     the SAME normalised components
+ *                                             lyricLinesWriteComponents() built,
+ *                                             each carrying 'cid' (from the
+ *                                             upsert) + 'chordsProvided' +
+ *                                             'notesProvided'
+ * @return void
+ */
+function lyricLinesResyncChordsNotesShadow(\mysqli $db, string $songId, array $norm): void
+{
+    $cols = lyricLinesShadowColumnsPresent($db);
+    if (!$cols['ChordsJson'] && !$cols['NotesJson']) {
+        return;   // post-C6 drop (or never migrated) — nothing to resync.
+    }
+
+    /* Only resolve/query when there is genuinely a component to fix — the
+       common case (every field explicitly provided) does zero extra work. */
+    $lyricsId = null;
+    $sel = null;
+
+    foreach ($norm as $c) {
+        $needChords = $cols['ChordsJson'] && empty($c['chordsProvided']);
+        $needNotes  = $cols['NotesJson']  && empty($c['notesProvided']);
+        if (!$needChords && !$needNotes) {
+            continue;
+        }
+        $cid = (int)($c['cid'] ?? 0);
+        if ($cid <= 0) {
+            continue;   // no upserted row to correlate to (shouldn't happen; defensive)
+        }
+        if ($lyricsId === null) {
+            $lyricsId = lyricLinesEnsurePrimaryVersion($db, $songId);
+            $sel = $db->prepare(
+                "SELECT ChordsJson, Note FROM tblLyricLines
+                  WHERE LyricsId = ? AND ComponentId = ?
+                  ORDER BY SortOrder, Id"
+            );
+        }
+
+        $sel->bind_param('ii', $lyricsId, $cid);
+        $sel->execute();
+        $rows = $sel->get_result()->fetch_all(MYSQLI_ASSOC);
+
+        $setCols = [];
+        $vals    = [];
+        $types   = '';
+        if ($needChords) {
+            $cells = [];
+            foreach ($rows as $r) {
+                $cells[] = ($r['ChordsJson'] !== null) ? json_decode((string)$r['ChordsJson'], true) : null;
+            }
+            $setCols[] = 'ChordsJson = ?';
+            $vals[]    = lyricLinesShadowCellsToJson($cells);
+            $types    .= 's';
+        }
+        if ($needNotes) {
+            $cells = [];
+            foreach ($rows as $r) {
+                $cells[] = ($r['Note'] !== null && $r['Note'] !== '') ? (string)$r['Note'] : null;
+            }
+            $setCols[] = 'NotesJson = ?';
+            $vals[]    = lyricLinesShadowCellsToJson($cells);
+            $types    .= 's';
+        }
+        $vals[]  = $cid;
+        $types  .= 'i';
+        $upd = $db->prepare('UPDATE tblSongComponents SET ' . implode(', ', $setCols) . ' WHERE Id = ?');
+        $upd->bind_param($types, ...$vals);
+        $upd->execute();
+        $upd->close();
+    }
+    if ($sel !== null) {
+        $sel->close();
+    }
+}
+
+/**
  * Build the ordered DESIRED line list from the in-memory normalised components
  * (each carrying its upserted `cid`), NEVER reading tblSongComponents.LinesJson.
  * **PURE** — no DB, no I/O (the part-type→slug lookup is injected as $slugResolver
@@ -772,6 +1200,16 @@ function lyricLinesBuildDesiredFromComponents(array $norm, callable $slugResolve
         $chords     = is_array($c['chords'] ?? null) ? array_values($c['chords']) : null;
         $notes      = is_array($c['notes']  ?? null) ? array_values($c['notes'])  : null;
         $langs      = is_array($c['validatedLangs'] ?? null) ? array_values($c['validatedLangs']) : null;
+        /* #2072 — the writer-level "did the caller mention this field at all"
+           signal (see the long comment on lyricLinesWriteComponents()'s
+           normalisation, above, for the full reasoning). Defaulted to `true`
+           ("yes, provided") when a caller's normalised array happens not to
+           carry the flag at all, so this PURE function degrades to TODAY's
+           behaviour (never preserve) for anything other than the ONE real
+           caller (lyricLinesWriteComponents(), which always sets both) —
+           never a silent PHP "Undefined array key" warning. */
+        $notesProvided  = $c['notesProvided']  ?? true;
+        $chordsProvided = $c['chordsProvided'] ?? true;
 
         foreach ($c['lines'] as $i => $line) {
             $text     = (string)$line;
@@ -797,9 +1235,80 @@ function lyricLinesBuildDesiredFromComponents(array $norm, callable $slugResolve
                 'Note'           => $noteVal,
                 'LanguageCode'   => $lineLang,
                 'IsInstrumental' => $isInst,
+                /* #2072 — writer-level layer of the per-line preserve-on-omit
+                   defence: `true` on a field means "the in-memory payload
+                   never mentioned it, so lyricLinesMergePreserved() must
+                   reclaim whatever is already stored" for a MATCHED (UPDATE)
+                   line, BEFORE either the dirty-check or the UPDATE bind sees
+                   this row. The legacy LinesJson-sourced lyricLinesBuildDesired()
+                   (the backfill/re-projection path, which re-reads what is
+                   ALREADY stored rather than an in-memory edit payload) emits
+                   NO `_preserve` key at all — lyricLinesMergePreserved()
+                   treats a missing key as "nothing to merge", so that path's
+                   behaviour stays byte-identical to before this fix. */
+                '_preserve' => ['Note' => !$notesProvided, 'ChordsJson' => !$chordsProvided],
             ];
             $sort++;
         }
+    }
+    return $desired;
+}
+
+/**
+ * #2072 — general per-line "omitted means preserve, explicit null means clear"
+ * merge, spent by lyricLinesApplyDesired() for every MATCHED (UPDATE) line,
+ * BEFORE either the dirty-check (lyricLinesRowClean) or the UPDATE bind reads
+ * the row. **PURE** — no DB, no I/O — so it is unit-tested directly
+ * (tests/php/test-lyric-lines-diff.php).
+ *
+ * ELI5: if nobody said anything new about this line's note or chords, keep
+ * whatever is already sitting in the database for it, instead of letting the
+ * next save silently blank it out.
+ *
+ * DETAILED: `lyricLinesApplyDesired()`'s UPDATE writes EVERY projected column
+ * on every matched line (rule #25 — the ONE write path does a full-row column
+ * list, never a partial SET) — so a caller that built its desired row without
+ * knowing a per-line field exists (an importer that has never heard of Notes,
+ * a stale-cached editor, a re-ingest over an existing song) would otherwise
+ * NULL that field on every save. That is exactly the bug #2072 reported for
+ * `tblLyricLines.Note`: the OpenLyrics importer WRITES it, nothing reads it
+ * back, and the next whole-song save destroys it because the save payload
+ * never carried a `notes` key at all.
+ *
+ * `_preserve` is set by lyricLinesBuildDesiredFromComponents() ONLY (never by
+ * the legacy LinesJson-sourced lyricLinesBuildDesired() backfill projector,
+ * which re-reads what is already stored rather than an in-memory edit
+ * payload) from the `notesProvided` / `chordsProvided` flags computed with
+ * `array_key_exists` — so an explicit `null` ("clear this") is distinguishable
+ * from an absent key ("I have nothing to say about this"), the same
+ * distinction rule #45 already draws for `tblSongComponents.Label` /
+ * `SourceWorkId`, generalised here to per-LINE columns.
+ *
+ * A desired row with NO `_preserve` key (the legacy path, or any future
+ * caller that has not opted in) is returned COMPLETELY UNCHANGED — this is
+ * what keeps the legacy backfill projector byte-identical to its pre-#2072
+ * behaviour, and what keeps this helper safe to call unconditionally.
+ *
+ * @param array<string,mixed>      $desired      one lyricLinesBuildDesiredFromComponents() entry
+ * @param array<string,mixed>|null $existingRow  the CURRENT tblLyricLines row for the SAME
+ *                                                matched Id (from $existingById in
+ *                                                lyricLinesApplyDesired()), or null when there
+ *                                                is nothing to reclaim (an INSERT, or a matched
+ *                                                Id this call somehow can't find the row for)
+ * @return array<string,mixed>  $desired, with Note/ChordsJson swapped back to the
+ *                               currently-stored value wherever `_preserve` says the
+ *                               caller stayed silent about that field
+ */
+function lyricLinesMergePreserved(array $desired, ?array $existingRow): array
+{
+    if ($existingRow === null || empty($desired['_preserve'])) {
+        return $desired;
+    }
+    if (!empty($desired['_preserve']['Note'])) {
+        $desired['Note'] = $existingRow['Note'] ?? null;
+    }
+    if (!empty($desired['_preserve']['ChordsJson'])) {
+        $desired['ChordsJson'] = $existingRow['ChordsJson'] ?? null;
     }
     return $desired;
 }
@@ -1081,6 +1590,69 @@ function lyricLinesEnrichmentTablesPresent(\mysqli $db): bool
 }
 
 /**
+ * #2073 commit 5 — is `tblLyricLineVocalParts`/`tblLyricLineVocalSpans`/
+ * `tblLyricRounds`/`tblLyricRoundVoices`/`tblPresentationSlideOverrides`
+ * present? Local, memoised probe (mirrors `lyricLinesEnrichmentTablesPresent()`
+ * immediately above) so `lyricLinesSnapshotDeletedEnrichment()` never needs
+ * `vocal_parts.php` / `lyric_rounds.php` loaded on every path that reaches
+ * it — the booleans are looked up in ONE query, independently of
+ * `vocalPartsTablesReady()` / `vocalPartsSpansReady()` / `lyricRoundsReady()`
+ * (which memoise their OWN per-table facts for their own callers) rather
+ * than requiring those two files just to ask a question this file can
+ * answer itself with a single `INFORMATION_SCHEMA` round trip (rule #22 is
+ * about not re-deriving VALUES, not about never asking the schema a plain
+ * existence question twice).
+ *
+ * `tblLyricWords` is DELIBERATELY not probed here: it ships in the SAME
+ * migration as `tblLyricLines` itself (`migrate-normalize-lyrics.php`), so
+ * by the time this file's write path runs at all, it is already guaranteed
+ * present — unlike `tblPresentationSlideOverrides`, which ships in the
+ * SEPARATE `migrate-presentation-themes.php` and genuinely can be absent
+ * (#2073 commit 5 cross-review finding F4).
+ *
+ * @return array{parts:bool,spans:bool,rounds:bool,slideOverrides:bool}
+ */
+function lyricLinesVocalTablesPresent(\mysqli $db): array
+{
+    static $present = null;
+    if ($present !== null) {
+        return $present;
+    }
+    $present = ['parts' => false, 'spans' => false, 'rounds' => false, 'slideOverrides' => false];
+    try {
+        $r = $db->query(
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME IN ('tblLyricLineVocalParts', 'tblLyricLineVocalSpans',
+                                    'tblLyricRounds', 'tblLyricRoundVoices',
+                                    'tblPresentationSlideOverrides')"
+        );
+        $found = [];
+        if ($r) {
+            while ($row = $r->fetch_row()) { $found[(string)$row[0]] = true; }
+            $r->close();
+        }
+        $present['parts']          = !empty($found['tblLyricLineVocalParts']);
+        $present['spans']          = !empty($found['tblLyricLineVocalSpans']);
+        $present['rounds']         = !empty($found['tblLyricRounds']) && !empty($found['tblLyricRoundVoices']);
+        $present['slideOverrides'] = !empty($found['tblPresentationSlideOverrides']);
+    } catch (\Throwable $_e) {
+        /* #1688 A1/§1a — a deadlock is not "best effort failed", it is the whole
+           transaction already gone. Every catch in this file can run inside the
+           caller's transaction (both save funnels call lyricLinesWriteComponents
+           between begin_transaction() and commit()), so swallowing 1213/1205 here
+           lets the caller commit nothing and still answer ok:true. The code list
+           lives once, in song_relocate.php — a copied list is the "keep these in
+           sync" comment rule #35 calls the failure rather than the fix.
+           A MISSING table still returns false (1146 is not in the fatal set), so
+           the fail-open behaviour on an un-migrated install is unchanged. */
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
+        $present = ['parts' => false, 'spans' => false, 'rounds' => false, 'slideOverrides' => false];
+    }
+    return $present;
+}
+
+/**
  * PF2 / R3 — best-effort snapshot of the per-line enrichment that lyricLinesProjectSong()'s
  * DELETE is about to cascade away, written to tblActivityLog so it is never SILENTLY
  * lost and can be recovered. A NO-OP while enrichment is dormant (the tables are empty,
@@ -1092,50 +1664,241 @@ function lyricLinesEnrichmentTablesPresent(\mysqli $db): bool
  * fuzzy floor (counted as delete+insert). Until the fuller enrichment-aware match +
  * re-attach UX lands (P3 follow-up), this is the safety net.
  *
+ * #2073 commit 5 — EXTENDED to also snapshot the vocal-parts family so a
+ * deleted line's voice/echo marks, and any round (or round VOICE) that
+ * pointed at it, "would cascade away with no trace" no longer applies:
+ * `tblLyricLineVocalParts` and `tblLyricLineVocalSpans` rows for the
+ * deleted lines are captured (gated on `lyricLinesVocalTablesPresent()`,
+ * same never-throw posture as translations/annotations above), and every
+ * `tblLyricRounds` row whose OWN Start/End/Coda line intersects the
+ * deletion, OR whose Nth VOICE's own partner-song span does, is captured
+ * too — `lyricRoundsToFlagFromRows()` (`lyric_rounds.php`, pure) is what
+ * decides which of those captured rounds actually need the round-side "F4"
+ * discoverability flip (`IntegrityStatus -> 'needs-review'`), applied by
+ * the CALLER, `lyricLinesApplyDesired()`, after the DELETE has actually run
+ * (see that function and `lyricLinesFlagRoundsAfterLineDelete()` below).
+ *
+ * #2073 commit 5 cross-review finding F4 — three fixes over the version
+ * that shipped first:
+ *   1. A round VOICE whose OWN `StartLineId`/`EndLineId` intersects the
+ *      deletion is now discovered even when the PARENT round's own four
+ *      line columns are completely untouched (the original SQL only ever
+ *      searched `tblLyricRounds`' own columns, so this round was never even
+ *      fetched). See `lyricRoundsToFlagFromRows()`'s own doc-block.
+ *   2. The `tblLyricRounds` / `tblLyricRoundVoices` captures are now
+ *      `SELECT *`, not a hand-picked column list — the earlier list (Id,
+ *      StartLineId, EndLineId, CodaStartLineId, CodaEndLineId, EndingMode /
+ *      Id, RoundId, VoiceNumber, StartLineId, EndLineId) omitted Kind,
+ *      Label, TimesThrough, Bpm, BeatsPerBar, BeatsPerLine, VocalPartId,
+ *      EntryBasis, EntryLines, EntryBeats, EntryMs, IntervalSemitones,
+ *      SortOrder — a snapshot that cannot restore those is decoration, not
+ *      recovery. `SELECT *` also means a FUTURE column never has to be
+ *      remembered here by hand (mirrors `lyricRoundsForVersion()`'s own
+ *      `SELECT *`, one file over).
+ *   3. `tblLyricWords` (per-word timing, `ON DELETE CASCADE` from
+ *      `tblLyricLines`) and `tblPresentationSlideOverrides` (per-line/word
+ *      style patches, ALSO `ON DELETE CASCADE`) genuinely cascade from this
+ *      same delete and were not captured at all — the earlier version of
+ *      this doc-block claimed the DELETE-time comment in
+ *      `lyricLinesApplyDesired()` covered "everything that cascades"; it did
+ *      not. Both are captured now (the second gated on
+ *      `lyricLinesVocalTablesPresent()['slideOverrides']`, since it ships
+ *      in a SEPARATE migration and can genuinely be absent — `tblLyricWords`
+ *      ships in the SAME migration as `tblLyricLines` itself and is never
+ *      gated, matching every other unconditional `tblLyricLines`-adjacent
+ *      reference in this file).
+ *
  * @param list<int>          $deleteIds  line Ids about to be deleted
  * @param array<int,string>  $textById   pre-edit LineText keyed by line Id (snapshot context)
+ * @return array{roundsToFlag:list<int>}
  */
-function lyricLinesSnapshotDeletedEnrichment(\mysqli $db, string $songId, array $deleteIds, array $textById): void
+function lyricLinesSnapshotDeletedEnrichment(\mysqli $db, string $songId, array $deleteIds, array $textById): array
 {
-    if (empty($deleteIds) || !lyricLinesEnrichmentTablesPresent($db)) {
-        return;
+    $empty = ['roundsToFlag' => []];
+    if (empty($deleteIds)) {
+        return $empty;
     }
+
+    $roundsToFlag = [];
+
     try {
         /* Placeholder string built from a hardcoded count (rule #5) — never input. */
         $place = implode(',', array_fill(0, count($deleteIds), '?'));
         $types = str_repeat('i', count($deleteIds));
 
-        $trStmt = $db->prepare(
-            "SELECT Id, LineId, TargetLanguage, Kind, Text
-               FROM tblLyricLineTranslations WHERE LineId IN ({$place})"
-        );
-        $trStmt->bind_param($types, ...$deleteIds);
-        $trStmt->execute();
-        $trans = $trStmt->get_result()->fetch_all(MYSQLI_ASSOC);
-        $trStmt->close();
+        $trans = [];
+        $annos = [];
+        if (lyricLinesEnrichmentTablesPresent($db)) {
+            $trStmt = $db->prepare(
+                "SELECT Id, LineId, TargetLanguage, Kind, Text
+                   FROM tblLyricLineTranslations WHERE LineId IN ({$place})"
+            );
+            $trStmt->bind_param($types, ...$deleteIds);
+            $trStmt->execute();
+            $trans = $trStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $trStmt->close();
 
-        $anStmt = $db->prepare(
-            "SELECT Id, StartLineId, EndLineId, AnnotationType, Body
-               FROM tblLyricLineAnnotations WHERE StartLineId IN ({$place}) OR EndLineId IN ({$place})"
-        );
-        $anStmt->bind_param($types . $types, ...array_merge($deleteIds, $deleteIds));
-        $anStmt->execute();
-        $annos = $anStmt->get_result()->fetch_all(MYSQLI_ASSOC);
-        $anStmt->close();
+            $anStmt = $db->prepare(
+                "SELECT Id, StartLineId, EndLineId, AnnotationType, Body
+                   FROM tblLyricLineAnnotations WHERE StartLineId IN ({$place}) OR EndLineId IN ({$place})"
+            );
+            $anStmt->bind_param($types . $types, ...array_merge($deleteIds, $deleteIds));
+            $anStmt->execute();
+            $annos = $anStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $anStmt->close();
+        }
 
-        if (empty($trans) && empty($annos)) {
-            return;   // the common path once enrichment exists: deleted lines had none
+        /* #2073 commit 5 cross-review F4 fix 3 — tblLyricWords ships in the
+           SAME migration as tblLyricLines (migrate-normalize-lyrics.php), so
+           it is unconditionally present wherever this write path runs at
+           all; unlike tblPresentationSlideOverrides below, it needs no
+           existence probe of its own. */
+        $wStmt = $db->prepare(
+            "SELECT Id, LineId, SortOrder, WordText, StartTimeMs, EndTimeMs, MetaJson
+               FROM tblLyricWords WHERE LineId IN ({$place})"
+        );
+        $wStmt->bind_param($types, ...$deleteIds);
+        $wStmt->execute();
+        $lyricWords = $wStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $wStmt->close();
+        $wordIds = array_map(static fn($w) => (int)$w['Id'], $lyricWords);
+
+        $vocalTables = lyricLinesVocalTablesPresent($db);
+
+        $vocalLineParts = [];
+        if ($vocalTables['parts']) {
+            $vpStmt = $db->prepare(
+                "SELECT Id, LineId, VocalPartId, LyricsId, IsBackground, SortOrder
+                   FROM tblLyricLineVocalParts WHERE LineId IN ({$place})"
+            );
+            $vpStmt->bind_param($types, ...$deleteIds);
+            $vpStmt->execute();
+            $vocalLineParts = $vpStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $vpStmt->close();
+        }
+        $vocalSpans = [];
+        if ($vocalTables['spans']) {
+            $vsStmt = $db->prepare(
+                "SELECT Id, LineId, VocalPartId, LyricsId, StartOffset, EndOffset, IsBackground, SortOrder
+                   FROM tblLyricLineVocalSpans WHERE LineId IN ({$place})"
+            );
+            $vsStmt->bind_param($types, ...$deleteIds);
+            $vsStmt->execute();
+            $vocalSpans = $vsStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $vsStmt->close();
+        }
+
+        /* #2073 commit 5 cross-review F4 fix 3 (continued) — presentation slide
+           overrides anchored either directly on a to-be-deleted LINE, or on a
+           WORD of that line (both FKs are ON DELETE CASCADE). Gated on the
+           table's OWN existence (a SEPARATE migration — genuinely can be
+           absent, rule #19). */
+        $slideOverrides = [];
+        if ($vocalTables['slideOverrides']) {
+            if ($wordIds) {
+                $wPlace = implode(',', array_fill(0, count($wordIds), '?'));
+                $soStmt = $db->prepare(
+                    "SELECT * FROM tblPresentationSlideOverrides
+                      WHERE LyricLineId IN ({$place}) OR LyricWordId IN ({$wPlace})"
+                );
+                $soStmt->bind_param($types . str_repeat('i', count($wordIds)), ...array_merge($deleteIds, $wordIds));
+            } else {
+                $soStmt = $db->prepare(
+                    "SELECT * FROM tblPresentationSlideOverrides WHERE LyricLineId IN ({$place})"
+                );
+                $soStmt->bind_param($types, ...$deleteIds);
+            }
+            $soStmt->execute();
+            $slideOverrides = $soStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $soStmt->close();
+        }
+
+        /* #2073 commit 5 cross-review F4 fix 1 — fetch the UNION of "rounds
+           whose OWN line columns intersect the deletion" and "rounds whose
+           VOICES' own partner-song span intersects the deletion", so a round
+           that only loses through a voice is neither skipped here nor missed
+           by the flag decision below. */
+        $rounds       = [];
+        $roundVoices  = [];
+        if ($vocalTables['rounds']) {
+            $rIdStmt = $db->prepare(
+                "SELECT Id FROM tblLyricRounds
+                  WHERE StartLineId IN ({$place}) OR EndLineId IN ({$place})
+                     OR CodaStartLineId IN ({$place}) OR CodaEndLineId IN ({$place})"
+            );
+            $rIdStmt->bind_param(
+                $types . $types . $types . $types,
+                ...array_merge($deleteIds, $deleteIds, $deleteIds, $deleteIds)
+            );
+            $rIdStmt->execute();
+            $roundIdsFromRoundFields = array_map(
+                static fn($row) => (int)$row['Id'],
+                $rIdStmt->get_result()->fetch_all(MYSQLI_ASSOC)
+            );
+            $rIdStmt->close();
+
+            $rvIdStmt = $db->prepare(
+                "SELECT RoundId FROM tblLyricRoundVoices WHERE StartLineId IN ({$place}) OR EndLineId IN ({$place})"
+            );
+            $rvIdStmt->bind_param($types . $types, ...array_merge($deleteIds, $deleteIds));
+            $rvIdStmt->execute();
+            $roundIdsFromVoiceFields = array_map(
+                static fn($row) => (int)$row['RoundId'],
+                $rvIdStmt->get_result()->fetch_all(MYSQLI_ASSOC)
+            );
+            $rvIdStmt->close();
+
+            $roundIds = array_values(array_unique(array_merge($roundIdsFromRoundFields, $roundIdsFromVoiceFields)));
+
+            if ($roundIds) {
+                /* #2073 commit 5 cross-review F4 fix 2 — SELECT * (never a
+                   hand-picked column list) so this snapshot actually carries
+                   every restoration-critical field: Kind, Label,
+                   TimesThrough, Bpm, BeatsPerBar, BeatsPerLine, … for rounds;
+                   VocalPartId, EntryBasis, EntryLines, EntryBeats, EntryMs,
+                   IntervalSemitones, SortOrder, … for voices. */
+                $rPlace = implode(',', array_fill(0, count($roundIds), '?'));
+                $rStmt  = $db->prepare("SELECT * FROM tblLyricRounds WHERE Id IN ({$rPlace})");
+                $rStmt->bind_param(str_repeat('i', count($roundIds)), ...$roundIds);
+                $rStmt->execute();
+                $rounds = $rStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $rStmt->close();
+
+                $rvPlace = implode(',', array_fill(0, count($roundIds), '?'));
+                $rvStmt  = $db->prepare("SELECT * FROM tblLyricRoundVoices WHERE RoundId IN ({$rvPlace})");
+                $rvStmt->bind_param(str_repeat('i', count($roundIds)), ...$roundIds);
+                $rvStmt->execute();
+                $roundVoices = $rvStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $rvStmt->close();
+
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_rounds.php';
+                if (function_exists('lyricRoundsToFlagFromRows')) {
+                    $roundsToFlag = lyricRoundsToFlagFromRows($rounds, $roundVoices, $deleteIds);
+                }
+            }
+        }
+
+        if (empty($trans) && empty($annos) && empty($lyricWords) && empty($vocalLineParts)
+            && empty($vocalSpans) && empty($slideOverrides) && empty($rounds) && empty($roundVoices)
+        ) {
+            return ['roundsToFlag' => $roundsToFlag];   // the common path: deleted lines carried none of this
         }
 
         $snapshot = json_encode([
-            'songId'       => $songId,
-            'reason'       => 'Enrichment cascade-deleted by an Id-preserving reprojection (#1235 PF2/R3); recoverable from this row.',
-            'deletedLines' => array_map(
+            'songId'         => $songId,
+            'reason'         => 'Enrichment cascade-deleted by an Id-preserving reprojection (#1235 PF2/R3, extended #2073 commit 5 for voices/spans/words/slide-overrides/rounds); recoverable from this row.',
+            'deletedLines'   => array_map(
                 static fn(int $id): array => ['id' => $id, 'text' => $textById[$id] ?? null],
                 $deleteIds
             ),
-            'translations' => $trans,
-            'annotations'  => $annos,
+            'translations'    => $trans,
+            'annotations'     => $annos,
+            'lyricWords'      => $lyricWords,
+            'vocalLineParts'  => $vocalLineParts,
+            'vocalSpans'      => $vocalSpans,
+            'slideOverrides'  => $slideOverrides,
+            'rounds'          => $rounds,
+            'roundVoices'     => $roundVoices,
         ], JSON_UNESCAPED_UNICODE);
 
         $userId = null;                          // system action — projector has no user context
@@ -1160,6 +1923,54 @@ function lyricLinesSnapshotDeletedEnrichment(\mysqli $db, string $songId, array 
            A MISSING table still returns false (1146 is not in the fatal set), so
            the fail-open behaviour on an un-migrated install is unchanged. */
         if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
-        /* Best-effort: never break a save because the snapshot failed. */
+        /* Best-effort: never break a save because the snapshot failed — but still
+           hand back whatever round-flag decision WAS reached before the failure. */
+        return ['roundsToFlag' => $roundsToFlag];
+    }
+
+    return ['roundsToFlag' => $roundsToFlag];
+}
+
+/**
+ * #2073 commit 5 — the "F4" discoverability flip the migration's own
+ * `tblLyricRounds.IntegrityStatus` COMMENT describes: a round whose
+ * `EndLineId`/`CodaStartLineId`/`CodaEndLineId` is about to go NULL
+ * (`ON DELETE SET NULL`) because that line is being deleted SURVIVES the
+ * delete looking outwardly healthy but meaning something quietly
+ * different — this flips it to `'needs-review'` so a curator can find it,
+ * instead of it sitting there silently wrong. Never touches a round whose
+ * `StartLineId` is the line being deleted — that round is CASCADE-deleted
+ * in full (nothing survives to flag; the snapshot already logged it).
+ *
+ * Best-effort, same never-throw-except-transaction-fatal posture as every
+ * other delete-time helper in this file.
+ *
+ * @param list<int> $roundIds  `lyricLinesSnapshotDeletedEnrichment()`'s own `roundsToFlag`
+ */
+function lyricLinesFlagRoundsAfterLineDelete(\mysqli $db, array $roundIds): void
+{
+    if (empty($roundIds)) {
+        return;
+    }
+    try {
+        $ids = array_values(array_unique(array_map('intval', $roundIds)));
+        $place = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $db->prepare("UPDATE tblLyricRounds SET IntegrityStatus = 'needs-review' WHERE Id IN ({$place})");
+        $stmt->bind_param(str_repeat('i', count($ids)), ...$ids);
+        $stmt->execute();
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        /* #1688 A1/§1a — a deadlock is not "best effort failed", it is the whole
+           transaction already gone. Every catch in this file can run inside the
+           caller's transaction (both save funnels call lyricLinesWriteComponents
+           between begin_transaction() and commit()), so swallowing 1213/1205 here
+           lets the caller commit nothing and still answer ok:true. The code list
+           lives once, in song_relocate.php — a copied list is the "keep these in
+           sync" comment rule #35 calls the failure rather than the fix.
+           A MISSING table still returns false (1146 is not in the fatal set), so
+           the fail-open behaviour on an un-migrated install is unchanged. */
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
+        /* Best-effort: a missed flag means a curator finds the problem later by
+           eye instead of via this discoverability aid — never a failed save. */
     }
 }

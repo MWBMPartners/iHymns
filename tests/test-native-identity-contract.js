@@ -13,6 +13,28 @@
  * hand-typed list that could quietly drift — and then checks the Swift
  * (and, conditionally, Kotlin) source actually mentions every one of them.
  *
+ * #2073 UPDATE (commit 16, `.claude/vocal-parts-2073-plan.md` design pass 7
+ * "Native" note): the web side is gaining two brand-new SPARSE keys on
+ * every song component — `voices` (who sings each run of lines) and
+ * `voiceSpans` (who sings PART of one line) — plus a top-level, include-only
+ * `rounds`/`vocalWords` pair on the whole-song shape. A native decoder that
+ * FAILS on an unrecognised key would break the app the moment a single
+ * curator assigns a voice part to a single song — worse than a missing
+ * feature, an outright crash/error on content that used to load fine. This
+ * file's Assertions 6-8 (below Assertion 5) check three things, tree-derived
+ * from the actual source rather than assumed: (a) `SongComponent.swift` and
+ * Android's `SongComponent` data class both declare `voices`/`voiceSpans`
+ * as genuinely OPTIONAL (Swift `?`, Kotlin default value) so an absent key
+ * decodes to "nothing assigned" rather than throwing; (b) NEITHER platform's
+ * decoder has been made artificially strict — Swift has no hand-written
+ * `init(from decoder:)` overriding the default tolerant behaviour, and
+ * Kotlin's shared parser still sets `ignoreUnknownKeys = true`; (c) the
+ * supporting `VoiceRun`/`VoiceRunPart` (Apple) or `VoiceRun`/`VoicePart`
+ * (Android) /`VoiceSpan` shapes actually exist as real decodable types, not
+ * a `[String: Any]`/`JsonElement` escape hatch. Rendering these values is
+ * explicitly DEFERRED to a later commit (see the two model files' own doc
+ * comments) — this guard is decode-only, matching that scope.
+ *
  * DETAILED
  * --------
  * Modelled on `tests/test-identifier-routes.js` (read first, per the build
@@ -60,12 +82,15 @@
  * self-test that didn't go red as expected).
  *
  * @see .claude/catalogue-1741-1752-plan.md §7
+ * @see .claude/vocal-parts-2073-plan.md    design pass 7 "Native" note (#2073, commit 16)
  * @see tests/php/test-song-identity-render.php   the PHP twin this mirrors (#1750 §6)
  * @see tests/php/test-work-identity-fields.php    the P4b guard this also mirrors
  * @see appApple/Packages/iHymnsKit/Sources/IHModels/SongDetail.swift
+ * @see appApple/Packages/iHymnsKit/Sources/IHModels/SongComponent.swift
  * @see appApple/Packages/iHymnsKit/Sources/IHModels/Work.swift
  * @see appApple/Packages/iHymnsKit/Sources/IHFeatures/SongMetadataView.swift
  * @see appAndroid/app/src/main/java/ltd/mwbmpartners/ihymns/models/Song.kt
+ * @see appAndroid/app/src/main/java/ltd/mwbmpartners/ihymns/viewmodel/SongViewModel.kt
  */
 
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
@@ -83,6 +108,7 @@ const IH_FEATURES = join(REPO_ROOT, 'appApple', 'Packages', 'iHymnsKit', 'Source
 const IH_API       = join(REPO_ROOT, 'appApple', 'Packages', 'iHymnsKit', 'Sources', 'IHAPI');
 
 const SONG_DETAIL_SWIFT       = join(IH_MODELS, 'SongDetail.swift');
+const SONG_COMPONENT_SWIFT    = join(IH_MODELS, 'SongComponent.swift');
 const WORK_SWIFT              = join(IH_MODELS, 'Work.swift');
 const SONG_METADATA_VIEW_SWIFT = join(IH_FEATURES, 'SongMetadataView.swift');
 const SONG_DETAIL_VIEW_SWIFT   = join(IH_FEATURES, 'SongDetailView.swift');
@@ -91,6 +117,7 @@ const API_CLIENT_SWIFT         = join(IH_API, 'APIClient.swift');
 const ANDROID_APP_ROOT = join(REPO_ROOT, 'appAndroid', 'app', 'src', 'main', 'java', 'ltd', 'mwbmpartners', 'ihymns');
 const SONG_KT               = join(ANDROID_APP_ROOT, 'models', 'Song.kt');
 const SONG_DETAIL_SCREEN_KT = join(ANDROID_APP_ROOT, 'ui', 'screens', 'SongDetailScreen.kt');
+const SONG_VIEW_MODEL_KT    = join(ANDROID_APP_ROOT, 'viewmodel', 'SongViewModel.kt');
 
 let passed = 0;
 let failed = 0;
@@ -248,6 +275,69 @@ function androidIdentityCheck(songKt, screenKt, derivedKeys) {
     return { status: 'green', missing: [] };
 }
 
+/**
+ * #2073 (commit 16) — true when `src` (already comment-stripped) declares a
+ * Swift stored property named `propName` typed as a genuinely OPTIONAL array
+ * of `elementType`, e.g. `let voices: [VoiceRun]?`. This is the exact shape
+ * that makes Swift's SYNTHESIZED `Decodable` use `decodeIfPresent` for that
+ * key (rule #21/#25 precedent: every sparse key in this codebase's native
+ * models — `chords`, `lineLanguages` — follows this same `[T]?` pattern) —
+ * an array WITHOUT the trailing `?` would make a missing key throw
+ * `keyNotFound` and crash the decode of every song until this one is set.
+ * Allows either `let` or `var` and an optional `public`/access modifier, and
+ * tolerates a trailing default-value expression (`= nil`) after the `?`.
+ */
+function swiftHasOptionalArrayProperty(src, propName, elementType) {
+    const re = new RegExp(`\\b(?:let|var)\\s+${propName}\\s*:\\s*\\[${elementType}\\]\\?`);
+    return re.test(src);
+}
+
+/**
+ * #2073 (commit 16) — true when `src` (already comment-stripped) contains a
+ * hand-written `init(from decoder:` / `init(from decoder: Decoder)` —
+ * i.e. a CUSTOM `Decodable` implementation that could, deliberately or by
+ * accident, reject an unrecognised key (e.g. by asserting
+ * `container.allKeys.count == CodingKeys.allCases.count`). Swift's
+ * COMPILER-SYNTHESIZED `Decodable` conformance (no custom init at all) is
+ * what actually makes an extra/future JSON key silently ignored by default
+ * — there is no "strict mode" flag to set, unlike Kotlin's
+ * `kotlinx.serialization` (see `kotlinIgnoresUnknownKeys()` below), so the
+ * ABSENCE of a custom decoder here is itself the thing worth guarding.
+ */
+function swiftHasCustomDecoderInit(src) {
+    return /\binit\s*\(\s*from\s+\w+\s*:\s*Decoder\b/.test(src);
+}
+
+/**
+ * #2073 (commit 16) — true when `src` (already comment-stripped) declares a
+ * Kotlin `@Serializable` data-class property named `propName` typed as
+ * `List<elementType>` WITH a default value (`= emptyList()` or any other
+ * `= ...` expression). `kotlinx.serialization` is strict about a MISSING
+ * required property regardless of `ignoreUnknownKeys` (that flag only
+ * covers keys the JSON has that the class does NOT declare — the opposite
+ * direction) — a property needs its OWN default to degrade gracefully when
+ * the wire key is absent, so the default is what actually matters here, not
+ * just the type.
+ */
+function kotlinHasDefaultedListProperty(src, propName, elementType) {
+    const re = new RegExp(`\\bval\\s+${propName}\\s*:\\s*List<${elementType}>\\s*=\\s*\\S`);
+    return re.test(src);
+}
+
+/**
+ * #2073 (commit 16) — true when `src` (the Android `Json { ... }` parser
+ * configuration block) sets `ignoreUnknownKeys = true`. Unlike Swift's
+ * `JSONDecoder`, `kotlinx.serialization` REJECTS an unrecognised key by
+ * default — this flag is what makes a wire key the app doesn't know about
+ * yet (a future `rounds`/`vocalWords` companion, or any other server
+ * addition) survive decoding instead of throwing
+ * `SerializationException`. Whitespace-tolerant; comment-stripped input
+ * expected (a commented-out `// ignoreUnknownKeys = true` must not count).
+ */
+function kotlinIgnoresUnknownKeys(src) {
+    return /\bignoreUnknownKeys\s*=\s*true\b/.test(src);
+}
+
 /* =========================================================================
  * MUTATION SELF-TESTS (rule #34) — run FIRST, entirely in memory, against
  * small fixtures, never the real tree. A guard that has never been proven
@@ -359,6 +449,61 @@ console.log('Mutation self-tests (run first, in memory):\n');
     const allGreen = androidIdentityCheck(derived.join(' '), 'fun copyrightDisplay(song: Song): String { ... }', derived);
     check('mutation — androidIdentityCheck() is GREEN when all keys AND copyrightDisplay are present',
         allGreen.status === 'green');
+}
+
+// --- #2073 (commit 16) — swiftHasOptionalArrayProperty(): fails-high AND fails-low ---
+{
+    const optionalFixture = 'public struct Foo { public let voices: [VoiceRun]? = nil }';
+    check('mutation FAILS-HIGH — swiftHasOptionalArrayProperty() detects a genuinely optional `[T]?` array property',
+        swiftHasOptionalArrayProperty(optionalFixture, 'voices', 'VoiceRun'));
+
+    const requiredFixture = 'public struct Foo { public let voices: [VoiceRun] }';
+    check('mutation FAILS-LOW — swiftHasOptionalArrayProperty() rejects the SAME property spelled WITHOUT the `?` (a required array, not sparse)',
+        !swiftHasOptionalArrayProperty(requiredFixture, 'voices', 'VoiceRun'),
+        'a required (non-Optional) array must not be reported as the safe sparse shape — that would let a breaking change through silently');
+
+    const wrongNameFixture = 'public struct Foo { public let somethingElse: [VoiceRun]? = nil }';
+    check('mutation FAILS-LOW — swiftHasOptionalArrayProperty() does not match a differently-named property',
+        !swiftHasOptionalArrayProperty(wrongNameFixture, 'voices', 'VoiceRun'));
+}
+
+// --- #2073 (commit 16) — swiftHasCustomDecoderInit(): fails-high AND fails-low ---
+{
+    const customDecoderFixture = 'struct Foo: Decodable { init(from decoder: Decoder) throws { ... } }';
+    check('mutation FAILS-HIGH — swiftHasCustomDecoderInit() detects a real custom `init(from decoder: Decoder)`',
+        swiftHasCustomDecoderInit(customDecoderFixture));
+
+    const synthesizedFixture = 'struct Foo: Codable { let voices: [VoiceRun]? = nil }';
+    check('mutation FAILS-LOW — swiftHasCustomDecoderInit() reports false for a struct with NO custom decoder (relies on synthesis)',
+        !swiftHasCustomDecoderInit(synthesizedFixture));
+
+    const unrelatedInitFixture = 'struct Foo { init(from song: SongDetail) { ... } }';
+    check('mutation — swiftHasCustomDecoderInit() does not false-positive on an unrelated `init(from:)` whose parameter is not typed `Decoder`',
+        !swiftHasCustomDecoderInit(unrelatedInitFixture),
+        'a labelled-"from" convenience initializer that has nothing to do with Decodable must not be mistaken for a strict custom decoder');
+}
+
+// --- #2073 (commit 16) — kotlinHasDefaultedListProperty(): fails-high AND fails-low ---
+{
+    const defaultedFixture = 'data class Foo(val voices: List<VoiceRun> = emptyList())';
+    check('mutation FAILS-HIGH — kotlinHasDefaultedListProperty() detects a defaulted `List<T>` property',
+        kotlinHasDefaultedListProperty(defaultedFixture, 'voices', 'VoiceRun'));
+
+    const noDefaultFixture = 'data class Foo(val voices: List<VoiceRun>)';
+    check('mutation FAILS-LOW — kotlinHasDefaultedListProperty() rejects the SAME property with NO default value (required, not tolerant of an absent key)',
+        !kotlinHasDefaultedListProperty(noDefaultFixture, 'voices', 'VoiceRun'),
+        'kotlinx.serialization throws on a missing required property regardless of ignoreUnknownKeys — a property with no default is not actually safe');
+}
+
+// --- #2073 (commit 16) — kotlinIgnoresUnknownKeys(): fails-high AND fails-low ---
+{
+    check('mutation FAILS-HIGH — kotlinIgnoresUnknownKeys() detects `ignoreUnknownKeys = true`',
+        kotlinIgnoresUnknownKeys('val json = Json { ignoreUnknownKeys = true }'));
+    check('mutation FAILS-LOW — kotlinIgnoresUnknownKeys() reports false once the flag is flipped to `false`',
+        !kotlinIgnoresUnknownKeys('val json = Json { ignoreUnknownKeys = false }'),
+        'a strict parser (flag false or absent) must not be reported as tolerant');
+    check('mutation FAILS-LOW — kotlinIgnoresUnknownKeys() reports false when the flag is absent entirely',
+        !kotlinIgnoresUnknownKeys('val json = Json { isLenient = true }'));
 }
 
 console.log('');
@@ -535,6 +680,62 @@ console.log('\nAssertion 5 — every Work key appears in Work.swift:\n');
 for (const key of WORK_KEYS) {
     check(`'${key}' appears in Work.swift`, workSwift.includes(key));
 }
+
+/* =========================================================================
+ * ASSERTIONS — #2073 (commit 16): native decoders tolerate the new
+ * voices/voiceSpans/rounds keys
+ *
+ * Decode-only scope (rendering is a later, separate commit — see the two
+ * model files' own doc comments): every check below is about whether a
+ * payload carrying these keys decodes WITHOUT throwing, never about whether
+ * anything on screen changes.
+ * ========================================================================= */
+
+console.log('\nAssertion 6 — SongComponent.swift declares voices/voiceSpans as OPTIONAL, with no custom decoder overriding tolerance:\n');
+
+check('appApple/.../IHModels/SongComponent.swift exists', existsSync(SONG_COMPONENT_SWIFT));
+
+const songComponentSwiftRaw = existsSync(SONG_COMPONENT_SWIFT) ? readFileSync(SONG_COMPONENT_SWIFT, 'utf8') : '';
+const songComponentSwift = stripSlashComments(songComponentSwiftRaw);
+
+check("'voices' is declared as a genuinely Optional array (`[VoiceRun]?`) on SongComponent",
+    swiftHasOptionalArrayProperty(songComponentSwift, 'voices', 'VoiceRun'));
+check("'voiceSpans' is declared as a genuinely Optional array (`[VoiceSpan]?`) on SongComponent",
+    swiftHasOptionalArrayProperty(songComponentSwift, 'voiceSpans', 'VoiceSpan'));
+check('the supporting VoiceRun/VoiceRunPart/VoiceSpan types are real decodable structs (not a `[String: Any]` escape hatch)',
+    /struct\s+VoiceRun\s*:[^{]*Codable/.test(songComponentSwift)
+    && /struct\s+VoiceRunPart\s*:[^{]*Codable/.test(songComponentSwift)
+    && /struct\s+VoiceSpan\s*:[^{]*Codable/.test(songComponentSwift));
+check('SongComponent.swift has NO custom `init(from decoder:)` overriding the default unknown-key-tolerant synthesis',
+    !swiftHasCustomDecoderInit(songComponentSwift));
+
+console.log('\nAssertion 7 — SongDetail.swift stays unknown-key tolerant (proves `rounds`/`vocalWords` decode safely even though this commit adds no property for them yet):\n');
+
+// SongDetail.swift is read by earlier assertions in this file already
+// (`songDetailSwift`, line ~444) — reused here rather than re-read, per this
+// file's own "don't duplicate a read" convention.
+check('SongDetail.swift has NO custom `init(from decoder:)` — an unrecognised top-level key (e.g. a future `rounds`/`vocalWords`) is silently ignored by Swift\'s default JSONDecoder behaviour, with no extra property or config needed on THIS commit',
+    !swiftHasCustomDecoderInit(songDetailSwift));
+
+console.log("\nAssertion 8 — Android's SongComponent data class tolerates voices/voiceSpans, and the shared parser stays configured to ignore unknown keys:\n");
+
+check('appAndroid/.../models/Song.kt exists', existsSync(SONG_KT));
+check('appAndroid/.../viewmodel/SongViewModel.kt exists', existsSync(SONG_VIEW_MODEL_KT));
+
+const songKtStripped = stripSlashComments(songKtSrc);
+const songViewModelKtSrc = existsSync(SONG_VIEW_MODEL_KT) ? readFileSync(SONG_VIEW_MODEL_KT, 'utf8') : '';
+const songViewModelKtStripped = stripSlashComments(songViewModelKtSrc);
+
+check("'voices' is declared on Android's SongComponent as `List<VoiceRun>` WITH a default value (absent-key safe)",
+    kotlinHasDefaultedListProperty(songKtStripped, 'voices', 'VoiceRun'));
+check("'voiceSpans' is declared on Android's SongComponent as `List<VoiceSpan>` WITH a default value (absent-key safe)",
+    kotlinHasDefaultedListProperty(songKtStripped, 'voiceSpans', 'VoiceSpan'));
+check('the supporting VoiceRun/VoicePart/VoiceSpan classes are real @Serializable data classes (not a raw JsonElement escape hatch)',
+    /@Serializable\s+data class VoiceRun\b/.test(songKtStripped)
+    && /@Serializable\s+data class VoicePart\b/.test(songKtStripped)
+    && /@Serializable\s+data class VoiceSpan\b/.test(songKtStripped));
+check("SongViewModel.kt's shared Json{} parser still sets `ignoreUnknownKeys = true` (required for kotlinx.serialization to tolerate a key it doesn't know about at all, e.g. a future `rounds`/`vocalWords` addition)",
+    kotlinIgnoresUnknownKeys(songViewModelKtStripped));
 
 /* ------------------------------------------------------------------ */
 

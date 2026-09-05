@@ -84,12 +84,10 @@ php -S localhost:8080
 
 | File | What it does |
 |---|---|
-| `data/songs.json` | One-time migration input for MySQL (generated, don't edit manually) — the running app reads live MySQL, not this file |
 | `appWeb/public_html/index.php` | SPA shell |
 | `appWeb/public_html/api.php` | All API endpoints |
 | `appWeb/public_html/js/app.js` | JS app entry point |
-| `appWeb/public_html/manage/includes/auth.php` | Auth & role system |
-| `appWeb/public_html/manage/includes/db.php` | Database & migrations |
+| `appWeb/public_html/manage/includes/auth.php` | Auth & role system — requires `includes/db_mysql.php` directly (no separate `db.php` wrapper exists) |
 
 ### Further Reading
 

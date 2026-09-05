@@ -99,6 +99,10 @@ $COLUMN_EXCEPTIONS = [
     'webhooks.php' => [
         'Details' => 'holds an expandable <details> element wrapping the pretty-printed per-attempt AttemptLogJson blob (#1909) — it has no single sortable value, and it is not the trailing column (Actions is), so it needs an explicit exception',
     ],
+    'vocal-parts-review.php' => [
+        'Line in context' => 'renders several lines of surrounding lyric text (marker + context + target run) inside one cell — a multi-line preview, not one sortable value, and not the trailing column (Actions is)',
+        'Proposal'         => 'holds LIVE <select>/<input>/checkbox controls a curator uses to correct the guessed part/label/echo flag before Accept — the same "cell holds an editable control, not a static value" shape as songbooks.php\'s Order column',
+    ],
 ];
 
 /** Strip PHP tags (both `<?php ... ?>` and `<?= ... ?>`) so a `?>` or stray

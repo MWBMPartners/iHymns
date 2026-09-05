@@ -983,6 +983,21 @@ $MAPPING = [
         'venue_save'      => 'api:org_admin_venue_save',
     ],
 
+    /* #2073 commit 15 — the voice-part marker review queue. Every action
+       delegates to includes/vocal_part_review.php (rule #22) and has a
+       verified api.php twin gated on the SAME edit_songs entitlement the
+       page itself checks (rule #1587). 'refresh' re-scans ONE song right
+       now; the whole-catalogue batch (migrate-backfill-vocal-part-
+       suggestions.php) stays web-only/manual by design (rule #48's
+       setup-database carve-out), which is why there is no mapping entry
+       for a batch action here — the page has none to dispatch either. */
+    'vocal-parts-review.php' => [
+        'accept'  => 'api:admin_vocal_suggestion_accept',
+        'dismiss' => 'api:admin_vocal_suggestion_dismiss',
+        'refresh' => 'api:admin_vocal_suggestion_refresh_song',
+        'undo'    => 'api:admin_vocal_suggestion_undo',
+    ],
+
     'webhooks.php' => [
         'create'        => 'api:admin_webhook_create',
         'delete'        => 'api:admin_webhook_delete',

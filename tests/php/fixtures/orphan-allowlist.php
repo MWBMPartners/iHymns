@@ -736,23 +736,40 @@ return [
            afterPageLoad() song branch), so they are no longer orphans. Same
            F5/F6/1g/1h/1i self-cleaning pattern this file's history already
            proves out. */
+        /* ---------------------------------------------------------------
+         * The singing-part review API twins (#2073, five actions).
+         *
+         * The review page at /manage/vocal-parts-review posts to its own
+         * handlers, so nothing in this repository calls these. They exist
+         * because rule #48 requires every capability to be reachable through
+         * /api as well — for the native apps and for the Swagger console —
+         * and each is gated on exactly the same permission the page uses.
+         *
+         * Same shape as the admin/org API-parity family above: caller-less in
+         * this tree ON PURPOSE, not by neglect.
+         * --------------------------------------------------------------- */
+        'admin_vocal_suggestion_list'        => '#2073 API parity for /manage/vocal-parts-review — no first-party caller by design',
+        'admin_vocal_suggestion_accept'      => '#2073 API parity for /manage/vocal-parts-review — no first-party caller by design',
+        'admin_vocal_suggestion_dismiss'     => '#2073 API parity for /manage/vocal-parts-review — no first-party caller by design',
+        'admin_vocal_suggestion_undo'        => '#2073 API parity for /manage/vocal-parts-review — no first-party caller by design',
+        'admin_vocal_suggestion_refresh_song'=> '#2073 API parity for /manage/vocal-parts-review — no first-party caller by design',
     ],
 
-    /* =====================================================================
-     * 2. TABLES AN APP PATH READS THAT NOTHING WRITES (§3.2)
-     *
-     * A reader with no writer is a feature that can only ever return an
-     * empty result — "API-reachable, user-invisible, data-impossible".
-     * ===================================================================== */
     'tables_reader_no_writer' => [
         /* tblSongAlternativeTitles graduated OUT of this list in #1783: the
            duplicate_song endpoint (manage/editor/api2.php) now writes it via
            INSERT...SELECT when copying a song's alt titles, so it is no longer
            reader-with-no-writer. Removing the entry keeps the count exact. */
+        'tblPresentationSlideOverrides' => '#2073 read by lyricLinesSnapshotDeletedEnrichment() so a delete does not lose it silently; the writer is the not-yet-built slide-override editor',
         'tblSongArrangements'      => '#1066 one-pass dormant — ?include=arrangements read side shipped, write side is future feature work',
         'tblSongRoyaltyIds'        => '#1066 one-pass dormant — ?include=royaltyIds read side shipped, write side is future feature work',
         'tblSongScriptureRefs'     => '#1066 one-pass dormant — ?include=scriptureRefs read side shipped, write side is future feature work',
-        'tblVocalParts'            => '#1066 one-pass dormant — ?include=vocalParts read side shipped, write side is future feature work',
+        /* 'tblVocalParts' entry RETIRED #2073 commit 5: includes/vocal_parts.php
+           now writes it too (vocalPartsUpsert()/vocalPartsFindOrCreate() INSERT
+           and UPDATE it, vocalPartsDelete() DELETEs it), so it is no longer
+           reader-with-no-writer. Same F5/F6/1g/1h/1i/1j self-cleaning pattern
+           this file's history already proves out (see the retired entries
+           elsewhere in this file for the worked examples). */
         'tblContentLicences'       => '#1668 licence-store consolidation — catalogue rows ship only in .sql/.fulldata/ihymns-full.sql, so a schema-only install reads an empty catalogue',
         /* #1741 P4c entries for tblTuneAliases/tblTuneCredits/
            tblTuneExternalLinks RETIRED by #1748 — manage/tunes.php +
@@ -786,7 +803,15 @@ return [
      * 3. TABLES AN APP PATH WRITES THAT NOTHING READS (§3.3)
      * ===================================================================== */
     'tables_writer_no_reader' => [
-        'tblLyricWords'     => 'deliberate — per-word timing accrues at ingest (lyrics_ingest.php:358) for the future karaoke/sync read path; see .claude/lyrics-normalisation-strategy.md. Deleting the write throws away data we collect on purpose',
+        /* 'tblLyricWords' entry RETIRED #2073 commit 5: includes/vocal_parts.php's
+           vocalPartsAssignWords() (the word-grain voice-assignment ingest twin,
+           D2) now reads it too — `SELECT w.Id FROM tblLyricWords w JOIN
+           tblLyricLines l ON l.Id = w.LineId WHERE w.Id IN (...) AND
+           l.LyricsId = ?`, the ownership/IDOR check proving every word id it is
+           asked to assign a voice to genuinely belongs to the lyrics version the
+           caller claims — so it is no longer writer-with-no-reader. Same
+           F5/F6/1g/1h/1i/1j/tblVocalParts self-cleaning pattern this file's
+           history already proves out. */
         'tblLyricSyllables' => 'deliberate — per-syllable timing accrues at ingest (lyrics_ingest.php:362) for the future karaoke/sync read path; see .claude/lyrics-normalisation-strategy.md',
     ],
 

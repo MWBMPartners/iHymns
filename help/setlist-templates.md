@@ -6,7 +6,7 @@
 
 ## 🎯 What this is
 
-A service usually has a shape before it has songs. A **template** captures that shape as a list of labelled rows; applying one starts a brand-new setlist with those rows already there, ready for you to drop your songs into. This is separate from an ordinary setlist, which is just a plain list of songs.
+A service usually has a shape before it has songs. A **template** captures that shape as a list of labelled rows; applying one starts a brand-new setlist with those rows already there, ready for you to drop your songs into. This is separate from an ordinary setlist, which is just a plain list of songs — see [Set Lists](setlists.md) for building, ordering, following along live, and sharing one.
 
 ---
 

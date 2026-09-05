@@ -19,6 +19,7 @@
 - [[Development Setup]]
 - [[API Reference]] — plus the live OpenAPI spec + Swagger UI at `/manage/api-docs`
 - [[Song Data Format]]
+- [[Import & Export Fidelity]]
 - [[Database & Migrations]]
 - [[Security]]
 - [[Deployment & CI-CD]]

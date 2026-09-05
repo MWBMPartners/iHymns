@@ -56,9 +56,9 @@ try {
         $mysql->query(
             "CREATE TABLE tblSongPartTypes (
                 Id         INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-                Slug       VARCHAR(40)  NOT NULL,
+                Slug       VARCHAR(40)  NOT NULL COMMENT 'intro|verse|pre-chorus|chorus|post-chorus|bridge|refrain|interlude|instrumental|solo|ad-lib|outro|tag|vamp|coda',
                 Name       VARCHAR(60)  NOT NULL,
-                IsNumbered TINYINT(1)   NOT NULL DEFAULT 0,
+                IsNumbered TINYINT(1)   NOT NULL DEFAULT 0 COMMENT 'Verse 1 / Chorus 2 vs Intro/Outro',
                 SortOrder  INT UNSIGNED NOT NULL DEFAULT 0,
                 UNIQUE KEY uq_Slug (Slug)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci

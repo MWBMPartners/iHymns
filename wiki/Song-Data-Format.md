@@ -61,9 +61,9 @@ Language: fr-FR         ← Optional IETF BCP 47 language tag (defaults to songb
 
 ---
 
-## Parsed JSON (`data/songs.json`)
+## Parsed JSON (interchange shape)
 
-The parser (`tools/parse-songs.js`) converts source files into structured JSON. The output `data/songs.json` is the import format consumed by `appWeb/.sql/migrate-json.php` as a one-time seed — the **database is canonical at runtime** (every read is live MySQL; see [[Architecture]]).
+The parser (`tools/parse-songs.js`) converts source files into structured JSON matching the interchange shape below. Its output now lands only at a gitignored `tmp/songs.json` local build artefact — **the database is canonical at runtime** (every read is live MySQL; see [[Architecture]]), and the one-time bootstrap script that used to consume a *tracked* `data/songs.json` as a seed, `appWeb/.sql/migrate-json.php`, was retired in #1614 (it was ~4x stale against the live catalogue by the time it went). New song content goes in through the Song Editor's bulk importers or a real backup restore — see [[Database & Migrations]] § Data Migration.
 
 ### Song Object
 
@@ -101,7 +101,7 @@ The parser (`tools/parse-songs.js`) converts source files into structured JSON. 
 
 ### JSON Schema
 
-The structure is validated against `data/songs.schema.json` (JSON Schema draft 2020-12). Any changes to the song format must update the schema.
+The structure is validated against `tests/fixtures/songs.schema.json` (JSON Schema draft 2020-12; moved out of `data/` in #1617). Any changes to the song format must update the schema.
 
 ---
 
@@ -157,7 +157,7 @@ The router supports flexible input: `MP-1` is normalised to `MP-0001`.
 
 ## Editor Import & Export Formats
 
-Beyond the `.SourceSongData/` → `data/songs.json` one-time seed pipeline above, the Song Editor's bulk-import/export tooling reads and writes several projection-software formats. Import: ChordPro, OpenLyrics/OpenLP, ProPresenter 6, **ProPresenter 7+** (`.pro`/`.probundle`/`.proplaylist`), VideoPsalm, FreeShow, EasyWorship, Proclaim, PPTX. Export: the same set (8 formats), offered publicly on any song/songbook page — see [[PWA Features]] § Export & Present.
+Beyond the historical `.SourceSongData/` → MySQL parser pipeline above, the Song Editor's bulk-import/export tooling reads and writes several projection-software formats — and is now the supported way to bring new song content into a live install (see [[Database & Migrations]] § Data Migration). Import: ChordPro, OpenLyrics/OpenLP, ProPresenter 6, **ProPresenter 7+** (`.pro`/`.probundle`/`.proplaylist`), VideoPsalm, FreeShow, EasyWorship, Proclaim, PPTX. Export: the same set (8 formats), offered publicly on any song/songbook page — see [[PWA Features]] § Export & Present.
 
 **ProPresenter 7+ (epic #1968)** gets the most detail here because its wire format has a real gotcha for anyone building against it: PP7 does **not** store chords as inline `[G]`-style brackets in the slide text — that's only ProPresenter's own editing metaphor. A chord is a positioned protobuf attribute (a UTF-16 code-unit range + a chord string) layered over otherwise-clean plain lyric text. iHymns' own per-line `chords` cells are already positioned the same way, so the import/export mapping is direct — no inline-bracket parsing on either side. Decoding is a hand-rolled, independently-cross-validated proto3 wire-walker (`includes/propresenter7_decode.php`), never a self-consistent round-trip against iHymns' own exporter alone. See [[Architecture]] § ProPresenter interop and [[Database & Migrations]] for the fuller picture (media ingest, the dormant presentation-timeline schema).
 
@@ -165,7 +165,7 @@ Beyond the `.SourceSongData/` → `data/songs.json` one-time seed pipeline above
 
 ## Parser
 
-Run the parser to regenerate `data/songs.json` from source files:
+Run the parser to regenerate its local-only build artefact from source files:
 
 ```bash
 npm run parse-songs
@@ -177,7 +177,7 @@ The parser:
 1. Scans `.SourceSongData/` subdirectories
 2. Parses each `.txt` file for title, components, writers, composers
 3. Detects companion `_audio.mid` and `_music.pdf` files
-4. Outputs structured JSON to `data/songs.json`
+4. Outputs structured JSON to a gitignored `tmp/songs.json` (nothing commits it, and nothing in the running app reads it)
 5. Reports statistics (song count, songbook breakdown)
 
-**33 unit tests** validate the parser in `tests/test-song-parser.js`.
+**25 unit tests** validate the interchange format's *shape* — against a small synthetic fixture, not the real catalogue — in `tests/test-song-fixture-shape.js` (renamed from `test-song-parser.js` when the real `data/songs.json` corpus it used to check against was retired, #1617).

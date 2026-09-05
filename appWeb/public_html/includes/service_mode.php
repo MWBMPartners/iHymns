@@ -289,6 +289,36 @@ function serviceMode_generateCode(int $len = 6): string
  * header doc-block; the existing `revision`/`StateRevision` counter already
  * IS that value for every reader.
  *
+ * #2073 — ROUNDS/CANON "you are here". A round (several voices singing the
+ * same words, staggered) needs its own tiny "which step are we on right
+ * now" fact riding alongside the ordinary song/section broadcast, so that
+ * (a) a Present-mode screen being driven remotely can be told which step to
+ * show, and (b) a congregant who picked a voice can be told "you're on line
+ * 3" via `js/modules/service-follow.js`. This is a FIFTH allow-listed key,
+ * additive exactly like `lineIndex`/`scrollPct`/`transposeOffset` above — an
+ * old client that never sends it is completely unaffected, and this
+ * function still needs NO migration (it is one more shape inside the same
+ * StateJson blob). See `.claude/vocal-parts-2073-plan.md` "Design pass 5"
+ * §4.4 for the full remote-drive design; the actual round SCHEDULE (which
+ * line each voice is on at a given step) is never sent over the wire — only
+ * the step NUMBER is. The receiving end re-derives the schedule itself from
+ * the round's own data (already on the page) via the pure, PHP-mirrored
+ * `lyricRoundTimeline()` (see `includes/lyric_rounds.php` and its JavaScript
+ * twin exported from `js/modules/present-mode.js`) — sending the already-
+ * expanded step list here would be needless weight on every single
+ * broadcast for a fact both ends can work out for free.
+ *
+ * ⚠️ CAVEAT FOR WHOEVER WIRES THE OPERATOR BUTTON THAT SENDS THIS: this
+ * function only cleans `state` — it has no say over `songId`/`componentIndex`.
+ * `serviceMode_applyBroadcast()`'s `UPDATE` binds those two positionally
+ * (`bind_param('sisi', $songId, $componentIndex, $stateJson, $sessionId)`),
+ * and mysqli binds a PHP `null` as SQL `NULL` regardless of the declared
+ * type — so a caller that broadcasts a round step WITHOUT also resending the
+ * session's current `songId`/`componentIndex` will silently blank the very
+ * song/section every congregant is following. Every round-step broadcast
+ * MUST carry the same `songId`/`componentIndex` the last ordinary broadcast
+ * used, unchanged.
+ *
  * @param mixed $state Decoded JSON body's `state` value (or absent/non-array).
  * @return string|null Compact JSON, or null when there is nothing valid to store.
  */
@@ -324,6 +354,48 @@ function serviceMode_cleanState(mixed $state): ?string
     }
     if (array_key_exists('transposeOffset', $state) && is_numeric($state['transposeOffset'])) {
         $clean['transposeOffset'] = max(-12, min(12, (int)$state['transposeOffset']));
+    }
+
+    /* #2073 — `round`: the ONLY nested shape this function accepts (every
+       other key above is a scalar). Anything that is not "a round id we can
+       trust" (a positive whole number) drops the WHOLE `round` key rather
+       than storing a half-formed one a reader would have to special-case —
+       matching this function's existing "the caller sent nothing usable"
+       posture for every other field. See this function's own doc-block for
+       why `startedAt`/`step` are the only clock the wire carries and why the
+       caller — not this function — is responsible for keeping songId /
+       componentIndex un-nulled alongside it. */
+    if (isset($state['round']) && is_array($state['round'])) {
+        $r = $state['round'];
+        $roundId = (isset($r['id']) && is_numeric($r['id'])) ? (int)$r['id'] : 0;
+        if ($roundId > 0) {
+            $clean['round'] = [
+                'id'      => $roundId,
+                /* Which step (0-based) of the round's timeline is showing
+                   right now; clamped the same way `lineIndex` above is. */
+                'step'    => (isset($r['step']) && is_numeric($r['step'])) ? max(0, min(9999, (int)$r['step'])) : 0,
+                /* Auto-advancing, or parked on one step for manual stepping? */
+                'playing' => !empty($r['playing']),
+                /* Server-clock epoch MILLISECONDS of this round's step 0, so
+                   every follower's local `atMs` maths starts from the SAME
+                   moment rather than each device's own "when I first saw
+                   this" — a non-numeric/zero/negative value degrades to
+                   null (no known start), which every reader treats as "step
+                   through manually", never as "start at the Unix epoch". */
+                'startedAt' => (isset($r['startedAt']) && is_numeric($r['startedAt']) && (int)$r['startedAt'] > 0)
+                    ? (int)$r['startedAt']
+                    : null,
+                /* Split panel (one column per voice) or a stacked single
+                   column — a per-viewer preference the operator's choice
+                   seeds but a congregant's own device is free to override
+                   locally (this is only the STARTING suggestion). Anything
+                   else typed here falls back to the one layout every device
+                   can render without CSS grid support. */
+                'layout'  => (isset($r['layout']) && in_array($r['layout'], ['split', 'stacked'], true))
+                    ? $r['layout']
+                    : 'split',
+            ];
+        }
     }
 
     if (!$clean) {
