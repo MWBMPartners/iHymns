@@ -4912,4 +4912,64 @@ return [
             || !_migProbe_tableExists($db, 'tblLyricRoundVoices')
             || !_migProbe_tableExists($db, 'tblVocalPartSuggestions'),
     ],
+
+    /* #2073 commit 14 (D4) — the backfill BATCH that scans every song's
+       lyrics for old-style plain-text voice markers ("WOMEN", "MEN: You
+       are holy,", "(echo)") and writes each one into the
+       tblVocalPartSuggestions review queue commit 2's migration created —
+       NEVER applying anything to a song's real lyrics itself (that only
+       happens once a curator clicks Accept on /manage/vocal-parts-review,
+       #2073 commit 15). DATA WRITE across the WHOLE catalogue, so — unlike
+       the schema-only 'vocal-parts-rounds' card right above — this one is
+       'manual' + 'dryRunnable', mirroring 'cleanup-zero-line-components'
+       (#2063) and 'reconcile-media-flags' (#1862): EXCLUDED from "Apply
+       all" and the pending counter, defaults to a REPORT-ONLY dry run, and
+       needs an explicit &confirm=1 to actually write a single row. */
+    'vocal-parts-backfill' => [
+        'script' => 'migrate-backfill-vocal-part-suggestions.php',
+        'manual' => true,
+        'dryRunnable' => true,
+        'card' => [
+            'title'  => 'Detect voice markers into a review queue (#2073)',
+            'body'   => 'DATA WRITE — scans every song&rsquo;s lyrics for old-style'
+                      . ' plain-text voice markers ("WOMEN", "MEN: You are holy,",'
+                      . ' "(echo)") and queues each one as a suggestion in'
+                      . ' <code>tblVocalPartSuggestions</code> for a curator to Accept,'
+                      . ' Dismiss or Undo on <code>/manage/vocal-parts-review</code>.'
+                      . ' NEVER changes a song&rsquo;s actual lyrics by itself — only a'
+                      . ' curator&rsquo;s Accept does that. Requires the'
+                      . ' <code>Vocal / singing parts (#1137)</code> and'
+                      . ' <code>Vocal parts: echo spans, rounds/canon, review queue'
+                      . ' (#2073)</code> cards to have run first. Do NOT run via'
+                      . ' &ldquo;Apply all&rdquo;. Defaults to <strong>dry-run</strong>'
+                      . ' (reports counts per form and per songbook); pass'
+                      . ' <code>&amp;confirm=1</code> to write the suggestions.'
+                      . ' Idempotent — a re-run refreshes still-open suggestions and'
+                      . ' never touches one a curator already reviewed.',
+            'button' => 'Detect Voice Markers (dry-run unless confirmed)',
+        ],
+        /* Sentinel-row probe (rule #19) — a data-only pass over pre-existing
+           lyrics has no schema signal of its own (the 'reconcile-media-flags'
+           / 'publishers-entity' idiom), so completion is a tblAppSettings row
+           the migration writes only on a CONFIRMED apply. Deliberately NOT a
+           "does >= 1 pending suggestion row exist" probe: a healthy, fully
+           reviewed queue would then show this card as pending forever, which
+           would invite someone to "fix" that by running it again — the
+           sentinel instead answers "has this backfill ever been run", which
+           only ever needs answering once. */
+        'probe' => static function (\mysqli $db): bool {
+            try {
+                $r = $db->query(
+                    "SELECT 1 FROM tblAppSettings WHERE SettingKey = 'vocal_parts_backfill_ran' LIMIT 1"
+                );
+                $applied = $r && $r->fetch_row() !== null;
+                if ($r) {
+                    $r->close();
+                }
+                return !$applied;
+            } catch (\Throwable $_e) {
+                return false;   /* tblAppSettings absent on a fresh pre-install DB → not pending. */
+            }
+        },
+    ],
 ];
