@@ -959,7 +959,7 @@ if (!empty($breadcrumbItems)) {
 
 ?>
 <!DOCTYPE html>
-<html lang="<?= htmlspecialchars($locale) ?>" dir="<?= htmlspecialchars($textDir) ?>" data-bs-theme="light" data-ihymns-theme="light">
+<html lang="<?= htmlspecialchars($locale) ?>" dir="<?= htmlspecialchars($textDir) ?>">
 <head>
     <!-- ================================================================
          META TAGS — Character encoding, viewport, and compatibility
@@ -1048,6 +1048,33 @@ if (!empty($breadcrumbItems)) {
     <link rel="icon" type="image/png" sizes="32x32" href="/assets/icon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="/assets/icon-16.png">
     <link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png">
+
+    <!-- ================================================================
+         THEME — apply the reader's saved appearance choice to <html>
+         BEFORE any stylesheet loads (the same fix #955 made for
+         /manage/*, reused here). Without this, <html> carried a
+         hardcoded light theme until js/app.js finished loading, so
+         anyone using dark mode, high contrast, or a colour-blind-
+         friendly palette saw a flash of the wrong (light) theme on
+         every cold start and every PWA launch — the first thing such a
+         reader notices, every time.
+
+         admin-theme-init.php already reads the reader's choice
+         synchronously and stamps the matching attributes; it just
+         needed a way to run under THIS page's strict nonce-based CSP
+         (#117), which /manage/* doesn't send at all (see
+         manage/includes/auth.php) and so never needed. Setting
+         $ihymnsThemeInitNonce here (read by the partial itself) is that
+         hand-off — see admin-theme-init.php's own doc-block for the
+         contract. The storage keys it reads are kept in step with
+         js/modules/settings.js by
+         tests/php/test-public-theme-init-flash.php (CLAUDE.md rule #35
+         — two files that must agree need a mechanism, not a comment).
+         ================================================================ -->
+    <?php
+    $ihymnsThemeInitNonce = $cspNonce;
+    require __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-theme-init.php';
+    ?>
 
     <!-- ================================================================
          STYLESHEETS — CDN with local fallback

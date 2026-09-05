@@ -36,14 +36,43 @@ declare(strict_types=1);
  *
  * Replaces the per-page hardcoded `<html data-bs-theme="dark">`
  * convention that ignored user preference (#953 / #955).
+ *
+ * OPTIONAL NONCE (public-site reuse)
+ * -----------------------------------
+ * `/manage/*` sends a CSP with no script-src restriction at all (see
+ * `manage/includes/auth.php`), so this inline <script> has always been
+ * free to run there without a nonce. The public site (`index.php`) sends
+ * a STRICT nonce-based CSP instead (#117: `script-src 'self'
+ * 'nonce-…'`, no `'unsafe-inline'`) that silently refuses ANY inline
+ * script with no matching nonce — the same silent-no-op failure shape
+ * as CLAUDE.md rule #30. So a page with that stricter policy must set
+ * `$ihymnsThemeInitNonce` to its own per-request nonce BEFORE requiring
+ * this file:
+ *
+ *   <?php $ihymnsThemeInitNonce = $cspNonce; ?>
+ *   <?php require __DIR__ . '/manage/includes/admin-theme-init.php'; ?>
+ *
+ * Left unset (every admin page today), the <script> tag is emitted
+ * exactly as before — byte-identical, no behaviour change for
+ * `/manage/*`.
  */
 
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     http_response_code(403);
     exit('Access denied.');
 }
+
+/* Build the nonce attribute (if any) once, up front, so the <script> tag
+   below stays a single readable line either way. htmlspecialchars() is
+   defensive only — $cspNonce is always a base64_encode() of random
+   bytes server-side, never attacker input — but costs nothing and means
+   this partial never has to trust its caller. */
+$ihymnsThemeInitNonceAttr = '';
+if (isset($ihymnsThemeInitNonce) && is_string($ihymnsThemeInitNonce) && $ihymnsThemeInitNonce !== '') {
+    $ihymnsThemeInitNonceAttr = ' nonce="' . htmlspecialchars($ihymnsThemeInitNonce, ENT_QUOTES, 'UTF-8') . '"';
+}
 ?>
-<script>
+<script<?= $ihymnsThemeInitNonceAttr ?>>
 (function () {
     /* Mirror of the storage keys used by js/modules/settings.js +
        js/constants.js so admin pages share the SAME preference the
