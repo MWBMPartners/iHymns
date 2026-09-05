@@ -1464,3 +1464,54 @@ body:has(.navbar-admin) .modal-content.bg-dark {
 .slug-advanced[open] summary {
     margin-bottom: 0.25rem;
 }
+
+/* ==========================================================================
+   v2 EDITOR "WHO SINGS" PANEL (#2073 commit 7) — the Structure tab's per-
+   section voice-part / echo / rounds drawer (manage/editor/v2/voices-panel.js).
+   Sibling of the chords box + per-line enrichment panel right above it in
+   the same card (structure-tab.js's buildCard()); no new visual language,
+   just this feature's own class names against the SAME theme tokens the
+   rest of this file already uses (--surface-card/--surface-elevated/
+   --card-border/--text-muted/--radius-sm/--accent-solid), so it matches
+   whatever theme (light/dark/high-contrast) the admin session is in
+   without a single hardcoded colour here.
+
+   NEVER A COLOUR-ONLY CUE (mirrors the CLAUDE.md #24/#45 discipline this
+   codebase already applies to public-facing chips): an echoed/background
+   voice's own chip/span/legend rows carry the word "(echo)" in their TEXT
+   (voices-panel.js's own chip-label builders) — the dashed border below is
+   reinforcement for a sighted user, never the only signal.
+============================================================================ */
+.v2-voices-panel {
+    border-top: 1px dashed var(--card-border);
+    padding-top: 0.5rem;
+}
+.v2-voice-line-row {
+    border-radius: var(--radius-sm);
+    padding: 0.15rem 0.25rem;
+}
+.v2-voice-line-row:hover {
+    background-color: var(--surface-elevated);
+}
+.v2-voice-chip,
+.v2-voice-span-chip {
+    display: inline-flex;
+    align-items: center;
+}
+.v2-voice-chip--bg {
+    border: 1px dashed var(--card-border);
+    font-style: italic;
+}
+.v2-round-card {
+    background-color: var(--surface-elevated);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+}
+.v2-round-form {
+    background-color: var(--surface-elevated);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+}
+.v2-voice-legend-row .form-control {
+    background-color: var(--surface-card);
+}

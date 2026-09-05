@@ -168,6 +168,24 @@ $licenceTypesForJs = licenceTypesForPicker(getDbMysqli());
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_part_type_helpers.php';
 $songPartTypesForJs = songPartTypesForPicker(getDbMysqli());
 
+/* #2073 commit 7 — the served voice-part vocabulary for the Structure
+   tab's "Who sings" panel (v2/voices-panel.js), shipped the SAME
+   "server-derive the vocab, no second list" convention as the registries
+   above (rule #35/#43): the panel's part `<select>` is built ONLY from
+   THIS list, never a hand-typed kind list of its own, so it can never
+   offer a kind `vocalPartsUpsert()` would then 400 on.
+   `vocalPartsKindsProjection()` (includes/vocal_parts.php) is a pure,
+   DB-free function — it always returns the full kind list regardless of
+   migration state, but a curator must not be able to PICK any of them on
+   an un-migrated install (every write would just 409), so this is gated
+   on `vocalPartsTablesReady()` the same way this file's own Structure-tab
+   hooks gate the whole panel — `[]` here is exactly what makes the panel
+   render its calm "not available on this install yet" notice instead of
+   a populated-but-doomed picker (mirrors `$songPartTypesForJs`'s own
+   un-migrated-install posture two lines up). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'vocal_parts.php';
+$vocalPartKindsForJs = vocalPartsTablesReady(getDbMysqli()) ? vocalPartsKindsProjection() : [];
+
 /* #1862 (epic #1863) — server-derived config for the Metadata tab's
    public-domain suggestion hint, shipped the SAME "server-derive the vocab/
    config, no second list" convention as the three registries above
@@ -619,6 +637,14 @@ $pdSuggestForJs = [
          structure-tab.js treats as "use my own built-in fallback list", never an error. -->
     <script>window._iHymnsSongPartTypes = <?= json_encode($songPartTypesForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
 
+    <!-- #2073 commit 7 — voice-part kind vocabulary (list of
+         {key,label,description,gender,marker}, map order) for the Structure
+         tab's "Who sings" panel (v2/voices-panel.js). Same emit shape +
+         flags + "classic global registry map" convention as the four above
+         — [] on an un-migrated install, which the panel shows as its own
+         calm "not available on this install yet" notice, never an error. -->
+    <script>window._iHymnsVocalPartKinds = <?= json_encode($vocalPartKindsForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
+
     <!-- #1862 — public-domain suggestion config (life-plus term + publication-year
          fallback threshold) for the Metadata tab's PD hint. Same emit shape + flags
          + "classic global registry map" convention as the three registries above. -->
@@ -733,7 +759,7 @@ $pdSuggestForJs = [
            is separate from the song scalars. structure-tab.js's per-component
            enrichment panel (enrichment-panel.js) reads + writes these two
            slices directly. */
-        const store = createStore({ song: {}, components: [], credits: {}, tags: [], links: [], media: [], lineTranslations: [], lineAnnotations: [], songbookRightsDefaults: null, pendingDuplicate: false });
+        const store = createStore({ song: {}, components: [], credits: {}, tags: [], links: [], media: [], lineTranslations: [], lineAnnotations: [], vocalParts: null, songbookRightsDefaults: null, pendingDuplicate: false });
         let teardowns = [];
         /* #1846 — flush functions registered by whichever mounted tabs hold a
            pending DEBOUNCED save (metadata / structure / credits / links /
@@ -858,6 +884,16 @@ $pdSuggestForJs = [
                    tab's per-line enrichment panel from having anything to show. */
                 store.set('lineTranslations', data.lineTranslations || []);
                 store.set('lineAnnotations', data.lineAnnotations || []);
+                /* #2073 commit 7 — the "who sings this line" bulk payload
+                   (parts/lineAssignments/spans/rounds, `ready`/`spansReady`/
+                   `roundsReady` gates), api2.php's `load_song` sidecar
+                   right next to `lineAnnotations` above (see that case's
+                   own doc-comment). `null` before the first load and on a
+                   response that somehow omits the key — voices-panel.js's
+                   own `vp()` already degrades a non-object slice to the
+                   all-empty, `ready:false` shape, so this never has to
+                   guess a default shape here. */
+                store.set('vocalParts', data.vocalParts || null);
                 /* #1769 P4 — the songbook's default rights keys, a prefill HINT
                    for the Metadata tab's rights panel (D4). null on an
                    un-migrated install, so the panel simply shows no hint. */

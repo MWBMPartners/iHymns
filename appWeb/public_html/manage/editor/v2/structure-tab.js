@@ -49,6 +49,7 @@
  * ========================================================================== */
 
 import { buildEnrichmentPanel, componentLineId } from './enrichment-panel.js';
+import { buildVoicesPanel } from './voices-panel.js';
 import { iconBtn } from './ui-helpers.js';
 
 /* #1869 (epic #1863, CLAUDE.md rule #43's LAST picker item — registry
@@ -314,6 +315,40 @@ export function mountStructureTab(container, opts) {
        both render() (before the rebuild) and teardown() below. */
     let cardPickerDetachFns = [];
 
+    /* #2073 commit 7 — destroy fns for every card's "Who sings" panel
+       (voices-panel.js), the SAME lifecycle shape as cardPickerDetachFns
+       immediately above: a panel subscribes to the store's `vocalParts`
+       slice and (while a queued assignment is waiting on a save) to this
+       file's own `onComponentSaved()` registry below, both OUTSIDE this
+       tab's normal `store.subscribe('components', render)` rebuild
+       trigger — without detaching these FIRST, every structural op
+       (move/remove/add) would strand another card's subscriber forever
+       (the #1860 §4.3 leak class this mirrors). Cleared in both render()
+       (before the rebuild) and teardown() below, alongside
+       cardPickerDetachFns. */
+    let voicesPanelDestroyFns = [];
+
+    /* #2073 commit 7 — components with a "who sings this" assignment
+       queued because the section hadn't saved yet (D3's "hold and retry"
+       path, voices-panel.js's own `queuePending()`) register a listener
+       here; `_saveComponentNow()` below notifies them right after a
+       successful save so the queued assignment can retry with a real
+       line id. Keyed by comp._key like saveTimers/pendingSaves above —
+       a Set per key so more than one panel/action can wait on the SAME
+       component's next save without clobbering each other. */
+    const saveListeners = new Map();
+    function onComponentSaved(comp, fn) {
+        const key = comp._key;
+        if (!saveListeners.has(key)) { saveListeners.set(key, new Set()); }
+        saveListeners.get(key).add(fn);
+        return function off() {
+            const set = saveListeners.get(key);
+            if (!set) { return; }
+            set.delete(fn);
+            if (!set.size) { saveListeners.delete(key); }
+        };
+    }
+
     function debouncedSave(comp) {
         const key = comp._key;
         if (saveTimers.has(key)) { clearTimeout(saveTimers.get(key)); }
@@ -350,12 +385,31 @@ export function mountStructureTab(container, opts) {
     }
     registerFlush(flushPending);
 
+    /* #2073 commit 7, D3 — comp._key -> the in-flight save Promise<boolean>
+       for that component, so a SECOND caller wanting the same component
+       saved while one save is already running gets the SAME promise
+       rather than firing a second, racing component_upsert. This closes
+       the "just-added section whose create hasn't resolved" case the D3
+       brief names by name: addComponent() below calls saveComponent()
+       once, unawaited by its own button click handler, to CREATE the
+       section — if a curator ticks lines and hits Assign on that very
+       card before that create lands, voices-panel.js's ensureAndResolveIds()
+       calls ensureSaved(comp) -> saveComponent(comp) a SECOND time for a
+       component whose id is still 0; without this map that would be two
+       concurrent `component_upsert` calls racing to create the same
+       section. */
+    const inFlightSaves = new Map();
+
     /** Persist one component (create or update) atomically. On a CREATE, adopt
      *  the server-assigned componentId so later edits UPDATE in place.
      *  #1846/#1851 — resolves TRUE on success, FALSE on failure (never
      *  rejects); flushPending() below sums the FALSEs into a failure count
-     *  for the shell's Save-button outcome report. */
-    async function saveComponent(comp) {
+     *  for the shell's Save-button outcome report. #2073 commit 7 — the
+     *  actual per-call work, wrapped by the de-duping `saveComponent()`
+     *  below rather than called directly; also notifies any
+     *  `onComponentSaved()` listeners (voices-panel.js's queued D3 retry)
+     *  right after a SUCCESSFUL save. */
+    async function _saveComponentNow(comp) {
         try {
             const payload = {
                 id:        comp.id || 0,
@@ -422,12 +476,59 @@ export function mountStructureTab(container, opts) {
                 toast('Source work not found — cleared.', 'warning');
                 comp.sourceWorkId = null;
             }
+            /* #2073 commit 7 — D3's "hold and retry" queue: tell anything
+               waiting on THIS component's next successful save (a voices
+               panel with a queued line/round assignment) that it just
+               happened, so it can resolve real line ids and finish the
+               write it deferred. A save that FAILS (the catch block below)
+               deliberately does NOT notify — a listener only ever wants to
+               know about a save that actually landed. */
+            const listeners = saveListeners.get(comp._key);
+            if (listeners && listeners.size) { listeners.forEach((fn) => { try { fn(); } catch (_e) {} }); }
             return true;
         } catch (e) {
             toast('Could not save section: ' + e.message, 'danger');
             return false;
         }
     }
+
+    /** Public entry point every OTHER caller in this file uses (never
+     *  `_saveComponentNow()` directly) — see the `inFlightSaves` doc-
+     *  comment above for why the de-dupe exists. */
+    async function saveComponent(comp) {
+        const key = comp._key;
+        if (inFlightSaves.has(key)) { return inFlightSaves.get(key); }
+        const p = _saveComponentNow(comp);
+        inFlightSaves.set(key, p);
+        try {
+            return await p;
+        } finally {
+            inFlightSaves.delete(key);
+        }
+    }
+
+    /**
+     * #2073 commit 7, D3 — flush THIS component's pending debounced save
+     * right now and report whether it landed. Reuses `saveComponent()`
+     * (never a second save path, rule #25) — voices-panel.js's own
+     * `ensureAndResolveIds()` is the one caller today, mirroring
+     * `flushPending()`'s identical "cancel the timer, save now" shape one
+     * level up (the shell's manual Save button), just scoped to ONE
+     * component instead of every mounted one.
+     * @returns {Promise<boolean>}
+     */
+    async function ensureSaved(comp) {
+        const key = comp._key;
+        if (saveTimers.has(key)) { clearTimeout(saveTimers.get(key)); saveTimers.delete(key); }
+        pendingSaves.delete(key);
+        return saveComponent(comp);
+    }
+    /** True while a lyric/chord edit on this component is still sitting
+     *  inside its debounce window — voices-panel.js's D3 flow forces a
+     *  flush whenever this is true, even when comp.lineIds already looks
+     *  resolved (see that file's own `ensureAndResolveIds()` doc-comment
+     *  for the stale-id race this closes). */
+    function hasPendingSave(comp) { return pendingSaves.has(comp._key); }
 
     /** Build one component card. Wires its own inputs; no list re-render on edit. */
     function buildCard(comp, index, total) {
@@ -696,6 +797,13 @@ export function mountStructureTab(container, opts) {
             }
             comp.lines = newLines;
             renderChordRows();   // keep the per-line chord rows in lockstep — LOCAL re-render, not store.set
+            /* #2073 commit 7 — keep the "Who sings" panel's line rows (and
+               its selection-index clamp) in step with the lyrics box too,
+               the SAME "local re-render, not store.set" shape
+               renderChordRows() just used one line up. `voices` is
+               assigned a few lines below, in the SAME function — see its
+               own declaration for why calling it here is still safe. */
+            voices.refresh();
             debouncedSave(comp);   // incremental — NO list re-render
         });
         body.appendChild(ta);
@@ -812,6 +920,20 @@ export function mountStructureTab(container, opts) {
         /* #1627 item 3 — per-line language / translation / annotation panel. */
         body.appendChild(buildEnrichmentPanel(comp, { store, api, songId, toast, saveComponent }));
 
+        /* #2073 commit 7 — "Who sings" panel, right after the enrichment
+           panel (mirrors that panel's own placement one line up — both
+           are per-line drawers under the same card). `voices` is declared
+           with `const` here (not earlier) but the lyrics textarea's
+           'input' handler above already closes over it safely: that
+           handler only ever RUNS once a curator types, which is always
+           after buildCard() has finished running and `voices` has been
+           assigned — see MDN on closures/temporal-dead-zone for why a
+           reference defined before, but only INVOKED after, a `const`
+           declaration is safe. */
+        const voices = buildVoicesPanel(comp, { store, api, songId, toast, ensureSaved, hasPendingSave, onSaved: (fn) => onComponentSaved(comp, fn) });
+        body.appendChild(voices.el);
+        voicesPanelDestroyFns.push(voices.destroy);
+
         card.append(header, body);
         return card;
     }
@@ -874,6 +996,14 @@ export function mountStructureTab(container, opts) {
            render() for the SAME shared module. */
         cardPickerDetachFns.forEach((fn) => { try { fn(); } catch (_e) {} });
         cardPickerDetachFns = [];
+        /* #2073 commit 7 — same reasoning, same ordering, for every card's
+           "Who sings" panel: it subscribes to the store's `vocalParts`
+           slice (and, while a queued assignment is waiting, to this
+           file's own onComponentSaved() registry) OUTSIDE this tab's
+           `components`-triggered rebuild, so a stranded subscriber from
+           the OLD card would otherwise live on past the rebuild below. */
+        voicesPanelDestroyFns.forEach((fn) => { try { fn(); } catch (_e) {} });
+        voicesPanelDestroyFns = [];
         container.innerHTML = '';
         const comps = store.get('components') || [];
         comps.forEach((c, i) => {
@@ -903,6 +1033,9 @@ export function mountStructureTab(container, opts) {
            can't reach). */
         cardPickerDetachFns.forEach((fn) => { try { fn(); } catch (_e) {} });
         cardPickerDetachFns = [];
+        /* #2073 commit 7 — same reasoning as render()'s matching block. */
+        voicesPanelDestroyFns.forEach((fn) => { try { fn(); } catch (_e) {} });
+        voicesPanelDestroyFns = [];
         container.innerHTML = '';
     };
 }
