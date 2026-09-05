@@ -22651,6 +22651,420 @@ paths:
           description: The line-enrichment tables are not migrated
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
+  /manage/editor/api2.php?action=vocal_part_upsert:
+    post:
+      operationId: editorVocalPartUpsert
+      tags: [Editor API v2]
+      summary: Create or edit one voice part in a song's part registry (#2073)
+      description: |
+        POST, editor role only (`edit_songs` entitlement). `part.kind` is
+        validated against the served `IHYMNS_VOCAL_PART_KINDS` vocabulary —
+        never free text (CLAUDE.md rule #43). Omitting `part.id` creates a
+        new part; `Source`/`ttmlAgentId` (machine provenance) can never be
+        set through this curator-facing action. The response's `vocalParts`
+        key is the WHOLE song's voice-parts payload, read back fresh (rule
+        #35) — a client replaces its local copy wholesale rather than
+        patching it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, part]
+              properties:
+                songId: { type: string }
+                part:
+                  type: object
+                  required: [kind]
+                  properties:
+                    id: { type: integer, description: Omit to create; present to edit that exact row. }
+                    kind: { type: string, description: One of IHYMNS_VOCAL_PART_KINDS' keys (or a known alias). }
+                    label: { type: string, nullable: true }
+                    singerName: { type: string, nullable: true, description: Required (with or instead of musicianId) when kind is named-singer. }
+                    gender: { type: string, nullable: true, enum: [male, female, neutral] }
+                    musicianId: { type: integer, nullable: true, description: Must exist in tblMusicians. }
+                    sortOrder: { type: integer }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  part: { type: object }
+                  vocalParts: { type: object, description: "The whole song's voice-parts payload (rule #35 read-back)." }
+        "400":
+          description: Missing songId, or the part payload fails validation (bad kind/gender/label, or a named-singer with neither name nor musician)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: The edit_songs entitlement is required
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found, or part.id does not belong to it
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The vocal-part tables (#1137) are not migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=vocal_part_delete:
+    post:
+      operationId: editorVocalPartDelete
+      tags: [Editor API v2]
+      summary: Delete a voice part (#2073)
+      description: |
+        POST, editor role only. FK CASCADE also drops the part's own
+        line/span/word assignment rows; a round voice that named this part
+        becomes an un-named "Voice N" rather than being deleted itself.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, id]
+              properties:
+                songId: { type: string }
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: integer, description: 0 or 1. }
+                  vocalParts: { type: object, description: "The whole song's voice-parts payload (rule #35 read-back)." }
+        "400":
+          description: Missing songId/id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: The edit_songs entitlement is required
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found, or id does not belong to it
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The vocal-part tables (#1137) are not migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=vocal_lines_assign:
+    post:
+      operationId: editorVocalLinesAssign
+      tags: [Editor API v2]
+      summary: Put one or more voice parts on a run of lines (#2073)
+      description: |
+        POST, editor role only. The curator's "run" gesture — two or more
+        `partIds` on the same `lineIds` is a duet. `mode` defaults to
+        `replace`, which deletes any OTHER part currently on these lines in
+        the SAME echo/lead class as `isBackground` first (so an echo mark on
+        a line survives a `replace` of its lead voice, and vice versa);
+        `add` leaves whatever is already on these lines untouched. Unlike
+        every other action on this page, this one's `vocalParts` response
+        key comes straight from the write itself — there is no separate
+        read-back call needed because the core already returns that whole
+        payload.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, lineIds, partIds]
+              properties:
+                songId: { type: string }
+                lineIds: { type: array, items: { type: integer }, description: "1..500 tblLyricLines.Id values on this song's editable version." }
+                partIds: { type: array, items: { type: integer }, description: "1..8 distinct part ids." }
+                mode: { type: string, enum: [replace, add], default: replace }
+                isBackground: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Assigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  vocalParts: { type: object, description: "The whole song's voice-parts payload (rule #35 read-back)." }
+        "400":
+          description: Missing songId, or lineIds/partIds/mode fails validation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: The edit_songs entitlement is required
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found, or a lineId/partId does not belong to it (or a part is on a different lyrics version than the lines)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The vocal-part tables (#1137) are not migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=vocal_lines_clear:
+    post:
+      operationId: editorVocalLinesClear
+      tags: [Editor API v2]
+      summary: Take a voice part (or every part) off a run of lines (#2073)
+      description: |
+        POST, editor role only. An OMITTED `isBackground` key, or an
+        explicit `null`, clears BOTH the lead and the echo rows on these
+        lines; `true`/`false` clears only that one class.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, lineIds]
+              properties:
+                songId: { type: string }
+                lineIds: { type: array, items: { type: integer } }
+                isBackground: { type: boolean, nullable: true }
+      responses:
+        "200":
+          description: Cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  cleared: { type: integer, description: Rows deleted. }
+                  vocalParts: { type: object, description: "The whole song's voice-parts payload (rule #35 read-back)." }
+        "400":
+          description: Missing songId, or lineIds fails validation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: The edit_songs entitlement is required
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found, or a lineId does not belong to it
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The vocal-part tables (#1137) are not migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=vocal_span_upsert:
+    post:
+      operationId: editorVocalSpanUpsert
+      tags: [Editor API v2]
+      summary: Mark only part of a line as a different or echoed voice (#2073)
+      description: |
+        POST, editor role only. `start`/`end` are 0-based, end-exclusive
+        UTF-8 CODE-POINT offsets into the line's text (CLAUDE.md rule #21 —
+        never a byte or UTF-16 index). Gated on BOTH the #1137 trio AND
+        `tblLyricLineVocalSpans`, a SEPARATE, LATER #2073 migration an
+        install can be missing even once the trio exists.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, span]
+              properties:
+                songId: { type: string }
+                span:
+                  type: object
+                  required: [lineId, partId, start, end]
+                  properties:
+                    id: { type: integer, description: Omit to create. }
+                    lineId: { type: integer }
+                    partId: { type: integer }
+                    start: { type: integer }
+                    end: { type: integer }
+                    isBackground: { type: boolean, default: false }
+                    sortOrder: { type: integer }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  span: { type: object }
+                  vocalParts: { type: object, description: "The whole song's voice-parts payload (rule #35 read-back)." }
+        "400":
+          description: Missing songId, or the span payload fails validation (bad/overlapping offsets)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: The edit_songs entitlement is required
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found, or lineId/partId does not belong to it
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The vocal-part tables (#1137), or tblLyricLineVocalSpans, are not migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=vocal_span_delete:
+    post:
+      operationId: editorVocalSpanDelete
+      tags: [Editor API v2]
+      summary: Delete a sub-line voice span (#2073)
+      description: POST, editor role only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, id]
+              properties:
+                songId: { type: string }
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: integer, description: 0 or 1. }
+                  vocalParts: { type: object, description: "The whole song's voice-parts payload (rule #35 read-back)." }
+        "400":
+          description: Missing songId/id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: The edit_songs entitlement is required
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found, or id does not belong to it
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The vocal-part tables (#1137), or tblLyricLineVocalSpans, are not migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=round_upsert:
+    post:
+      operationId: editorRoundUpsert
+      tags: [Editor API v2]
+      summary: Create or edit a round/canon/partner-song over a run of lines (#2073)
+      description: |
+        POST, editor role only. `round.voices` is REPLACED AS A SET on every
+        save — the complete voice list, never a partial patch. Voice 1
+        always enters at the very start (`entryBasis` "lines", `entryLines`
+        0); every other voice's `entryBasis` picks which of `entryLines` /
+        `entryBeats` / `entryMs` is authoritative for it. Gated on BOTH the
+        #1137 trio AND `tblLyricRounds` + `tblLyricRoundVoices`, a SEPARATE,
+        LATER #2073 migration an install can be missing even once the trio
+        exists.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, round]
+              properties:
+                songId: { type: string }
+                round:
+                  type: object
+                  required: [startLineId, voices]
+                  properties:
+                    id: { type: integer, description: Omit to create. }
+                    kind: { type: string, enum: [round, canon, partner-song], default: round }
+                    label: { type: string, nullable: true }
+                    startLineId: { type: integer }
+                    endLineId: { type: integer, nullable: true, description: Omit/null for a single-line round. }
+                    timesThrough: { type: integer, minimum: 1, maximum: 8, default: 2 }
+                    endingMode: { type: string, enum: [complete, together, coda], default: complete }
+                    codaStartLineId: { type: integer, nullable: true, description: Required when endingMode is coda. }
+                    codaEndLineId: { type: integer, nullable: true }
+                    bpm: { type: number, nullable: true }
+                    beatsPerBar: { type: integer, nullable: true }
+                    beatsPerLine: { type: number, nullable: true }
+                    voices:
+                      type: array
+                      minItems: 1
+                      maxItems: 8
+                      items:
+                        type: object
+                        required: [number]
+                        properties:
+                          number: { type: integer, description: "1..N, contiguous, starting at 1." }
+                          partId: { type: integer, nullable: true, description: "Omit/null for an un-named \"Voice N\"." }
+                          label: { type: string, nullable: true }
+                          entryBasis: { type: string, enum: [lines, beats, ms], default: lines }
+                          entryLines: { type: integer, default: 0 }
+                          entryBeats: { type: number, nullable: true }
+                          entryMs: { type: integer, nullable: true }
+                          intervalSemitones: { type: integer, nullable: true }
+                          startLineId: { type: integer, nullable: true, description: "Partner-song only; both-or-neither with endLineId." }
+                          endLineId: { type: integer, nullable: true }
+                          timesThrough: { type: integer, nullable: true, minimum: 1, maximum: 8, description: Per-voice override of the round's own timesThrough. }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  round: { type: object }
+                  vocalParts: { type: object, description: "The whole song's voice-parts payload, including this round (rule #35 read-back)." }
+        "400":
+          description: Missing songId, or the round/voices payload fails validation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: The edit_songs entitlement is required
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found, or round.id / a referenced line / a voice's partId does not belong to it
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The vocal-part tables (#1137), or tblLyricRounds/tblLyricRoundVoices, are not migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /manage/editor/api2.php?action=round_delete:
+    post:
+      operationId: editorRoundDelete
+      tags: [Editor API v2]
+      summary: Delete a round/canon/partner-song (#2073)
+      description: POST, editor role only. CASCADE drops the round's own voices.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, id]
+              properties:
+                songId: { type: string }
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted: { type: integer, description: 0 or 1. }
+                  vocalParts: { type: object, description: "The whole song's voice-parts payload (rule #35 read-back)." }
+        "400":
+          description: Missing songId/id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: The edit_songs entitlement is required
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found, or id does not belong to it
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: The vocal-part tables (#1137), or tblLyricRounds/tblLyricRoundVoices, are not migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   /manage/editor/api2.php?action=bulk_verify:
     post:
       operationId: editorBulkVerify

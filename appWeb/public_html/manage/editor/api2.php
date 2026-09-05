@@ -395,6 +395,20 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 /* #1235 P3 / #1088 — shared per-line enrichment (translations / annotations)
    write+read layer; the SAME contract the future native API (#1201) reuses. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'line_enrichment.php';
+/* #2073 — voice parts / echo spans / rounds. ELI5: this is the one place that
+   knows "who sings this line" and "how a round of voices comes in one after
+   another" — the eight vocal-part and round actions below, and load_song's
+   `vocalParts` sidecar, are thin delegates over it (rule #22 — no SQL here).
+   Detailed: `vocal_parts.php` owns the part registry + line/span assignment
+   (its OWN doc-block states the throw contract every case below honours:
+   InvalidArgumentException -> 400, RuntimeException -> 404,
+   vocalPartsTablesReady()===false -> 409). `lyric_rounds.php` owns rounds and
+   `require_once`s vocal_parts.php itself (its own doc-block explains the
+   one-directional dependency), so requiring it here also loads the part
+   registry — both are required explicitly anyway so neither file's load
+   order is a silent assumption a later edit could break. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'vocal_parts.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_rounds.php';
 /* #1627 — the ONE ArrangementJson rule, shared with gate G4 (#1618) and the
    write side. arrangement_update below must never persist ordinals the gate
    would reject; sharing the validator is what makes that structurally true
@@ -2264,10 +2278,21 @@ try {
         $songbookAbbr = (string)($snapshot['song']['SongbookAbbr'] ?? '');
         $songbookRightsDefaults = ed2_songbookRightsDefaults($db, $songbookAbbr);
 
+        /* #2073 — the "who sings what" sidecar, in the SAME place and SAME
+           shape (a whole-song bulk read from the one core, rule #35) as the
+           enrichment sidecar right above it: a v2 panel reads
+           `data.vocalParts.ready`/`.spansReady`/`.roundsReady` to decide
+           whether to show its controls or a calm "not available on this
+           install yet" notice, rather than probing with a doomed write and
+           reading the 409. `[]`/`false` on an un-migrated install —
+           vocalPartsForSong() never throws (see its own doc-block). */
+        $vocalParts = vocalPartsForSong($db, $songId);
+
         ed2_respond(array_merge(['ok' => true], $snapshot, [
             'media'            => $media,
             'lineTranslations' => $enrichment['translations'],
             'lineAnnotations'  => $enrichment['annotations'],
+            'vocalParts'       => $vocalParts,
             'songbookRightsDefaults' => $songbookRightsDefaults,
             /* #1783 — true when this is a not-yet-assigned duplicate (lives in
                the hidden staging book). The Metadata tab then renders the
@@ -7188,6 +7213,335 @@ try {
 
         logActivity('song.revision.restore', 'song', $songId, ['fromRevisionId' => $revisionId]);
         ed2_respond(['ok' => true, 'songId' => $songId]);
+        break;
+    }
+
+    /* =========================================================================
+     * #2073 — voice parts, echo spans and rounds (eight actions)
+     * =========================================================================
+     * ELI5: these are the "who sings this line" tools — add/edit/delete a
+     * voice (Men, Women, a named soloist, ...), put one on a run of lines,
+     * mark just a few words of a line as an echo, and set up a round/canon
+     * where voices come in one after another. Every one of them is a THIN
+     * wrapper: all the real work (working out who owns what, checking the
+     * numbers make sense, actually writing the rows) happens in
+     * includes/vocal_parts.php and includes/lyric_rounds.php — rule #22, no
+     * SQL lives here for any of them.
+     *
+     * Detailed:
+     *  - Every case follows the SAME shape as line_translation_upsert /
+     *    line_annotation_upsert above (rule #35 — the SAME contract, not a
+     *    bespoke one): songId required (400), ed2_requireEntitlement()
+     *    (403 — the song_link_add / duplicate_song precedent), ed2_songExists()
+     *    (404), vocalPartsTablesReady() (409 — the #1137 trio). The span and
+     *    round actions ALSO check their own readiness (409) because
+     *    tblLyricLineVocalSpans / tblLyricRounds+tblLyricRoundVoices are a
+     *    SEPARATE, LATER #2073 migration — an install can have the trio
+     *    without yet having run that one, and a bare SELECT of a missing
+     *    table would otherwise throw under MYSQLI_REPORT_STRICT (rule #19)
+     *    instead of a calm, expected 409.
+     *  - The core's own throw contract — stated in vocal_parts.php's own file
+     *    doc-block, and explicitly mirrored by lyric_rounds.php's — is what
+     *    maps exceptions to status codes here: InvalidArgumentException ->
+     *    400 (bad input), RuntimeException -> 404 (an id doesn't exist or
+     *    doesn't belong to this song — deliberately never says which, so a
+     *    guess can't probe for the difference), anything else rolled back
+     *    and rethrown to the file's outer catch (rule #35 — branch on the
+     *    STATUS CODE a caller gets back, never on the wording of the message;
+     *    api-client.js's unwrap() attaches `err.status` for exactly this).
+     *  - EVERY response reads the WHOLE song's vocalParts payload back from
+     *    vocalPartsForSong() rather than trusting what was just written (rule
+     *    #35's "read the truth back") — vocalPartsAssignLines() happens to
+     *    already RETURN that exact payload itself (its own doc-block), so
+     *    vocal_lines_assign is the one case below that has no separate
+     *    read-back call; every other case fetches it explicitly. The v2
+     *    panel (a later commit) replaces its local store slice with whatever
+     *    comes back WHOLESALE, never a patch, so a 'replace' mode or a
+     *    server-side fold is always visible rather than silently missed.
+     *  - Voice/echo/round data is per-line ENRICHMENT, not component content
+     *    — the same doctrine line_translation_upsert already uses — but
+     *    unlike a translation, the plan treats "who sings this" as song
+     *    content worth a Revisions-tab entry, so every write below calls
+     *    ed2_touchRevision() (its own 15-second coalesce keeps a burst of
+     *    clicks to one row, exactly like every other caller of it above).
+     * @see .claude/vocal-parts-2073-plan.md   "Design pass 7" §6 (the action
+     *      table + status-code contract this block implements)
+     * ========================================================================= */
+
+    /* ---- vocal_part_upsert (POST) — create or edit one row in this song's
+           voice-part registry. Body: { songId, part:{ id?, kind, label?,
+           singerName?, gender?, musicianId?, sortOrder? } }. `kind` is
+           validated against the served IHYMNS_VOCAL_PART_KINDS vocabulary —
+           never free text (rule #43); omitting `id` creates a new part.
+           See vocalPartsUpsert()'s own doc-block for the full field-by-field
+           validation (hide-when-equal label fold, implied gender, the
+           named-singer musicianId/singerName requirement). ---- */
+    case 'vocal_part_upsert': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        ed2_requireEntitlement('edit_songs');
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!vocalPartsTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Vocal-part tables are not migrated.'], 409); }
+        $input = is_array($body['part'] ?? null) ? $body['part'] : [];
+        $db->begin_transaction();
+        try {
+            $part = vocalPartsUpsert($db, $songId, $input, $ed2UserId);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'vocal_parts');
+            $db->commit();
+        } catch (\InvalidArgumentException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 400);
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.vocalParts.part', 'song', $songId, ['id' => (int)($part['id'] ?? 0), 'kind' => (string)($part['kind'] ?? '')]);
+        ed2_respond(['ok' => true, 'part' => $part, 'vocalParts' => vocalPartsForSong($db, $songId)]);
+        break;
+    }
+
+    /* ---- vocal_part_delete (POST) — { songId, id }. FK CASCADE drops its
+           own line/span/word rows too; a round voice that named this part
+           becomes an un-named "Voice N" rather than being deleted itself
+           (vocalPartsDelete()'s own doc-block). ---- */
+    case 'vocal_part_delete': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $id     = (int)($body['id'] ?? 0);
+        if ($songId === '' || $id <= 0) { ed2_respond(['ok' => false, 'error' => 'songId + id are required.'], 400); }
+        ed2_requireEntitlement('edit_songs');
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!vocalPartsTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Vocal-part tables are not migrated.'], 409); }
+        $db->begin_transaction();
+        try {
+            $removed = vocalPartsDelete($db, $songId, $id);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'vocal_parts');
+            $db->commit();
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.vocalParts.part.delete', 'song', $songId, ['id' => $id]);
+        ed2_respond(['ok' => true, 'deleted' => $removed ? 1 : 0, 'vocalParts' => vocalPartsForSong($db, $songId)]);
+        break;
+    }
+
+    /* ---- vocal_lines_assign (POST) — the curator's "run" gesture: put one or
+           more parts on a RUN of lines in ONE call (two partIds on the same
+           lines is a duet). Body: { songId, lineIds:[...], partIds:[...],
+           mode?:'replace'|'add', isBackground?:bool }. `mode` defaults to
+           'replace' — see vocalPartsAssignLines()'s own doc-block for
+           exactly what that deletes first (only the SAME echo/lead class as
+           `isBackground`, so an echo mark on a line survives a 'replace' of
+           its lead voice, and vice versa). The core's return value here IS
+           already the whole vocalParts payload (its own doc-block), so —
+           unlike every other case in this block — there is no separate
+           vocalPartsForSong() read-back call needed. ---- */
+    case 'vocal_lines_assign': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        ed2_requireEntitlement('edit_songs');
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!vocalPartsTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Vocal-part tables are not migrated.'], 409); }
+        $lineIds      = is_array($body['lineIds'] ?? null) ? $body['lineIds'] : [];
+        $partIds      = is_array($body['partIds'] ?? null) ? $body['partIds'] : [];
+        $mode         = (string)($body['mode'] ?? 'replace');
+        $isBackground = !empty($body['isBackground'] ?? false);
+        $db->begin_transaction();
+        try {
+            $vocalParts = vocalPartsAssignLines($db, $songId, $lineIds, $partIds, $mode, $isBackground);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'vocal_parts');
+            $db->commit();
+        } catch (\InvalidArgumentException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 400);
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.vocalParts.assign', 'song', $songId, [
+            'lineCount' => count($lineIds),
+            'partIds'   => array_values(array_map('intval', $partIds)),
+            'mode'      => $mode,
+        ]);
+        ed2_respond(['ok' => true, 'vocalParts' => $vocalParts]);
+        break;
+    }
+
+    /* ---- vocal_lines_clear (POST) — take a part (or every part) off a run of
+           lines. Body: { songId, lineIds:[...], isBackground?:bool|null }.
+           An OMITTED key or an explicit `null` clears BOTH the lead AND the
+           echo rows on these lines; `true`/`false` clears only that one
+           class — see vocalPartsClearLines()'s own doc-block. ---- */
+    case 'vocal_lines_clear': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        ed2_requireEntitlement('edit_songs');
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!vocalPartsTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Vocal-part tables are not migrated.'], 409); }
+        $lineIds = is_array($body['lineIds'] ?? null) ? $body['lineIds'] : [];
+        /* array_key_exists (not `??`) so an explicit `false` is honoured as
+           "clear only the lead class" rather than being coalesced away like
+           an absent key or an explicit `null` (both of which mean "clear
+           both classes" — vocalPartsClearLines()'s own contract). */
+        $isBackground = null;
+        if (array_key_exists('isBackground', $body) && $body['isBackground'] !== null) {
+            $isBackground = (bool)$body['isBackground'];
+        }
+        $db->begin_transaction();
+        try {
+            $cleared = vocalPartsClearLines($db, $songId, $lineIds, $isBackground);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'vocal_parts');
+            $db->commit();
+        } catch (\InvalidArgumentException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 400);
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.vocalParts.clear', 'song', $songId, ['lineCount' => count($lineIds), 'cleared' => $cleared]);
+        ed2_respond(['ok' => true, 'cleared' => $cleared, 'vocalParts' => vocalPartsForSong($db, $songId)]);
+        break;
+    }
+
+    /* ---- vocal_span_upsert (POST) — mark only PART of a line (a phrase or a
+           handful of words) as a different or echoed voice. Body: { songId,
+           span:{ id?, lineId, partId, start, end, isBackground?, sortOrder? }
+           }. `start`/`end` are 0-based, end-exclusive UTF-8 CODE-POINT
+           offsets (rule #21 — never byte or UTF-16). Gated on BOTH the
+           #1137 trio AND tblLyricLineVocalSpans, which is a SEPARATE, LATER
+           #2073 migration an install can be missing even once the trio
+           exists. ---- */
+    case 'vocal_span_upsert': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        ed2_requireEntitlement('edit_songs');
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!vocalPartsTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Vocal-part tables are not migrated.'], 409); }
+        if (!vocalPartsSpansReady($db)) { ed2_respond(['ok' => false, 'error' => 'Vocal-part span tables are not migrated.'], 409); }
+        $input = is_array($body['span'] ?? null) ? $body['span'] : [];
+        $db->begin_transaction();
+        try {
+            $span = vocalPartsSpanUpsert($db, $songId, $input);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'vocal_parts');
+            $db->commit();
+        } catch (\InvalidArgumentException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 400);
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.vocalParts.span', 'song', $songId, ['id' => (int)($span['id'] ?? 0), 'lineId' => (int)($span['lineId'] ?? 0)]);
+        ed2_respond(['ok' => true, 'span' => $span, 'vocalParts' => vocalPartsForSong($db, $songId)]);
+        break;
+    }
+
+    /* ---- vocal_span_delete (POST) — { songId, id } ---- */
+    case 'vocal_span_delete': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $id     = (int)($body['id'] ?? 0);
+        if ($songId === '' || $id <= 0) { ed2_respond(['ok' => false, 'error' => 'songId + id are required.'], 400); }
+        ed2_requireEntitlement('edit_songs');
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!vocalPartsTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Vocal-part tables are not migrated.'], 409); }
+        if (!vocalPartsSpansReady($db)) { ed2_respond(['ok' => false, 'error' => 'Vocal-part span tables are not migrated.'], 409); }
+        $db->begin_transaction();
+        try {
+            $removed = vocalPartsSpanDelete($db, $songId, $id);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'vocal_parts');
+            $db->commit();
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.vocalParts.span.delete', 'song', $songId, ['id' => $id]);
+        ed2_respond(['ok' => true, 'deleted' => $removed ? 1 : 0, 'vocalParts' => vocalPartsForSong($db, $songId)]);
+        break;
+    }
+
+    /* ---- round_upsert (POST) — create or edit a round/canon/partner-song
+           over a run of lines, and its WHOLE voice list at once (replaced as
+           a set — every save states the complete list, never a partial
+           patch; see lyricRoundUpsert()'s own doc-block). Body: { songId,
+           round:{ id?, kind?, label?, startLineId, endLineId?,
+           timesThrough?, endingMode?, codaStartLineId?, codaEndLineId?,
+           bpm?, beatsPerBar?, beatsPerLine?, voices:[{ number, partId?,
+           label?, entryBasis?, entryLines?, entryBeats?, entryMs?,
+           intervalSemitones?, startLineId?, endLineId?, timesThrough? }] } }.
+           Gated on BOTH the #1137 trio AND tblLyricRounds +
+           tblLyricRoundVoices, which are a SEPARATE, LATER #2073 migration
+           an install can be missing even once the trio exists. ---- */
+    case 'round_upsert': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        ed2_requireEntitlement('edit_songs');
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!vocalPartsTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Vocal-part tables are not migrated.'], 409); }
+        if (!lyricRoundsReady($db)) { ed2_respond(['ok' => false, 'error' => 'Round tables are not migrated.'], 409); }
+        $input = is_array($body['round'] ?? null) ? $body['round'] : [];
+        $db->begin_transaction();
+        try {
+            $round = lyricRoundUpsert($db, $songId, $input, $ed2UserId);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'vocal_parts');
+            $db->commit();
+        } catch (\InvalidArgumentException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 400);
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.vocalParts.round', 'song', $songId, ['id' => (int)($round['id'] ?? 0), 'kind' => (string)($round['kind'] ?? '')]);
+        ed2_respond(['ok' => true, 'round' => $round, 'vocalParts' => vocalPartsForSong($db, $songId)]);
+        break;
+    }
+
+    /* ---- round_delete (POST) — { songId, id }. CASCADE drops the round's
+           own voices (lyricRoundDelete()'s own doc-block). ---- */
+    case 'round_delete': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $id     = (int)($body['id'] ?? 0);
+        if ($songId === '' || $id <= 0) { ed2_respond(['ok' => false, 'error' => 'songId + id are required.'], 400); }
+        ed2_requireEntitlement('edit_songs');
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!vocalPartsTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Vocal-part tables are not migrated.'], 409); }
+        if (!lyricRoundsReady($db)) { ed2_respond(['ok' => false, 'error' => 'Round tables are not migrated.'], 409); }
+        $db->begin_transaction();
+        try {
+            $removed = lyricRoundDelete($db, $songId, $id);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'vocal_parts');
+            $db->commit();
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.vocalParts.round.delete', 'song', $songId, ['id' => $id]);
+        ed2_respond(['ok' => true, 'deleted' => $removed ? 1 : 0, 'vocalParts' => vocalPartsForSong($db, $songId)]);
         break;
     }
 

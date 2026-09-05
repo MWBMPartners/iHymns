@@ -951,6 +951,171 @@ check(
     )
 );
 
+/* =============================================================================
+ * 8. Voice parts / echo spans / rounds (#2073) — a new action in this family
+ *    cannot be added without its own documentation, its own client method,
+ *    its own entitlement gate, its own not-migrated 409, its own whole-
+ *    payload read-back, and POST-only dispatch.
+ * =============================================================================
+ *
+ * ELI5
+ * ----
+ * Eight new actions let a curator say "who sings this line" and "these
+ * voices come in one after another as a round". They are all built the same
+ * way on purpose (rule #35 — the SAME contract, not eight bespoke ones).
+ * This section checks that sameness actually holds for every one of them —
+ * so a ninth action added later that forgets one piece (the entitlement
+ * check, the 409, the docs page, the client method) is caught immediately
+ * instead of shipping a half-wired endpoint nobody notices until a curator
+ * hits it.
+ *
+ * WHY THE FAMILY ITSELF IS DERIVED, NOT TYPED (rule #34)
+ * -------------------------------------------------------
+ * Naming the eight action strings here would be exactly the "hardcoded list
+ * inside the test" anti-pattern this file's own section 1 doc-block already
+ * tells the story of (the `['postJson', 'postForm']` list that went green for
+ * weeks while import2.php's client was never checked). Instead, the family is
+ * discovered by a STRUCTURAL fingerprint every one of these eight cases
+ * shares by design: each calls `vocalPartsTablesReady($db)` before doing
+ * anything, because every one of them writes through a table family gated on
+ * that readiness probe (vocal_parts.php's own file doc-block states this is
+ * the ONE gate every write in that file's contract requires). A ninth action
+ * added later that keeps this same gate is swept into every assertion below
+ * automatically, with no edit to this file.
+ *
+ * WHAT IT ASSERTS, per discovered action
+ *   (a) requires the edit_songs entitlement (403 on a role that lacks it);
+ *   (b) answers 409, from THIS exact gate, when the tables are not migrated;
+ *   (c) is NOT in ED2_GET_SAFE_ACTIONS (a state-changing action reachable via
+ *       plain GET would skip the X-Requested-With CSRF check entirely —
+ *       rule #29's named regression class, section 1's own subject);
+ *   (d) reads the WHOLE song's vocalParts payload back into its response
+ *       (rule #35 — "read the truth back", never trust what was just sent);
+ *   (e) has a documented path item in api-docs.yaml (rule #48);
+ *   (f) has a real caller in v2/api-client.js (so it is reachable from the
+ *       browser at all — the exact gap #1608's parity ledger, section 3
+ *       above, exists to catch for the OLDER v1->v2 migration, applied here
+ *       to a family that must never repeat it on day one).
+ * Plus two fixed checks outside the derived loop: `load_song` carries the
+ * `vocalParts` sidecar, and the span/round sub-families additionally gate on
+ * their OWN later migration (tblLyricLineVocalSpans /
+ * tblLyricRounds+tblLyricRoundVoices) on top of the shared #1137-trio gate.
+ *
+ * MUTATION-TESTED (rule #34) — transcript in this commit's body:
+ *   m1 delete `ed2_requireEntitlement('edit_songs');` from `vocal_part_upsert`     -> RED (b)
+ *   m2 delete the `'vocalParts' => vocalPartsForSong(...)` key from one response  -> RED (d)
+ *   m3 add `'vocal_part_upsert'` to ED2_GET_SAFE_ACTIONS                          -> RED (c)
+ *   m4 delete the `vocal_span_delete` path item from api-docs.yaml               -> RED (e)
+ *   m5 delete `deleteVocalSpan` from api-client.js                                -> RED (f)
+ *   m6 delete `vocalPartsTablesReady($db)` from `round_delete` entirely           -> RED (vacuity floor: family drops to 7)
+ *   each reverted afterward -> GREEN.
+ * ============================================================================= */
+
+echo "\n#2073 — voice-parts / rounds action family\n\n";
+
+$docsPath = dirname(__DIR__, 2) . '/appWeb/public_html/api-docs.yaml';
+$docsSrc  = (string)file_get_contents($docsPath);
+
+/* The derived family (see the doc-block above for why this fingerprint, not
+   a typed list, is the checked set — rule #34's own distinction between a
+   DERIVED checked set and TYPED disposition data, the same shape section 3's
+   $RENAMED/$RETIRED maps already establish for a different guard). */
+$allV2Actions = dispatchParserCasesForSwitch($v2DispatchFile, '$action');
+$vocalFamily = [];
+foreach ($allV2Actions as $actionName) {
+    $bodyText = $isolateCase($apiNoComments, $actionName);
+    if ($bodyText !== '' && str_contains($bodyText, 'vocalPartsTablesReady(')) {
+        $vocalFamily[] = $actionName;
+    }
+}
+sort($vocalFamily);
+
+check(
+    'derived at least 8 voice-parts/rounds actions from the tree by their shared '
+        . 'vocalPartsTablesReady() gate (a scan finding fewer would pass every '
+        . 'assertion below vacuously — rule #34)',
+    count($vocalFamily) >= 8
+);
+echo '       family (' . count($vocalFamily) . '): ' . implode(', ', $vocalFamily) . "\n";
+
+/* ED2_GET_SAFE_ACTIONS, parsed from source rather than re-typed (rule #35 —
+   the SAME array this file's own runtime reads, never a second copy). */
+preg_match('/const\s+ED2_GET_SAFE_ACTIONS\s*=\s*\[(.*?)\];/s', $apiNoComments, $mGetSafe);
+preg_match_all("/'([a-z0-9_]+)'/", $mGetSafe[1] ?? '', $mGetSafeNames);
+$getSafeActions = array_flip($mGetSafeNames[1] ?? []);
+check(
+    'parsed a plausible ED2_GET_SAFE_ACTIONS list (>= 10) — a scan finding none '
+        . 'would pass check (c) below vacuously',
+    count($getSafeActions) >= 10
+);
+
+foreach ($vocalFamily as $actionName) {
+    $bodyText = $isolateCase($apiNoComments, $actionName);
+
+    check(
+        "{$actionName} requires the edit_songs entitlement (403 on a role that lacks it)",
+        str_contains($bodyText, "ed2_requireEntitlement('edit_songs')")
+    );
+    check(
+        "{$actionName} answers 409 from ITS OWN vocalPartsTablesReady() check, not a "
+            . 'coincidental 409 elsewhere in the body',
+        (bool)preg_match('/!vocalPartsTablesReady\(\$db\)\)\s*\{\s*ed2_respond\([^;]*?,\s*409\)/s', $bodyText)
+    );
+    check(
+        "{$actionName} is POST-only — absent from ED2_GET_SAFE_ACTIONS (a GET-reachable "
+            . 'state change would skip the X-Requested-With CSRF check entirely, rule #29)',
+        !isset($getSafeActions[$actionName])
+    );
+    check(
+        "{$actionName}'s response reads the WHOLE song's vocalParts payload back "
+            . "('vocalParts' => ..., rule #35 — never trust what was just sent)",
+        (bool)preg_match("/'vocalParts'\s*=>/", $bodyText)
+    );
+    check(
+        "{$actionName} has a documented path item in api-docs.yaml (rule #48)",
+        str_contains($docsSrc, "action={$actionName}:")
+    );
+    check(
+        "{$actionName} has a real caller in v2/api-client.js (postJson/getJson with this "
+            . 'literal — the #1608-shaped gap of an action nothing in the browser can reach)',
+        in_array($actionName, $clientActions, true)
+    );
+
+    /* Span and round actions additionally gate on their OWN, LATER migration
+       — tblLyricLineVocalSpans for spans, tblLyricRounds/tblLyricRoundVoices
+       for rounds — on top of the shared #1137-trio check just proved above.
+       Derived from the action NAME's own shape (span_/round_), not a second
+       hand-typed pair list; every member of $vocalFamily is one or the other
+       or neither (the part/lines actions need no extra gate). */
+    if (str_contains($actionName, 'span')) {
+        check(
+            "{$actionName} ALSO answers 409 when tblLyricLineVocalSpans is not migrated "
+                . '(a SEPARATE, later #2073 migration on top of the #1137 trio)',
+            str_contains($bodyText, 'vocalPartsSpansReady($db)')
+        );
+    }
+    if (str_starts_with($actionName, 'round_')) {
+        check(
+            "{$actionName} ALSO answers 409 when the round tables are not migrated "
+                . '(a SEPARATE, later #2073 migration on top of the #1137 trio)',
+            str_contains($bodyText, 'lyricRoundsReady($db)')
+        );
+    }
+}
+
+/* load_song's sidecar — the ONE read that is not itself in $vocalFamily (it
+   delegates ALL readiness handling to vocalPartsForSong(), which degrades to
+   an empty, false-flagged shape rather than 409ing — a read has nothing to
+   refuse, per that function's own doc-block), so it needs its own check
+   rather than falling out of the derived loop above. */
+$loadSongBody = $isolateCase($apiNoComments, 'load_song');
+check("api2.php has a 'load_song' case", $loadSongBody !== '');
+check(
+    "load_song's response carries the 'vocalParts' sidecar (vocalPartsForSong()) beside "
+        . "'lineTranslations'/'lineAnnotations' — the SAME pattern, not a second shape",
+    $loadSongBody !== '' && (bool)preg_match("/'vocalParts'\s*=>\s*\\\$vocalParts/", $loadSongBody)
+);
+
 echo "\n{$passed} passed, {$failed} failed\n";
 if ($failed > 0) {
     echo "\nFailures:\n";

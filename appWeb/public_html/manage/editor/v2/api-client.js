@@ -221,6 +221,39 @@ export const editorApi = {
     upsertLineAnnotation:  (songId, annotation)  => postJson('line_annotation_upsert', { songId: songId, annotation: annotation }),
     deleteLineAnnotation:  (songId, id)          => postJson('line_annotation_delete', { songId: songId, id: id }),
 
+    /* Voice parts, echo spans and rounds (#2073). ELI5: "who sings this
+       line" — a part registry per song, a run-of-lines assignment (a duet is
+       two partIds on the same lines), a sub-line echo span for just a few
+       words, and a round/canon where voices come in one after another.
+       Detail: every method is a thin postJson() over one of the eight
+       api2.php cases those doc-blocks describe in full (mirrors the SAME
+       pattern this file already uses for line translations/annotations
+       right above — one method per atomic server action, rule #22). EVERY
+       one of these responses carries the WHOLE song's `vocalParts` payload
+       (rule #35's "read the truth back") EXCEPT assignVocalLines(), whose
+       server-side core already IS that payload (see api2.php's own
+       doc-comment on `vocal_lines_assign`) — a caller replaces its local
+       store slice with `res.vocalParts` WHOLESALE on every one of them,
+       never a patch, so a 'replace' mode or a server-side fold is never
+       silently missed. `err.status` distinguishes failure kinds (409 = the
+       matching table family is not migrated on this install — spans and
+       rounds each have their OWN, LATER migration on top of the #1137
+       trio, so either can 409 independently; 422 is not used here, unlike
+       arrangement_update — an unprocessable body is a 400 on this
+       particular pair of files, per vocal_parts.php's own throw contract;
+       404 = a referenced id doesn't exist or isn't this song's), never the
+       message text (rule #35). */
+    upsertVocalPart:  (songId, part)                      => postJson('vocal_part_upsert', { songId: songId, part: part }),
+    deleteVocalPart:  (songId, id)                        => postJson('vocal_part_delete', { songId: songId, id: id }),
+    assignVocalLines: (songId, lineIds, partIds, mode, isBackground) =>
+        postJson('vocal_lines_assign', { songId: songId, lineIds: lineIds, partIds: partIds, mode: mode || 'replace', isBackground: !!isBackground }),
+    clearVocalLines:  (songId, lineIds, isBackground)     =>
+        postJson('vocal_lines_clear', { songId: songId, lineIds: lineIds, isBackground: (isBackground === undefined ? null : isBackground) }),
+    upsertVocalSpan:  (songId, span)                      => postJson('vocal_span_upsert', { songId: songId, span: span }),
+    deleteVocalSpan:  (songId, id)                        => postJson('vocal_span_delete', { songId: songId, id: id }),
+    upsertRound:      (songId, round)                     => postJson('round_upsert', { songId: songId, round: round }),
+    deleteRound:      (songId, id)                        => postJson('round_delete', { songId: songId, id: id }),
+
     /* Credits — role is one of writers/composers/arrangers/adaptors/translators/artists.
        `credit` is EITHER the structured {id?, first?, surname?, suffix?} shape
        credits-tab.js sends per keystroke, or the flat back-compat {id?, name}
