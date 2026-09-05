@@ -3441,15 +3441,22 @@ try {
         }
         /* #2072 — accept per-line `notes`. Deliberately the SAME array_key_exists
            idiom as `label`/`sourceWorkId` immediately above, NOT the isset()-based
-           test `chords`/`languages` use a few lines down: this handler patches
+           test `languages` uses a few lines down: this handler patches
            ONE already-known component (compId, when > 0), so it CAN tell "the
            caller addressed this field" from "the caller said nothing" — and the
            whole point of #2072 is that an explicit `notes: null` must genuinely
            CLEAR a stored note, which isset() cannot express (it treats an
-           explicit null the same as "absent"). `chords`/`languages` keep their
-           older isset()-based test unchanged here — this fix does not touch
-           their existing (looser) behaviour. */
+           explicit null the same as "absent"). `languages` keeps its older
+           isset()-based test unchanged here — this fix does not touch its
+           existing (looser) behaviour. */
         $hasNotes = array_key_exists('notes', $comp);
+        /* #2087 — chords now gets the SAME array_key_exists treatment as notes
+           immediately above, replacing the isset()-based test this field used to
+           have (mentioned as still-current in the paragraph above until this fix).
+           An explicit `chords: null` must genuinely CLEAR the stored chords, which
+           isset() cannot express (it treats a null value the same as "the key
+           isn't here at all") — the exact gap #2087 reported. */
+        $hasChords = array_key_exists('chords', $comp);
 
         $db->begin_transaction();
         try {
@@ -3463,7 +3470,6 @@ try {
                 'number'    => $number,
                 'sortOrder' => $sortOrder,
                 'lines'     => $lines,
-                'chords'    => (isset($comp['chords'])    && is_array($comp['chords']))    ? array_values($comp['chords'])    : null,
                 'language'  => $language,
                 'languages' => (isset($comp['languages']) && is_array($comp['languages'])) ? array_values($comp['languages']) : null,
                 '_target'   => true,   // marker to resolve the resulting Id (stripped by the writer)
@@ -3490,10 +3496,25 @@ try {
                (`lyricLinesMergePreserved()`, matched by content-diffed line Id,
                not array position) do the reclaim correctly, line by line. */
             if ($hasNotes)   { $entry['notes'] = (isset($comp['notes']) && is_array($comp['notes'])) ? array_values($comp['notes']) : null; }
+            /* #2087 — chords: KEY-PRESENT-ONLY, same reasoning as `notes` immediately
+               above (and #2072, which fixed notes this same way first). Omitting the
+               key here — instead of always filling it in from isset(), right or
+               wrong — lets lyricLinesWriteComponents()'s own IDENTITY-based preserve
+               (lyricLinesMergePreserved(), matched by content-diffed line Id, not
+               array position) do the reclaim correctly, line by line. */
+            if ($hasChords)  { $entry['chords'] = is_array($comp['chords'] ?? null) ? array_values($comp['chords']) : null; }
             $found = false;
             foreach ($comps as $idx => $c) {
                 if ($compId > 0 && (int)($c['id'] ?? 0) === $compId) {
-                    if (!isset($comp['chords']))    { $entry['chords']    = $c['chords'] ?? null; }
+                    /* #2087 — deliberately NO "!$hasChords -> $entry['chords'] = $c['chords']"
+                       line here (see the $hasChords comment above, and #2072 for the
+                       identical fix already shipped for notes). That line used to copy
+                       the OLD component's chords array VERBATIM onto whatever NEW
+                       `lines` this request sent — wrong the instant lines are added,
+                       removed, or reordered WITHIN this one component, landing a chord
+                       on the wrong lyric. Leaving the key out of $entry lets the
+                       writer's identity-based preserve reclaim the right chord for the
+                       right line instead of guessing by position. */
                     if (!isset($comp['languages'])) { $entry['languages'] = $c['languages'] ?? null; }
                     /* #1860 Phase 5 §3.2 — target-preserve, layer 1 of §3's three-layer
                        silent-wipe defence: an omitted key on an UPDATE reads the CURRENT
@@ -5607,10 +5628,12 @@ try {
         try {
             /* #1235 P4/C5 — bulk replace/append through the shared drop-safe write path
                (lines authoritative + JSON shadow). PF1 / R1: on 'replace', a pasted
-               component that OMITS chords/languages reclaims the position-matched
-               original's (Type | Number | line-count, FIFO) — so Paste & Reflow / import
-               (which rebuilds STRUCTURE, not enrichment) never silently drops it. Client-
-               sent values always win. */
+               component that OMITS languages reclaims the position-matched original's
+               (Type | Number | line-count, FIFO) — so Paste & Reflow / import (which
+               rebuilds STRUCTURE, not enrichment) never silently drops it. Client-sent
+               values always win. #2087 — chords USED to be carried the same way; see
+               the dedicated comment below (search "chords: KEY-PRESENT-ONLY") for why
+               that carry is gone. */
             $existing = ed2_currentComponents($db, $songId);
             /* #1860 Phase 5 §3.3 — Paste & Reflow REBUILDS structure; the pasted rows
                never carry `label`/`sourceWorkId` at all, so without a carry every
@@ -5629,12 +5652,15 @@ try {
                preserve (`lyricLinesMergePreserved()`, matched by content-diffed
                line Id, not position) — so `notes` is handled below by simply
                OMITTING the key when this incoming row doesn't carry one, not by
-               hand-carrying a guessed value. */
-            $carry = [];   // "type\x1fnumber\x1flineCount" => FIFO of ['c'=>chords array|null,'l'=>languages array|null,'lb'=>label|null,'sw'=>sourceWorkId|null]
+               hand-carrying a guessed value. #2087 — `chords` was removed from this
+               tuple for the exact same reason (see the dedicated comment further
+               down, search "chords: KEY-PRESENT-ONLY"): it is the SAME
+               (type, number, lineCount) FIFO hazard, one column over. */
+            $carry = [];   // "type\x1fnumber\x1flineCount" => FIFO of ['l'=>languages array|null,'lb'=>label|null,'sw'=>sourceWorkId|null]
             if ($mode === 'replace') {
                 foreach ($existing as $pc) {
                     $ck = (string)$pc['type'] . "\x1f" . (string)(int)$pc['number'] . "\x1f" . count($pc['lines']);
-                    $carry[$ck][] = ['c' => $pc['chords'], 'l' => $pc['languages'], 'lb' => $pc['label'] ?? null, 'sw' => $pc['sourceWorkId'] ?? null];
+                    $carry[$ck][] = ['l' => $pc['languages'], 'lb' => $pc['label'] ?? null, 'sw' => $pc['sourceWorkId'] ?? null];
                 }
             }
 
@@ -5650,14 +5676,11 @@ try {
                     $ck = $type . "\x1f" . (string)$number . "\x1f" . count($lines);
                     if (!empty($carry[$ck])) { $carried = array_shift($carry[$ck]); }
                 }
-                $chords = (isset($comp['chords']) && is_array($comp['chords']))
-                    ? array_values($comp['chords'])
-                    : ($carried !== null ? $carried['c'] : null);
                 $langs  = (isset($comp['languages']) && is_array($comp['languages']))
                     ? array_values($comp['languages'])
                     : ($carried !== null ? $carried['l'] : null);
                 /* #1860 Phase 5 §3.3 — explicit-wins-else-carried, mirroring the
-                   chords/languages shape immediately above (isset-based "was this
+                   languages shape immediately above (isset-based "was this
                    provided" test, not array_key_exists — this funnel rebuilds
                    STRUCTURE, so an incoming row without a real label/work-link value
                    simply carries the position-matched original forward). */
@@ -5672,7 +5695,6 @@ try {
                     'number'    => $number,
                     'language'  => (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null,
                     'lines'     => $lines,
-                    'chords'    => is_array($chords) ? $chords : null,
                     'languages' => is_array($langs) ? $langs : null,
                     'label'         => $label,
                     'sourceWorkId'  => $sourceWorkId,
@@ -5687,6 +5709,25 @@ try {
                    array_key_exists rather than isset) and genuinely clears. */
                 if (array_key_exists('notes', $comp)) {
                     $incomingEntry['notes'] = is_array($comp['notes'] ?? null) ? array_values($comp['notes']) : null;
+                }
+                /* #2087 — chords: KEY-PRESENT-ONLY, no carry — exactly the `notes`
+                   treatment immediately above (#2072), applied to the field the
+                   issue actually reported. This funnel (Paste & Reflow / single-song
+                   import) genuinely rebuilds a song's STRUCTURE and today never
+                   mentions chords at all, which is precisely why the old FIFO carry
+                   existed — but a (type, number, lineCount) key is a guess: reflow
+                   legitimately changes line counts (that IS the reflow), and two
+                   components sharing a key handed the SECOND one the FIRST's old
+                   chords. Omitting the key instead lets
+                   `lyricLinesWriteComponents()`'s own IDENTITY-based preserve
+                   (`lyricLinesMergePreserved()`, matched by content-diffed line Id,
+                   not position) reclaim each SURVIVING line's own chords correctly —
+                   a line whose wording genuinely changed during reflow has no stable
+                   position for a chord to follow anyway, so losing it there is
+                   correct, not a regression. An explicit `chords: null` still
+                   reaches the writer as null and genuinely clears. */
+                if (array_key_exists('chords', $comp)) {
+                    $incomingEntry['chords'] = is_array($comp['chords'] ?? null) ? array_values($comp['chords']) : null;
                 }
                 $incoming[] = $incomingEntry;
             }

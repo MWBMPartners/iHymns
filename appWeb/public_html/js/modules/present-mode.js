@@ -97,6 +97,8 @@ import { announce } from '../utils/announce.js';
  * @param {Object<number, number>} lineEndMs
  * @returns {{basis: string, stepMs: ?number, steps: Array<{i: number, atMs: ?number, voices: Array<{n: number, line: number}>}>}}
  */
+import { acquireWakeLock, releaseWakeLock } from '../utils/wake-lock.js';
+
 export function roundTimeline(round, voices, subjectLineIds, lineStartMs, lineEndMs) {
     const n = subjectLineIds.length;
     if (n === 0 || !voices || voices.length === 0) {
@@ -695,6 +697,10 @@ export function initPresentMode() {
                tests/test-present-round-projector.js proves this line is
                present and first. */
             stopRoundPlayback();
+            /* Let the screen sleep normally again (#2079). Paired with the
+               acquire below; releasing here rather than later means a device
+               is not held awake by a screen nobody is looking at. */
+            releaseWakeLock();
             if (document.fullscreenElement) {
                 document.exitFullscreen().catch(() => {});
             }
@@ -865,6 +871,15 @@ export function initPresentMode() {
            <body>, which is the state this is trying to avoid. */
         setBackgroundInert(true);
         overlay.focus({ preventScroll: true });
+
+        /* Keep the screen awake for as long as the overlay is up (#2079).
+           A tablet propped up showing a verse will otherwise dim and lock
+           partway through a long prayer, and a volunteer running the service
+           has no reason to know they were meant to change the device's power
+           settings first. Deliberately NOT awaited — the request can be
+           refused (low battery, an unsupported browser, an OS policy) and the
+           overlay must open exactly the same either way. */
+        acquireWakeLock();
 
         /* Enter fullscreen if available.
            ELI5: ask the browser to hide everything else (address bar, tabs)

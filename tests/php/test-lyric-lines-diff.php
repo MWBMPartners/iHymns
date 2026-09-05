@@ -418,6 +418,20 @@ assertEq(
     'mergePreserved: Note reclaimed from storage, ChordsJson stays the new authoritative value'
 );
 
+/* #2087 — the MIRROR IMAGE of the test immediately above: ChordsJson preserved
+   (omitted), Note authoritative (provided). The mechanism must work
+   symmetrically for chords, not just notes — an importer/funnel that never
+   learned about `chords` must not wipe a stored chord when it saves a genuine
+   note change. */
+assertEq(
+    lyricLinesMergePreserved(
+        ['Note' => 'forte', 'ChordsJson' => null, '_preserve' => ['Note' => false, 'ChordsJson' => true]],
+        ['Note' => 'sing softly', 'ChordsJson' => '"C"']
+    ),
+    ['Note' => 'forte', 'ChordsJson' => '"C"', '_preserve' => ['Note' => false, 'ChordsJson' => true]],
+    '#2087: mergePreserved mirror — ChordsJson reclaimed from storage, Note stays the new authoritative value'
+);
+
 /* An EXPLICIT null (Note provided as null, i.e. `_preserve.Note = false`) must
    genuinely CLEAR the stored value, not reclaim it — this is the whole point
    of computing the flag with array_key_exists rather than isset. */
@@ -653,6 +667,114 @@ assertEq($mergedShared[3]['Note'], null,
     '#2072 finding 3: second occurrence, second line — also correctly null, not cross-contaminated');
 
 /* ==================================================================== */
+/* #2087 — the SAME three findings, mirrored onto CHORDS (issue #2087).  */
+/* Chords have the identical bug shape #2072 fixed for notes: a caller    */
+/* omitting `chords` used to be hand-carried by position/key instead of   */
+/* reaching lyricLinesWriteComponents()'s own identity-based reclaim.     */
+/* These tests prove the SAME core mechanism (lyricLinesDiff +            */
+/* lyricLinesMergePreserved, via the identical ihymnsTestSimulateMergedDesired */
+/* helper above) gives the right answer for ChordsJson too.               */
+/* ==================================================================== */
+
+/* --- #2087 finding 1 mirror (first half): omit chords + ADD a line ->
+       surviving matched lines keep their chords. Before the caller-level fix,
+       save_song_core.php's $carryChords FIFO (and component_upsert's/
+       components_replace's own carries) were keyed/positioned the same way
+       $carryNotes would have been — adding a line breaks the lookup, so an
+       omission became an explicit null and wiped line 1's chord even though
+       line 1's own content never changed. --- */
+$existingChordsAdd = [
+    ['Id' => 1, 'ComponentId' => 100, 'PartType' => 'verse', 'PartNumber' => 1, 'SortOrder' => 0,
+     'LineText' => 'Amazing grace', 'ChordsJson' => '"C"', 'Note' => null,
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+    ['Id' => 2, 'ComponentId' => 100, 'PartType' => 'verse', 'PartNumber' => 1, 'SortOrder' => 1,
+     'LineText' => 'how sweet the sound', 'ChordsJson' => null, 'Note' => null,
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+];
+$normChordsAdd = [
+    ['cid' => 100, 'type' => 'verse', 'number' => 1, 'language' => null,
+     'lines' => ['Amazing grace', 'how sweet the sound', 'that saved a wretch like me'],
+     'chords' => null, 'notes' => null, 'validatedLangs' => null,
+     'notesProvided' => true, 'chordsProvided' => false],
+];
+$mergedChordsAdd = ihymnsTestSimulateMergedDesired($existingChordsAdd, lyricLinesBuildDesiredFromComponents($normChordsAdd, $slug));
+assertEq(count($mergedChordsAdd), 3, '#2087 finding 1 mirror (add a line): 3 desired lines (2 matched + 1 new)');
+assertEq($mergedChordsAdd[0]['ChordsJson'], '"C"',
+    '#2087 finding 1 mirror (add a line): surviving matched line 1 KEEPS its chord despite the component growing by one line');
+assertEq($mergedChordsAdd[1]['ChordsJson'], null,
+    '#2087 finding 1 mirror (add a line): surviving matched line 2 stays null (it never had a chord) — not corrupted either way');
+assertEq($mergedChordsAdd[2]['ChordsJson'], null,
+    '#2087 finding 1 mirror (add a line): the brand-new third line has no existing row to reclaim from — null, not an error');
+
+/* --- #2087 finding 1 mirror (second half): omit chords + REORDER lines ->
+       the chord follows the LINE (matched by content), not the array index. A
+       position/key-based carry would have left "C" sitting at index 0
+       regardless of which line moved there. --- */
+$existingChordsReorder = [
+    ['Id' => 1, 'ComponentId' => 100, 'PartType' => 'verse', 'PartNumber' => 1, 'SortOrder' => 0,
+     'LineText' => 'Amazing grace', 'ChordsJson' => '"C"', 'Note' => null,
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+    ['Id' => 2, 'ComponentId' => 100, 'PartType' => 'verse', 'PartNumber' => 1, 'SortOrder' => 1,
+     'LineText' => 'how sweet the sound', 'ChordsJson' => null, 'Note' => null,
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+];
+$normChordsReorder = [
+    ['cid' => 100, 'type' => 'verse', 'number' => 1, 'language' => null,
+     'lines' => ['how sweet the sound', 'Amazing grace'],   // SWAPPED order
+     'chords' => null, 'notes' => null, 'validatedLangs' => null,
+     'notesProvided' => true, 'chordsProvided' => false],
+];
+$mergedChordsReorder = ihymnsTestSimulateMergedDesired($existingChordsReorder, lyricLinesBuildDesiredFromComponents($normChordsReorder, $slug));
+assertEq($mergedChordsReorder[0]['ChordsJson'], null,
+    "#2087 finding 1 mirror (reorder): 'how sweet the sound' (no chord) is now at index 0 and correctly has no chord");
+assertEq($mergedChordsReorder[1]['ChordsJson'], '"C"',
+    "#2087 finding 1 mirror (reorder): 'Amazing grace' carried its chord to its NEW index 1 — the chord followed the LINE, not the index");
+
+/* --- #2087 finding 3 mirror: two components sharing a (type, number) bucket
+       — a chorus reprised verbatim later in the song. The FIRST occurrence
+       explicitly changes its own chords; the SECOND says nothing about chords
+       at all. The old FIFO-by-key carry queued both occurrences' OLD chords
+       together and handed the SECOND incoming component whichever queue entry
+       the FIRST incoming component didn't consume — i.e. the FIRST
+       occurrence's OLD chord, not the SECOND's. --- */
+$existingChordsShared = [
+    ['Id' => 201, 'ComponentId' => 10, 'PartType' => 'chorus', 'PartNumber' => null, 'SortOrder' => 0,
+     'LineText' => 'Praise the Lord', 'ChordsJson' => '"C"', 'Note' => null,
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+    ['Id' => 202, 'ComponentId' => 10, 'PartType' => 'chorus', 'PartNumber' => null, 'SortOrder' => 1,
+     'LineText' => 'Alleluia', 'ChordsJson' => null, 'Note' => null,
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+    ['Id' => 203, 'ComponentId' => 11, 'PartType' => 'chorus', 'PartNumber' => null, 'SortOrder' => 2,
+     'LineText' => 'Praise the Lord', 'ChordsJson' => '"G"', 'Note' => null,
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+    ['Id' => 204, 'ComponentId' => 11, 'PartType' => 'chorus', 'PartNumber' => null, 'SortOrder' => 3,
+     'LineText' => 'Alleluia', 'ChordsJson' => null, 'Note' => null,
+     'LanguageCode' => null, 'IsInstrumental' => 0],
+];
+$normChordsShared = [
+    /* First occurrence — EXPLICITLY provides chords (a genuine change). */
+    ['cid' => 10, 'type' => 'chorus', 'number' => 0, 'language' => null,
+     'lines' => ['Praise the Lord', 'Alleluia'], 'chords' => [['F'], null], 'notes' => null,
+     'validatedLangs' => null, 'notesProvided' => true, 'chordsProvided' => true],
+    /* Reprise — says NOTHING about chords. */
+    ['cid' => 11, 'type' => 'chorus', 'number' => 0, 'language' => null,
+     'lines' => ['Praise the Lord', 'Alleluia'], 'chords' => null, 'notes' => null,
+     'validatedLangs' => null, 'notesProvided' => true, 'chordsProvided' => false],
+];
+$mergedChordsShared = ihymnsTestSimulateMergedDesired($existingChordsShared, lyricLinesBuildDesiredFromComponents($normChordsShared, $slug));
+assertEq($mergedChordsShared[0]['ChordsJson'], json_encode(['F'], JSON_UNESCAPED_UNICODE),
+    '#2087 finding 3 mirror: first occurrence — explicit chord wins over its own old value');
+assertEq($mergedChordsShared[1]['ChordsJson'], null,
+    '#2087 finding 3 mirror: first occurrence, second line — explicit null in the provided array, stays null');
+assertEq($mergedChordsShared[2]['ChordsJson'], '"G"',
+    "#2087 finding 3 mirror: SECOND occurrence (omitted chords) reclaims its OWN prior value ('G') — " .
+    "NOT the first occurrence's old chord ('C'). A regression here means a reprised chorus " .
+    "would silently inherit its first occurrence's chord."
+);
+assertEq($mergedChordsShared[3]['ChordsJson'], null,
+    '#2087 finding 3 mirror: second occurrence, second line — also correctly null, not cross-contaminated');
+
+/* ==================================================================== */
 /* #2072 finding 4 — the shadow-JSON write. lyricLinesShadowCellsToJson()   */
 /* is the PURE "any non-null cell -> encode; else null" rule shared by      */
 /* BOTH the original (pre-merge) shadow write in                           */
@@ -747,6 +869,42 @@ assertEq(
     'array_key_exists(\'notes\', $comp) — key-present-only, no hand-carried fallback'
 );
 
+/* #2087 — save_song_core.php has TWO write paths (mirrored + legacy
+   un-migrated), and this bug's fix is intentionally asymmetric between them:
+   the MIRRORED path's $carryChords use must be GONE (superseded by
+   lyricLinesWriteComponents()'s identity-based reclaim), but the LEGACY
+   path's own $carryChords use must REMAIN (it has no tblLyricLines to run a
+   diff against, so the imperfect positional guess is its only protection).
+   Isolate the mirrored write-path loop by its own unique start/end markers so
+   this guard can't be satisfied by the (deliberately untouched) legacy
+   branch sitting right below it in the same file. */
+$mirroredWriteStart = strpos($saveCoreCode, '$writeComps = [];');
+$mirroredWriteEnd   = strpos($saveCoreCode, 'lyricLinesWriteComponents($db, $songId, $writeComps);', $mirroredWriteStart === false ? 0 : $mirroredWriteStart);
+$mirroredWriteBlock = ($mirroredWriteStart !== false && $mirroredWriteEnd !== false)
+    ? substr($saveCoreCode, $mirroredWriteStart, $mirroredWriteEnd - $mirroredWriteStart)
+    : '';
+assertEq($mirroredWriteBlock !== '', true, '#2087: the mirrored (tblLyricLines-ready) write-path loop was found in save_song_core.php');
+assertEq(
+    (bool)preg_match("/array_key_exists\\('chords',\\s*\\\$comp\\)/", $mirroredWriteBlock),
+    true,
+    '#2087 caller guard (save_song_core.php, mirrored path): chords is included on $writeComps[] only ' .
+    'when array_key_exists(\'chords\', $comp) — key-present-only, mirroring the notes fix'
+);
+assertEq(
+    str_contains($mirroredWriteBlock, 'carryChords['),
+    false,
+    '#2087 caller guard (save_song_core.php, mirrored path): the mirrored write path no longer reads ' .
+    '$carryChords at all — that positional (type, number, lineCount) guess is gone from the ONE path ' .
+    'that has a strictly better identity-based alternative available'
+);
+assertEq(
+    str_contains($saveCoreCode, "elseif (\$updChords !== null && !isset(\$comp['chords']))"),
+    true,
+    '#2087 (deliberate exception, NOT a regression): the LEGACY un-migrated branch still carries chords ' .
+    'positionally, because — unlike the mirrored path above — it has no tblLyricLines to reclaim a chord ' .
+    'by identity, so this imperfect FIFO is the only protection that branch has against a silent wipe'
+);
+
 $api2Src  = (string)file_get_contents(dirname(__DIR__, 2) . '/appWeb/public_html/manage/editor/api2.php');
 $api2Code = preg_replace('#/\*[\s\S]*?\*/#', '', $api2Src) ?? $api2Src;
 
@@ -768,6 +926,38 @@ assertEq(
     'NEW lines this request sent, misaligning the moment lines were added/removed/reordered WITHIN ' .
     'this one component. Omitting the key instead lets the writer\'s identity-based preserve do it right.'
 );
+assertEq(
+    (bool)preg_match("/\\\$hasChords\\s*=\\s*array_key_exists\\('chords',\\s*\\\$comp\\);/", $cuBlock),
+    true,
+    '#2087 caller guard (component_upsert): $hasChords is array_key_exists-based, so an explicit ' .
+    'null still counts as "provided" and can genuinely clear a stored chord'
+);
+assertEq(
+    str_contains($cuBlock, '!$hasChords'),
+    false,
+    '#2087 caller guard (component_upsert): NO "!$hasChords -> $entry[\'chords\'] = $c[\'chords\']" ' .
+    'positional target-preserve — that line copied the OLD component\'s chords array onto whatever ' .
+    'NEW lines this request sent, misaligning the moment lines were added/removed/reordered WITHIN ' .
+    'this one component (the exact bug #2087 reported). Omitting the key instead lets the writer\'s ' .
+    'identity-based preserve do it right.'
+);
+assertEq(
+    str_contains($cuBlock, "\$c['chords']"),
+    false,
+    '#2087 caller guard (component_upsert): nothing reads $c[\'chords\'] any more at all — this catches ' .
+    'the ORIGINAL bug line (`if (!isset($comp[\'chords\'])) { $entry[\'chords\'] = $c[\'chords\'] ?? null; }`) ' .
+    'being pasted back verbatim, which the "!$hasChords" check above alone would NOT catch (that line ' .
+    'tests isset(), not $hasChords)'
+);
+assertEq(
+    (bool)preg_match("/if\\s*\\(\\\$hasChords\\)\\s*\\{\\s*\\\$entry\\['chords'\\]/", $cuBlock),
+    true,
+    '#2087 caller guard (component_upsert): $entry[\'chords\'] is only ever assigned INSIDE ' .
+    '"if ($hasChords) { ... }" — never unconditionally. Without this, a well-meaning edit could compute ' .
+    '$hasChords correctly and yet assign $entry[\'chords\'] unconditionally with the OLD isset()-based ' .
+    'expression, which silently un-does the explicit-null-clears fix while every OTHER assertion here ' .
+    'still passes (mutation-verified: see the session notes)'
+);
 
 $crStart = strpos($api2Code, "case 'components_replace':");
 $crEnd   = strpos($api2Code, "case 'import_file':", $crStart === false ? 0 : $crStart);
@@ -782,6 +972,16 @@ assertEq(
     true,
     '#2072 caller guard (components_replace): notes is included on the incoming entry only when ' .
     'array_key_exists(\'notes\', $comp) — key-present-only, no FIFO carry'
+);
+assertEq(str_contains($crBlock, "'c' =>"), false,
+    "#2087 caller guard (components_replace): the carry tuple no longer has a 'c' (chords) slot");
+assertEq(str_contains($crBlock, "carried['c']"), false,
+    "#2087 caller guard (components_replace): nothing reads a carried 'c' value any more");
+assertEq(
+    (bool)preg_match("/array_key_exists\\('chords',\\s*\\\$comp\\)/", $crBlock),
+    true,
+    '#2087 caller guard (components_replace): chords is included on the incoming entry only when ' .
+    'array_key_exists(\'chords\', $comp) — key-present-only, no FIFO carry'
 );
 
 /* -------------------------------------------------------------------- */

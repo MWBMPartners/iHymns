@@ -427,6 +427,12 @@ const NATIVE_DOM_EVENTS = new Set([
     'load', 'DOMContentLoaded', 'beforeunload', 'unload', 'pagehide', 'pageshow',
     'scroll', 'resize', 'popstate', 'hashchange', 'visibilitychange', 'languagechange',
     'storage', 'online', 'offline',
+    /* 'release' fires on a WakeLockSentinel when the browser takes the screen
+       wake lock back — usually because the page was hidden or the battery is
+       low. It is a genuine native event, just not one on Window or Element, so
+       it needs naming here for this guard to recognise it (#2079).
+       https://developer.mozilla.org/docs/Web/API/WakeLockSentinel/release_event */
+    'release',
     'error', 'message', 'messageerror',
     'open', 'close', 'abort', 'progress', 'loadend', 'loadstart', 'timeout', 'readystatechange',
     'ended', 'play', 'playing', 'pause', 'timeupdate', 'durationchange', 'volumechange',

@@ -776,21 +776,32 @@ function editorSaveSongCore(): array
 
             /* #1235 PF1 / R1 — carry-forward (data-loss guard) + write-path selection.
                A STALE client (a Service-Worker-cached pre-#1094 / pre-P3 editor.js)
-               POSTs components WITHOUT `chords` / `languages`, so a naive recreate
-               would NULL them song-wide. BEFORE the write we snapshot the existing
-               per-component arrays keyed by Type | Number | line-count as a FIFO queue
-               (repeated identical parts — a refrain reprised after each verse — pair
-               1:1); a component whose POST OMITS the key reclaims its carried value, a
+               POSTs components WITHOUT `languages`, so a naive recreate would NULL it
+               song-wide. BEFORE the write we snapshot the existing per-component
+               arrays keyed by Type | Number | line-count as a FIFO queue (repeated
+               identical parts — a refrain reprised after each verse — pair 1:1); a
+               component whose POST OMITS the key reclaims its carried value, a
                component that SENDS the key (even empty) stays authoritative.
 
                #1235 P4/C5 — on a MIRRORED install the carry SOURCE is the AUTHORITATIVE
                tblLyricLines (assembled editor shape), NOT the doomed LinesJson/
-               ChordsJson/LanguagesJson columns, and the save uses the inverted write
-               path below (lines authoritative; JSON shadow) — so it survives the C6
-               drop. On an un-migrated install (no mirror) the carry is the pre-delete
-               JSON-column snapshot, reattached as raw JSON in the legacy path. */
+               LanguagesJson columns, and the save uses the inverted write path below
+               (lines authoritative; JSON shadow) — so it survives the C6 drop. On an
+               un-migrated install (no mirror) the carry is the pre-delete JSON-column
+               snapshot, reattached as raw JSON in the legacy path.
+
+               #2087 — `$carryChords` USED to work the same way as `$carryLangs`
+               below, on BOTH branches. It is now consumed ONLY by the un-migrated
+               (`else`) legacy branch further down (search "PF1 / R1 carry-forward"
+               near `$updChords`): that branch has no `tblLyricLines` at all, so — unlike
+               the mirrored branch — it has no identity-based mechanism to fall back on,
+               and this positional FIFO (imperfect as it is) is the only thing standing
+               between an omitted `chords` key and a silent wipe there. The MIRRORED
+               branch's own use of this carry is gone (see the dedicated comment further
+               down, search "chords: KEY-PRESENT-ONLY") because `lyricLinesWriteComponents()`
+               gives it something strictly better: an IDENTITY-based reclaim. */
             $ll_syncReady = lyricLinesSyncReady($db);
-            $carryChords  = [];   // "type\x1fnumber\x1flineCount" => FIFO list (arrays when mirrored; JSON strings legacy)
+            $carryChords  = [];   // "type\x1fnumber\x1flineCount" => FIFO list, legacy (un-migrated) branch ONLY — see #2087 note above
             $carryLangs   = [];
             /* #2072 — deliberately NO $carryNotes FIFO here (an independent review
                caught this before ship). A FIFO keyed by (type, number, lineCount)
@@ -844,11 +855,15 @@ function editorSaveSongCore(): array
                 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
                 foreach (lyricLinesEditableComponents($db, $songId) as $pc) {
                     $key = (string)$pc['type'] . "\x1f" . (string)(int)$pc['number'] . "\x1f" . count($pc['lines']);
-                    $carryChords[$key][] = $pc['chords'];      // prior parallel chords array, or null
+                    /* #2087 — no `$carryChords[$key][] = $pc['chords']` line here any
+                       more: the mirrored branch below no longer consumes this carry
+                       (it gets an identity-based reclaim from lyricLinesWriteComponents()
+                       instead), so populating it here would just be unused work. See the
+                       $carryChords declaration comment above for the full picture. */
                     $carryLangs[$key][]  = $pc['languages'];   // prior per-line override array, or null
                     /* #1860 Phase 5 §3.4 — lyricLinesEditableComponents() ALWAYS emits
                        both keys (§2.3, null default), so no isset/array_key_exists guard
-                       is needed here — mirrors the chords/languages lines above. */
+                       is needed here — mirrors the languages line above. */
                     $carryLabels[$key][]      = $pc['label'];
                     $carrySourceWorks[$key][] = $pc['sourceWorkId'];
                 }
@@ -1029,32 +1044,28 @@ function editorSaveSongCore(): array
 
             if ($ll_syncReady) {
                 /* #1235 P4/C5 — inverted write path. Build the components payload from
-                   the POST (clean per-line chords; reattach the PF1-carried
-                   chords/languages a stale client omitted), then hand it to the shared
-                   writer: tblLyricLines becomes the source of truth and the JSON columns
-                   are shadow-written from the SAME payload while they exist. Id-stable —
-                   no component DELETE (so ComponentId no longer churns every save). */
+                   the POST (clean per-line chords; reattach the PF1-carried languages a
+                   stale client omitted — #2087: chords USED to get the same treatment,
+                   see the dedicated comment below for why that carry is gone), then hand
+                   it to the shared writer: tblLyricLines becomes the source of truth and
+                   the JSON columns are shadow-written from the SAME payload while they
+                   exist. Id-stable — no component DELETE (so ComponentId no longer
+                   churns every save). */
                 $writeComps = [];
                 foreach ($song['components'] ?? [] as $comp) {
                     /* Normalise type/number EXACTLY as lyricLinesWriteComponents stores them
                        (trim + 20-char cap; non-negative int) so the PF1 carry key matches the
                        snapshot key (built above from the STORED, normalised values via
                        lyricLinesEditableComponents) — a raw-vs-normalised mismatch would
-                       silently fail the chords/languages carry-forward (the C5 review finding). */
+                       silently fail the languages carry-forward (the C5 review finding). */
                     $cType  = function_exists('mb_substr')
                         ? (mb_substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse')
                         : (substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse');
                     $cNum   = max(0, (int)($comp['number'] ?? 0));
                     $cLines = is_array($comp['lines'] ?? null) ? array_values($comp['lines']) : [];
                     $pf1Key = $cType . "\x1f" . (string)$cNum . "\x1f" . count($cLines);
-                    /* chords: explicit (even empty) wins; omitted reclaims the carried prior array. */
-                    if (array_key_exists('chords', $comp)) {
-                        $cChords = $saveSongCleanChords($comp['chords'] ?? null, count($cLines));
-                    } else {
-                        $carried = !empty($carryChords[$pf1Key]) ? array_shift($carryChords[$pf1Key]) : null;
-                        $cChords = is_array($carried) ? $carried : null;
-                    }
-                    /* languages (per-line override): same explicit-vs-carry rule. */
+                    /* languages (per-line override): explicit (even empty) wins; omitted
+                       reclaims the carried prior array. */
                     if (array_key_exists('languages', $comp)) {
                         $cLangs = is_array($comp['languages'] ?? null) ? $comp['languages'] : null;
                     } else {
@@ -1062,10 +1073,10 @@ function editorSaveSongCore(): array
                         $cLangs = is_array($carriedL) ? $carriedL : null;
                     }
                     /* #1860 Phase 5 §3.4 — label/sourceWorkId: same explicit-vs-carry
-                       rule as chords/languages above (array_key_exists — even an
-                       explicit `null` counts as "the client addressed this field").
-                       The resolved value is handed to lyricLinesWriteComponents()
-                       WITH the key always present, so its own labelProvided/
+                       rule as languages above (array_key_exists — even an explicit
+                       `null` counts as "the client addressed this field"). The
+                       resolved value is handed to lyricLinesWriteComponents() WITH
+                       the key always present, so its own labelProvided/
                        sourceWorkIdProvided flags read true and it simply stores what
                        this funnel already carried forward — the writer-level
                        preserve (§3.1) only has work left to do for OTHER funnels that
@@ -1085,7 +1096,6 @@ function editorSaveSongCore(): array
                         'number'    => $cNum,
                         'language'  => (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null,
                         'lines'     => $cLines,
-                        'chords'    => $cChords,
                         'languages' => $cLangs,
                         'label'         => $cLabel,
                         'sourceWorkId'  => $cSourceWorkId,
@@ -1104,6 +1114,23 @@ function editorSaveSongCore(): array
                        explicit `null` still reaches the writer as null and clears. */
                     if (array_key_exists('notes', $comp)) {
                         $writeCompEntry['notes'] = is_array($comp['notes'] ?? null) ? array_values($comp['notes']) : null;
+                    }
+                    /* #2087 — chords: KEY-PRESENT-ONLY, no hand-carry — exactly the
+                       `notes` treatment immediately above (#2072), now applied to the
+                       field the issue actually reported. The removed `else` branch
+                       reclaimed a chords array from $carryChords keyed on
+                       (type, number, lineCount): adding or removing a line changes
+                       that key and misses the lookup (an omission silently became an
+                       explicit null and wiped the chords), and two components
+                       sharing a key could hand the SECOND one the FIRST's chords.
+                       Omitting the key instead lets lyricLinesWriteComponents()'s own
+                       IDENTITY-based preserve (lyricLinesMergePreserved(), matched by
+                       content-diffed line Id, not position) reclaim each surviving
+                       line's own chords correctly, even across an added/removed/
+                       reordered line. An explicit `chords: null` still reaches the
+                       writer as null and genuinely clears. */
+                    if (array_key_exists('chords', $comp)) {
+                        $writeCompEntry['chords'] = $saveSongCleanChords($comp['chords'] ?? null, count($cLines));
                     }
                     /* #2073 commit 5 cross-review finding F3 — voices: same KEY-
                        PRESENT-ONLY contract as notes immediately above, and for
@@ -1288,7 +1315,19 @@ function editorSaveSongCore(): array
                        this component, so don't let the reinsert leave ChordsJson NULL:
                        reclaim the pre-delete array for the position-matched part
                        (same Type | Number | line-count), FIFO so duplicate parts pair
-                       1:1. An explicit (even empty) `chords` above stays authoritative. */
+                       1:1. An explicit (even empty) `chords` above stays authoritative.
+
+                       #2087 — this positional FIFO has the SAME (type, number,
+                       lineCount) hazard the issue reported (a changed line count
+                       misses the key; two parts sharing a key can cross-contaminate),
+                       and it is DELIBERATELY KEPT here, unlike the mirrored branch's
+                       matching carry (removed — search "chords: KEY-PRESENT-ONLY" in
+                       this file). The reason is that this branch runs only on an
+                       un-migrated install that has no `tblLyricLines` at all, so there
+                       is no identity-based diff to reclaim a chord by — this imperfect
+                       positional guess is the ONLY protection available here against a
+                       silent wipe. Do not delete this to "match" the other two fixes;
+                       there is nothing better to fall back on in this branch. */
                     $pf1Key = $type . "\x1f" . (string)$cNum . "\x1f"
                             . (is_array($comp['lines'] ?? null) ? count($comp['lines']) : 0);
                     if (!empty($carryChords[$pf1Key])) {
