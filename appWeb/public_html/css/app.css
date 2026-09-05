@@ -1682,11 +1682,49 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
 [data-bs-theme="dark"] .markup-hl-pink   { background-color: rgba(214, 51, 132, 0.30); }
 [data-bs-theme="dark"] .markup-hl-orange { background-color: rgba(253, 126, 20, 0.32); }
 
+/* Per-line translation / transliteration row — includes/pages/song.php
+   (#1089/#1100 P1/#320). The base look (small, muted, hidden until the
+   "Show translation" toolbar button reveals it) comes entirely from the
+   Bootstrap utility classes song.php already puts on the element
+   (`small text-muted mb-1 d-none`) — nothing to add here for that part.
+   song-translations.js toggles the `d-none` on every row carrying THIS
+   class, regardless of kind — ONE toggle for both, see that file's own
+   doc-block for why. A TRANSLATION (a different meaning in another
+   language) keeps the long-standing `.fst-italic` Bootstrap utility
+   class alongside this one — italic is this app's established "this is
+   an added translation" cue, unchanged here.
+
+   A TRANSLITERATION is a different thing from a translation — the SAME
+   words, spelled out in a different alphabet so someone who can't read
+   the original script can still sing along (Korean 사랑 written as
+   "sarang"), not a different meaning. Reusing the italic "translation"
+   look for it would tell a reader the wrong thing, so this row gets its
+   OWN look instead of `.fst-italic`: upright (never italic), letters
+   spaced slightly further apart (the loose tracking used by phonetic /
+   pronunciation guides, e.g. dictionary respellings, to read as "sound
+   this out" rather than "read this sentence"), and a thin left rule —
+   the same visual device `.lyric-component` already uses for a
+   structural block, at half the width, so it reads as "a formatting
+   add-on" rather than "translated meaning". `--card-border` is the same
+   theme-aware token used there, so this stays legible in light, dark
+   and high-contrast without a separate override
+   (https://developer.mozilla.org/docs/Web/CSS/letter-spacing). The
+   element also carries a visually-hidden "Romanized:" lead-in (song.php)
+   so this same distinction reaches screen-reader users, not just
+   sighted ones. */
+.lyric-line-transliteration {
+    font-style: normal;
+    letter-spacing: 0.03em;
+    padding-left: 0.5rem;
+    border-left: 2px solid var(--card-border);
+}
+
 /* Per-line note — a collapsible <details> sibling of .lyric-line-translation
-   (song-markup.js inserts it immediately after any translation rows for the
-   same line, so reading order stays lyric → translation → note). Keeps the
-   browser's native disclosure triangle — already keyboard-operable with no
-   extra ARIA needed. */
+   (song-markup.js inserts it immediately after any translation/
+   transliteration rows for the same line, so reading order stays
+   lyric → translation/transliteration → note). Keeps the browser's
+   native disclosure triangle — already keyboard-operable with no extra
+   ARIA needed. */
 .lyric-line-note {
     font-size: 0.85em;
     margin: 0.15rem 0 0.5rem;
