@@ -752,7 +752,12 @@ return [
         'tblSongArrangements'      => '#1066 one-pass dormant — ?include=arrangements read side shipped, write side is future feature work',
         'tblSongRoyaltyIds'        => '#1066 one-pass dormant — ?include=royaltyIds read side shipped, write side is future feature work',
         'tblSongScriptureRefs'     => '#1066 one-pass dormant — ?include=scriptureRefs read side shipped, write side is future feature work',
-        'tblVocalParts'            => '#1066 one-pass dormant — ?include=vocalParts read side shipped, write side is future feature work',
+        /* 'tblVocalParts' entry RETIRED #2073 commit 5: includes/vocal_parts.php
+           now writes it too (vocalPartsUpsert()/vocalPartsFindOrCreate() INSERT
+           and UPDATE it, vocalPartsDelete() DELETEs it), so it is no longer
+           reader-with-no-writer. Same F5/F6/1g/1h/1i/1j self-cleaning pattern
+           this file's history already proves out (see the retired entries
+           elsewhere in this file for the worked examples). */
         'tblContentLicences'       => '#1668 licence-store consolidation — catalogue rows ship only in .sql/.fulldata/ihymns-full.sql, so a schema-only install reads an empty catalogue',
         /* #1741 P4c entries for tblTuneAliases/tblTuneCredits/
            tblTuneExternalLinks RETIRED by #1748 — manage/tunes.php +
@@ -786,7 +791,15 @@ return [
      * 3. TABLES AN APP PATH WRITES THAT NOTHING READS (§3.3)
      * ===================================================================== */
     'tables_writer_no_reader' => [
-        'tblLyricWords'     => 'deliberate — per-word timing accrues at ingest (lyrics_ingest.php:358) for the future karaoke/sync read path; see .claude/lyrics-normalisation-strategy.md. Deleting the write throws away data we collect on purpose',
+        /* 'tblLyricWords' entry RETIRED #2073 commit 5: includes/vocal_parts.php's
+           vocalPartsAssignWords() (the word-grain voice-assignment ingest twin,
+           D2) now reads it too — `SELECT w.Id FROM tblLyricWords w JOIN
+           tblLyricLines l ON l.Id = w.LineId WHERE w.Id IN (...) AND
+           l.LyricsId = ?`, the ownership/IDOR check proving every word id it is
+           asked to assign a voice to genuinely belongs to the lyrics version the
+           caller claims — so it is no longer writer-with-no-reader. Same
+           F5/F6/1g/1h/1i/1j/tblVocalParts self-cleaning pattern this file's
+           history already proves out. */
         'tblLyricSyllables' => 'deliberate — per-syllable timing accrues at ingest (lyrics_ingest.php:362) for the future karaoke/sync read path; see .claude/lyrics-normalisation-strategy.md',
     ],
 

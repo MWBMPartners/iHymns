@@ -9,10 +9,11 @@ declare(strict_types=1);
  *
  * ELI5: this file is the ONE place that knows "who sings this line" — the
  * fixed list of voice kinds (Men, Women, Choir, a Soloist, …), the helpers
- * that turn a typed word like "MEN" into one of those kinds, and the
- * read-only queries that fetch what a song has already had assigned. It
- * does NOT yet let anyone assign a voice to a line — that is write-side
- * work landing in a later commit of the same feature (#2073 commit 5).
+ * that turn a typed word like "MEN" into one of those kinds, the read-only
+ * queries that fetch what a song has already had assigned, AND (as of
+ * commit 5) the write half: create/edit a part, put it on a run of lines,
+ * mark a sub-line echo span, and the bulk "everything about this song's
+ * voices" read-back every write hands back (rule #35).
  *
  * WHY A PHP MAP, NOT A DB REGISTRY (rule #20 of .claude/CLAUDE.md): the set
  * of "kinds" (lead/soloist/male/female/children/all/…) is fixed and shared
@@ -56,13 +57,31 @@ declare(strict_types=1);
  * reader below simply returns its empty shape, because a read has nothing
  * to refuse; only a WRITE (commit 5) has a reason to 409.
  *
- * COMMIT SCOPE (#2073 commits 1 and 4 of 17 — see
+ * COMMIT SCOPE (#2073 commits 1, 4 and 5 of 17 — see
  * `.claude/vocal-parts-2073-plan.md`, "Design pass 7" §12 for the full plan):
- * vocabulary + normalisers + shape builders + READ fetchers ONLY. There is
- * deliberately NO `vocalPartsUpsert`, `vocalPartsAssignLines`,
- * `vocalPartsSpanUpsert`, `vocalPartsDelete` or any other function that
- * INSERTs/UPDATEs/DELETEs a row in this file yet — those land in commit 5
- * alongside `includes/lyric_rounds.php`.
+ * commits 1 and 4 shipped vocabulary + normalisers + shape builders + READ
+ * fetchers ONLY (their own history is unchanged below — see the two
+ * paragraphs that follow). Commit 5 (this one) adds the WRITE half:
+ * `vocalPartsUpsert()` / `vocalPartsDelete()` (the part registry),
+ * `vocalPartsAssignLines()` / `vocalPartsClearLines()` (the run-of-lines
+ * grain), `vocalPartsSpanUpsert()` / `vocalPartsSpanDelete()` (the sub-line
+ * echo grain), their ingest-only, version-scoped twins
+ * (`vocalPartsAssignLinesForVersion()`, `vocalPartsAssignWords()`,
+ * `vocalPartsPruneAgents()` — none of these three has a caller yet; they
+ * are the shape a later TTML-ingest commit needs and are proven here by a
+ * PURE truth table only), `vocalPartsApplyComponentVoices()` (the ONE seam
+ * `lyricLinesWriteComponents()` calls so an IMPORTER'S positional `voices`
+ * cells become FK rows the moment a line finally gets an Id — see that
+ * function's own doc-block and `includes/lyric_lines_sync.php`), and
+ * `vocalPartsForSong()` (the ONE bulk payload — `VOCAL_PARTS_PAYLOAD_KEYS`,
+ * declared back in commit 1 — every write below hands back in full, rule
+ * #35's "read the truth back, never trust what you just sent"). Every
+ * write function in this file reuses the SAME ownership/IDOR resolvers
+ * commit 1 already shipped (`vocalPartsResolveLines()` /
+ * `vocalPartsResolvePart()`) rather than a second ad-hoc JOIN — a caller
+ * cannot attach a part to, or read a span from, a line that is not on
+ * *this* song's *primary* lyrics version, ever (see §2.2's doc-blocks,
+ * unchanged by this commit).
  *
  * Commit 1 shipped the vocabulary + probes + shape builders with NOTHING
  * calling this file yet. Commit 4 ("Design pass 7" §5.3, the public read
@@ -77,6 +96,17 @@ declare(strict_types=1);
  * no-tables-yet sense — it is dormant only in the "no assignment rows exist
  * yet" sense, which is what keeps every one of the ~16,083 songs' fidelity
  * hashes byte-identical after this commit, per that file's own doc-block).
+ *
+ * WHY THE NEW WRITE FUNCTIONS ARE STILL "DORMANT" DESPITE EXISTING NOW:
+ * nothing in the shipped Editor UI or `api2.php` calls any of them yet —
+ * that wiring is commit 6/7 of the same plan. `vocalPartsApplyComponentVoices()`
+ * is the one exception worth naming precisely: `lyricLinesWriteComponents()`
+ * calls it on EVERY save, but only ever does anything when a caller's
+ * payload carries a `voices` key on a component (`voicesProvided`) — an
+ * ordinary editor save never sets that key, so this stays a verified
+ * byte-identical no-op for every save that has never heard of voices, the
+ * same "read the flag before doing the work" discipline #2072's
+ * `notesProvided` / `chordsProvided` already established one file over.
  *
  * Every DB value that enters a query is bound via `bindParamSafe()` (#928);
  * the only interpolated SQL text is `array_fill()`-built `?,?,?` placeholder
@@ -1661,4 +1691,1251 @@ function vocalPartsDeriveRuns(array $orderedLineIds, array $linesMap): array
     }
 
     return $runs;
+}
+
+
+/* =====================================================================
+ * #2073 COMMIT 5 — THE WRITE HALF.
+ *
+ * Everything below INSERTs / UPDATEs / DELETEs. Same throw contract as
+ * every read function above (see the file header): `\InvalidArgumentException`
+ * -> the caller answers 400, `\RuntimeException` -> 404 (an id doesn't exist
+ * or doesn't belong to the song asked about — this file never says which,
+ * so a guess can't be used to probe for the difference). None of these
+ * functions checks `vocalPartsTablesReady()` itself — that is the CALLER's
+ * job (a 409 belongs to the endpoint, not the core), exactly as
+ * `line_enrichment.php`'s own upsert/delete functions do.
+ *
+ * PURE VALIDATORS FIRST (no DB — directly unit-tested,
+ * `tests/php/test-vocal-parts-core.php`), then the DB-touching functions
+ * that call them. This mirrors `line_enrichment.php`'s own split: "the
+ * DB-touching upsert/delete functions need a live mysqli and are covered by
+ * manual / staging verification; these pure guards are the CI-enforced
+ * contract" (that file's own header) — this codebase has no live MySQL in
+ * CI, so pushing every real DECISION into a pure function is what makes the
+ * decision itself testable at all.
+ * ===================================================================== */
+
+/**
+ * ELI5: turn whatever kind text a write handed us into one of the 21 keys,
+ * or refuse the write outright — unlike the read-side `vocalPartsNormalizeKind()`
+ * this NEVER returns null quietly, because a WRITE with an unrecognised kind
+ * is a caller bug (a stale client, a typo in a payload) that must surface as
+ * a 400, not silently store something wrong.
+ *
+ * @throws \InvalidArgumentException  the text is not a known kind, alias or marker
+ */
+function vocalPartsRequireKind(string $kindInput): string
+{
+    $kind = vocalPartsNormalizeKind($kindInput);
+    if ($kind === null) {
+        throw new \InvalidArgumentException("Unknown vocal-part kind '{$kindInput}'.");
+    }
+    return $kind;
+}
+
+/**
+ * ELI5: clean up a typed label — trim it, cap its length, and turn "I typed
+ * nothing" into a real `null` rather than an empty string (so `Label <=> NULL`
+ * NULL-safe comparisons downstream, and the display fallback ladder in
+ * `vocalPartsDisplayLabel()`, both see the ABSENCE of a label, not a
+ * zero-length string masquerading as one).
+ *
+ * PURE — accepts `mixed` because a JSON body decodes a missing/absent key as
+ * PHP `null` and this file's write functions pass whatever the caller sent
+ * straight through without a separate `is_string()` gate first.
+ */
+function vocalPartsNormalizeLabelInput(mixed $value, int $maxLen = 120): ?string
+{
+    if ($value === null) {
+        return null;
+    }
+    $s = trim((string)$value);
+    if ($s === '') {
+        return null;
+    }
+    return function_exists('mb_substr') ? mb_substr($s, 0, $maxLen, 'UTF-8') : substr($s, 0, $maxLen);
+}
+
+/**
+ * ELI5: rule #45's "hide when it says nothing a reader couldn't already
+ * guess" fold, applied to a vocal part's Label — if a curator types "Women"
+ * as the Label of a `female` part, that is not an override, it is exactly
+ * the word `vocalPartsDisplayLabel()` would already show, so store `null`
+ * instead (the D1 hide-when-equal rule this feature's own plan cites from
+ * rule #27/#45's component-Label precedent). Case-folded so "women" / "WOMEN"
+ * / "Women" are all recognised as "the same as the kind's own word".
+ *
+ * PURE. Never called for `null` (a caller passes the already-normalised
+ * label from `vocalPartsNormalizeLabelInput()`, which is `null` exactly when
+ * there is nothing to fold in the first place).
+ */
+function vocalPartsFoldHiddenLabel(?string $label, string $kind): ?string
+{
+    if ($label === null) {
+        return null;
+    }
+    $def = IHYMNS_VOCAL_PART_KINDS[$kind] ?? null;
+    if ($def === null) {
+        return $label;
+    }
+    $kindLabel = (string)$def['label'];
+    return (mb_strtolower($label, 'UTF-8') === mb_strtolower($kindLabel, 'UTF-8')) ? null : $label;
+}
+
+/**
+ * ELI5: work out the Gender a vocal part should actually be stored with —
+ * a caller's explicit choice wins, but if they said nothing, use whatever
+ * the kind itself implies (rule #44 — derive, never ask twice for a fact
+ * the kind already answers).
+ *
+ * @throws \InvalidArgumentException  a NON-EMPTY value that is not one of
+ *                                     IHYMNS_VOCAL_GENDERS
+ */
+function vocalPartsNormalizeGenderInput(?string $gender, string $kind): ?string
+{
+    if ($gender === null || trim($gender) === '') {
+        return vocalPartsImpliedGender($kind);
+    }
+    $g = strtolower(trim($gender));
+    if (!in_array($g, IHYMNS_VOCAL_GENDERS, true)) {
+        throw new \InvalidArgumentException('gender must be one of: ' . implode(', ', IHYMNS_VOCAL_GENDERS));
+    }
+    return $g;
+}
+
+/**
+ * ELI5: a "Named singer" part is meaningless without knowing WHICH singer —
+ * either a real musician-registry row or, failing that, at least a typed
+ * name. Every other kind needs neither, so this is a no-op for them.
+ *
+ * @throws \InvalidArgumentException  kind is 'named-singer' and BOTH are empty
+ */
+function vocalPartsValidateNamedSingerInputs(string $kind, ?int $musicianId, ?string $singerName): void
+{
+    if ($kind !== 'named-singer') {
+        return;
+    }
+    $hasMusician = $musicianId !== null && $musicianId > 0;
+    $hasName     = $singerName !== null && trim($singerName) !== '';
+    if (!$hasMusician && !$hasName) {
+        throw new \InvalidArgumentException('A named singer needs a musician or a name.');
+    }
+}
+
+/**
+ * ELI5: "add" or "replace" — anything else is a caller bug, refused loudly
+ * rather than silently treated as one or the other.
+ *
+ * @throws \InvalidArgumentException  not (case-insensitively) 'add' or 'replace'
+ */
+function vocalPartsNormalizeAssignMode(string $mode): string
+{
+    $m = strtolower(trim($mode));
+    if ($m !== 'add' && $m !== 'replace') {
+        throw new \InvalidArgumentException("mode must be 'add' or 'replace'.");
+    }
+    return $m;
+}
+
+/**
+ * ELI5: the extra rules a sub-line echo span must follow ON TOP OF the
+ * ordinary offset-in-range check every code-point span in this codebase
+ * shares (`lineEnrichmentValidateOffsets()`, reused here rather than
+ * re-forked — rule #22): it must have real width (a zero-width span marks
+ * nothing), and it must NOT be the whole line (that is a LINE assignment —
+ * `vocalPartsAssignLines()` — not a span; storing it as a span would let
+ * the same fact be represented two different ways, which is exactly what
+ * this whole feature's DDL doc-block calls out as "the app-rejected case").
+ *
+ * PURE (once `line_enrichment.php` is loaded — the DB-touching span
+ * functions below `require_once` it before calling this; the caller MUST
+ * do the same before calling this directly, exactly like every other
+ * `line_enrichment.php` consumer in this codebase).
+ *
+ * @return array{0:int,1:int}  [start, end], both non-null (a vocal span never
+ *                              uses the enrichment schema's "to the end"/"from
+ *                              the start" null shorthand — a span is always a
+ *                              closed pair on ONE line)
+ * @throws \InvalidArgumentException
+ */
+function vocalPartsValidateSpanOffsets(int $start, int $end, int $cpLen): array
+{
+    /* @lyrics-version-exempt: PURE offset arithmetic — no version to resolve. */
+    [$s, $e] = lineEnrichmentValidateOffsets($start, $end, $cpLen, $cpLen, true);
+    $s = $s ?? 0;
+    $e = $e ?? $cpLen;
+    if ($e <= $s) {
+        throw new \InvalidArgumentException('endOffset must be greater than startOffset.');
+    }
+    if ($s === 0 && $e === $cpLen) {
+        throw new \InvalidArgumentException('A whole-line span is a line assignment — use the line control, not a span.');
+    }
+    return [$s, $e];
+}
+
+/**
+ * ELI5: given a TTML `<ttm:agent type="…">` and "is this the 1st, 2nd, …
+ * PERSON-type agent in the file", guess a reasonable starting kind for it.
+ * PURE — a curator can always re-kind the part afterwards; this only has to
+ * be a REASONABLE first guess, never a promise.
+ *
+ * TTML2 §12.2.1 defines four `ttm:agent` types: person | group | character |
+ * other (this file's own vocabulary doc-block also lists `organization`,
+ * which several real-world TTML files use even though it is not in the
+ * TTML2 base vocabulary — mapped the same way here).
+ *
+ * ⚠️ FLAGGED DEVIATION FROM THE PLAN'S OWN PROSE (per this commit's brief:
+ * report a plan/reality mismatch loudly rather than silently resolving it
+ * either way): "Design pass 2" §2.8 explicitly says a `person`-type agent
+ * ALWAYS maps to `'lead'`, "deterministic and simple" — and explicitly
+ * REJECTS ordinal differentiation ("for the FIRST person agent... 'soloist'
+ * for later ones? No"). "Design pass 7" (authoritative on a contradiction)
+ * then lists THIS function's signature with a `$personOrdinal` parameter
+ * Pass 2's version never had, but Pass 7's prose never explains what that
+ * parameter is FOR — so the plan, as written, hands this implementer a
+ * parameter with no stated purpose while its own cited source function
+ * explicitly argues against the one purpose a fresh reader would guess.
+ * DEFENSIBLE DEFAULT CHOSEN HERE (trivially changeable — this function is
+ * dormant, ingest-only, and has no caller in this commit): the FIRST
+ * `person`-type agent (`$personOrdinal === 0`) is `'lead'`; every
+ * SUBSEQUENT one is `'soloist'` — multiple distinct named voices in one
+ * TTML file are far more often several soloists than several equally-"lead"
+ * singers, and `'soloist'` is a strictly weaker, easily-corrected claim than
+ * silently reusing `'lead'` for two different people. A real Apple Music
+ * TTML fixture (owner checklist item, tracked in the plan's standing-tasks
+ * list) is what should settle this for good.
+ *
+ * @param array{type?:?string,name?:?string,meta?:array} $agent
+ */
+function vocalPartsKindFromTtmlAgent(array $agent, int $personOrdinal): string
+{
+    $type = strtolower(trim((string)($agent['type'] ?? '')));
+    switch ($type) {
+        case 'group':
+            return 'group';
+        case 'other':
+            return 'duet';
+        case 'character':
+            return 'named-singer';
+        case 'organization':
+            return 'choir';
+        case 'person':
+            return $personOrdinal <= 0 ? 'lead' : 'soloist';
+        default:
+            /* Missing / unrecognised type attribute — Pass 2 §2.8's own
+               "missing/unknown -> 'lead'" fallback, unaffected by the
+               ordinal question above (an agent with no declared type at
+               all is not confidently a repeated soloist). */
+            return 'lead';
+    }
+}
+
+/* --------------------------------------------------------------------
+ * Part registry — create / edit / delete a tblVocalParts row.
+ * -------------------------------------------------------------------- */
+
+/**
+ * ELI5: "give me the part for this voice on this lyrics version — reuse it
+ * if one already matches, otherwise make one." Rule #43's find-or-create
+ * discipline, applied to the PART row (never to the fixed KIND vocabulary,
+ * which is never minted — see this file's own vocabulary doc-block).
+ *
+ * Match ladder (first hit wins, all scoped to `$lyricsId`):
+ *   1. `$ttmlAgentId` given -> `(LyricsId, TtmlAgentId)` — `uq_Lyrics_Agent`
+ *      (schema.sql:4518), the idempotent re-ingest key.
+ *   2. `$kind === 'named-singer' && $musicianId` given -> the SAME musician
+ *      already registered as a named-singer part on this version.
+ *   3. Otherwise -> `(LyricsId, PartKind, Label <=> $label)` — the NULL-safe
+ *      `<=>` operator so "no label" only matches another "no label" row,
+ *      never accidentally matching a labelled one or vice versa.
+ *   4. No match anywhere above -> INSERT a new row, `SortOrder` = the
+ *      version's current max + 1 (read then bound — never interpolated).
+ *
+ * On a hit this NEVER overwrites `Label` / `SingerName` / `MusicianId` (a
+ * curator's own edits always win over a re-ingest's guess); `MetaJson` is
+ * refreshed only when the row's OWN `Source` still equals the caller's
+ * `$source` (a machine-owned row may have its machine metadata refreshed by
+ * the SAME machine, never by a different one, and never by a curator's
+ * `'ihymns'`-sourced write at all).
+ *
+ * @param array<string,mixed>|null $meta  JSON-encoded into MetaJson on a hit
+ *                                         refresh or a create; `null` leaves
+ *                                         MetaJson untouched/absent
+ * @return int  tblVocalParts.Id
+ * @throws \InvalidArgumentException  unknown $kind
+ */
+function vocalPartsFindOrCreate(
+    \mysqli $db,
+    int $lyricsId,
+    string $kind,
+    ?string $label = null,
+    string $source = 'ihymns',
+    ?string $ttmlAgentId = null,
+    ?int $musicianId = null,
+    ?string $singerName = null,
+    ?array $meta = null
+): int {
+    $kind  = vocalPartsRequireKind($kind);
+    $label = vocalPartsNormalizeLabelInput($label);
+    $metaJson = ($meta !== null) ? json_encode($meta, JSON_UNESCAPED_UNICODE) : null;
+
+    if ($ttmlAgentId !== null && $ttmlAgentId !== '') {
+        $stmt = $db->prepare('SELECT Id, Source FROM tblVocalParts WHERE LyricsId = ? AND TtmlAgentId = ? LIMIT 1');
+        bindParamSafe(__FUNCTION__ . ':agent', $stmt, 'is', $lyricsId, $ttmlAgentId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if ($row !== null) {
+            if ($metaJson !== null && (string)$row['Source'] === $source) {
+                $upd = $db->prepare('UPDATE tblVocalParts SET MetaJson = ? WHERE Id = ?');
+                bindParamSafe(__FUNCTION__ . ':agent-meta', $upd, 'si', $metaJson, $row['Id']);
+                $upd->execute();
+                $upd->close();
+            }
+            return (int)$row['Id'];
+        }
+    } elseif ($kind === 'named-singer' && $musicianId !== null) {
+        $stmt = $db->prepare(
+            "SELECT Id FROM tblVocalParts WHERE LyricsId = ? AND PartKind = 'named-singer' AND MusicianId = ? LIMIT 1"
+        );
+        bindParamSafe(__FUNCTION__ . ':musician', $stmt, 'ii', $lyricsId, $musicianId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if ($row !== null) {
+            return (int)$row['Id'];
+        }
+    } else {
+        $stmt = $db->prepare('SELECT Id FROM tblVocalParts WHERE LyricsId = ? AND PartKind = ? AND Label <=> ? LIMIT 1');
+        bindParamSafe(__FUNCTION__ . ':label', $stmt, 'iss', $lyricsId, $kind, $label);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if ($row !== null) {
+            return (int)$row['Id'];
+        }
+    }
+
+    $sortStmt = $db->prepare('SELECT COALESCE(MAX(SortOrder) + 1, 0) FROM tblVocalParts WHERE LyricsId = ?');
+    bindParamSafe(__FUNCTION__ . ':sort', $sortStmt, 'i', $lyricsId);
+    $sortStmt->execute();
+    $sortOrder = (int)($sortStmt->get_result()->fetch_row()[0] ?? 0);
+    $sortStmt->close();
+
+    $gender = vocalPartsImpliedGender($kind);
+
+    $insCols  = ['LyricsId', 'PartKind', 'Label', 'MusicianId', 'SingerName', 'Gender', 'TtmlAgentId', 'Source', 'SortOrder', 'MetaJson'];
+    $insTypes = implode('', ['i', 's', 's', 'i', 's', 's', 's', 's', 'i', 's']);
+    $ins = $db->prepare('INSERT INTO tblVocalParts (' . implode(', ', $insCols) . ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    bindParamSafe(
+        __FUNCTION__ . ':insert',
+        $ins,
+        $insTypes,
+        $lyricsId,
+        $kind,
+        $label,
+        $musicianId,
+        $singerName,
+        $gender,
+        $ttmlAgentId,
+        $source,
+        $sortOrder,
+        $metaJson
+    );
+    $ins->execute();
+    $id = (int)$db->insert_id;
+    $ins->close();
+    return $id;
+}
+
+/**
+ * ELI5: create or edit ONE vocal part — the curator-facing counterpart of
+ * `vocalPartsFindOrCreate()` (which is the ingest-facing one). Unlike
+ * find-or-create, this NEVER silently reuses another row: an `id` means
+ * "edit this exact row", its absence means "make a brand-new one", and a
+ * caller who wants find-or-create semantics on create asks for it
+ * explicitly (a future editor action, `findOrCreate: true` — see the plan's
+ * §4.4) rather than getting it by default here.
+ *
+ * IDOR: an `id` is resolved via `vocalPartsResolvePart($db, $songId, $id)`
+ * (this file's own ownership check, §2.2) — a caller can never edit a part
+ * that does not belong to a lyrics version of THIS song.
+ *
+ * Input `{id?, kind, label?, singerName?, gender?, musicianId?, sortOrder?}`.
+ * Every field is OMITTED-MEANS-KEEP on an UPDATE (`array_key_exists`, the
+ * same convention as this codebase's Label/SourceWorkId component fields,
+ * rule #45) and REQUIRED-ISH on a CREATE (`kind` is the one field that must
+ * actually be present; everything else defaults sensibly). `Source` and
+ * `TtmlAgentId` are machine provenance — never settable through this
+ * curator-facing function at all (a curator edits what a part SAYS, not
+ * where it CAME FROM).
+ *
+ * @param array<string,mixed> $input
+ * @return array  the shape (`vocalPartsShape()`) of the row as it now stands
+ * @throws \InvalidArgumentException  bad kind/gender/label/musicianId, or a
+ *                                     named-singer with neither name nor musician
+ * @throws \RuntimeException          `id` given but not found for this song
+ */
+function vocalPartsUpsert(\mysqli $db, string $songId, array $input, ?int $userId = null): array
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';   // lyricLinesEnsurePrimaryVersion()
+
+    $id = isset($input['id']) ? (int)$input['id'] : 0;
+    $existing = null;
+
+    if ($id > 0) {
+        $existing = vocalPartsResolvePart($db, $songId, $id);
+        if ($existing === null) {
+            throw new \RuntimeException('Vocal part not found for this song.');
+        }
+        $lyricsId = (int)$existing['LyricsId'];
+        $kind = (array_key_exists('kind', $input) && $input['kind'] !== null)
+            ? vocalPartsRequireKind((string)$input['kind'])
+            : (string)$existing['PartKind'];
+    } else {
+        $kind     = vocalPartsRequireKind((string)($input['kind'] ?? ''));
+        $lyricsId = lyricLinesEnsurePrimaryVersion($db, $songId);
+    }
+
+    $label = array_key_exists('label', $input)
+        ? vocalPartsFoldHiddenLabel(vocalPartsNormalizeLabelInput($input['label']), $kind)
+        : ($existing !== null ? $existing['Label'] : null);
+
+    $singerName = array_key_exists('singerName', $input)
+        ? vocalPartsNormalizeLabelInput($input['singerName'], 255)
+        : ($existing !== null ? $existing['SingerName'] : null);
+
+    $musicianId = null;
+    if (array_key_exists('musicianId', $input)) {
+        if ($input['musicianId'] !== null) {
+            $musicianId = (int)$input['musicianId'];
+            $chk = $db->prepare('SELECT 1 FROM tblMusicians WHERE Id = ? LIMIT 1');
+            bindParamSafe(__FUNCTION__ . ':musician-exists', $chk, 'i', $musicianId);
+            $chk->execute();
+            $found = $chk->get_result()->fetch_row() !== null;
+            $chk->close();
+            if (!$found) {
+                throw new \InvalidArgumentException('musicianId does not exist.');
+            }
+        }
+    } elseif ($existing !== null) {
+        $musicianId = $existing['MusicianId'] !== null ? (int)$existing['MusicianId'] : null;
+    }
+
+    vocalPartsValidateNamedSingerInputs($kind, $musicianId, $singerName);
+
+    /* Gender: a caller's explicit choice always wins (even an explicit
+       `null`, which re-derives from the — possibly just-changed — kind);
+       an omitted key on an UPDATE keeps whatever is already stored UNLESS
+       the kind itself just changed, in which case the stale gender from the
+       OLD kind would be actively misleading, so it is re-derived instead. */
+    if (array_key_exists('gender', $input)) {
+        $gender = vocalPartsNormalizeGenderInput(
+            $input['gender'] !== null ? (string)$input['gender'] : null,
+            $kind
+        );
+    } elseif ($existing !== null && (string)$existing['PartKind'] === $kind) {
+        $gender = $existing['Gender'];
+    } else {
+        $gender = vocalPartsImpliedGender($kind);
+    }
+
+    $sortOrder = null;
+    if (array_key_exists('sortOrder', $input) && $input['sortOrder'] !== null) {
+        $sortOrder = max(0, (int)$input['sortOrder']);
+    } elseif ($existing !== null) {
+        $sortOrder = (int)$existing['SortOrder'];
+    }
+
+    if ($id > 0) {
+        $upd = $db->prepare(
+            'UPDATE tblVocalParts SET PartKind = ?, Label = ?, SingerName = ?, Gender = ?, MusicianId = ?, SortOrder = ? WHERE Id = ?'
+        );
+        bindParamSafe(
+            __FUNCTION__ . ':update',
+            $upd,
+            implode('', ['s', 's', 's', 's', 'i', 'i', 'i']),
+            $kind,
+            $label,
+            $singerName,
+            $gender,
+            $musicianId,
+            $sortOrder,
+            $id
+        );
+        $upd->execute();
+        $upd->close();
+        $resultId = $id;
+    } else {
+        if ($sortOrder === null) {
+            $sortStmt = $db->prepare('SELECT COALESCE(MAX(SortOrder) + 1, 0) FROM tblVocalParts WHERE LyricsId = ?');
+            bindParamSafe(__FUNCTION__ . ':sort', $sortStmt, 'i', $lyricsId);
+            $sortStmt->execute();
+            $sortOrder = (int)($sortStmt->get_result()->fetch_row()[0] ?? 0);
+            $sortStmt->close();
+        }
+        $ins = $db->prepare(
+            "INSERT INTO tblVocalParts (LyricsId, PartKind, Label, SingerName, Gender, MusicianId, Source, SortOrder)
+             VALUES (?, ?, ?, ?, ?, ?, 'ihymns', ?)"
+        );
+        bindParamSafe(
+            __FUNCTION__ . ':insert',
+            $ins,
+            implode('', ['i', 's', 's', 's', 's', 'i', 'i']),
+            $lyricsId,
+            $kind,
+            $label,
+            $singerName,
+            $gender,
+            $musicianId,
+            $sortOrder
+        );
+        $ins->execute();
+        $resultId = (int)$db->insert_id;
+        $ins->close();
+    }
+
+    $row = vocalPartsResolvePart($db, $songId, $resultId);
+    if ($row === null) {
+        /* Cannot happen on a normal path (we just wrote it under the same
+           transaction) — defensive only, so a caller never gets a `null`
+           shape back out of a function typed to return `array`. */
+        throw new \RuntimeException('Vocal part not found for this song.');
+    }
+    $musicianName = null;
+    if (!empty($row['MusicianId'])) {
+        $mStmt = $db->prepare('SELECT Name FROM tblMusicians WHERE Id = ? LIMIT 1');
+        bindParamSafe(__FUNCTION__ . ':musician-name', $mStmt, 'i', $row['MusicianId']);
+        $mStmt->execute();
+        $mRow = $mStmt->get_result()->fetch_assoc();
+        $mStmt->close();
+        $musicianName = $mRow['Name'] ?? null;
+    }
+    return vocalPartsShape($row, $musicianName !== null ? (string)$musicianName : null);
+}
+
+/**
+ * ELI5: delete a vocal part and everything that names it — its line
+ * assignments, its sub-line spans, its word overrides, and (via
+ * `tblLyricRoundVoices.VocalPartId ON DELETE SET NULL`) it stops naming a
+ * round's voice without deleting the round itself (an unnamed "Voice N" is
+ * a fully legal row — see that table's own COMMENT).
+ *
+ * IDOR: ownership via `vocalPartsResolvePart()`.
+ *
+ * @throws \RuntimeException  not found for this song
+ */
+function vocalPartsDelete(\mysqli $db, string $songId, int $partId): bool
+{
+    $existing = vocalPartsResolvePart($db, $songId, $partId);
+    if ($existing === null) {
+        throw new \RuntimeException('Vocal part not found for this song.');
+    }
+    $stmt = $db->prepare('DELETE FROM tblVocalParts WHERE Id = ?');
+    bindParamSafe(__FUNCTION__, $stmt, 'i', $partId);
+    $stmt->execute();
+    $affected = $stmt->affected_rows > 0;
+    $stmt->close();
+    return $affected;
+}
+
+/* --------------------------------------------------------------------
+ * Line grain — the run gesture: put one or more parts on a set of lines.
+ * -------------------------------------------------------------------- */
+
+/**
+ * ELI5: "these lines are sung by these voices" — a curator ticks a run of
+ * lines, picks one or more parts (a duet is two parts on the same lines),
+ * and presses Assign. ONE call, ALL lines and ALL parts, or none of it
+ * (each statement below runs eagerly rather than inside its own nested
+ * transaction — the CALLER is expected to already be inside one, exactly
+ * like every other write in this file and in `line_enrichment.php`).
+ *
+ * IDOR (two layers): `vocalPartsResolveLines()` proves every line belongs
+ * to THIS song's primary version (§2.2, unchanged); this function ALSO
+ * proves every part belongs to that SAME lyrics version — a part minted on
+ * a TTML-ingested version can never be pinned onto the curator's own lines,
+ * and vice versa (§2.2's read-only sibling never had to enforce this
+ * because it never crossed the two; a WRITE can, so it must check).
+ *
+ * OVERLAP / ABUT SEMANTICS (spelled out, because nothing is actually
+ * STORED as a "run" — a run is always DERIVED at read time by
+ * `vocalPartsDeriveRuns()`): assigning lines 5-8 to Men when lines 3-8 were
+ * previously Women leaves 3-4 Women and 5-8 Men — two derived runs, no
+ * separate "split the run" step needed. Assigning 9-12 to Men immediately
+ * AFTER lines 5-8 are already Men derives as ONE run 5-12 (adjacency plus
+ * an identical part set is ALL `vocalPartsDeriveRuns()` needs — it does not
+ * know or care that two separate Assign calls produced it). A scattered,
+ * non-adjacent `$lineIds` list is legal and simply derives as several runs.
+ *
+ * `$mode`:
+ *   - `'replace'` (default) — DELETE any OTHER part currently on these
+ *     lines with the SAME `$isBackground` class first (an echo mark on a
+ *     line therefore survives a `replace` re-assignment of its LEAD voice,
+ *     and a lead re-assignment survives a `replace` of its echo — the two
+ *     classes never see each other's DELETEs; this is Pass 2 §2.4's
+ *     "decision 6").
+ *   - `'add'` — leaves whatever is already on these lines untouched and
+ *     only adds the new part(s).
+ * Either way the actual per-(line,part) write is
+ * `INSERT ... ON DUPLICATE KEY UPDATE` against `uq_Line_Part
+ * (LineId, VocalPartId)` — a part can never appear twice on one line (as
+ * BOTH a voice and an echo of itself — meaningless — the DUPLICATE KEY just
+ * flips `IsBackground` to whichever class this call asked for instead of
+ * erroring, which is the correct, harmless behaviour rather than a bug to
+ * "fix" by widening the unique key, which would be an ALTER — rule #20).
+ *
+ * @param list<int> $lineIds
+ * @param list<int> $partIds  1..8 distinct part ids
+ * @return array  `vocalPartsForSong()` — the WHOLE song's payload, per this
+ *                 feature's read-back-the-truth convention (rule #35)
+ * @throws \InvalidArgumentException  bad mode, empty/too-many partIds
+ * @throws \RuntimeException          a line or part is not on this song's
+ *                                     primary version, or a part is on a
+ *                                     DIFFERENT lyrics version than the lines
+ */
+function vocalPartsAssignLines(
+    \mysqli $db,
+    string $songId,
+    array $lineIds,
+    array $partIds,
+    string $mode = 'replace',
+    bool $isBackground = false
+): array {
+    $mode = vocalPartsNormalizeAssignMode($mode);
+
+    $partIdsNorm = array_values(array_unique(array_map('intval', $partIds)));
+    if (!$partIdsNorm) {
+        throw new \InvalidArgumentException('partIds must be a non-empty list.');
+    }
+    if (count($partIdsNorm) > 8) {
+        throw new \InvalidArgumentException('partIds must not exceed 8 per call.');
+    }
+
+    $lines = vocalPartsResolveLines($db, $songId, $lineIds);   // IDOR + same-primary-version guard
+    $lyricsId = null;
+    foreach ($lines as $l) {
+        $lyricsId = $l['lyricsId'];
+        break;
+    }
+
+    foreach ($partIdsNorm as $pid) {
+        $part = vocalPartsResolvePart($db, $songId, $pid);
+        if ($part === null) {
+            throw new \RuntimeException('One or more partIds do not belong to this song.');
+        }
+        if ((int)$part['LyricsId'] !== $lyricsId) {
+            throw new \RuntimeException('A vocal part must belong to the same lyrics version as the lines it is assigned to.');
+        }
+    }
+
+    $lineIdList = array_keys($lines);
+    $bgInt = $isBackground ? 1 : 0;
+
+    if ($mode === 'replace') {
+        $place = implode(',', array_fill(0, count($lineIdList), '?'));
+        $del = $db->prepare("DELETE FROM tblLyricLineVocalParts WHERE LineId IN ({$place}) AND IsBackground = ?");
+        bindParamSafe(
+            __FUNCTION__ . ':replace',
+            $del,
+            str_repeat('i', count($lineIdList)) . 'i',
+            ...array_merge($lineIdList, [$bgInt])
+        );
+        $del->execute();
+        $del->close();
+    }
+
+    $ins = $db->prepare(
+        'INSERT INTO tblLyricLineVocalParts (LineId, VocalPartId, LyricsId, IsBackground, SortOrder)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE IsBackground = VALUES(IsBackground), SortOrder = VALUES(SortOrder)'
+    );
+    foreach ($lineIdList as $lineId) {
+        foreach ($partIdsNorm as $i => $pid) {
+            bindParamSafe(__FUNCTION__ . ':insert', $ins, 'iiiii', $lineId, $pid, $lyricsId, $bgInt, $i);
+            $ins->execute();
+        }
+    }
+    $ins->close();
+
+    return vocalPartsForSong($db, $songId);
+}
+
+/**
+ * ELI5: take a part (or every part) off a set of lines.
+ *
+ * `$isBackground`: `null` clears BOTH the voice AND the echo rows on these
+ * lines (a full "start over" for this line); `true`/`false` clears only
+ * that one background class, leaving the other untouched — the same
+ * IsBackground-scoped-DELETE convention `vocalPartsAssignLines()`'s
+ * `'replace'` mode uses, exposed here as its own action for a curator who
+ * wants to clear WITHOUT immediately re-assigning something else.
+ *
+ * IDOR via `vocalPartsResolveLines()`.
+ *
+ * @param list<int> $lineIds
+ * @return int  rows deleted
+ */
+function vocalPartsClearLines(\mysqli $db, string $songId, array $lineIds, ?bool $isBackground = null): int
+{
+    $lines = vocalPartsResolveLines($db, $songId, $lineIds);
+    $lineIdList = array_keys($lines);
+    if (!$lineIdList) {
+        return 0;
+    }
+
+    $place = implode(',', array_fill(0, count($lineIdList), '?'));
+    $sql   = "DELETE FROM tblLyricLineVocalParts WHERE LineId IN ({$place})";
+    $types = str_repeat('i', count($lineIdList));
+    $params = $lineIdList;
+    if ($isBackground !== null) {
+        $sql .= ' AND IsBackground = ?';
+        $types .= 'i';
+        $params[] = $isBackground ? 1 : 0;
+    }
+    $stmt = $db->prepare($sql);
+    bindParamSafe(__FUNCTION__, $stmt, $types, ...$params);
+    $stmt->execute();
+    $affected = $stmt->affected_rows;
+    $stmt->close();
+    return $affected;
+}
+
+/* --------------------------------------------------------------------
+ * Sub-line spans — the echo-inside-a-line grain.
+ * -------------------------------------------------------------------- */
+
+/**
+ * ELI5: "only PART of this line is a different voice" — e.g. the closing
+ * parenthetical of "Great is Thy faithfulness (He is my refuge)" sung by an
+ * echo. Offsets are 0-based, end-exclusive UTF-8 CODE POINTS (rule #21 —
+ * `mb_strlen`, never a byte or UTF-16 index).
+ *
+ * Input `{id?, lineId, partId, start, end, isBackground?, sortOrder?}`.
+ * On an UPDATE (`id` given), `lineId`/`partId` are read from the EXISTING
+ * row (§2.2's ownership resolvers still run against them — a caller cannot
+ * "move" a span onto a different line/part by supplying new ids alongside
+ * an existing span id; a moved span is a delete + a fresh create).
+ *
+ * @param array<string,mixed> $input
+ * @return array  {id, lineId, partId, start, end, isBackground, sortOrder}
+ * @throws \InvalidArgumentException  bad offsets (see `vocalPartsValidateSpanOffsets()`)
+ * @throws \RuntimeException          `id` given but not found; line/part not
+ *                                     on this song's primary version, or the
+ *                                     part is on a different lyrics version
+ */
+function vocalPartsSpanUpsert(\mysqli $db, string $songId, array $input): array
+{
+    /* @lyrics-version-exempt: the JOIN through tblLyrics right below is an
+       ownership/IDOR check on ONE already-known span id — like
+       vocalPartsResolvePart()'s identical exemption above, it only needs
+       to confirm the span's own lyrics version belongs to $songId at all,
+       never which version is "current". The actual primary-version pin for
+       this write is applied a few lines down, via vocalPartsResolveLines(). */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'line_enrichment.php';   // lineEnrichmentValidateOffsets()
+
+    $id = isset($input['id']) ? (int)$input['id'] : 0;
+    $existingSpan = null;
+    if ($id > 0) {
+        $stmt = $db->prepare(
+            'SELECT s.*, ll.LyricsId AS LineLyricsId
+               FROM tblLyricLineVocalSpans s
+               JOIN tblLyricLines ll ON ll.Id = s.LineId
+               JOIN tblLyrics ly     ON ly.Id = ll.LyricsId
+              WHERE s.Id = ? AND ly.SongId = ?
+              LIMIT 1'
+        );
+        bindParamSafe(__FUNCTION__ . ':existing', $stmt, 'is', $id, $songId);
+        $stmt->execute();
+        $existingSpan = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if ($existingSpan === null) {
+            throw new \RuntimeException('Vocal span not found for this song.');
+        }
+        $lineId = (int)$existingSpan['LineId'];
+        $partId = (int)$existingSpan['VocalPartId'];
+    } else {
+        $lineId = (int)($input['lineId'] ?? 0);
+        $partId = (int)($input['partId'] ?? 0);
+    }
+
+    $lines = vocalPartsResolveLines($db, $songId, [$lineId]);   // IDOR + same-primary-version guard
+    $line  = $lines[$lineId];
+    $part  = vocalPartsResolvePart($db, $songId, $partId);
+    if ($part === null) {
+        throw new \RuntimeException('Vocal part not found for this song.');
+    }
+    if ((int)$part['LyricsId'] !== $line['lyricsId']) {
+        throw new \RuntimeException('A vocal part must belong to the same lyrics version as the line it is assigned to.');
+    }
+
+    [$start, $end] = vocalPartsValidateSpanOffsets((int)($input['start'] ?? 0), (int)($input['end'] ?? 0), $line['cpLen']);
+    $isBackground = !empty($input['isBackground'] ?? ($input['bg'] ?? false));
+    $sortOrder = isset($input['sortOrder']) ? max(0, (int)$input['sortOrder']) : 0;
+    $bgInt = $isBackground ? 1 : 0;
+
+    if ($id > 0) {
+        $upd = $db->prepare('UPDATE tblLyricLineVocalSpans SET StartOffset = ?, EndOffset = ?, IsBackground = ?, SortOrder = ? WHERE Id = ?');
+        bindParamSafe(__FUNCTION__ . ':update', $upd, 'iiiii', $start, $end, $bgInt, $sortOrder, $id);
+        $upd->execute();
+        $upd->close();
+        $resultId = $id;
+    } else {
+        $ins = $db->prepare(
+            "INSERT INTO tblLyricLineVocalSpans (LineId, VocalPartId, LyricsId, StartOffset, EndOffset, IsBackground, SortOrder, Source)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'ihymns')"
+        );
+        bindParamSafe(__FUNCTION__ . ':insert', $ins, 'iiiiiii', $lineId, $partId, $line['lyricsId'], $start, $end, $bgInt, $sortOrder);
+        $ins->execute();
+        $resultId = (int)$db->insert_id;
+        $ins->close();
+    }
+
+    return [
+        'id'           => $resultId,
+        'lineId'       => $lineId,
+        'partId'       => $partId,
+        'start'        => $start,
+        'end'          => $end,
+        'isBackground' => $isBackground,
+        'sortOrder'    => $sortOrder,
+    ];
+}
+
+/**
+ * IDOR via a JOIN to `tblSongs` through the span's own line — a span row
+ * carries no `SongId` of its own, so ownership is proved the same way
+ * `vocalPartsSpanUpsert()`'s UPDATE branch proves it.
+ *
+ * @throws \RuntimeException  not found for this song
+ */
+function vocalPartsSpanDelete(\mysqli $db, string $songId, int $spanId): bool
+{
+    /* @lyrics-version-exempt: same reasoning as vocalPartsResolvePart()'s
+       own exemption — a specific $spanId is already known, so this JOIN
+       through tblLyrics only proves the span belongs to a lyrics version
+       of $songId at all, never which version is the song's "current" one. */
+    $stmt = $db->prepare(
+        'SELECT s.Id
+           FROM tblLyricLineVocalSpans s
+           JOIN tblLyricLines ll ON ll.Id = s.LineId
+           JOIN tblLyrics ly     ON ly.Id = ll.LyricsId
+          WHERE s.Id = ? AND ly.SongId = ?
+          LIMIT 1'
+    );
+    bindParamSafe(__FUNCTION__ . ':resolve', $stmt, 'is', $spanId, $songId);
+    $stmt->execute();
+    $found = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    if (!$found) {
+        throw new \RuntimeException('Vocal span not found for this song.');
+    }
+    $del = $db->prepare('DELETE FROM tblLyricLineVocalSpans WHERE Id = ?');
+    bindParamSafe(__FUNCTION__ . ':delete', $del, 'i', $spanId);
+    $del->execute();
+    $affected = $del->affected_rows > 0;
+    $del->close();
+    return $affected;
+}
+
+/* --------------------------------------------------------------------
+ * Ingest-only primitives — NO caller yet in this commit (the TTML-ingest
+ * wiring is a later commit of the same plan); shipped now, proven by the
+ * pure `vocalPartsKindFromTtmlAgent()` truth table above, so that commit
+ * needs no NEW schema-touching function, only a caller. These bypass the
+ * "primary ('ihymns') version only" pin `vocalPartsResolveLines()`
+ * enforces — DELIBERATELY: an ingest writes onto the version it JUST
+ * parsed (an `applemusic-ttml`/`openlyrics` row), never the curator's own,
+ * and the curator-facing functions above must never be relaxed to allow
+ * that (see this file's own "Re-ingest wipes assignments..." risk note in
+ * the plan — the pin is what stops a curator's OWN edit ever landing on
+ * the wrong version by mistake).
+ * -------------------------------------------------------------------- */
+
+/**
+ * ELI5: the ingest-side twin of `vocalPartsAssignLines()` — same
+ * `INSERT ... ON DUPLICATE KEY UPDATE` shape, but scoped directly to a
+ * KNOWN `$lyricsId` (the version the ingest itself just created) rather
+ * than resolved from a `$songId` + "which version is primary" lookup,
+ * because for this caller the version is never in question — it is the one
+ * the ingest is writing right now, always non-'ihymns'.
+ *
+ * No ownership resolvers here on purpose: the caller (a future
+ * `lyrics_ingest.php`) already holds `$lyricsId` from having just inserted
+ * the `tblLyrics` row itself, inside the SAME transaction — there is
+ * nothing left to prove that a JOIN back through `tblLyrics`/`tblSongs`
+ * would tell it that it does not already know.
+ *
+ * @param list<int> $partIds
+ * @return int  rows written (INSERTed or updated)
+ */
+function vocalPartsAssignLinesForVersion(\mysqli $db, int $lyricsId, int $lineId, array $partIds, bool $isBackground): int
+{
+    $partIdsNorm = array_values(array_unique(array_map('intval', $partIds)));
+    $bgInt = $isBackground ? 1 : 0;
+    $ins = $db->prepare(
+        'INSERT INTO tblLyricLineVocalParts (LineId, VocalPartId, LyricsId, IsBackground, SortOrder)
+         VALUES (?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE IsBackground = VALUES(IsBackground), SortOrder = VALUES(SortOrder)'
+    );
+    $written = 0;
+    foreach ($partIdsNorm as $i => $pid) {
+        bindParamSafe(__FUNCTION__, $ins, 'iiiii', $lineId, $pid, $lyricsId, $bgInt, $i);
+        $ins->execute();
+        $written++;
+    }
+    $ins->close();
+    return $written;
+}
+
+/**
+ * ELI5: the WORD-grain twin of `vocalPartsAssignLinesForVersion()` — a
+ * TTML word carries its OWN voice only when it differs from its line's (the
+ * inherit rule this whole feature's schema comment states, and
+ * `vocalPartsWordsForLines()`'s own read-side doc-block already documents
+ * from the reading end); ingest-only, no editor consumer this commit (D2).
+ *
+ * Ownership: every `$wordIds` entry is checked to belong to `$lyricsId` in
+ * ONE query — mirrors `vocalPartsResolveLines()`'s shape one level down
+ * (word, not line) rather than re-deriving a bespoke check.
+ *
+ * @param list<int> $wordIds
+ * @throws \RuntimeException  a word id does not belong to `$lyricsId`
+ * @return int  rows written
+ */
+function vocalPartsAssignWords(\mysqli $db, int $lyricsId, array $wordIds, int $partId, bool $isBackground): int
+{
+    $ids = array_values(array_unique(array_map('intval', $wordIds)));
+    if (!$ids) {
+        return 0;
+    }
+    $place = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $db->prepare(
+        "SELECT w.Id FROM tblLyricWords w JOIN tblLyricLines l ON l.Id = w.LineId
+          WHERE w.Id IN ({$place}) AND l.LyricsId = ?"
+    );
+    bindParamSafe(__FUNCTION__ . ':resolve', $stmt, str_repeat('i', count($ids)) . 'i', ...array_merge($ids, [$lyricsId]));
+    $stmt->execute();
+    $found = [];
+    while ($row = $stmt->get_result()->fetch_row()) {
+        $found[(int)$row[0]] = true;
+    }
+    $stmt->close();
+    if (count($found) !== count($ids)) {
+        throw new \RuntimeException('One or more wordIds do not belong to this lyrics version.');
+    }
+
+    $bgInt = $isBackground ? 1 : 0;
+    $ins = $db->prepare(
+        'INSERT INTO tblLyricWordVocalParts (WordId, VocalPartId, LyricsId, IsBackground, SortOrder)
+         VALUES (?, ?, ?, ?, 0)
+         ON DUPLICATE KEY UPDATE IsBackground = VALUES(IsBackground)'
+    );
+    $written = 0;
+    foreach ($ids as $wordId) {
+        bindParamSafe(__FUNCTION__ . ':insert', $ins, 'iiii', $wordId, $partId, $lyricsId, $bgInt);
+        $ins->execute();
+        $written++;
+    }
+    $ins->close();
+    return $written;
+}
+
+/**
+ * ELI5: after a re-ingest re-parses a TTML/OpenLyrics file's `<head>`
+ * agents, remove any MACHINE-OWNED part whose agent id is no longer
+ * present — a singer who was removed from the source file should not keep
+ * a stale part around forever. A CURATOR's own `'ihymns'`-sourced part is
+ * NEVER touched here (the `Source = ?` filter is exact-match, and a
+ * curator part's `Source` is always `'ihymns'`, never the ingest's own
+ * `$source` value).
+ *
+ * @param list<string> $keepAgentIds  every agent id the JUST-parsed file
+ *                                     still defines/references
+ * @return int  rows deleted
+ */
+function vocalPartsPruneAgents(\mysqli $db, int $lyricsId, string $source, array $keepAgentIds): int
+{
+    $keep = array_values(array_unique(array_filter(array_map('strval', $keepAgentIds), static fn($v) => $v !== '')));
+    if (!$keep) {
+        $stmt = $db->prepare(
+            "DELETE FROM tblVocalParts WHERE LyricsId = ? AND Source = ? AND TtmlAgentId IS NOT NULL"
+        );
+        bindParamSafe(__FUNCTION__ . ':all', $stmt, 'is', $lyricsId, $source);
+        $stmt->execute();
+        $affected = $stmt->affected_rows;
+        $stmt->close();
+        return $affected;
+    }
+    $place = implode(',', array_fill(0, count($keep), '?'));
+    $stmt = $db->prepare(
+        "DELETE FROM tblVocalParts WHERE LyricsId = ? AND Source = ? AND TtmlAgentId IS NOT NULL AND TtmlAgentId NOT IN ({$place})"
+    );
+    bindParamSafe(__FUNCTION__, $stmt, 'is' . str_repeat('s', count($keep)), $lyricsId, $source, ...$keep);
+    $stmt->execute();
+    $affected = $stmt->affected_rows;
+    $stmt->close();
+    return $affected;
+}
+
+/* --------------------------------------------------------------------
+ * The importer voices transport — the ONE seam `lyricLinesWriteComponents()`
+ * calls (includes/lyric_lines_sync.php) once it has minted real line Ids.
+ * -------------------------------------------------------------------- */
+
+/**
+ * ELI5: for ONE line inside a component whose `voices` key WAS provided,
+ * decide what should happen to it — leave it alone, wipe its voice marks,
+ * or replace them with a fresh list. PURE — no DB — so the tri-state
+ * contract `vocalPartsApplyComponentVoices()`'s own doc-block describes can
+ * be proven by a truth table (tests/php/test-vocal-parts-core.php) without a
+ * live mysqli, the same reason every other decision in this file that CAN
+ * be made without touching the database is its own small function rather
+ * than inline logic buried inside a write function.
+ *
+ * #2073 commit 5 cross-review finding F3: the bug this function exists to
+ * make impossible to reintroduce was exactly a MISSING case here — a
+ * component-level `voices: null`/`[]` was treated the same as "this line's
+ * own cell is absent", so both fell into the SAME `continue` inside
+ * `vocalPartsApplyComponentVoices()`, and an explicit "clear this section's
+ * voices" request silently did nothing (a CLEAR quietly became a PRESERVE).
+ *
+ * @param array<int,mixed>|null $cells  the component's OWN `voices` value,
+ *        already normalised to null-or-array by the caller
+ *        (`is_array($c['voices'] ?? null) ? $c['voices'] : null`) — never a
+ *        bare scalar
+ * @param int $li  this line's 0-based index within the component
+ * @return array{action:string,cell?:list<mixed>}  `action` is one of
+ *         'untouched' | 'clear' | 'set' ('set' carries the raw list to
+ *         apply as `cell`)
+ */
+function vocalPartsVoiceCellAction(?array $cells, int $li): array
+{
+    if ($cells === null || $cells === []) {
+        /* Component-level `voices: null`/`[]` -> every line is CLEARED,
+           never left untouched. This branch IS the F3 fix — deleting it
+           reproduces the exact bug the cross-review found. */
+        return ['action' => 'clear'];
+    }
+    if (!array_key_exists($li, $cells)) {
+        return ['action' => 'untouched'];   // a shorter array -> this ONE line untouched
+    }
+    $cell = $cells[$li];
+    if ($cell === null || $cell === []) {
+        return ['action' => 'clear'];
+    }
+    if (!is_array($cell)) {
+        return ['action' => 'untouched'];   // malformed entry — best-effort transport, skip
+    }
+    return ['action' => 'set', 'cell' => $cell];
+}
+
+/**
+ * ELI5: an importer only ever knows a line by its POSITION ("the 3rd line
+ * of the 2nd component") because no `tblLyricLines.Id` exists until the
+ * write actually happens — so it hands its voice data over as a plain
+ * per-line, per-component array, and THIS function is the one place that
+ * turns "position" into "real FK rows on a real Id", the instant
+ * `lyricLinesWriteComponents()` (rule #22 — the ONE line-write path, never
+ * a second one) has resolved that Id.
+ *
+ * CELL SEMANTICS (per line, exactly mirroring how `chords`/`notes` per-line
+ * cells already behave one file over — #2072's `notesProvided`/
+ * `chordsProvided`, generalised here to a THIRD outcome because unlike a
+ * scalar column, `tblLyricLineVocalParts` rows can PRE-EXIST independently
+ * of this write, so "say nothing" and "actively wipe it" are genuinely
+ * different things a caller needs to be able to mean):
+ *   - the component never carried a `voices` key at all
+ *     (`voicesProvided === false`) -> every line in it is UNTOUCHED.
+ *   - `voices` is present but `null`/`[]` -> EVERY line in the component is
+ *     CLEARED (both voice and echo rows — a deliberate "wipe this
+ *     section's voice marks").
+ *   - `voices` is a per-line array and a given line's OWN cell is
+ *     absent (the array is shorter than `lines`) -> that ONE line is
+ *     UNTOUCHED.
+ *   - that line's cell is `null`/`[]` -> that ONE line is CLEARED.
+ *   - that line's cell is `list<{kind,label?,bg?}>` -> that line's voices
+ *     are REPLACED with find-or-create'd parts for exactly those entries
+ *     (an unrecognised `kind` string in one entry is skipped, best-effort —
+ *     this is a bulk TRANSPORT for machine-authored data, not a
+ *     curator-facing validated form; a malformed single entry must not
+ *     abort an otherwise-good import).
+ *
+ * NEVER a second write path (rule #22): every actual row change goes
+ * through `vocalPartsClearLines()` / `vocalPartsAssignLines()` above — this
+ * function is purely the position -> Id -> cell-semantics glue.
+ *
+ * #2073 commit 5 cross-review finding F3 (fixed here): the ORIGINAL version
+ * of this function treated a component-level `voices: null`/`[]` the SAME
+ * as "this line's own cell is absent" — both fell into ONE `continue` that
+ * left every line UNTOUCHED, so an explicit "clear this section's voices"
+ * request silently did nothing (a component-level CLEAR degraded into a
+ * PRESERVE, the opposite of what the caller asked for). Every per-line
+ * decision below is delegated to `vocalPartsVoiceCellAction()` (pure, just
+ * above) precisely so the three outcomes — untouched / clear / set — are a
+ * truth table this repo can prove without a live mysqli
+ * (tests/php/test-vocal-parts-core.php), rather than inline branching that
+ * can quietly regress the same way again.
+ *
+ * @param array<int,array<string,mixed>> $norm         the SAME normalised
+ *          components `lyricLinesWriteComponents()` built (each carries
+ *          'lines', 'voices', 'voicesProvided')
+ * @param array<int,array<int,int>>      $lineIdsByPos  [componentIndex][lineIndex] => tblLyricLines.Id
+ * @return array{touched:int,cleared:int,created:int}
+ */
+function vocalPartsApplyComponentVoices(\mysqli $db, string $songId, array $norm, array $lineIdsByPos, string $source): array
+{
+    $touched = 0;
+    $cleared = 0;
+    $created = 0;
+
+    foreach ($norm as $ci => $c) {
+        if (empty($c['voicesProvided'])) {
+            continue;   // said nothing about this component's voices -> untouched
+        }
+        $cells = is_array($c['voices'] ?? null) ? $c['voices'] : null;
+        $lineCount = count($c['lines'] ?? []);
+        $lyricsId = null;
+
+        for ($li = 0; $li < $lineCount; $li++) {
+            $lineId = (int)($lineIdsByPos[$ci][$li] ?? 0);
+            if ($lineId <= 0) {
+                continue;   // the line failed to resolve — nothing to attach to
+            }
+
+            $decision = vocalPartsVoiceCellAction($cells, $li);
+            if ($decision['action'] === 'untouched') {
+                continue;
+            }
+            if ($decision['action'] === 'clear') {
+                $cleared += vocalPartsClearLines($db, $songId, [$lineId], null);
+                $touched++;
+                continue;
+            }
+
+            /* 'set' — replace this line's voices with find-or-create'd parts. */
+            if ($lyricsId === null) {
+                $lines = vocalPartsResolveLines($db, $songId, [$lineId]);
+                $lyricsId = $lines[$lineId]['lyricsId'];
+            }
+
+            $byBackground = [false => [], true => []];
+            foreach ($decision['cell'] as $spec) {
+                if (!is_array($spec) || empty($spec['kind'])) {
+                    continue;
+                }
+                $kind = vocalPartsNormalizeKind((string)$spec['kind']);
+                if ($kind === null) {
+                    continue;   // unrecognised word — skip this entry, best-effort transport
+                }
+                $label = vocalPartsNormalizeLabelInput($spec['label'] ?? null);
+                $bg    = !empty($spec['bg']);
+                $partId = vocalPartsFindOrCreate($db, $lyricsId, $kind, $label, $source);
+                $created++;
+                $byBackground[$bg][] = $partId;
+            }
+
+            /* This line's cell is a REPLACEMENT for the whole line — clear
+               first, then add each background class present, so a cell
+               that mentions only foreground parts also wipes any
+               previously-stored echo on this same line (and vice versa). */
+            vocalPartsClearLines($db, $songId, [$lineId], null);
+            foreach ($byBackground as $bg => $partIds) {
+                if ($partIds) {
+                    vocalPartsAssignLines($db, $songId, [$lineId], $partIds, 'add', (bool)$bg);
+                }
+            }
+            $touched++;
+        }
+    }
+
+    return ['touched' => $touched, 'cleared' => $cleared, 'created' => $created];
+}
+
+/* --------------------------------------------------------------------
+ * The bulk read-back payload — every write function above returns this
+ * (rule #35: hand back the WHOLE truth, never let a caller trust its own
+ * request as the new state).
+ * -------------------------------------------------------------------- */
+
+/**
+ * ELI5: "everything there is to know about this song's voices, in one
+ * call" — the ONE payload shape `VOCAL_PARTS_PAYLOAD_KEYS` (declared back
+ * in commit 1) names, and every write function in this file returns.
+ *
+ * Every key is ALWAYS present; every list/map is empty (never omitted, never
+ * an error) when the tables aren't migrated, when the song has no primary
+ * ('ihymns') lyrics version yet, or when it simply has no vocal data — a
+ * caller never has to guess which of those three is true from an absent
+ * key, exactly like `vocalPartsShape()`'s own "always present" convention.
+ *
+ * `roundsReady`/`rounds` are resolved via `includes/lyric_rounds.php`,
+ * lazily required here (rather than at this file's own top) so the two
+ * files' mutual need of each other's functions (this file's line/part
+ * ownership resolvers; that file's round reader) never has to become a
+ * hard, order-sensitive `require_once` cycle at load time — see
+ * `lyric_rounds.php`'s own header for the other half of this note.
+ *
+ * @return array{ready:bool,spansReady:bool,roundsReady:bool,lyricsId:?int,
+ *               parts:list<array>,lineAssignments:array<int,list<array>>,
+ *               spans:array<int,list<array>>,rounds:list<array>}
+ */
+function vocalPartsForSong(\mysqli $db, string $songId): array
+{
+    $empty = [
+        'ready'           => false,
+        'spansReady'      => false,
+        'roundsReady'     => false,
+        'lyricsId'        => null,
+        'parts'           => [],
+        'lineAssignments' => [],
+        'spans'           => [],
+        'rounds'          => [],
+    ];
+
+    $ready = vocalPartsTablesReady($db);
+    if (!$ready) {
+        return $empty;
+    }
+    $spansReady = vocalPartsSpansReady($db);
+
+    $roundsReady = false;
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_rounds.php';
+    if (function_exists('lyricRoundsReady')) {
+        $roundsReady = lyricRoundsReady($db);
+    }
+
+    /* @lyrics-version-cache-ok: a plain read outside any transaction — this
+       function runs no begin_transaction() of its own (every write below it
+       in this file resolves its OWN lyricsId independently), so a "found"
+       answer cached from earlier in the SAME request cannot be invalidated
+       by a rollback the way lyricLinesEnsurePrimaryVersion()'s find-or-create
+       must guard against (see lyricLinesPrimaryLyricsId()'s own "WHY A FOUND
+       ROW..." doc-block for the read-vs-write distinction this marker lets a
+       reviewer confirm — the identical reasoning vocalPartsResolveLines()'s
+       own marker states one function above). */
+    $lyricsId = lyricLinesPrimaryLyricsId($db, $songId);
+    if ($lyricsId <= 0) {
+        $empty['ready']       = $ready;
+        $empty['spansReady']  = $spansReady;
+        $empty['roundsReady'] = $roundsReady;
+        return $empty;
+    }
+
+    $rounds = [];
+    if ($roundsReady && function_exists('lyricRoundsForVersion')) {
+        $rounds = lyricRoundsForVersion($db, $lyricsId);
+    }
+
+    return [
+        'ready'           => $ready,
+        'spansReady'      => $spansReady,
+        'roundsReady'     => $roundsReady,
+        'lyricsId'        => $lyricsId,
+        'parts'           => vocalPartsForVersion($db, $lyricsId),
+        'lineAssignments' => vocalPartsLinesMap($db, $lyricsId),
+        'spans'           => $spansReady ? vocalPartsSpansMap($db, $lyricsId) : [],
+        'rounds'          => $rounds,
+    ];
 }

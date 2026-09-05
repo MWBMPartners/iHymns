@@ -1105,6 +1105,25 @@ function editorSaveSongCore(): array
                     if (array_key_exists('notes', $comp)) {
                         $writeCompEntry['notes'] = is_array($comp['notes'] ?? null) ? array_values($comp['notes']) : null;
                     }
+                    /* #2073 commit 5 cross-review finding F3 — voices: same KEY-
+                       PRESENT-ONLY contract as notes immediately above, and for
+                       the identical reason. Before this fix, $writeCompEntry
+                       never carried a 'voices' key AT ALL — so a save routed
+                       through this whole-song funnel could never reach
+                       lyricLinesWriteComponents() with voicesProvided true, and
+                       both an explicit "clear this section's voices" and an
+                       explicit per-line voices list were silently dropped on
+                       the floor before vocal_parts.php ever saw them. Only set
+                       the key when THIS payload actually carries one, so an
+                       explicit `null`/`[]` still reaches the writer and CLEARS
+                       (vocalPartsVoiceCellAction()'s tri-state fix), while an
+                       editor that has never heard of voices at all (today's
+                       ordinary case) keeps leaving the key out entirely —
+                       voicesProvided stays false and every existing voice mark
+                       is preserved untouched. */
+                    if (array_key_exists('voices', $comp)) {
+                        $writeCompEntry['voices'] = is_array($comp['voices'] ?? null) ? array_values($comp['voices']) : null;
+                    }
                     $writeComps[] = $writeCompEntry;
                 }
                 lyricLinesWriteComponents($db, $songId, $writeComps);
