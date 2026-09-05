@@ -102,6 +102,29 @@ function _migProbe_constraintExists(\mysqli $db, string $table, string $constrai
     return $hit;
 }
 
+/**
+ * A column's current COLUMN_COMMENT text, or '' when the column/comment is
+ * absent. Used ONLY by the organisation-licences schema-reconcile probe
+ * (#2078) to detect whether the LicenceType comment has been updated to
+ * reference the tblLicenceTypes registry — none of the other probes need
+ * comment text, so this stays a one-off helper rather than a column added
+ * to every table's probe vocabulary.
+ *
+ * ELI5: "what does this column's comment say right now?"
+ */
+function _migProbe_columnComment(\mysqli $db, string $table, string $column): string
+{
+    $stmt = $db->prepare(
+        'SELECT COLUMN_COMMENT FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('ss', $table, $column);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row ? (string)$row['COLUMN_COMMENT'] : '';
+}
+
 return [
     'account-sync' => [
         'script' => 'migrate-account-sync.php',
@@ -359,6 +382,66 @@ return [
             'button' => 'Run Multi-licence Migration',
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblOrganisationLicences'),
+    ],
+    'organisation-licences-schema-reconcile' => [
+        'script' => 'migrate-reconcile-organisation-licences-schema.php',
+        'card' => [
+            'title'  => 'Reconcile organisation-licences schema (#2078)',
+            'body'   => 'Brings an install that already ran the'
+                      . ' &ldquo;Multiple licence types per organisation (#640)&rdquo; card'
+                      . ' into line with the shape a fresh install gets from'
+                      . ' <code>schema.sql</code> — the two had drifted apart in ways that'
+                      . ' change behaviour, not just cosmetics. The important one:'
+                      . ' <code>ExpiresAt</code> was a plain date on a migrated install'
+                      . ' and a full date-and-time on a fresh one, so a licence expiring'
+                      . ' &ldquo;today&rdquo; answered the CCLI gate&rsquo;s expiry check'
+                      . ' differently depending on which install you were on. An existing'
+                      . ' date-only expiry becomes end-of-that-day once it gains a time'
+                      . ' (an expiry has always meant &ldquo;valid through the end of this'
+                      . ' day&rdquo;). Also renames the index/constraint that had drifted'
+                      . ' apart in name only (<code>uk_OrgLicence</code> &rarr;'
+                      . ' <code>uniq_OrgLicence</code>, <code>fk_OrgLicences_Org</code>'
+                      . ' &rarr; <code>fk_OrgLicence_Org</code>), and narrows'
+                      . ' <code>LicenceNumber</code> from 255 to 100 characters ONLY when'
+                      . ' nothing currently stored is longer than that — a longer value'
+                      . ' is left exactly as it is (with a message naming the row count)'
+                      . ' rather than risk truncating it. Idempotent — every step re-checks'
+                      . ' the live schema first, so a second run (or a run against a'
+                      . ' database that is already partway there) is a clean no-op for'
+                      . ' whatever has already landed. A no-op, not a fatal, when'
+                      . ' <code>tblOrganisationLicences</code> doesn&rsquo;t exist yet.',
+            'button' => 'Reconcile Organisation-licences Schema',
+        ],
+        /* Data-derived, genuinely inspects the live schema (rule #19) — pending
+           (true) when the table is absent (mirrors the "organisation-licences"
+           card's own probe: nothing to reconcile yet) OR when ANY of the target
+           shapes isn't there yet. Some of these may stay pending forever on an
+           install where the LicenceNumber-narrow was skipped for real data-
+           safety reasons (see the migration's own WARN output) — that is the
+           honest answer, not a bug: the table genuinely isn't fully reconciled
+           until the data is trimmed and the migration re-run. Any read error
+           reports pending too (fail-safe, mirrors "consolidate-org-licences"). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblOrganisationLicences')) { return true; }
+            try {
+                if (_migProbe_columnDataType($db, 'tblOrganisationLicences', 'LicenceNumber') !== 'varchar'
+                    || _migProbe_columnCharLength($db, 'tblOrganisationLicences', 'LicenceNumber') !== 100
+                    || _migProbe_columnIsNullable($db, 'tblOrganisationLicences', 'LicenceNumber')) {
+                    return true;
+                }
+                if (_migProbe_columnDataType($db, 'tblOrganisationLicences', 'ExpiresAt') !== 'timestamp') { return true; }
+                if (_migProbe_columnDataType($db, 'tblOrganisationLicences', 'CreatedAt') !== 'timestamp') { return true; }
+                if (_migProbe_columnDataType($db, 'tblOrganisationLicences', 'UpdatedAt') !== 'timestamp') { return true; }
+                if (!_migProbe_indexExists($db, 'tblOrganisationLicences', 'uniq_OrgLicence')) { return true; }
+                if (_migProbe_indexExists($db, 'tblOrganisationLicences', 'idx_OrganisationId')) { return true; }
+                if (!_migProbe_indexExists($db, 'tblOrganisationLicences', 'idx_IsActive')) { return true; }
+                if (!_migProbe_constraintExists($db, 'tblOrganisationLicences', 'fk_OrgLicence_Org')) { return true; }
+                if (!str_contains(_migProbe_columnComment($db, 'tblOrganisationLicences', 'LicenceType'), 'tblLicenceTypes')) { return true; }
+            } catch (\Throwable $e) {
+                return true;
+            }
+            return false;
+        },
     ],
     'songbook-affiliations' => [
         'script' => 'migrate-songbook-affiliations.php',

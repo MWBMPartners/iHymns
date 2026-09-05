@@ -45,6 +45,18 @@ declare(strict_types=1);
  *   CLI:  php appWeb/.sql/migrate-organisation-licences.php
  *
  * Idempotent.
+ *
+ * ⚠️ HISTORICAL SHAPE — kept as-is on purpose (#2078): the CREATE TABLE above
+ * is left exactly as it was written on the day this migration first ran; it
+ * documents what an install that ran THIS script actually got, which has
+ * since drifted from what `schema.sql` gives a fresh install (a plain DATE
+ * `ExpiresAt` here vs a full date-and-time on a fresh install, among other
+ * differences — see #2078 for why that particular one is not cosmetic).
+ * `migrate-reconcile-organisation-licences-schema.php` is the LATER,
+ * data-aware ALTER that brings an already-migrated install into line with
+ * `schema.sql`'s current shape; it does not rewrite this file's history.
+ *
+ * @see appWeb/.sql/migrate-reconcile-organisation-licences-schema.php
  */
 
 if (PHP_SAPI === 'cli') {
