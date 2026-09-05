@@ -2997,7 +2997,35 @@ class SongData
             'tune', 'media', 'arrangements', 'royaltyIds', 'scriptureRefs',
             'vocalParts', 'translations', 'annotations',
             'externalIds',   /* #1750 / #1741 D5 — recording/release external-ID store, opt-in */
+            'rounds', 'vocalWords',   /* #2073 — "who sings this line": echo/rounds + word grain, opt-in */
         ];
+    }
+
+    /**
+     * ELI5: which of the blocks above show "what the lyrics say / who sings
+     * them" — the ones that MUST disappear together with `components`
+     * whenever a viewer isn't allowed to see this song's lyric body.
+     *
+     * DETAILED (#2073, rule #28 content-gating + rule #35 "a mechanism, not
+     * a comment"): `translations` and `annotations` were already on
+     * `access_resolver.php`'s strip list; `vocalParts` joined them when
+     * #1137 shipped. This commit adds TWO more blocks (`rounds`,
+     * `vocalWords`) that reveal the exact same KIND of fact — who sings
+     * which line, in what order — so they must be gated identically. Rather
+     * than typing the block names a second time inside `access_resolver.php`
+     * (the classic "keep these two lists in sync" comment that #1677/#1581
+     * proved never actually stays in sync), THIS array is the one place that
+     * decides "is a song_detail include block lyric-BODY-shaped", and
+     * `tests/php/test-lyric-body-strip-lockstep.php` asserts every member
+     * here also appears in `access_resolver.php`'s own strip array — adding
+     * a block to one file and not the other is exactly the silent
+     * content-gating leak that test is mutation-proven to catch.
+     *
+     * @return string[]
+     */
+    public static function lyricBodyIncludeBlocks(): array
+    {
+        return ['vocalParts', 'translations', 'annotations', 'rounds', 'vocalWords'];
     }
 
     /**
@@ -3023,8 +3051,14 @@ class SongData
             return [];
         }
 
-        /* Resolve the song's primary lyrics version once (for per-line blocks). */
-        $needsLyrics = (bool)array_intersect($want, ['vocalParts', 'translations', 'annotations']);
+        /* Resolve the song's primary lyrics version once (for per-line blocks).
+           #2073 — every lyric-body block needs it EXCEPT `vocalWords`, which
+           deliberately reads EVERY tblLyrics version that carries word-grain
+           overrides rather than one version (see vocalPartsWordsForSong()'s
+           own doc-block) — array_diff() against lyricBodyIncludeBlocks()
+           rather than retyping the other four names here keeps this list and
+           that one from drifting apart (rule #35). */
+        $needsLyrics = (bool)array_intersect($want, array_diff(self::lyricBodyIncludeBlocks(), ['vocalWords']));
         $lyricsId = $needsLyrics ? $this->_primaryLyricsId($songId) : 0;
 
         $out = [];
@@ -3092,14 +3126,81 @@ class SongData
                         break;
 
                     case 'vocalParts':
+                        /* #2073 commit 4 — delegate to vocalPartsForVersion()
+                           (the ONE vocal-parts core, includes/vocal_parts.php,
+                           rule #22) instead of this block's own private
+                           SELECT. The WIRE shape keeps its long-shipped first
+                           six keys byte-identical in name, order and value —
+                           id/partKind/label/singerName/gender/musicianId, so
+                           a native client reading them today sees no change —
+                           and APPENDS the superset fields vocalPartsShape()
+                           derives. "Design pass 7" §1 C8: the newer per-line
+                           `voices` run shape (SongComponent, above this
+                           method) names the SAME fact `kind`; this older,
+                           already-public block keeps `partKind` too so
+                           nothing that reads it today breaks — both names
+                           carry the identical value here. */
                         if ($lyricsId > 0) {
-                            $rows = $this->_extrasRows(
-                                'SELECT Id AS id, PartKind AS partKind, Label AS label, '
-                              . 'SingerName AS singerName, Gender AS gender, MusicianId AS musicianId '
-                              . 'FROM tblVocalParts WHERE LyricsId = ? ORDER BY SortOrder, Id',
-                                'i', [$lyricsId]
-                            );
-                            if ($rows) { $out['vocalParts'] = $rows; }
+                            require_once __DIR__ . DIRECTORY_SEPARATOR . 'vocal_parts.php';
+                            if (vocalPartsTablesReady($this->db)) {
+                                $rows = [];
+                                foreach (vocalPartsForVersion($this->db, $lyricsId) as $shape) {
+                                    $rows[] = [
+                                        'id'           => $shape['id'],
+                                        'partKind'     => $shape['kind'],
+                                        'label'        => $shape['label'],
+                                        'singerName'   => $shape['singerName'],
+                                        'gender'       => $shape['gender'],
+                                        'musicianId'   => $shape['musicianId'],
+                                        'kind'         => $shape['kind'],
+                                        'displayLabel' => $shape['displayLabel'],
+                                        'ttmlAgentId'  => $shape['ttmlAgentId'],
+                                        'source'       => $shape['source'],
+                                        'sortOrder'    => $shape['sortOrder'],
+                                    ];
+                                }
+                                if ($rows) { $out['vocalParts'] = $rows; }
+                            }
+                        }
+                        break;
+
+                    case 'rounds':
+                        /* #2073 — `includes/lyric_rounds.php`
+                           (`lyricRoundsReady()` / `lyricRoundsForVersion()`)
+                           lands in a LATER commit of this same feature
+                           (commit 5 — see
+                           .claude/vocal-parts-2073-plan.md "Design pass 7"
+                           §12); this block is wired NOW so nothing else
+                           needs to touch SongData.php once that file exists.
+                           function_exists() keeps this a silent, safe
+                           omission — never a fatal "call to undefined
+                           function" — until then: the identical
+                           live-but-empty contract every other block in this
+                           method already has for an un-migrated table. Once
+                           commit 5 lands, this starts working with NO edit
+                           here. */
+                        if ($lyricsId > 0
+                            && function_exists('lyricRoundsReady')
+                            && function_exists('lyricRoundsForVersion')
+                            && lyricRoundsReady($this->db)
+                        ) {
+                            $rows = lyricRoundsForVersion($this->db, $lyricsId);
+                            if ($rows) { $out['rounds'] = $rows; }
+                        }
+                        break;
+
+                    case 'vocalWords':
+                        /* #2073 — version-INDEPENDENT, unlike every other
+                           case here: a song can carry SEVERAL tblLyrics
+                           versions (a TTML/OpenLyrics ingest alongside the
+                           curator's own 'ihymns' one) and word-grain
+                           overrides live on their OWN version, so this block
+                           does not resolve $lyricsId at all — see
+                           vocalPartsWordsForSong()'s own doc-block. */
+                        require_once __DIR__ . DIRECTORY_SEPARATOR . 'vocal_parts.php';
+                        if (vocalPartsTablesReady($this->db)) {
+                            $rows = vocalPartsWordsForSong($this->db, $songId);
+                            if ($rows) { $out['vocalWords'] = $rows; }
                         }
                         break;
 

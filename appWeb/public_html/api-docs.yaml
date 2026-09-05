@@ -218,8 +218,9 @@ info:
     responses are filtered by the caller's access-tier capabilities: when the
     tier may not view the lyric body (or it is copyrighted and the tier lacks
     that capability) the `components` / `translations` / `annotations` /
-    `vocalParts` are stripped and the song object gains `contentRestricted: true`
-    + a `restrictionReason`. Disallowed `media` rows are dropped and
+    `vocalParts` / `rounds` / `vocalWords` (#2073) are stripped and the song
+    object gains `contentRestricted: true` + a `restrictionReason`.
+    Disallowed `media` rows are dropped and
     `hasAudio` / `hasSheetMusic` forced false; `offlineAllowed` reflects the
     `offline_save` capability. With the flag off, the song object is returned
     byte-identical (no extra fields). See the `Song` schema's gated fields.
@@ -925,7 +926,8 @@ paths:
         **Content gating (#1353).** When `content_gating_enabled='1'` and the
         caller's access tier lacks the relevant capability, the returned `song`
         is filtered: `components` / `translations` / `annotations` /
-        `vocalParts` stripped, `contentRestricted: true` + `restrictionReason`
+        `vocalParts` / `rounds` / `vocalWords` (#2073) stripped,
+        `contentRestricted: true` + `restrictionReason`
         added, disallowed media dropped, `hasAudio` / `hasSheetMusic` forced
         false. With the flag off (default) the payload is unchanged. See the
         `Song` schema's gated fields.
@@ -962,7 +964,10 @@ paths:
             data. Allow-list: `tune`, `media`, `arrangements`, `royaltyIds`,
             `scriptureRefs`, `vocalParts`, `translations`, `annotations`,
             `externalIds` (#1750 — recording/release external-ID rows;
-            never exposes the internal `SourceRef` idempotency column).
+            never exposes the internal `SourceRef` idempotency column),
+            `rounds` (#2073 — rounds/canons over this song's lines),
+            `vocalWords` (#2073 — word-grain "who sings this word"
+            overrides, version-independent — see the `Song` schema).
           schema:
             type: string
             example: tune,media,vocalParts,scriptureRefs
@@ -2009,7 +2014,7 @@ paths:
             blocks are ignored; a block appears only when the song has that data.
             Allow-list: `tune`, `media`, `arrangements`, `royaltyIds`,
             `scriptureRefs`, `vocalParts`, `translations`, `annotations`,
-            `externalIds` (#1750).
+            `externalIds` (#1750), `rounds`, `vocalWords` (#2073).
           schema: { type: string, example: "tune,media,vocalParts,scriptureRefs" }
       responses:
         "200":
@@ -23300,6 +23305,47 @@ components:
           description: Ordered song components (verses, choruses, etc.)
           items:
             $ref: "#/components/schemas/SongComponent"
+        vocalParts:
+          type: array
+          description: |
+            (#2073) Every registered voice part for this song's lyrics
+            version — include-only (`?include=vocalParts`), absent unless
+            requested AND the song actually has any. Content-gated (lyric
+            body).
+          items:
+            $ref: "#/components/schemas/VocalPart"
+        rounds:
+          type: array
+          description: |
+            (#2073) Rounds / canons / partner-songs defined over this song's
+            lines — include-only (`?include=rounds`), absent unless
+            requested AND the song actually has any. Content-gated (lyric
+            body).
+          items:
+            type: object
+            description: |
+              A round's full shape (kind, ending mode, per-voice entry
+              offsets, the derived step-by-step timeline) is defined by the
+              write/render commits of #2073 and documented here once they
+              land — this include is wired but returns no rows yet on every
+              install.
+        vocalWords:
+          type: array
+          description: |
+            (#2073) Word-grain "who sings this exact word" overrides —
+            include-only (`?include=vocalWords`), version-INDEPENDENT (a
+            song can carry several lyrics versions, e.g. a TTML import
+            alongside the curator's own; this reads every one that has any
+            word-grain data, not just one). Absent unless requested AND the
+            song actually has any. Content-gated (lyric body).
+          items:
+            type: object
+            description: |
+              `{lyricsId, source, parts: [VocalPart], lines: [{lineId,
+              sortOrder, text, startMs, endMs, parts: [{id, bg}], words:
+              [{wordId, sortOrder, text, startMs, endMs, parts: [{id, bg}]}]}]}`
+              — a word's empty `parts` list means it INHERITS its line's
+              parts (only an override is stored).
         links:
           type: array
           description: |
@@ -23322,8 +23368,9 @@ components:
           description: |
             Content gating (#1353). Present and `true` only when
             `content_gating_enabled='1'` AND the caller's access tier may
-            not view this song's lyric body — `components` /
-            `translations` / `annotations` / `vocalParts` are then
+            not view this song's lyric body — `components` (including its
+            per-line `voices`/`voiceSpans`, #2073) / `translations` /
+            `annotations` / `vocalParts` / `rounds` / `vocalWords` are then
             stripped from the payload. Absent entirely when gating is off
             (the default) or the caller is allowed to view the lyrics.
         restrictionReason:
@@ -23377,6 +23424,151 @@ components:
             unaffected), so a client must treat an absent key the same as
             deriving the heading from `type`+`number` itself.
           example: Kyrie
+        lineIds:
+          type: array
+          items:
+            type: integer
+          description: |
+            The database id (`tblLyricLines.Id`) of each line, parallel to
+            `lines` (same length, same order) — the ANCHOR a client uses to
+            attach per-line data (a translation, an annotation, a voice
+            part/echo span) to the exact line it belongs to, never a
+            positional index (an index shifts the moment a line is edited or
+            inserted; the id never does). Always present.
+          example: [4011, 4012, 4013, 4014]
+        voices:
+          type: array
+          description: |
+            "Who sings this section" (#2073), folded into RUNS of
+            consecutive lines sharing the same part(s) — one entry per run,
+            never one per line, so a renderer prints one "WOMEN" header over
+            several lines instead of repeating it. SPARSE: present only when
+            at least one line in this component has a part assigned — the
+            corpus carries zero voice-assignment rows today, so this key is
+            absent on every existing song. Content-gated: stripped together
+            with the rest of `components` when a viewer may not see the
+            lyric body (it is lyric BODY, not metadata).
+          items:
+            $ref: "#/components/schemas/VoiceRun"
+        voiceSpans:
+          type: array
+          description: |
+            A MID-line echo or voice switch (#2073) — e.g. the lead sings a
+            line and a backing part echoes its last few words. SPARSE, same
+            rule as `voices`. `start`/`end` are 0-based UNICODE CODE-POINT
+            offsets into the spanned line's text (never byte or UTF-16 —
+            multi-byte scripts would misalign otherwise), `end` exclusive.
+            Content-gated the same way `voices` is.
+          items:
+            $ref: "#/components/schemas/VoiceSpan"
+
+    VoiceRun:
+      type: object
+      description: |
+        One run of consecutive lines (#2073) sung by the same set of parts,
+        in the SAME order those parts were assigned (a duet's two chips keep
+        whichever order they were given — never re-sorted).
+      properties:
+        from:
+          type: integer
+          description: 0-based index into the component's `lines` where this run starts (inclusive).
+          example: 0
+        to:
+          type: integer
+          description: 0-based index into the component's `lines` where this run ends (inclusive).
+          example: 1
+        parts:
+          type: array
+          items:
+            $ref: "#/components/schemas/VoiceRunPart"
+
+    VoiceRunPart:
+      type: object
+      description: One part singing within a VoiceRun (more than one entry here means a duet/unison line).
+      properties:
+        id:
+          type: integer
+          description: tblVocalParts.Id for this song's lyrics version.
+        kind:
+          type: string
+          description: One of the fixed voice-part kinds (lead, soloist, male, female, children, all, choir, backing, …).
+          example: female
+        label:
+          type: string
+          description: The display label to show — a curator's custom label, a named singer, or the kind's own generic word ("Women").
+          example: Women
+        bg:
+          type: boolean
+          description: True for a background/echo voice (rendered distinctly — italic/dashed, never colour-only).
+        enters:
+          type: boolean
+          description: |
+            True when this part was NOT singing on the immediately preceding
+            (adjacent) line — i.e. this run is where it starts — so a
+            renderer can show a fresh "Women enters" cue rather than a
+            continuation marker. A gap (a line with no assigned part) always
+            resets this to true for whatever sings next.
+
+    VoiceSpan:
+      type: object
+      description: A mid-line echo/voice-switch span (#2073), code-point anchored.
+      properties:
+        line:
+          type: integer
+          description: 0-based index into the component's `lines`/`lineIds` — the spanned line.
+        start:
+          type: integer
+          description: 0-based Unicode code-point offset where the span starts (inclusive).
+        end:
+          type: integer
+          description: 0-based Unicode code-point offset where the span ends (exclusive).
+        part:
+          allOf:
+            - $ref: "#/components/schemas/VoiceRunPart"
+          description: The part singing this span (same shape as a VoiceRunPart, minus `enters`, which has no meaning for a sub-line span).
+
+    VocalPart:
+      type: object
+      description: |
+        One entry of the `?include=vocalParts` song_detail block (#2073).
+        The first six properties (`id`…`musicianId`) are the long-shipped
+        shape a native client already reads — byte-identical in name and
+        value; everything after `musicianId` is additive.
+      properties:
+        id:
+          type: integer
+        partKind:
+          type: string
+          deprecated: true
+          description: Same value as `kind` below — kept for back-compatibility with clients written before #2073.
+        label:
+          type: string
+          nullable: true
+        singerName:
+          type: string
+          nullable: true
+        gender:
+          type: string
+          nullable: true
+          enum: [male, female, neutral]
+        musicianId:
+          type: integer
+          nullable: true
+        kind:
+          type: string
+          description: One of the fixed voice-part kinds — the preferred name going forward (see `partKind`).
+        displayLabel:
+          type: string
+          description: What to actually print — a curator's Label, then SingerName, then a registry musician's name, then the kind's own generic word.
+        ttmlAgentId:
+          type: string
+          nullable: true
+          description: The TTML `<ttm:agent xml:id="…">` this part was ingested from, when it came from a timed-lyrics import.
+        source:
+          type: string
+          description: Where this part came from — ihymns (curator-entered) | applemusic-ttml | openlyrics | propresenter7 | import-marker.
+        sortOrder:
+          type: integer
 
     SongSummary:
       type: object

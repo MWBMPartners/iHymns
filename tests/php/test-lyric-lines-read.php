@@ -329,6 +329,204 @@ assertEq(
     "#2072 — the PUBLIC shape must NOT emit a 'notes' key (would change ~16k stored fidelity hashes)"
 );
 
+/* ==================================================================== */
+/* 12 — #2073 "who sings this line": lyricLinesFoldVoiceRuns() truth table */
+/*      (the worked example from .claude/vocal-parts-2073-plan.md         */
+/*      "Design pass 3" §1.1, implemented verbatim — six lines, a duet on */
+/*      line 3, an echo on line 4, a gap on line 5, echo resumes on 6).   */
+/*      W=female/10 "Women", M=male/11 "Men", E=backing/12 "Echo" (bg).   */
+/* ==================================================================== */
+$W = ['id' => 10, 'kind' => 'female',  'label' => 'Women', 'bg' => false];
+$M = ['id' => 11, 'kind' => 'male',    'label' => 'Men',   'bg' => false];
+$E = ['id' => 12, 'kind' => 'backing', 'label' => 'Echo',  'bg' => true];
+
+/* Line ids are arbitrary — the fold only ever compares them for equality,
+   never interprets them — so real-looking tblLyricLines ids (401..406)
+   prove the function is genuinely id-agnostic, not accidentally relying on
+   0-based array positions lining up with the ids themselves. */
+$foldLineIds = [401, 402, 403, 404, 405, 406];
+$foldVoices = [
+    401 => [$W],
+    402 => [$W],
+    403 => [$W, $M],       // duet
+    404 => [$W, $E],       // echo alongside the lead
+    // 405 absent — a gap
+    406 => [$E],
+];
+assertEq(
+    lyricLinesFoldVoiceRuns($foldLineIds, $foldVoices),
+    [
+        ['from' => 0, 'to' => 1, 'parts' => [
+            ['id' => 10, 'kind' => 'female', 'label' => 'Women', 'bg' => false, 'enters' => true],
+        ]],
+        ['from' => 2, 'to' => 2, 'parts' => [
+            ['id' => 10, 'kind' => 'female',  'label' => 'Women', 'bg' => false, 'enters' => false],
+            ['id' => 11, 'kind' => 'male',    'label' => 'Men',   'bg' => false, 'enters' => true],
+        ]],
+        ['from' => 3, 'to' => 3, 'parts' => [
+            ['id' => 10, 'kind' => 'female',  'label' => 'Women', 'bg' => false, 'enters' => false],
+            ['id' => 12, 'kind' => 'backing', 'label' => 'Echo',  'bg' => true,  'enters' => true],
+        ]],
+        ['from' => 5, 'to' => 5, 'parts' => [
+            ['id' => 12, 'kind' => 'backing', 'label' => 'Echo', 'bg' => true, 'enters' => true],
+        ]],
+    ],
+    'lyricLinesFoldVoiceRuns(): run A extends over the two identical Women lines, ' .
+    'the duet on line 3 opens run B (Women continues, Men enters), the echo on line 4 ' .
+    'opens run C (Women continues, Echo enters), the gap on line 5 closes it, and the ' .
+    'echo alone on line 6 opens run D with Echo entering fresh (the gap reset adjacency)'
+);
+assertEq(lyricLinesFoldVoiceRuns([], []), [], 'lyricLinesFoldVoiceRuns(): no lines -> []');
+assertEq(lyricLinesFoldVoiceRuns([401, 402], []), [], 'lyricLinesFoldVoiceRuns(): no voice data anywhere -> [] (never a leading empty run)');
+
+/* MUTATION PROOF (recorded per rule #34 — run once, must go RED, then restore):
+ *   change `$sig === $prevSig` to `$sig !== $prevSig` in lyricLinesFoldVoiceRuns()
+ *   -> the two-line Women run (case above) splits into two separate runs instead
+ *      of extending -> this assertion goes RED (run count 4 -> 5, `to` fields wrong).
+ *   remove the `if ($runs !== [])` sparse guard around the `voices` emit in
+ *   lyricLinesAssembleFromRows() (below, case 15) -> case 15 goes RED (an empty
+ *   `voices => []` key appears where the test asserts the key is ABSENT).
+ * Both were run against this file during #2073 commit 4's own verification pass
+ * and confirmed RED before being restored to the code below.
+ */
+
+/* ==================================================================== */
+/* 13 — #2073: lyricLinesAssembleFromRows($rows) with NO extra args is    */
+/*      BYTE-IDENTICAL to before commit 4 — the whole point of defaulting */
+/*      $voicesByLine/$spansByLine to [] is that every existing call site */
+/*      (there are many) that never learned about voices keeps behaving   */
+/*      exactly as it always did.                                        */
+/* ==================================================================== */
+assertEq(
+    lyricLinesAssembleFromRows([
+        row(1, 10, 'a', ['comp_number' => 1]), row(2, 10, 'b', ['comp_number' => 1]),
+        row(3, 11, 'c', ['comp_number' => 2]), row(4, 11, 'd', ['comp_number' => 2]),
+    ]),
+    [
+        ['type' => 'verse', 'number' => 1, 'lines' => ['a', 'b'], 'chords' => null, 'language' => null, 'lineIds' => [1, 2]],
+        ['type' => 'verse', 'number' => 2, 'lines' => ['c', 'd'], 'chords' => null, 'language' => null, 'lineIds' => [3, 4]],
+    ],
+    '#2073 — calling with only $rows (both new params default to []) reproduces case 1 exactly'
+);
+
+/* ==================================================================== */
+/* 14 — #2073: `voices` is emitted AFTER `lineLanguages`, on a fixture     */
+/*      that ALSO carries a sparse `lineLanguages` key — strict === on    */
+/*      the WHOLE array is what proves the ORDER, not just the presence.  */
+/* ==================================================================== */
+assertEq(
+    lyricLinesAssembleFromRows(
+        [
+            row(1, 30, 'hello',   ['comp_lang' => 'en', 'line_lang' => 'en']),
+            row(2, 30, 'bonjour', ['comp_lang' => 'en', 'line_lang' => 'fr']),
+        ],
+        [1 => [$W]]   // only line 1 (component position 0) carries a part
+    ),
+    [[
+        'type' => 'verse', 'number' => 1, 'lines' => ['hello', 'bonjour'],
+        'chords' => null, 'language' => 'en', 'lineIds' => [1, 2], 'lineLanguages' => ['en', 'fr'],
+        'voices' => [
+            ['from' => 0, 'to' => 0, 'parts' => [
+                ['id' => 10, 'kind' => 'female', 'label' => 'Women', 'bg' => false, 'enters' => true],
+            ]],
+        ],
+    ]],
+    "#2073 — 'voices' key lands AFTER 'lineLanguages' in insertion order (strict === proves it, " .
+    "since PHP's === on arrays requires the same keys in the same order)"
+);
+
+/* ==================================================================== */
+/* 15 — #2073: $voicesByLine that names ONLY line ids OUTSIDE this        */
+/*      component -> NO `voices` key at all (sparse — never `voices=>[]`) */
+/* ==================================================================== */
+assertEq(
+    lyricLinesAssembleFromRows(
+        [
+            row(1, 10, 'a', ['comp_number' => 1]), row(2, 10, 'b', ['comp_number' => 1]),
+        ],
+        [999 => [$W]]   // 999 belongs to no line in this component
+    ),
+    [
+        ['type' => 'verse', 'number' => 1, 'lines' => ['a', 'b'], 'chords' => null, 'language' => null, 'lineIds' => [1, 2]],
+    ],
+    "#2073 — a \$voicesByLine map with no entry for any of this component's lines " .
+    "produces NO 'voices' key (sparse; not an empty array)"
+);
+
+/* ==================================================================== */
+/* 16 — #2073: `voiceSpans` — `line` is the 0-based POSITION within the   */
+/*      component (index 1 for the SECOND line here), not the raw line   */
+/*      id (102); a span keyed to an id outside the component -> no key. */
+/* ==================================================================== */
+assertEq(
+    lyricLinesAssembleFromRows(
+        [row(101, 90, 'You are holy,'), row(102, 90, 'You are worthy,')],
+        [],
+        [102 => [['id' => 5, 'partId' => 12, 'kind' => 'backing', 'label' => 'Echo', 'bg' => true, 'start' => 4, 'end' => 9]]]
+    ),
+    [[
+        'type' => 'verse', 'number' => 1, 'lines' => ['You are holy,', 'You are worthy,'],
+        'chords' => null, 'language' => null, 'lineIds' => [101, 102],
+        'voiceSpans' => [
+            ['line' => 1, 'start' => 4, 'end' => 9, 'part' => ['id' => 12, 'kind' => 'backing', 'label' => 'Echo', 'bg' => true]],
+        ],
+    ]],
+    "#2073 — voiceSpans 'line' is the component-relative POSITION (1, the second line), " .
+    "carries code-point start/end (rule #21), and the span's OWN id is not part of the public shape"
+);
+assertEq(
+    lyricLinesAssembleFromRows(
+        [row(101, 91, 'a')],
+        [],
+        [999 => [['id' => 1, 'partId' => 1, 'kind' => 'lead', 'label' => 'Lead', 'bg' => false, 'start' => 0, 'end' => 1]]]
+    ),
+    [['type' => 'verse', 'number' => 1, 'lines' => ['a'], 'chords' => null, 'language' => null, 'lineIds' => [101]]],
+    "#2073 — a span keyed to a line id outside the component produces NO 'voiceSpans' key (sparse)"
+);
+
+/* ==================================================================== */
+/* #2073 — WIRING: the assembler wrappers must actually CALL the gated    */
+/* voice fetcher, and that fetcher must actually GATE on readiness — a    */
+/* source assertion (same caveat as the editor-shape checks above: these  */
+/* wrappers take a live \mysqli, so they can't be exercised as pure       */
+/* functions here) that a future edit can't silently drop the wiring      */
+/* while every pure-function case above keeps passing (they never touch   */
+/* the wrapper functions at all).                                        */
+/* ==================================================================== */
+function _extractFn(string $code, string $name): string
+{
+    $start = strpos($code, "function {$name}(");
+    if ($start === false) {
+        return '';
+    }
+    $next = strpos($code, "\nfunction ", $start + 10);
+    return substr($code, $start, $next === false ? null : $next - $start);
+}
+
+$assembleOneFn = _extractFn($readerCode, 'lyricLinesAssembleComponents');
+$assembleMapFn = _extractFn($readerCode, 'lyricLinesAssembleComponentsMap');
+$fetchVoicesFn = _extractFn($readerCode, 'lyricLinesFetchVoices');
+
+assertEq($assembleOneFn !== '', true, 'lyricLinesAssembleComponents() found');
+assertEq($assembleMapFn !== '', true, 'lyricLinesAssembleComponentsMap() found');
+assertEq($fetchVoicesFn !== '', true, 'lyricLinesFetchVoices() found');
+assertEq(
+    str_contains($assembleOneFn, 'lyricLinesFetchVoices('),
+    true,
+    '#2073 — lyricLinesAssembleComponents() calls the gated voice fetcher'
+);
+assertEq(
+    str_contains($assembleMapFn, 'lyricLinesFetchVoices('),
+    true,
+    '#2073 — lyricLinesAssembleComponentsMap() calls the gated voice fetcher (once per batch, never per song)'
+);
+assertEq(
+    str_contains($fetchVoicesFn, 'vocalPartsTablesReady('),
+    true,
+    '#2073 — lyricLinesFetchVoices() gates on vocalPartsTablesReady() so an un-migrated install ' .
+    'issues no extra query and the assembler output stays byte-identical'
+);
+
 echo "\n  ----------------------------------------\n";
 echo "  {$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);

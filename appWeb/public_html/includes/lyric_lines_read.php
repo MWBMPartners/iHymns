@@ -30,6 +30,15 @@ declare(strict_types=1);
  * (present only when `tblSongComponents.Label` is set) — absent on every un-labelled
  * component, so the pre-Phase-5 byte parity holds verbatim for the whole un-labelled
  * corpus.
+ * Since #2073 ("who sings this line" — voice parts / echo / rounds) the shape carries
+ * two MORE optional sparse keys, appended AFTER `lineLanguages`: `voices` (consecutive
+ * same-part lines folded into a run — see `lyricLinesFoldVoiceRuns()` below) and
+ * `voiceSpans` (a mid-line echo/voice switch, code-point anchored — rule #21). The
+ * corpus stores ZERO voice rows today, so both are ABSENT on every existing song and
+ * the byte-parity claim above holds unchanged for the whole corpus; they only appear
+ * once a curator (or an importer) assigns a part to a line, which no write path does
+ * yet in this commit (#2073 commit 4 is READ-ONLY — see `includes/vocal_parts.php`'s
+ * own commit-scope note).
  *
  * The assembly CORE (lyricLinesAssembleFromRows) is PURE — no DB, no I/O — so it is
  * unit-tested directly (tests/php/test-lyric-lines-read.php). The DB wrappers fetch the
@@ -161,6 +170,112 @@ function lyricLinesComponentExtrasPresent(\mysqli $db): array
 }
 
 /**
+ * ELI5: turn "line 3 = Women, line 4 = Women, line 5 = Men" into "lines 3-4
+ * are a Women run, line 5 starts a Men run" — one wrapper per RUN, not one
+ * per line, so a renderer prints ONE "WOMEN" header over two lines instead
+ * of two.
+ *
+ * DETAILED (#2073 "Design pass 7" §5.1, the pure fold Pass 3 §1.1 designed —
+ * implemented here VERBATIM per that pass's own worked truth table): storage
+ * is one row per (line, part) — `tblLyricLineVocalParts`, read via
+ * `vocalPartsLinesMapForSongs()` — but the SUNG unit a renderer wants is a
+ * contiguous RUN of lines sharing the exact same set of parts, in the exact
+ * same order (order matters: it is the display order a duet's two chips
+ * print in). Folding that ONCE here means no consumer (the song page, the
+ * present-mode slide model, the print PDF, a future native client) re-derives
+ * runs its own way and risks disagreeing about where one starts (rule #22).
+ * PURE — no DB, no I/O — so it is unit-tested directly with plain arrays in
+ * `tests/php/test-lyric-lines-read.php` rather than needing a live song.
+ *
+ * ALGORITHM (exact — mirrors the worked table in the plan so a future reader
+ * can check this code against it line-by-line):
+ *   - Walk `$lineIds` in order, each with the (possibly empty) list of parts
+ *     `$voicesByLine` carries for it.
+ *   - A line with NO parts at all is a GAP: it closes whatever run was open
+ *     and resets adjacency — the run that starts again after a gap has every
+ *     part `enters:true`, because nothing on the immediately preceding line
+ *     was singing anything for it to continue FROM.
+ *   - A line whose parts (by id + background-ness, IN THE GIVEN ORDER — never
+ *     re-sorted, so a duet's two chips keep whichever order the SQL handed
+ *     back) exactly match the run currently open EXTENDS that run (`to`
+ *     moves forward); anything else STARTS a new run.
+ *   - `enters` on a NEW run's part is true unless that exact part id was
+ *     ALSO singing on the immediately preceding (adjacent) line — i.e. it was
+ *     part of the run that just closed. A part that drops out for one line
+ *     and comes straight back in is NOT a re-entry from this function's point
+ *     of view unless a GAP or a genuinely different set intervened — closing
+ *     ids are read from the run being replaced BEFORE it is overwritten, so
+ *     this reads correctly even when the SAME call is building run after run
+ *     in one pass.
+ *
+ * @param list<int> $lineIds  the component's line ids/positions, in order —
+ *      the assembler passes 0-based POSITION indexes (see `$flush` below),
+ *      matching the public shape's own "`from`/`to` are indexes into `lines`"
+ *      contract, but this function itself only ever compares entries for
+ *      equality, so it is agnostic to what the ints actually mean.
+ * @param array<int, list<array{id:int,kind:string,label:string,bg:bool}>> $voicesByLine
+ *      keyed by the SAME value `$lineIds` carries; each entry ALREADY ordered
+ *      (join SortOrder, then part SortOrder, then part Id — the order
+ *      `vocalPartsLinesMapForSongs()` returns).
+ * @return list<array{from:int,to:int,parts:list<array{id:int,kind:string,label:string,bg:bool,enters:bool}>}>
+ */
+function lyricLinesFoldVoiceRuns(array $lineIds, array $voicesByLine): array
+{
+    $runs    = [];   // list of run arrays, built in order
+    $curIdx  = null; // index into $runs of the run currently open, or null (no run open / a gap just happened)
+    $prevSig = null; // the "signature" (ordered id:bg pairs) of the run currently open
+
+    foreach (array_values($lineIds) as $i => $lineId) {
+        $parts = $voicesByLine[$lineId] ?? [];
+
+        if ($parts === []) {
+            /* A gap CLOSES the run and resets adjacency — the next run, if
+               any, starts fresh with every part "entering". */
+            $curIdx  = null;
+            $prevSig = null;
+            continue;
+        }
+
+        /* Order-preserving signature: two lines extend the SAME run only
+           when their parts are IDENTICAL in id, background-ness AND order —
+           never re-sorted, so a duet's chip order is a genuine part of what
+           "the same run" means. */
+        $sig = implode('|', array_map(
+            static fn(array $p): string => $p['id'] . ':' . ($p['bg'] ? '1' : '0'),
+            $parts
+        ));
+
+        if ($curIdx !== null && $sig === $prevSig) {
+            $runs[$curIdx]['to'] = $i;
+            continue;
+        }
+
+        /* Starting a NEW run. "enters" reads the ids of the run being
+           REPLACED (adjacent — it ended on line i-1) — computed BEFORE that
+           run is overwritten below, and empty when a gap just reset $curIdx
+           (every part in the new run "enters" after a gap, by definition). */
+        $closingIds = $curIdx !== null ? array_column($runs[$curIdx]['parts'], 'id') : [];
+
+        $newParts = [];
+        foreach ($parts as $p) {
+            $newParts[] = [
+                'id'     => $p['id'],
+                'kind'   => $p['kind'],
+                'label'  => $p['label'],
+                'bg'     => $p['bg'],
+                'enters' => !in_array($p['id'], $closingIds, true),
+            ];
+        }
+
+        $runs[]  = ['from' => $i, 'to' => $i, 'parts' => $newParts];
+        $curIdx  = count($runs) - 1;
+        $prevSig = $sig;
+    }
+
+    return $runs;
+}
+
+/**
  * Assemble ordered per-line rows (one song) into the component-shaped array
  * `SongData::_getComponents()` returns. **PURE** — no DB, no I/O.
  *
@@ -183,21 +298,44 @@ function lyricLinesComponentExtrasPresent(\mysqli $db): array
  * and the corpus-wide byte-parity claim stay literally true for the whole
  * un-labelled corpus.
  *
+ * #2073 ("who sings this line") §5.1-5.2: two MORE parameters, both defaulted
+ * so every existing call site (there are dozens across the app) that passes
+ * only `$rows` gets the exact byte-identical output it always did — this is
+ * what makes commit 4 a pure ADDITION rather than a behaviour change.
+ * `$voicesByLine` feeds the pure fold `lyricLinesFoldVoiceRuns()` (above) to
+ * emit a SPARSE `voices` key (one entry per RUN of consecutive lines sharing
+ * the same parts — never one per line); `$spansByLine` emits a SPARSE
+ * `voiceSpans` key for a mid-line echo/voice switch. Both are appended AFTER
+ * `lineLanguages` — resulting public key order:
+ * `type, number, lines, chords, language, [label], lineIds, [lineLanguages],
+ * [voices], [voiceSpans]`. Neither key is EVER emitted as an empty array —
+ * sparse means the key itself is absent, exactly like `label`/`lineLanguages`
+ * above, which is what keeps the ~16,083-song fidelity-snapshot hash
+ * byte-identical for the whole corpus today (it stores zero voice rows).
+ *
  * @param list<array{
  *   line_id:int|string, cid:int|string|null, text:string, line_lang:?string,
  *   line_chords:?string, comp_type:?string, comp_number:int|string|null,
  *   comp_lang:?string, line_parttype:?string, line_partnum:int|string|null,
  *   comp_label?:?string
  * }> $rows  one song's lines, already ordered by global SortOrder
- * @return list<array{type:string,number:int,lines:list<string>,chords:?array,language:?string,label?:string,lineIds?:list<int>,lineLanguages?:list<?string>}>
+ * @param array<int, list<array{id:int,kind:string,label:string,bg:bool}>> $voicesByLine
+ *   keyed by `line_id` (as carried in `$rows`) — one entry per part assigned
+ *   to that line, already ordered (join SortOrder, then part SortOrder, then
+ *   part Id). [] (the default) ⇒ no `voices` key is ever emitted.
+ * @param array<int, list<array{id:int,partId:int,kind:string,label:string,bg:bool,start:int,end:int}>> $spansByLine
+ *   keyed by `line_id`; `start`/`end` are 0-based UTF-8 CODE-POINT offsets
+ *   into that line's text (rule #21 — never byte/UTF-16), `end` exclusive.
+ *   [] (the default) ⇒ no `voiceSpans` key is ever emitted.
+ * @return list<array{type:string,number:int,lines:list<string>,chords:?array,language:?string,label?:string,lineIds?:list<int>,lineLanguages?:list<?string>,voices?:list<array{from:int,to:int,parts:list<array{id:int,kind:string,label:string,bg:bool,enters:bool}>}>,voiceSpans?:list<array{line:int,start:int,end:int,part:array{id:int,kind:string,label:string,bg:bool}}>}>
  */
-function lyricLinesAssembleFromRows(array $rows): array
+function lyricLinesAssembleFromRows(array $rows, array $voicesByLine = [], array $spansByLine = []): array
 {
     $components = [];
     $cur        = null;     // the component being built
     $curKey     = null;     // grouping key of the current run
 
-    $flush = static function (?array &$c) use (&$components): void {
+    $flush = static function (?array &$c) use (&$components, $voicesByLine, $spansByLine): void {
         if ($c === null) { return; }
         /* Reconstruct the chords parallel array: null when no line carried chords
            (the universal case today), else the per-line decoded values — byte-equal
@@ -227,6 +365,44 @@ function lyricLinesAssembleFromRows(array $rows): array
            component default (mirrors SongData::_getComponents). */
         foreach ($c['_lineLangs'] as $ll) {
             if ($ll !== $c['language']) { $out['lineLanguages'] = $c['_lineLangs']; break; }
+        }
+        /* #2073 §5.2 — voice RUNS (sparse: key present only when this component
+           has >=1 run — a component with no assigned parts folds to []
+           internally and lyricLinesFoldVoiceRuns() returns [], so the `!== []`
+           guard is what keeps this key ABSENT for the whole un-annotated
+           corpus, never present-but-empty). $voicesByLine is keyed by the raw
+           tblLyricLines.Id, exactly what `_lineIds` already carries. */
+        if ($voicesByLine !== []) {
+            $runs = lyricLinesFoldVoiceRuns($c['_lineIds'], $voicesByLine);
+            if ($runs !== []) {
+                $out['voices'] = $runs;
+            }
+        }
+        /* #2073 §5.2 — sub-line voice SPANS (sparse, same "absent not empty"
+           rule). `line` is the 0-based POSITION of the spanned line WITHIN
+           this component (an index into `lines`/`lineIds`) — not the raw
+           line id — so a renderer can address `lines[span.line]` directly
+           without a second lookup; offsets are CODE POINTS (rule #21). */
+        if ($spansByLine !== []) {
+            $spans = [];
+            foreach ($c['_lineIds'] as $pos => $lid) {
+                foreach ($spansByLine[$lid] ?? [] as $s) {
+                    $spans[] = [
+                        'line'  => $pos,
+                        'start' => (int)$s['start'],
+                        'end'   => (int)$s['end'],
+                        'part'  => [
+                            'id'    => (int)$s['partId'],
+                            'kind'  => (string)$s['kind'],
+                            'label' => (string)$s['label'],
+                            'bg'    => (bool)$s['bg'],
+                        ],
+                    ];
+                }
+            }
+            if ($spans !== []) {
+                $out['voiceSpans'] = $spans;
+            }
         }
         $components[] = $out;
         $c = null;
@@ -540,28 +716,80 @@ function lyricLinesFetchPrimaryMap(\mysqli $db, array $songIds): array
 }
 
 /**
+ * ELI5: get every "who sings this line" row for a batch of songs, or nothing
+ * at all when the feature isn't migrated yet — so the two assembler wrappers
+ * below can pass it straight to `lyricLinesAssembleFromRows()` without caring
+ * which case they're in.
+ *
+ * DETAILED (#2073 §1.4): a thin, GATED adapter over the one voice core
+ * (`includes/vocal_parts.php`, rule #22) — never a second copy of the
+ * readiness check or the SQL. `[[], []]` on an un-migrated install (no extra
+ * SELECT issued at all) means the assembler's two `if ($x !== [])` guards
+ * skip entirely, so its output stays byte-identical to today for every song
+ * on every install until a curator (or an importer) assigns a part to a
+ * line. Lazy `require_once` mirrors the `line_enrichment.php` pattern already
+ * used elsewhere in this codebase for a cross-file dependency that must never
+ * force a DB connection merely by being loaded.
+ *
+ * @param list<string> $songIds
+ * @return array{0: array<string, array<int, list<array{id:int,kind:string,label:string,bg:bool}>>>, 1: array<string, array<int, list<array{id:int,partId:int,kind:string,label:string,bg:bool,start:int,end:int}>>>}
+ *   `[voicesBySong, spansBySong]` — each SongId => (lineId => list), matching
+ *   `lyricLinesAssembleFromRows()`'s own `$voicesByLine`/`$spansByLine` shape.
+ */
+function lyricLinesFetchVoices(\mysqli $db, array $songIds): array
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'vocal_parts.php';
+    if (!vocalPartsTablesReady($db)) {
+        return [[], []];
+    }
+    $voices = vocalPartsLinesMapForSongs($db, $songIds);
+    $spans  = vocalPartsSpansReady($db) ? vocalPartsSpansMapForSongs($db, $songIds) : [];
+    return [$voices, $spans];
+}
+
+/**
  * Assemble one song's components from the authoritative `tblLyricLines`. Byte-identical
  * to SongData::_getComponents(). Returns [] for a song with no mirrored lines.
+ *
+ * #2073 — also folds in that song's voice runs/spans (sparse `voices` /
+ * `voiceSpans` keys) via `lyricLinesFetchVoices()`; the early `[]` return for
+ * a lineless song is UNCHANGED (zero extra queries — there is nothing to
+ * assemble either way), which is what keeps this a pure addition rather than
+ * a behaviour change for every song that has no mirrored lines at all.
  *
  * @return list<array<string,mixed>>
  */
 function lyricLinesAssembleComponents(\mysqli $db, string $songId): array
 {
-    return lyricLinesAssembleFromRows(lyricLinesFetchPrimary($db, $songId));
+    $rows = lyricLinesFetchPrimary($db, $songId);
+    if ($rows === []) {
+        return [];
+    }
+    [$voices, $spans] = lyricLinesFetchVoices($db, [$songId]);
+    return lyricLinesAssembleFromRows($rows, $voices[$songId] ?? [], $spans[$songId] ?? []);
 }
 
 /**
  * Bulk component assembly keyed by SongId (the getSongs() path). Only songs that have
  * mirrored lines appear in the map; the caller LEFT-JOIN-defaults the rest to [].
  *
+ * #2073 — one chunked `lyricLinesFetchVoices()` call per BATCH (never per
+ * song — no N+1), same early `[]` short-circuit as the single-song sibling
+ * above when nothing in the batch has mirrored lines at all.
+ *
  * @param string[] $songIds
  * @return array<string,list<array<string,mixed>>>
  */
 function lyricLinesAssembleComponentsMap(\mysqli $db, array $songIds): array
 {
+    $rowsMap = lyricLinesFetchPrimaryMap($db, $songIds);
+    if ($rowsMap === []) {
+        return [];
+    }
+    [$voices, $spans] = lyricLinesFetchVoices($db, array_keys($rowsMap));
     $out = [];
-    foreach (lyricLinesFetchPrimaryMap($db, $songIds) as $sid => $rows) {
-        $out[$sid] = lyricLinesAssembleFromRows($rows);
+    foreach ($rowsMap as $sid => $rows) {
+        $out[$sid] = lyricLinesAssembleFromRows($rows, $voices[$sid] ?? [], $spans[$sid] ?? []);
     }
     return $out;
 }

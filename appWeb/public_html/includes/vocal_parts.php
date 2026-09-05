@@ -56,14 +56,27 @@ declare(strict_types=1);
  * reader below simply returns its empty shape, because a read has nothing
  * to refuse; only a WRITE (commit 5) has a reason to 409.
  *
- * COMMIT SCOPE (#2073 commit 1 of 17 — see `.claude/vocal-parts-2073-plan.md`,
- * "Design pass 7" §12 for the full plan): vocabulary + normalisers + shape
- * builders + READ fetchers ONLY. There is deliberately NO `vocalPartsUpsert`,
- * `vocalPartsAssignLines`, `vocalPartsSpanUpsert`, `vocalPartsDelete` or any
- * other function that INSERTs/UPDATEs/DELETEs a row in this file yet — those
- * land in commit 5 alongside `includes/lyric_rounds.php`. NOTHING calls this
- * file yet (dormant, rule #20's "verified no-op" posture): it is exercised
- * only by `tests/php/test-vocal-parts-vocab.php`.
+ * COMMIT SCOPE (#2073 commits 1 and 4 of 17 — see
+ * `.claude/vocal-parts-2073-plan.md`, "Design pass 7" §12 for the full plan):
+ * vocabulary + normalisers + shape builders + READ fetchers ONLY. There is
+ * deliberately NO `vocalPartsUpsert`, `vocalPartsAssignLines`,
+ * `vocalPartsSpanUpsert`, `vocalPartsDelete` or any other function that
+ * INSERTs/UPDATEs/DELETEs a row in this file yet — those land in commit 5
+ * alongside `includes/lyric_rounds.php`.
+ *
+ * Commit 1 shipped the vocabulary + probes + shape builders with NOTHING
+ * calling this file yet. Commit 4 ("Design pass 7" §5.3, the public read
+ * assembler) wires the first real caller: `includes/lyric_lines_read.php`'s
+ * `lyricLinesFetchVoices()` requires this file lazily and calls the
+ * song-keyed, chunked fetchers below (`vocalPartsLinesMapForSongs()` /
+ * `vocalPartsSpansMapForSongs()`); `SongData::getSongDetailExtras()`'s
+ * `?include=vocalParts|vocalWords` blocks call `vocalPartsForVersion()` /
+ * `vocalPartsWordsForSong()` directly. This file is STILL read-only (rule
+ * A's "verified no-op" posture is about WRITES; every table this file reads
+ * already ships pre-#2073, so a read commit was never dormant in the
+ * no-tables-yet sense — it is dormant only in the "no assignment rows exist
+ * yet" sense, which is what keeps every one of the ~16,083 songs' fidelity
+ * hashes byte-identical after this commit, per that file's own doc-block).
  *
  * Every DB value that enters a query is bound via `bindParamSafe()` (#928);
  * the only interpolated SQL text is `array_fill()`-built `?,?,?` placeholder
@@ -1274,6 +1287,303 @@ function vocalPartsVersionHasAny(\mysqli $db, int $lyricsId): bool
     $has = $stmt->get_result()->fetch_row() !== null;
     $stmt->close();
     return $has;
+}
+
+/* =====================================================================
+ * SONG-KEYED, CHUNKED FETCHERS (#2073 commit 4) — feed the ONE public read
+ * assembler `lyricLinesAssembleFromRows()` (`includes/lyric_lines_read.php`)
+ * via its gated adapter `lyricLinesFetchVoices()`. Each fetcher below reads
+ * MANY songs' 'ihymns' version in one chunked `IN()` query (never per-song —
+ * the #929 whole-corpus-memory lesson — and never the whole corpus at once,
+ * `LYRIC_LINES_READ_CHUNK` songs per round trip, the SAME constant
+ * `lyricLinesFetchPrimaryMap()` chunks by), so `getSongs()`'s per-songbook
+ * bulk read stays the one query shape it has always been plus exactly one
+ * more per chunk.
+ *
+ * @lyrics-version-exempt (all three functions below): these are the BULK
+ * siblings of `lyricLinesFetchPrimary[Map]()` — they read MANY songs' worth
+ * of assignment rows in one round trip, so there is no single Id to resolve
+ * via `lyricLinesPrimaryLyricsId()` first; the `Source = 'ihymns'` filter is
+ * inlined in each JOIN instead, kept byte-identical to that function's own
+ * filter by `tests/php/test-lyric-lines-read.php`'s source assertions (#2076).
+ * ===================================================================== */
+
+/**
+ * ELI5: for a batch of songs, "who sings each line" — grouped by song, then
+ * by line, in the order a renderer wants to print them.
+ *
+ * DETAILED: reads `tblLyricLineVocalParts` JOINed to `tblVocalParts` (for the
+ * kind/label the caller needs to render — never a bare `VocalPartId`) and
+ * `tblLyrics` (for the 'ihymns'-version filter + the SongId to group by),
+ * with a LEFT JOIN to `tblMusicians` for a `named-singer`'s registry name.
+ * The display label is resolved HERE, in the fetcher, via
+ * `vocalPartsDisplayLabel()` — so the pure fold this feeds
+ * (`lyricLinesFoldVoiceRuns()`, `includes/lyric_lines_read.php`) never needs
+ * to know the vocabulary at all (rule #22).
+ *
+ * Row order (`ORDER BY ly.SongId, lvp.LineId, lvp.SortOrder, vp.SortOrder,
+ * vp.Id`) is what the PURE fold's `enters` computation depends on for a
+ * multi-part line (a duet/echo's chip order is genuinely part of "the same
+ * run") — never re-sorted after this query returns.
+ *
+ * @param list<string> $songIds
+ * @return array<string, array<int, list<array{id:int,kind:string,label:string,bg:bool}>>>
+ *   SongId => (LineId => ordered list of parts on that line).
+ */
+function vocalPartsLinesMapForSongs(\mysqli $db, array $songIds): array
+{
+    /* @lyrics-version-exempt: the bulk sibling of `lyricLinesFetchPrimaryMap()`
+       (#2076) — reads MANY songs' 'ihymns' version in one chunked IN() query,
+       so there is no single SongId to resolve via lyricLinesPrimaryLyricsId()
+       first; the same `Source = 'ihymns'` filter is inlined in the JOIN
+       instead (kept byte-identical to that function's own filter). */
+    $songIds = array_values(array_unique(array_filter($songIds, static fn($s) => $s !== '' && $s !== null)));
+    if (!$songIds) {
+        return [];
+    }
+
+    $out = [];
+    foreach (array_chunk($songIds, LYRIC_LINES_READ_CHUNK) as $chunk) {
+        $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+        $stmt = $db->prepare(
+            "SELECT ly.SongId AS song_id, lvp.LineId AS line_id, vp.Id AS part_id,
+                    vp.PartKind AS kind, vp.Label AS label, vp.SingerName AS singer_name,
+                    m.Name AS musician_name, lvp.IsBackground AS bg
+               FROM tblLyricLineVocalParts lvp
+               JOIN tblVocalParts vp     ON vp.Id = lvp.VocalPartId
+               JOIN tblLyrics ly         ON ly.Id = lvp.LyricsId
+               LEFT JOIN tblMusicians m  ON m.Id = vp.MusicianId
+              WHERE ly.SongId IN ($placeholders) AND ly.Source = 'ihymns'
+              ORDER BY ly.SongId, lvp.LineId, lvp.SortOrder, vp.SortOrder, vp.Id"
+        );
+        bindParamSafe(__FUNCTION__, $stmt, str_repeat('s', count($chunk)), ...$chunk);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_assoc()) {
+            $sid    = (string)$row['song_id'];
+            $lineId = (int)$row['line_id'];
+            $musicianName = ($row['musician_name'] !== null) ? (string)$row['musician_name'] : null;
+            $out[$sid][$lineId][] = [
+                'id'    => (int)$row['part_id'],
+                'kind'  => (string)$row['kind'],
+                'label' => vocalPartsDisplayLabel(
+                    ['label' => $row['label'], 'singerName' => $row['singer_name'], 'kind' => $row['kind']],
+                    $musicianName
+                ),
+                'bg'    => (bool)$row['bg'],
+            ];
+        }
+        $stmt->close();
+    }
+    return $out;
+}
+
+/**
+ * ELI5: for a batch of songs, every mid-line echo/voice-switch span, grouped
+ * the same way `vocalPartsLinesMapForSongs()` above groups whole-line
+ * assignments.
+ *
+ * DETAILED: `[]` immediately when `tblLyricLineVocalSpans` hasn't been
+ * migrated yet (`vocalPartsSpansReady()`) — no query attempted at all, the
+ * same "un-migrated degrades to nothing, never throws" contract every other
+ * reader in this file follows. SPAN DRIFT ON EDIT: mirrors the single-version
+ * sibling `vocalPartsSpansMap()`'s own doc-block — a span whose `start` no
+ * longer fits the line's CURRENT code-point length (a curator shortened the
+ * text after the span was drawn) is dropped; one whose `end` overruns is
+ * clamped to the new length. Neither case is rewritten in the table or
+ * thrown — a curator UI (a later commit) is the one place that should ever
+ * notice and offer to fix it.
+ *
+ * @param list<string> $songIds
+ * @return array<string, array<int, list<array{id:int,partId:int,kind:string,label:string,bg:bool,start:int,end:int}>>>
+ *   SongId => (LineId => ordered list of spans on that line, by StartOffset).
+ */
+function vocalPartsSpansMapForSongs(\mysqli $db, array $songIds): array
+{
+    /* @lyrics-version-exempt: the bulk sibling of `vocalPartsLinesMapForSongs()`
+       above — same reasoning (#2076): many songs, one chunked IN() query, the
+       `Source = 'ihymns'` filter inlined rather than resolved song-by-song. */
+    if (!vocalPartsSpansReady($db)) {
+        return [];
+    }
+    $songIds = array_values(array_unique(array_filter($songIds, static fn($s) => $s !== '' && $s !== null)));
+    if (!$songIds) {
+        return [];
+    }
+
+    $out = [];
+    foreach (array_chunk($songIds, LYRIC_LINES_READ_CHUNK) as $chunk) {
+        $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+        $stmt = $db->prepare(
+            "SELECT ly.SongId AS song_id, sp.Id AS span_id, sp.LineId AS line_id, vp.Id AS part_id,
+                    vp.PartKind AS kind, vp.Label AS label, vp.SingerName AS singer_name,
+                    m.Name AS musician_name, sp.IsBackground AS bg,
+                    sp.StartOffset AS start_off, sp.EndOffset AS end_off, ll.LineText AS line_text
+               FROM tblLyricLineVocalSpans sp
+               JOIN tblVocalParts vp     ON vp.Id = sp.VocalPartId
+               JOIN tblLyrics ly         ON ly.Id = sp.LyricsId
+               JOIN tblLyricLines ll     ON ll.Id = sp.LineId
+               LEFT JOIN tblMusicians m  ON m.Id = vp.MusicianId
+              WHERE ly.SongId IN ($placeholders) AND ly.Source = 'ihymns'
+              ORDER BY ly.SongId, sp.LineId, sp.StartOffset, sp.SortOrder, sp.Id"
+        );
+        bindParamSafe(__FUNCTION__, $stmt, str_repeat('s', count($chunk)), ...$chunk);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_assoc()) {
+            $sid    = (string)$row['song_id'];
+            $lineId = (int)$row['line_id'];
+            $cpLen  = mb_strlen((string)$row['line_text'], 'UTF-8');
+            $start  = (int)$row['start_off'];
+            if ($start >= $cpLen) {
+                continue; // the line shrank past this span's start entirely — drop it (see doc-block)
+            }
+            $end = min((int)$row['end_off'], $cpLen);
+            $musicianName = ($row['musician_name'] !== null) ? (string)$row['musician_name'] : null;
+            $out[$sid][$lineId][] = [
+                'id'     => (int)$row['span_id'],
+                'partId' => (int)$row['part_id'],
+                'kind'   => (string)$row['kind'],
+                'label'  => vocalPartsDisplayLabel(
+                    ['label' => $row['label'], 'singerName' => $row['singer_name'], 'kind' => $row['kind']],
+                    $musicianName
+                ),
+                'bg'     => (bool)$row['bg'],
+                'start'  => $start,
+                'end'    => $end,
+            ];
+        }
+        $stmt->close();
+    }
+    return $out;
+}
+
+/**
+ * ELI5: everything word-grain "who sings this exact word" data exists for one
+ * song — across EVERY copy of its lyrics that has any (a TTML import can sit
+ * alongside the curator's own version), not just the curator's own.
+ *
+ * DETAILED (#2073, D2 word grain — `SongData::getSongDetailExtras()`'s opt-in
+ * `?include=vocalWords` block, never the base payload): unlike every other
+ * reader in this file, this one is deliberately VERSION-INDEPENDENT — a song
+ * can carry several `tblLyrics` rows (`uq_song_source` = one per `Source`),
+ * and a TTML/Apple-Music ingest's word-grain overrides live on ITS OWN
+ * version, not the curator's 'ihymns' one, so there is no single `$lyricsId`
+ * to resolve here the way `vocalPartsForVersion()`'s callers do. Bounded by
+ * construction: at most one `tblLyrics` row per `Source` per song, so this
+ * can never explode the way a whole-corpus read would (rule #17) — it is
+ * still opt-in only, never folded into the base `song_detail` payload,
+ * because even a bounded per-song read is wasted work for the overwhelming
+ * majority of songs that carry no word-grain data at all.
+ *
+ * Reuses the already-landed pure per-version fetchers rather than re-deriving
+ * them (rule #22): `vocalPartsForVersion()` for `parts`, `vocalPartsLinesMap()`
+ * for each line's line-grain parts, `vocalPartsWordsMap()` for each word's
+ * OWN override rows (a word with none INHERITS its line's parts — the schema
+ * rule — so this deliberately does NOT synthesise an inherited entry; an
+ * empty `parts` list on a word means exactly that).
+ *
+ * @return list<array{
+ *   lyricsId:int, source:string,
+ *   parts: list<array{id:int,kind:string,label:?string,displayLabel:string,singerName:?string,gender:?string,musicianId:?int,ttmlAgentId:?string,source:string,sortOrder:int}>,
+ *   lines: list<array{
+ *     lineId:int, sortOrder:int, text:string, startMs:?int, endMs:?int,
+ *     parts: list<array{id:int,bg:bool}>,
+ *     words: list<array{wordId:int, sortOrder:int, text:string, startMs:?int, endMs:?int, parts: list<array{id:int,bg:bool}>}>
+ *   }>
+ * }>
+ */
+function vocalPartsWordsForSong(\mysqli $db, string $songId): array
+{
+    /* @lyrics-version-exempt: this function is DELIBERATELY version-
+       INDEPENDENT (see its own doc-block above) — it reads EVERY tblLyrics
+       version with word-grain data, not "the" primary version
+       lyricLinesPrimaryLyricsId() would resolve to, so calling that resolver
+       here would answer a question this function was never asking. */
+    $vStmt = $db->prepare(
+        "SELECT DISTINCT ly.Id AS lyrics_id, ly.Source AS source
+           FROM tblLyricWordVocalParts w
+           JOIN tblLyrics ly ON ly.Id = w.LyricsId
+          WHERE ly.SongId = ?
+          ORDER BY ly.Id"
+    );
+    bindParamSafe(__FUNCTION__ . ':versions', $vStmt, 's', $songId);
+    $vStmt->execute();
+    $versions = $vStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $vStmt->close();
+    if (!$versions) {
+        return [];
+    }
+
+    $out = [];
+    foreach ($versions as $v) {
+        $lyricsId = (int)$v['lyrics_id'];
+        $source   = (string)$v['source'];
+
+        $lineStmt = $db->prepare(
+            "SELECT Id, SortOrder, LineText, StartTimeMs, EndTimeMs
+               FROM tblLyricLines WHERE LyricsId = ? ORDER BY SortOrder, Id"
+        );
+        bindParamSafe(__FUNCTION__ . ':lines', $lineStmt, 'i', $lyricsId);
+        $lineStmt->execute();
+        $lineRows = $lineStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $lineStmt->close();
+
+        $wordStmt = $db->prepare(
+            "SELECT w.Id AS word_id, w.LineId AS line_id, w.SortOrder AS sort_order,
+                    w.WordText AS word_text, w.StartTimeMs AS start_ms, w.EndTimeMs AS end_ms
+               FROM tblLyricWords w
+               JOIN tblLyricLines ll ON ll.Id = w.LineId
+              WHERE ll.LyricsId = ?
+              ORDER BY ll.SortOrder, w.SortOrder, w.Id"
+        );
+        bindParamSafe(__FUNCTION__ . ':words', $wordStmt, 'i', $lyricsId);
+        $wordStmt->execute();
+        $wordRows = $wordStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $wordStmt->close();
+
+        /* Reuse the existing per-version fetchers (rule #22) — no second copy
+           of the line-grain / word-grain override SELECTs. */
+        $lineParts = vocalPartsLinesMap($db, $lyricsId);
+        $wordParts = vocalPartsWordsMap($db, $lyricsId);
+        $toPartRef = static fn(array $p): array => ['id' => $p['partId'], 'bg' => $p['bg']];
+
+        $wordsByLine = [];
+        foreach ($wordRows as $wr) {
+            $lid = (int)$wr['line_id'];
+            $wid = (int)$wr['word_id'];
+            $wordsByLine[$lid][] = [
+                'wordId'    => $wid,
+                'sortOrder' => (int)$wr['sort_order'],
+                'text'      => (string)$wr['word_text'],
+                'startMs'   => $wr['start_ms'] !== null ? (int)$wr['start_ms'] : null,
+                'endMs'     => $wr['end_ms'] !== null ? (int)$wr['end_ms'] : null,
+                'parts'     => array_map($toPartRef, $wordParts[$wid] ?? []),
+            ];
+        }
+
+        $lines = [];
+        foreach ($lineRows as $lr) {
+            $lid = (int)$lr['Id'];
+            $lines[] = [
+                'lineId'    => $lid,
+                'sortOrder' => (int)$lr['SortOrder'],
+                'text'      => (string)$lr['LineText'],
+                'startMs'   => $lr['StartTimeMs'] !== null ? (int)$lr['StartTimeMs'] : null,
+                'endMs'     => $lr['EndTimeMs'] !== null ? (int)$lr['EndTimeMs'] : null,
+                'parts'     => array_map($toPartRef, $lineParts[$lid] ?? []),
+                'words'     => $wordsByLine[$lid] ?? [],
+            ];
+        }
+
+        $out[] = [
+            'lyricsId' => $lyricsId,
+            'source'   => $source,
+            'parts'    => vocalPartsForVersion($db, $lyricsId),
+            'lines'    => $lines,
+        ];
+    }
+    return $out;
 }
 
 /* =====================================================================
