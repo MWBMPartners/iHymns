@@ -240,7 +240,7 @@ Logged-in users can sync setlists across all their devices:
 - New setlists (by ID) are inserted on the server
 - Existing setlists are updated if the local version is newer
 - Server-only setlists are preserved and returned to the client
-- Maximum 50 setlists per user, 200 songs per setlist
+- No limit on how many setlists a user may have (the old 50-setlist ceiling was deliberately removed, #1661 — see "Sync, conflicts & the song cap" above); 200 songs per setlist remains a hard cap
 
 ### Storage Locations
 

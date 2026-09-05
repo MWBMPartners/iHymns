@@ -169,7 +169,7 @@ A: The first person to create an account (either via `/manage/setup` or the publ
 ### Setlists
 
 **Q: How many setlists can I have?**
-A: Up to 50 setlists per user account, with up to 200 songs per setlist.
+A: As many as you like — the owner deliberately removed the old 50-setlist ceiling (#1661), so a setlist only goes away when you delete it or an expiry date you set passes. The one real limit is 200 songs *within* a single setlist; pushing more than that is refused outright (HTTP 413) rather than silently dropping the extra songs. See [[Setlists & Arrangements]] for detail.
 
 **Q: Can I share a setlist without an account?**
 A: Yes. The "Share" feature generates a public link that anyone can import, no account needed.
@@ -195,7 +195,7 @@ A: PHP 8.5+ with the `mysqli` extension. There is no PDO or SQLite dependency �
 A: No. MySQL 5.7+ / MariaDB 10.3+ is the only supported database, via `getDbMysqli()`. See [[Database & Migrations]].
 
 **Q: How do I run the song parser?**
-A: `npm run parse-songs` or `node tools/parse-songs.js`. This regenerates `data/songs.json` from the source files in `.SourceSongData/` — that file is a one-time migration input consumed by `appWeb/.sql/migrate-json.php`, not something the running app reads.
+A: `npm run parse-songs` or `node tools/parse-songs.js`. This reads the source files in `.SourceSongData/` and writes a gitignored `tmp/songs.json` local build artefact — not something the running app reads, and not part of setting up a fresh install any more (the one-time bootstrap script that used to consume it, `appWeb/.sql/migrate-json.php`, was retired in #1614; new song content goes in through the Song Editor's bulk importers instead).
 
 **Q: Why does a made-up URL like `/wp-admin` return 404 now?**
 A: That's deliberate (#1905). A path the app doesn't own — a `/wp-admin/` scanner probe, or any unknown URL — returns a real HTTP 404 instead of the old soft HTTP 200 with the app shell. Obvious scanner-bait is 404'd at the web-server edge; everything else is checked by the front controller against a valid-route list **derived from the app's own pages**, so a genuine new page is recognised automatically (a CI guard keeps that list in lockstep with the client router). A real iHymns page will not 404.

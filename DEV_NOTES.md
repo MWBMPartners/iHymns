@@ -397,7 +397,7 @@ Language: fr-FR         ← Optional IETF BCP 47 language tag (defaults to songb
 - Fuse.js handles fuzzy search efficiently in-browser
 - Phase TWO will move to proper database (iLyrics dB API)
 
-Since 2026-06 every runtime read is live MySQL; `songs.json` is a one-time migration input (see "MySQL Database Setup").
+Since 2026-06 every runtime read is live MySQL. `songs.json` is retired entirely (#1617) — there is no tracked corpus file any more, and new song content goes straight into MySQL through the Song Editor's bulk importer (see "MySQL Database Setup").
 
 ### Why `appWeb/`, `appApple/`, `appAndroid/` naming?
 
@@ -770,9 +770,6 @@ cd iHymns
 # resurrecting a deleted branch or pushing the wrong local branch)
 git config core.hooksPath tools/githooks
 
-# Parse song data (generates data/songs.json)
-npm run parse-songs
-
 # Start local PHP dev server (web app)
 npm run dev
 # → http://localhost:8000
@@ -819,8 +816,8 @@ npm run test:js                   # find appWeb -name '*.js' -exec node --check 
 npm run test:all                  # npm test && npm run test:php && npm run test:js
 ```
 
-As of this pass: **92 node suites** (`tests/*.js`) and **258 PHP suites** (`tests/php/*.php`), all
-passing. Both counts grow steadily — check `ls tests/*.js | wc -l` / `ls tests/php/*.php | wc -l` for
+As of this pass: **97 node suites** (`tests/*.js`) and **267 PHP suites** (`tests/php/*.php`).
+Both counts grow steadily — check `ls tests/*.js | wc -l` / `ls tests/php/*.php | wc -l` for
 the live count rather than trusting a number in prose.
 
 Both runners exit non-zero on any failing suite, so they compose in a shell `&&` chain (as
@@ -838,18 +835,23 @@ on one feature area without the full run.
 
 ## 📝 Commit Message Conventions
 
-This project uses [Conventional Commits](https://www.conventionalcommits.org/) for automated versioning:
+This project uses [Conventional Commits](https://www.conventionalcommits.org/) on the PR / squash-merge
+subject to decide the marketing-version bump (see "Version Numbering" above for the full contract —
+this is a short summary of the same rule, not a second source of truth):
 
 ```text
-feat: add new feature              → minor version bump
-fix: fix a bug                     → patch version bump
-feat!: breaking change             → major version bump
-BREAKING CHANGE: description       → major version bump
-docs: update documentation         → patch version bump
-refactor: restructure code         → patch version bump
-chore: maintenance task            → patch version bump
-test: add or update tests          → patch version bump
+feat: add new feature                     → minor version bump
+feat!: breaking change (or any `!`,       → major version bump
+  or a line-anchored BREAKING CHANGE:)
+Release: patch   (whole-line PR footer)   → patch version bump (a deliberate bug-fix release)
+fix: / docs: / refactor: / chore: /       → no version-number bump — only the
+  test: / perf: / style: / ci: / unknown    separate, always-incrementing build
+  (no "Release: patch" footer)              number moves ("build-only")
 ```
+
+The safe default is build-only: a mislabelled or bare subject under-bumps (the version simply
+doesn't move) rather than over-bumping. A bare `fix:` never implies a patch release on its own —
+that needs the explicit `Release: patch` footer.
 
 ---
 
@@ -889,24 +891,26 @@ The installer will:
 
 1. Test the connection before writing anything
 2. Write credentials to `appWeb/.auth/db_credentials.php` (permissions `0600`)
-3. Create all tables from `schema.sql` (160 `CREATE TABLE` statements; idempotent — safe to re-run)
+3. Create all tables from `schema.sql` (166 `CREATE TABLE` statements; idempotent — safe to re-run)
 4. Seed default data: user groups, 14 languages, 5 access tiers, app settings
 
 > **Manual setup:** Copy `appWeb/.auth/db_credentials.example.php` to `db_credentials.php`, edit it, then re-run the installer.
 
-#### Step 2: Migrate Song Data from JSON
+#### Step 2: Add Song Content
 
-```bash
-php appWeb/.sql/migrate-json.php
-```
+There is no `songs.json` bootstrap importer any more — the old `migrate-json.php` script was
+retired in #1614 (it depended on a `tblSongComponents.LinesJson` shadow column that a fresh
+`schema.sql` install no longer even creates, so it could not have bootstrapped a new install
+either). Real content goes straight into MySQL via one of:
 
-This imports all songs from `data/songs.json` into MySQL:
-- Clears existing song data and re-imports (transaction-wrapped)
-- Populates: songbooks, songs, writers, composers, components
-- Imports translation links from `songs[].translations` array
-- Builds `LyricsText` column for MySQL FULLTEXT search
+- The Song Editor's bulk importer, `/manage/editor/import2.php` — upload a `.zip` of song files
+  (OpenSong, OpenLyrics/OpenLP, ProPresenter, VideoPsalm, ChordPro, iHymns interchange JSON, and
+  more); it runs as a background job and inserts new songs (existing ones are skipped, never
+  overwritten).
+- `appWeb/.sql/restore.php`, or the web installer's restore-upload flow, from a real backup.
 
-> Specify a custom path: `php appWeb/.sql/migrate-json.php --json=/path/to/songs.json`
+`npm run parse-songs` still exists to turn `.SourceSongData/` raw text files into a local
+`tmp/songs.json` file for inspection, but nothing downstream reads that file any more.
 
 #### Step 3: Create Initial Admin User
 
@@ -925,9 +929,9 @@ For shared hosting without SSH:
 
 1. Copy `appWeb/.auth/db_credentials.example.php` to `db_credentials.php` and edit
 2. Navigate to `/manage/setup-database.php`
-3. Click **Run Install** (creates tables)
-4. Click **Run Song Migration** (imports songs)
-5. Visit `/manage/setup` (create admin account)
+3. Click **Run Install** (creates tables), then **Apply all pending** to bring migrations current
+4. Visit `/manage/setup` (create admin account)
+5. Sign in and use the Song Editor's bulk importer (`/manage/editor/import2.php`) to add song content
 
 #### One-Shot Alternative
 
@@ -945,18 +949,21 @@ scoped: `getSongsSlimIndex()` (lightweight id/number/title/songbook index, serve
 `?action=songs_index`), `getSongs($abbr)` (one songbook, editor `?action=songbook_export`),
 `getSongById()` (one full record, `?action=song_detail`).
 
-`data/songs.json` is now a **migration INPUT only** (consumed by `migrate-json.php`),
-never a runtime read source.
+`songs.json` is retired entirely (#1617) — the old `migrate-json.php` importer that
+used to consume it was removed in #1614, and there is no tracked corpus file left in
+the repo (`data/` holds only a `.gitkeep`). New song content goes straight into MySQL
+through the Song Editor's bulk importer or a real backup restore.
 
 When MySQL is unavailable, the server returns a **themed 503 maintenance page**
 (WS-K #1021, `includes/maintenance.php` + the `api.php` `isDbConnectionFailure()`
 503 path) — a graceful outage, never stale data. The ONLY offline fallback is the
-**client PWA offline cache** (service-worker-cached song pages + the slim index for
-client-side Fuse.js search).
+**client PWA offline cache** (service-worker-cached song pages + the slim index,
+queried live against the server on every search — there is no client-side Fuse.js
+index any more, #1014/#1015).
 
 ### Database Schema Overview
 
-**Song Data (6 tables):**
+**Song Data (7 tables):**
 
 | Table | Purpose |
 | --- | --- |
@@ -1008,7 +1015,7 @@ client-side Fuse.js search).
 | **Interchange / identity** (#1066) | `tblSongIdentityMap`, `tblApiKeyUsage`, `tblApiKeyIdempotency`, `tblLyricsConflicts`, `tblLyricsReviewQueue`, … | Dormant interchange / ingest / identity batch |
 | **Catalogues** (user-labelled "Collections") | `tblCatalogues`, `tblCatalogueSongs` | Curated groupings; internal name stays `catalogue` (#1223) |
 
-Full schema: `appWeb/.sql/schema.sql` (142 `CREATE TABLE` statements). Migrations
+Full schema: `appWeb/.sql/schema.sql` (166 `CREATE TABLE` statements). Migrations
 are NOT auto-applied on deploy — they are run via the web runner at
 `/manage/setup-database` (registry-driven "Apply all pending"; the operator is
 web-only, no CLI/SSH on the shared host).
@@ -1035,15 +1042,14 @@ appWeb/
 │   ├── db_credentials.example.php     # Template (tracked in git)
 │   └── db_credentials.php             # Credentials (NOT in git)
 ├── .sql/
-│   ├── schema.sql                     # Full MySQL schema
+│   ├── schema.sql                     # Full MySQL schema (166 tables)
 │   ├── install.php                    # Interactive table installer
-│   ├── migrate-json.php              # JSON → MySQL migration
-│   ├── migrate-users.php             # User/setlist migration
+│   ├── migrate-*.php                  # Individual, idempotent migrations
+│   ├── migrate-users.php             # Legacy user/setlist migration
 │   ├── cleanup.php                    # Token/session cleanup
-│   ├── backup.php                     # Database backup
+│   ├── backup.php / restore.php       # Database backup / restore
 │   └── .fulldata/
-│       ├── generate-full-sql.php      # One-shot SQL generator
-│       └── ihymns-full.sql            # Pre-built full SQL (~6.8 MB)
+│       └── ihymns-full.sql            # Manually-refreshed schema+data snapshot (~6.8 MB; not auto-regenerated)
 └── public_html/
     ├── includes/
     │   ├── db_mysql.php               # MySQLi connection factory
@@ -1078,8 +1084,8 @@ There is **no server-side JSON fallback** for reads. A DB outage returns a
 themed 503 maintenance page (#1021), never stale data. Offline support is the
 **client PWA cache**:
 - Service-worker-cached song pages for offline viewing
-- The slim song index (`?action=songs_index`) cached client-side for Fuse.js fuzzy search
-- `data/songs.json` is a migration input only, not a runtime read source
+- The slim song index (`?action=songs_index`) cached client-side for the offline-download picker; there is no client-side fuzzy-search index — search itself always hits the live server (#1014/#1015)
+- `songs.json` no longer exists as a tracked file or a runtime input of any kind (#1617)
 
 ### User Groups & Version Access
 
@@ -1165,26 +1171,21 @@ VALUES ('church_basic', 'Church Basic', 15,
     1, 1, 1, 0, 0, 0, 0);
 ```
 
-Then update `checkTierAccess()` in `ccli_validator.php` to include the new tier in the capability matrix, and add the tier name to the `$validTiers` array in the `admin_set_user_tier` API endpoint.
+That's it — no code change needed. `checkTierAccess()` (`ccli_validator.php`) resolves a tier's
+capabilities live from the `tblAccessTiers` row itself (`capsForTierFromRegistry()`), and
+`admin_set_user_tier` validates a tier name against the same live table, not a hardcoded list —
+both were deliberately rewritten (#1352/#1590, #1769 P0) so a curator-created tier works everywhere
+immediately. See CLAUDE.md rule #28. A brand-new *gateable feature* (as opposed to a new tier) is a
+one-line addition to the `TIER_CAPS` registry in `includes/access_tier_validation.php` — never a new
+column and never a second hardcoded matrix.
 
-### Setting Up Pricing / Prerequisites
+### Pricing / payment integration
 
-Pricing and payment integration are managed via `tblUserPurchases`:
-
-| Column | Purpose |
-| --- | --- |
-| `ProductType` | `tier_upgrade`, `songbook_unlock`, `feature_unlock`, `subscription` |
-| `TierGranted` | Which tier this purchase unlocks |
-| `Amount` / `Currency` | Payment amount (GBP default) |
-| `Status` | `active`, `expired`, `refunded`, `cancelled` |
-| `ExpiresAt` | NULL for one-off purchases; date for subscriptions |
-
-To set up a paid tier:
-
-1. Create the tier in `tblAccessTiers`
-2. Configure your payment processor (Stripe, PayPal, etc.)
-3. On successful payment, insert a row into `tblUserPurchases`
-4. Update the user's `AccessTier` to the purchased tier
+There is no payments or purchases table in the current schema — a guessed 2019-vintage
+`tblUserPurchases` shape existed in `schema.sql` for years with no migration that ever created it
+and no code that ever read or wrote it, and was formally dropped in the 2026-07-30 remediation pass.
+A future paid-tier feature designs its own schema from scratch (rule #20 — one-pass, forward-looking)
+rather than resurrecting that placeholder.
 
 ### Restricting Media Access
 

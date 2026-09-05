@@ -14,6 +14,7 @@
 | [External Links & Works](external-links-and-works.md) | Find songs, songbooks and people elsewhere on the web; understand Works (groupings of the same composition across sources) |
 | [Favorites](favorites.md) | Save and manage your favorite songs |
 | [Musical Key, Tempo & Time Signature](musical-keys.md) | See a song's recorded key, tempo and time signature, and how it feeds Transpose |
+| [Set Lists](setlists.md) | Build a running order, follow it hands-free while you lead, and share it with your team |
 | [Setlist Templates & Service Plans](setlist-templates.md) | Reuse the shape of a service and drop your songs into it |
 | [Exporting](exporting.md) | Download song words into your projection software's format |
 | [Live Follow & Live Services](live-follow.md) | Follow a worship leader — or your church's service — live on your own device |

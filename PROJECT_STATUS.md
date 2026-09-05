@@ -10,12 +10,12 @@
 | --- | --- | --- |
 | 📋 Project Plan | ✅ Complete | See [Project_Plan.md](Project_Plan.md) |
 | 🗂 Project Structure | ✅ Complete | Directories, .gitignore, deployment structure |
-| 📖 Help Documentation | ✅ Complete | 14 guides in `help/` + in-app help (25 public topics, 48 admin sections) |
-| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1979 — see GitHub for live open/closed counts |
+| 📖 Help Documentation | ✅ Complete | 15 guides in `help/` + in-app help (25 public topics, 49 admin sections) |
+| 🎫 GitHub Issues | 🟢 Active | Highest issue now #2087 — see GitHub for live open/closed counts |
 | 🔧 Song Data | ✅ Active | ~14,000 songs across 30+ songbooks (live count in `tblSongs` — query the DB, don't trust this file); served **live from MySQL** (DB-direct #1010; the static cache was decommissioned #1020) |
-| 🌐 Web PWA | ✅ Core + Enhanced | Search (Fuse.js), songbooks, lyrics, favourites, themes (Light/Dark/High-contrast/CVD/System #956), deep linking, WCAG 2.1 AA, offline support |
+| 🌐 Web PWA | ✅ Core + Enhanced | Live MySQL search (no client-side corpus — #1014/#1015), songbooks, lyrics, favourites, themes (Light/Dark/High-contrast/CVD/System #956), deep linking, WCAG 2.1 AA, offline support |
 | 🛠 Song Editor | ✅ Complete | `appWeb/public_html/manage/editor/` — **v2 (granular, per-edit) is now the default** (#1601 scope item 2), 302-redirected from the legacy route; the legacy v1 editor is not retired and stays reachable via `?legacy=1`. v2 has a chords box, an Arrangement (running-order) editor, and per-line translation/annotation panels; bulk import (ZIP / VideoPsalm / OpenSong / FreeShow / EasyWorship / iHymns JSON #1633), media uploads, per-component language overrides |
-| 🛠 Admin Portal | ✅ Active | 48 nav-registered admin destinations under `/manage/*`, organised as Dashboard + 6 groups (Songs / Catalogue / Access / People / Operations / Help). People hosts Service Mode (Venues, Service Projection, Lead a Service) + the org-scoped My CCLI Report (#1861); Songs hosts the unified Duplicates & Links page (#1215, absorbed the old song-link-suggestions); Catalogue gained the Tunes registry (#1748); Operations gained the outbound Webhooks surface (#1909) |
+| 🛠 Admin Portal | ✅ Active | 48 nav-registered admin destinations under `/manage/*`, organised as Dashboard + 7 groups (Songs / Song Library / Live Services / People / Access & Permissions / System & Reports / Help — the #1822 pass split Live Services out of People and gave every group a plain-English name). People hosts the org-scoped My CCLI Report (#1861); Songs hosts the unified Find Duplicates page (#1215, absorbed the old song-link-suggestions); Song Library gained the Tunes registry (#1748); System & Reports gained the outbound Webhooks surface (#1909) |
 | 🚀 CI/CD Pipeline | ✅ Complete | 15 workflows: deploy, changelog, release, test, lint, apple, apple-deploy, apple-dmg, auto-merge-alpha, build-android, dependabot-security-backport, language-registry-refresh, maintenance-ha-integrity-audit, maintenance-issues-sweep, promotion-deploy-bridge. Versioning is now **tag-free** (#1963/#1965, extended with the marketing-version/build-number split): `deploy.yml` itself classifies + bumps the committed `MAJOR.MINOR.PATCH` anchor on `alpha` (a `Release: patch` merge footer mints a deliberate patch release; the always-climbing build number is a separate field, injected on every deploy); `release.yml` is dormant (manual-tag-only) and `promotion-deploy-bridge.yml` is back to being just the beta/main deploy bridge, no longer a tag minter |
 | 🍎 Apple App | 🟡 Consolidated, unreleased | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
 | 🤖 Android App | 🟡 Scaffold / in progress | Kotlin / Jetpack Compose — ~12 Kotlin files; scaffold, not yet feature-complete |
@@ -28,7 +28,7 @@
 
 ### Milestone 1: Project Setup & Data Pipeline ✅
 
-Project structure, .gitignore, help docs, GitHub Issues, package.json, song parser, songs.json seed (now a migration **input** only — runtime reads are live MySQL, #1010).
+Project structure, .gitignore, help docs, GitHub Issues, package.json, song parser, songs.json seed (retired entirely, #1617 — runtime reads are live MySQL, #1010).
 
 ### Milestone 2: Web PWA Core ✅
 
@@ -58,7 +58,7 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 ### 2026-06 data-layer & worship program ✅ (highlights)
 
-- **DB-direct read layer** (epic #1010, WS-A–WS-K) — song reads now go **live to MySQL**; the whole-corpus `songs.json` cache / `songs_json` endpoint were removed (WS-J #1020). Scoped reads only: `?action=songs_index` (slim index), editor `?action=songbook_export` (one book), `?action=song_detail` (one record). A DB outage returns a themed **503** (WS-K #1021), never stale JSON. `songs.json` remains a migration **input** only.
+- **DB-direct read layer** (epic #1010, WS-A–WS-K) — song reads now go **live to MySQL**; the whole-corpus `songs.json` cache / `songs_json` endpoint were removed (WS-J #1020). Scoped reads only: `?action=songs_index` (slim index), editor `?action=songbook_export` (one book), `?action=song_detail` (one record). A DB outage returns a themed **503** (WS-K #1021), never stale JSON. `songs.json` is retired entirely (#1617) — there is no tracked corpus file of any kind any more.
 - **Lyrics normalisation** (#1235) — `tblLyricLines` is the **source of truth** for lyric lines (one shared read path `includes/lyric_lines_read.php`, one write path `lyricLinesWriteComponents()`); the `tblSongComponents` `LinesJson`/`ChordsJson`/`NotesJson` columns are a gated shadow being retired.
 - **Duplicate & counterpart detection** (#1215 / #1216) — unified `/manage/duplicate-songs` (absorbed the old `/manage/song-link-suggestions`, now a 302 redirect); shared scorer `includes/song_similarity.php`.
 - **Standard theme vocabulary** (#1152 / #1222) — CCLI / OpenLyrics theme taxonomy seeded into `tblSongTags`; curator canonicalisation on `/manage/tags`.
@@ -195,7 +195,7 @@ container doesn't have.
 
 - **Songs**: ~14,000 across 30+ songbooks (multilingual: English, Afrikaans, Spanish, French, Swahili, Portuguese, and others; live count in `tblSongs` — query the DB, don't trust this file), served **live from MySQL** (DB-direct #1010)
 - **Web PWA**: Feature-complete (core + enhanced + admin portal + editor)
-- **GitHub Issues**: highest issue now #2046 — see GitHub for live open/closed counts
+- **GitHub Issues**: highest issue now #2087 — see GitHub for live open/closed counts
 - **Phase**: ONE (local-catalogue / DB-direct; pre Phase-TWO iLyrics dB API integration)
 - **Version**: 1.3.0 Alpha (authoritative: `includes/infoAppVer.php`) — **tag-free**, Conventional-Commit-driven scheme (#1963 → #1965 → the marketing-version/build-number split, supersedes the retired tag-derived #1899 scheme): the committed `MAJOR.MINOR.PATCH` is the anchor, bumped by `deploy.yml` on `alpha` from a commit-message classifier (`feat:` → minor, a breaking change → major, a whole-line `Release: patch` merge footer → patch, everything else → build-only); the build number is a SEPARATE, always-climbing field (`Version.Build.Number` = `git rev-list --count HEAD`, deploy-injected; `NULL` on an undeployed checkout) shown alongside the version, never folded into it. No git tags, no GitHub Releases
 - **CI/CD**: 15 GitHub Actions workflows live

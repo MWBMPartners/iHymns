@@ -94,6 +94,28 @@ with none of the behind-the-scenes technical detail.
   credit people and works pages now properly names its type, URL, note and
   "Verified" fields; and a couple of small icon-labelling glitches were
   fixed on the musicians page and the favourites list.
+- **See your own notes and highlights on a song** — When you're signed in,
+  you can now mark up any song's words just for yourself: colour-highlight
+  a line, or attach a short note to a line or to the whole song. It's a
+  private layer only you can see — nobody else looking at the same song
+  sees your marks or notes.
+- **Turn pages hands-free while you play** — If you use a Bluetooth foot
+  pedal, or a MIDI foot controller plugged into your device, you can now
+  step forward and back through a song's verses and choruses without
+  touching the screen — handy when your hands are busy with an instrument.
+  Works on a song page and in Presentation mode.
+- **More ways to display chords** — Chords can now be shown as Nashville
+  numbers or as Do-Re-Mi (solfège) instead of plain letters, a capo
+  setting shows you the exact shape to play while the chord name stays
+  correct for however the song actually sounds, an octave marker for
+  singers reading an octave up or down, and — on a wider screen — an
+  optional two-column layout that fits more of a song's chords in view at
+  once. All are personal preferences that stick between visits.
+- **Imports now keep a hymn's exact singing order** — Some worship-software
+  files record a very specific order to sing a song in — perhaps a chorus
+  that repeats between verses, or a verse that's meant to be skipped.
+  Importing a song like that now keeps its intended order instead of just
+  listing its sections in file order.
 
 ## 1.1.0 — 28 August 2026
 
