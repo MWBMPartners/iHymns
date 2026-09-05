@@ -90,17 +90,21 @@ function j(value) {
 }
 
 /** One batched `php -r` call: requires the REAL voice_parts_render.php and
- *  runs every case through the four render functions this commit's lockstep
- *  covers, returning one parallel result set per case group. */
+ *  runs every case through the five render functions this commit's lockstep
+ *  covers (including the round-note function, added after CI's unused-
+ *  function flag on the JS side's `roundKindLabel()` turned up that the JS
+ *  renderer had never had a round-note function at all), returning one
+ *  parallel result set per case group. */
 function runPhpBatch(fixture) {
     const script = [
         'require ' + JSON.stringify(PHP_RENDERER_PATH) + ';',
         '$in = json_decode(file_get_contents("php://stdin"), true);',
-        '$out = ["ariaLabel" => [], "chipsHtml" => [], "runOpenTag" => [], "lineHtml" => []];',
+        '$out = ["ariaLabel" => [], "chipsHtml" => [], "runOpenTag" => [], "lineHtml" => [], "roundNoteHtml" => []];',
         'foreach ($in["runAriaLabelCases"] as $c) { $out["ariaLabel"][] = ihymnsVoiceRunAriaLabel($c["parts"]); }',
         'foreach ($in["chipsHtmlCases"] as $c) { $out["chipsHtml"][] = ihymnsVoiceChipsHtml($c["parts"]); }',
         'foreach ($in["runOpenTagCases"] as $c) { $out["runOpenTag"][] = ihymnsVoiceRunOpenTag($c["parts"]); }',
         'foreach ($in["lineHtmlCases"] as $c) { $out["lineHtml"][] = ihymnsVoiceLineHtml($c["text"], $c["spans"]); }',
+        'foreach ($in["roundNoteHtmlCases"] as $c) { $out["roundNoteHtml"][] = ihymnsVoiceRoundNoteHtml($c["round"]); }',
         'echo json_encode($out);',
     ].join('');
     const result = spawnSync('php', ['-r', script], {
@@ -119,7 +123,7 @@ async function main() {
 
     const fixture = JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8'));
     const {
-        voiceRunAriaLabel, voiceChipsHtml, voiceRunOpenTag, voiceLineHtml,
+        voiceRunAriaLabel, voiceChipsHtml, voiceRunOpenTag, voiceLineHtml, voiceRoundNoteHtml,
     } = await import(pathToFileURL(JS_MODULE_PATH).href);
 
     const jsResults = {
@@ -127,6 +131,7 @@ async function main() {
         chipsHtml: fixture.chipsHtmlCases.map((c) => voiceChipsHtml(c.parts)),
         runOpenTag: fixture.runOpenTagCases.map((c) => voiceRunOpenTag(c.parts)),
         lineHtml: fixture.lineHtmlCases.map((c) => voiceLineHtml(c.text, c.spans)),
+        roundNoteHtml: fixture.roundNoteHtmlCases.map((c) => voiceRoundNoteHtml(c.round)),
     };
     const phpResults = runPhpBatch(fixture);
 
@@ -148,6 +153,7 @@ async function main() {
     checkGroup('chipsHtmlCases', fixture.chipsHtmlCases, phpResults.chipsHtml, jsResults.chipsHtml);
     checkGroup('runOpenTagCases', fixture.runOpenTagCases, phpResults.runOpenTag, jsResults.runOpenTag);
     checkGroup('lineHtmlCases', fixture.lineHtmlCases, phpResults.lineHtml, jsResults.lineHtml);
+    checkGroup('roundNoteHtmlCases', fixture.roundNoteHtmlCases, phpResults.roundNoteHtml, jsResults.roundNoteHtml);
 
     console.log('\n--- MUTATION PROOF: the comparison itself can fail, not just happen to pass ---');
     {

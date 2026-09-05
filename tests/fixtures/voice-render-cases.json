@@ -55,5 +55,44 @@
       "expect": "<span class=\"lyric-voice-span\" role=\"group\" aria-roledescription=\"Men part\" data-voice-part=\"11\" data-voice-kind=\"male\" data-voice-bg=\"0\" data-voice-start=\"0\" data-voice-end=\"5\">abcde</span>fghij" },
     { "name": "an empty line with a stale span is dropped safely, never a crash", "text": "", "spans": [ {"start": 0, "end": 1, "part": {"id": 10, "kind": "female", "label": "Women", "bg": false}} ],
       "expect": "" }
+  ],
+
+  "roundNoteHtmlCases": [
+    { "name": "plain three-voice round, entries counted in lines",
+      "round": { "id": 501, "kind": "round", "lineIds": [100, 101, 102, 103], "voices": [
+        {"number": 1, "entryBasis": "lines", "entryLines": 0, "entryMs": null},
+        {"number": 2, "entryBasis": "lines", "entryLines": 2, "entryMs": null},
+        {"number": 3, "entryBasis": "lines", "entryLines": 4, "entryMs": null}
+      ] },
+      "expect": "<div class=\"lyric-round-note\" role=\"note\" aria-label=\"Round for 3 voices. Voice 2 enters 2 lines after Voice 1. Voice 3 enters 4 lines after Voice 1.\" data-round-id=\"501\"><i class=\"fa-solid fa-rotate me-1\" aria-hidden=\"true\"></i>Round &middot; 3 voices &middot; Voice 2 enters after 2 lines; Voice 3 enters after 4 lines</div>" },
+
+    { "name": "a voice whose entry is expressed in milliseconds, not lines (the 'ms' timing basis)",
+      "round": { "id": 502, "kind": "canon", "lineIds": [200, 201], "voices": [
+        {"number": 1, "entryBasis": "lines", "entryLines": 0, "entryMs": null},
+        {"number": 2, "entryBasis": "ms", "entryLines": 0, "entryMs": 4300}
+      ] },
+      "expect": "<div class=\"lyric-round-note\" role=\"note\" aria-label=\"Canon for 2 voices. Voice 2 enters at 0:04 after Voice 1.\" data-round-id=\"502\"><i class=\"fa-solid fa-rotate me-1\" aria-hidden=\"true\"></i>Canon &middot; 2 voices &middot; Voice 2 enters at 0:04</div>" },
+
+    { "name": "a round where the middle voice has nothing worth saying (entryLines 0, no entryMs) -- it is counted but gets no clause",
+      "round": { "id": 503, "kind": "partner-song", "lineIds": [300, 301, 302], "voices": [
+        {"number": 1, "entryBasis": "lines", "entryLines": 0, "entryMs": null},
+        {"number": 2, "entryBasis": "lines", "entryLines": 0, "entryMs": null},
+        {"number": 3, "entryBasis": "lines", "entryLines": 3, "entryMs": null}
+      ] },
+      "expect": "<div class=\"lyric-round-note\" role=\"note\" aria-label=\"Partner song for 3 voices. Voice 3 enters 3 lines after Voice 1.\" data-round-id=\"503\"><i class=\"fa-solid fa-rotate me-1\" aria-hidden=\"true\"></i>Partner song &middot; 3 voices &middot; Voice 3 enters after 3 lines</div>" },
+
+    { "name": "a 'beats' basis voice is described via its guaranteed entryLines fallback (also proves the singular 'line' wording)",
+      "round": { "id": 505, "kind": "round", "lineIds": [400, 401], "voices": [
+        {"number": 1, "entryBasis": "lines", "entryLines": 0, "entryMs": null},
+        {"number": 2, "entryBasis": "beats", "entryLines": 1, "entryBeats": 4, "entryMs": null}
+      ] },
+      "expect": "<div class=\"lyric-round-note\" role=\"note\" aria-label=\"Round for 2 voices. Voice 2 enters 1 line after Voice 1.\" data-round-id=\"505\"><i class=\"fa-solid fa-rotate me-1\" aria-hidden=\"true\"></i>Round &middot; 2 voices &middot; Voice 2 enters after 1 line</div>" },
+
+    { "name": "a round covering no lines at all renders nothing (an inconsistent/un-migrated round -- never point a note at nothing)",
+      "round": { "id": 506, "kind": "round", "lineIds": [], "voices": [
+        {"number": 1, "entryBasis": "lines", "entryLines": 0, "entryMs": null},
+        {"number": 2, "entryBasis": "lines", "entryLines": 2, "entryMs": null}
+      ] },
+      "expect": "" }
   ]
 }

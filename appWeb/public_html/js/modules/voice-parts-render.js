@@ -92,6 +92,21 @@ function roundKindLabel(kind) {
     return 'Round';
 }
 
+/**
+ * ELI5: turn a whole number of milliseconds into a clock reading like
+ * "0:04" or "1:23" — the twin of `_ihymnsVoiceFormatMs()`. Only used inside
+ * a round note's "at 0:04" clause, for a voice whose entry point is known
+ * in real time (the `ms` timing basis) rather than counted in lines.
+ * @param {number} ms
+ * @returns {string}
+ */
+function formatMs(ms) {
+    const totalSeconds = Math.round(Math.max(0, ms) / 1000);
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+}
+
 /* ---------------------------------------------------------------------
  * VOICE RUNS + SPANS
  * ------------------------------------------------------------------ */
@@ -379,4 +394,78 @@ export function renderComponentLinesHtml(comp, opts = {}) {
         }
     });
     return html;
+}
+
+/**
+ * ELI5: the small note block shown above the FIRST line of a round —
+ * "Round · 2 voices · Voice 2 enters after 2 lines". The twin of
+ * `ihymnsVoiceRoundNoteHtml()`; see that function's PHP doc-block for the
+ * full "why". Was previously MISSING here entirely — `roundKindLabel()`
+ * above sat unused because nothing called it, and a round added to a set
+ * list or a printed sheet silently lost the one instruction that tells the
+ * singers how to actually perform it (#2073 follow-up).
+ *
+ * DETAILED: one visible clause per voice that actually has an entry offset
+ * worth mentioning — voice 1 always enters at 0, so it is never named, and
+ * any OTHER voice with `entryLines <= 0` and no `entryMs` is treated the
+ * same way ("nothing worth saying"). A voice whose basis is `'beats'` is
+ * NOT given its own clause shape — it falls into the same branch as a
+ * plain `'lines'` voice and is described using its `entryLines` fallback
+ * (every voice always carries one, regardless of basis — see
+ * `lyricRoundsValidateVoicesShape()`'s doc-block in `lyric_rounds.php`, "the
+ * guaranteed fallback the pure timeline reads when a stronger basis isn't
+ * computable"). Only `'ms'` gets its own real-time "at 0:04" wording. The
+ * `aria-label` says the same thing in a fuller sentence for a screen reader
+ * ("Round for 2 voices. Voice 2 enters 2 lines after Voice 1."). Returns ''
+ * when the round covers no lines at all (an inconsistent/un-migrated round
+ * — never render a note that points at nothing).
+ *
+ * @param {{id?:number,kind?:string,lineIds?:number[],voices?:Array<{number:number,entryBasis?:string,entryLines?:number,entryMs?:?number}>}} round
+ * @returns {string}
+ */
+export function voiceRoundNoteHtml(round) {
+    const r = round || {};
+    const lineIds = Array.isArray(r.lineIds) ? r.lineIds : [];
+    if (lineIds.length === 0) {
+        return '';
+    }
+    const voices = Array.isArray(r.voices) ? r.voices : [];
+    const n = voices.length;
+    const kindLabel = roundKindLabel(String(r.kind || 'round'));
+
+    const visibleClauses = [];
+    const ariaClauses = [];
+    voices.forEach((v) => {
+        const entryLines = (v.entryLines ?? 0) | 0;
+        const entryMs = (v.entryMs === undefined || v.entryMs === null) ? null : (v.entryMs | 0);
+        const basis = String(v.entryBasis || 'lines');
+        if (entryLines <= 0 && entryMs === null) {
+            return; // voice 1 (or any voice with nothing worth saying)
+        }
+        const num = (v.number ?? 0) | 0;
+        if (basis === 'ms' && entryMs !== null) {
+            const when = `at ${formatMs(entryMs)}`;
+            visibleClauses.push(`Voice ${num} enters ${when}`);
+            ariaClauses.push(`Voice ${num} enters ${when} after Voice 1`);
+        } else {
+            const plural = entryLines === 1 ? 'line' : 'lines';
+            visibleClauses.push(`Voice ${num} enters after ${entryLines} ${plural}`);
+            ariaClauses.push(`Voice ${num} enters ${entryLines} ${plural} after Voice 1`);
+        }
+    });
+
+    const voicesWord = n === 1 ? 'voice' : 'voices';
+    let visible = `${escapeHtml(kindLabel)} &middot; ${n} ${escapeHtml(voicesWord)}`;
+    if (visibleClauses.length > 0) {
+        visible += ` &middot; ${escapeHtml(visibleClauses.join('; '))}`;
+    }
+
+    let ariaLabel = `${kindLabel} for ${n} ${voicesWord}.`;
+    if (ariaClauses.length > 0) {
+        ariaLabel += ` ${ariaClauses.join('. ')}.`;
+    }
+
+    const roundId = (r.id ?? 0) | 0;
+    return `<div class="lyric-round-note" role="note" aria-label="${escapeHtml(ariaLabel)}" data-round-id="${roundId}">`
+        + `<i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>${visible}</div>`;
 }
