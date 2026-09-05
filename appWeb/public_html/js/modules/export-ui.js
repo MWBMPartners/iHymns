@@ -57,6 +57,14 @@
  * ========================================================================== */
 
 import { apiFetch } from '../utils/api-client.js';
+/* Side-effect only (#1721): hangs the shared filename helpers off
+   `window.iHymnsExportFilename`, which manage/editor/format-export.js's
+   baseFilename() reads so a song exported from this public page gets the
+   SAME filename it would from the editor — no binding is used directly
+   here, format-export.js reaches the global itself (see its own comment).
+   Loaded up front (not lazily inside loadExportLibs() below) so it's ready
+   the moment format-export.js is, whichever export path fires first. */
+import './export-filename.js';
 
 let _libsPromise = null;
 

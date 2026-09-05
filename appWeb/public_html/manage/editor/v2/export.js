@@ -13,6 +13,17 @@
  *    menuEl : the <ul class="dropdown-menu"> to populate.
  * ========================================================================== */
 
+/* Side-effect only (#1721): loading this module hangs its filename helpers
+   off `window.iHymnsExportFilename`, which format-export.js's baseFilename()
+   reads so an exported song's file is named the SAME way here as it is by
+   the editor's other "Export song" (raw JSON) feature and the public song
+   page. No binding is imported because nothing in THIS file calls these
+   functions directly — format-export.js does, via the global, since it's a
+   plain classic <script> that can't `import` an ES module itself (see its
+   own comment on baseFilename()). This mirrors tags-tab.js's identical
+   side-effect import of combobox-a11y.js. */
+import '../../../js/modules/export-filename.js';
+
 /* v2 store slices -> the flat song object the legacy serializers expect:
    {title, number, songbook, songbookName, language, copyright, ccli, tuneName,
     writers:[name], composers:[name], arrangers:[name], artists:[name],
@@ -75,6 +86,18 @@ export function mountExportMenu(menuEl, opts) {
         ['VideoPsalm',     fmt ? () => runFmt('videoPsalm') : null],
         ['FreeShow',       fmt ? () => runFmt('freeShow') : null],
         ['Proclaim',       fmt ? () => runFmt('proclaim') : null],
+        /* ChordPro (#2068) — format-export.js has always built this format
+           (window.iHymnsFormatExport.chordPro) and it's offered on the
+           PUBLIC song/songbook Export menu (includes/partials/export-menu.php),
+           but this ITEMS array never had a row for it, so the v2 editor's
+           own menu simply never offered it — no error, no disabled item,
+           just a format that quietly didn't exist here. (The v1 editor's
+           own export list, manage/editor/index.php's bindFormat() calls,
+           is missing it too, for the same reason — out of scope for this
+           file, filed separately.) tests/test-v2-export-menu-formats.js
+           now checks this list against format-export.js's real format keys
+           so a future format can't go missing the same way twice. */
+        ['ChordPro',       fmt ? () => runFmt('chordPro') : null],
         ['EasyWorship (beta)', () => exportEasyWorship()],
     ];
 

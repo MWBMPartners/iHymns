@@ -40,8 +40,55 @@
             .slice(0, 120) || 'Untitled';
     }
 
-    /* "<Number> <Title>" so files sort numerically; falls back to title. */
+    /**
+     * Per-song filename, WITHOUT extension (#1721/#2068).
+     *
+     * ELI5: this is the one place that decides what an exported song's
+     * file gets called — "042 (CIS) - Amazing Grace (New Britain)" rather
+     * than a computer-ish string. Every format below (OpenSong, ChordPro,
+     * VideoPsalm, …) calls this same function, so they already agree with
+     * EACH OTHER; this makes them also agree with the app's other export
+     * feature (the raw single-song JSON export in the editor, and the
+     * whole-songbook bundle on /manage/songbooks), which already used the
+     * richer "<padded#> (<ABBR>) - <Title> (<Tune>)" convention.
+     *
+     * Detail: `js/modules/export-filename.js` is that ONE shared
+     * convention (`songExportFilename()`) — but it's an ES module and this
+     * file is a plain classic `<script>` (kept that way deliberately: this
+     * whole module is `require()`d as CommonJS by a dozen Node tests, e.g.
+     * tests/test-chordpro-export.js, and gaining a top-level `import`
+     * statement would break every one of them). A classic script can't
+     * `import` an ES module, so instead this reaches for the SAME module
+     * via the plain global it optionally exposes itself as,
+     * `window.iHymnsExportFilename` — exactly the same pattern this file's
+     * `buildZip()` above already uses to reach `window.iHymnsProPresenter`.
+     *
+     * Whichever page loaded this script is responsible for ALSO loading
+     * export-filename.js first: `manage/editor/v2/export.js` and the
+     * public `js/modules/export-ui.js` both do, as a side-effect `import`
+     * at the top of each — see the comment there. When the global isn't
+     * there (today, only the legacy v1 editor doesn't load it — #1721
+     * remainder, tracked separately since that page is out of scope for
+     * this fix) this degrades to the OLD "<Number> <Title>" naming that
+     * has always been here, rather than throwing — a page that hasn't
+     * picked up the shared helper keeps working exactly as it did before.
+     *
+     * `songbookSongs` (the array songExportFilename() uses to compute the
+     * zero-padding width) isn't available at any of format-export.js's own
+     * call sites — a single-song export here never has the REST of its
+     * songbook loaded alongside it — so an empty array is passed, which
+     * is documented there as "fall back to the 3-digit floor".
+     */
     function baseFilename(song) {
+        var helper = global.iHymnsExportFilename;
+        if (helper && typeof helper.songExportFilename === 'function') {
+            return helper.songExportFilename({
+                number:   song.number,
+                songbook: song.songbook,
+                title:    song.title,
+                tuneName: song.tuneName
+            }, []);
+        }
         var num = (song.number != null && song.number !== '') ? String(song.number) : '';
         var title = song.title || 'Untitled';
         return sanitizeFilename(num ? (num + ' ' + title) : title);

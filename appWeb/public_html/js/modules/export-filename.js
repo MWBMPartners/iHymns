@@ -183,3 +183,41 @@ export function songbookExportFilename(songbook) {
     }
     return `${name} (${abbr}) [Bundle]`;
 }
+
+/**
+ * Also expose these same helpers as a plain global,
+ * `window.iHymnsExportFilename` — for a script that loads this file as an
+ * ordinary classic `<script>` (or otherwise can't `import` an ES module)
+ * rather than as a module (#1721/#2068 follow-up).
+ *
+ * ELI5: this file is written the modern "import/export" way, but one of
+ * its consumers — `manage/editor/format-export.js`, the code that actually
+ * builds OpenSong/ChordPro/VideoPsalm/… files — is an old-style plain
+ * script that CAN'T use `import`. Rather than teach it to, or copy this
+ * file's logic into it a second time, this one extra line also hangs the
+ * same functions off `window` so that old-style script can reach them the
+ * way it already reaches its OTHER sibling helper, `window.iHymnsProPresenter`
+ * (see format-export.js's own `buildZip()`).
+ *
+ * Detail: `manage/editor/v2/export.js` and the public `js/modules/
+ * export-ui.js` both `import` this module as one of their own first lines
+ * purely for this side effect, so by the time either page's Export menu
+ * can be clicked, `window.iHymnsExportFilename` already exists and
+ * format-export.js's `baseFilename()` picks it up — see the long comment
+ * there for exactly how, and for the one page (the legacy v1 editor) that
+ * doesn't yet do this and therefore still gets the old, unpadded filename.
+ *
+ * Guarded with `typeof window !== 'undefined'` so importing this module
+ * under Node (every test in tests/test-export-filename.js) is a no-op here
+ * — there is no `window` under Node, so this block never runs there and
+ * none of those tests are affected.
+ */
+if (typeof window !== 'undefined') {
+    window.iHymnsExportFilename = {
+        sanitiseSegment,
+        paddingWidthFor,
+        padNumber,
+        songExportFilename,
+        songbookExportFilename,
+    };
+}
