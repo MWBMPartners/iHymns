@@ -607,25 +607,30 @@ class iHymnsApp {
                     break;
                 case 'ArrowLeft':
                 case 'ArrowRight':
-                    /* #2065 — not while a presentation overlay is open. present-mode.js binds
+                    /* #2065 — not while the presentation overlay is open. present-mode.js binds
                        these same keys via its own document listener, and preventDefault() there
-                       cannot stop THIS earlier-registered sibling, so one press advanced a slide
-                       AND walked the background page. display.js's "P" overlay binds no arrows and
-                       navigating under it closed it via router cleanup. Same double-fire class the
-                       PageDown/PageUp case below already guards. */
+                       cannot stop THIS earlier-registered sibling, so one press would both advance
+                       a slide AND walk the background page. Same double-fire class the
+                       PageDown/PageUp case below guards against (#1714 item 5 made this a single
+                       check again — there is now exactly one presentation overlay, not two). */
                     if (document.querySelector('.presentation-overlay')) break;
                     /* Previous/next song (if on song page) */
                     this.navigateSongDirection(e.key === 'ArrowLeft' ? 'prev' : 'next');
                     break;
                 case 'p':
                 case 'P':
-                    /* Toggle presentation mode (#125) */
+                    /* Toggle presentation mode (#125) — opens/closes the ONE
+                       presentation overlay (present-mode.js, #1714 item 5). */
                     this.display.togglePresentationMode();
                     break;
                 case 'b':
                 case 'B':
                     /* Blank/black the screen while presenting (#1273). No-ops
-                       elsewhere — toggleBlankScreen checks for the overlay. */
+                       elsewhere, and no-ops on the song page too unless the
+                       presentation overlay is actually open — toggleBlankScreen()
+                       reaches into it directly rather than guessing at an id
+                       (#1714 item 5: that guess used to miss the overlay people
+                       actually use, so "B" silently did nothing). */
                     this.display.toggleBlankScreen();
                     break;
                 case 'l':
@@ -669,15 +674,16 @@ class iHymnsApp {
                        existence check the 's' auto-scroll case above
                        uses) so native PageUp/PageDown paging is preserved
                        everywhere else (search results, admin tables, long
-                       articles). Also skipped while present-mode.js's OWN
-                       slide-by-slide overlay is open: that overlay wires
-                       these SAME two keys (added below) to its own
-                       next()/prev() via its own document keydown
-                       listener, and doesn't remove '.song-lyrics' from the
-                       DOM behind it — without this check one keypress
-                       would fire both handlers at once. */
+                       articles). Also skipped while the presentation
+                       overlay is open (#1714 item 5 simplified this back to
+                       one check, same as ArrowLeft/Right above — there is
+                       now exactly one overlay, and it always wires these
+                       SAME two keys to its own next()/prev() via its own
+                       document keydown listener, without removing
+                       '.song-lyrics' from the DOM behind it — without this
+                       check one keypress would fire both handlers at once). */
                     if (document.querySelector('.song-lyrics')
-                        && !document.querySelector('.presentation-overlay .present-nav')) {
+                        && !document.querySelector('.presentation-overlay')) {
                         e.preventDefault();
                         this.display.jumpToSection(e.key === 'PageDown' ? 1 : -1);
                     }

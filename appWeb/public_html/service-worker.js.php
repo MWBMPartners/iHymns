@@ -182,17 +182,34 @@ const PAGES_CACHE = 'ihymns-pages-v<?= $swCacheKey ?>-r' + SW_CACHE_REVISION;
  * window. The trim is confined to this bucket precisely so it can never reach
  * the app shell in CACHE_VERSION (evicting `/js/app.js` to make room for a
  * search result would be a spectacular own goal) — and `swPagesKeysToTrim()`
- * pins the two entry points a user needs in order to browse offline at all.
+ * pins the entry points a user needs in order to browse offline at all
+ * (home, songbooks, setlist, favorites — #2082).
  */
 const PAGES_CACHE_LIMIT = 120;
 
 /**
  * Which `/api?page=…` fragments are worth keeping for offline navigation.
- * Deliberately small: these are the four routes that make a download
- * BROWSABLE. Everything else is either per-user (settings, favourites) or a
- * long tail nobody reaches without a network anyway.
+ * Deliberately small: these are the routes that make a download BROWSABLE.
+ * Everything else is either genuinely per-user (settings — its template reads
+ * `$currentUser` and renders differently signed-in vs signed-out) or a long
+ * tail nobody reaches without a network anyway.
+ *
+ * #2082 — 'setlist' and 'favorites' ADDED. They were left off the original
+ * four (#1597 RC3) on the assumption they were "per-user" like settings, but
+ * their page templates (includes/pages/setlist.php, favorites.php) render a
+ * plain static shell with no server-side per-user read at all — no
+ * `$currentUser`, no `getAuthenticatedUser()`, no `$_SESSION` — because the
+ * actual set-list/favourites data lives entirely in the BROWSER's
+ * localStorage and is filled in by client JS after the shell loads. So the
+ * shell is exactly as shareable as home/songbooks, but a worship leader who
+ * had saved every song in Sunday's set list for offline use still hit the
+ * red "Failed to load page" alert the moment they opened it with no signal —
+ * the one page they most needed at that exact moment. See
+ * tests/test-offline-cache-policy.js's "no per-user marker" guard, which
+ * checks this claim against the real template source so it can never go
+ * silently stale again.
  */
-const OFFLINE_PAGE_FRAGMENTS = ['home', 'songbooks', 'songbook', 'search'];
+const OFFLINE_PAGE_FRAGMENTS = ['home', 'songbooks', 'songbook', 'search', 'setlist', 'favorites'];
 
 /**
  * Recently-viewed songs cache (#105).
@@ -387,10 +404,13 @@ function swKeysToTrim(keys, limit) {
 /**
  * The page fragments to delete so the fragment bucket fits its cap.
  *
- * Same oldest-first rule as swKeysToTrim(), except `page=home` and
- * `page=songbooks` are PINNED: they are the two entry points a user needs in
- * order to browse offline at all, and evicting them to make room for the 121st
- * search result would re-create RC3 by the back door.
+ * Same oldest-first rule as swKeysToTrim(), except `page=home`, `page=songbooks`,
+ * `page=setlist` and `page=favorites` are PINNED: they are the entry points a
+ * user needs in order to browse offline at all, and evicting them to make room
+ * for the 121st search result would re-create RC3 by the back door. #2082
+ * added setlist/favorites to the pin list alongside home/songbooks — a set
+ * list is exactly the kind of thing someone opens with no signal, so it must
+ * never be the one evicted to make room for a stale search result.
  *
  * @param {Array<Request|{url:string}>} keys
  * @param {number} limit
@@ -399,7 +419,7 @@ function swKeysToTrim(keys, limit) {
 function swPagesKeysToTrim(keys, limit) {
     const excess = keys.length - limit;
     if (excess <= 0) return [];
-    const pinned = ['home', 'songbooks'];
+    const pinned = ['home', 'songbooks', 'setlist', 'favorites'];
     return keys
         .filter(k => pinned.indexOf(swOfflinePageFragment(k && k.url ? k.url : k)) === -1)
         .slice(0, excess);
@@ -1281,8 +1301,9 @@ self.addEventListener('fetch', (event) => {
     if (url.pathname.startsWith('/api')) {
         const isSongPage = url.searchParams.get('page') === 'song';
         const songId = url.searchParams.get('id');
-        /* Non-null for home / songbooks / songbook / search — the fragments
-           that make an offline download actually browsable. */
+        /* Non-null for home / songbooks / songbook / search / setlist /
+           favorites — the fragments that make an offline download actually
+           browsable (#2082 added the last two). */
         const offlinePage = swOfflinePageFragment(event.request.url);
         /* `cache: 'no-store'` bypasses the browser HTTP cache so the
          * SW's network-first guarantee actually delivers a fresh

@@ -828,16 +828,20 @@ $transformFilesByTable = ddlScanTransformFiles($migrationFiles);
  * table, and the drift being tolerated is a property of the table's shape,
  * not of the file). Every entry was verified by hand against schema.sql
  * before being added here — none of these are "probably fine", each is a
- * specific, named difference (see 'why'). Three of the seven are a single
+ * specific, named difference (see 'why'). Three of the six are a single
  * missing `ON UPDATE CASCADE` on one FK each (harmless on a running install
  * — MySQL just won't cascade a SongId rename, which this app never does —
  * but still worth a follow-up ALTER so a fresh install and a migrated one
- * agree). tblOrganisationLicences is the one entry that is genuinely risky
- * (see its own 'why') and deserves its own careful migration, not a quick
- * comment copy. tblLyricLineVocalParts/tblLyricWordVocalParts are in a
- * migration this task was explicitly told not to touch (a sibling piece of
- * work already has it open) — grandfathering, not fixing, is deliberate
- * there.
+ * agree). tblLyricLineVocalParts/tblLyricWordVocalParts are in a migration
+ * this task was explicitly told not to touch (a sibling piece of work
+ * already has it open) — grandfathering, not fixing, is deliberate there.
+ * (tblOrganisationLicences — the entry that WAS here and was genuinely
+ * risky, a DATE-vs-DATETIME expiry that gates CCLI access — is resolved:
+ * #2078's migrate-reconcile-organisation-licences-schema.php is a LATER,
+ * data-aware ALTER that brings an already-migrated install's shape into
+ * line with schema.sql's, so this test's own LATER-TRANSFORM-EXEMPT rule
+ * now exempts the table entirely rather than comparing it — see that
+ * script's doc-block for the full data-safety reasoning.)
  *
  * @var array<string, array{count:int, why:string}>
  */
@@ -853,10 +857,6 @@ $allow = [
     'tblWorkSongs' => [
         'count' => 1,
         'why'   => "migrate-works.php's fk_work_song_song FK omits ON UPDATE CASCADE; schema.sql's copy has it. Same shape and same reasoning as tblSongAlternativeTitles's fk_alt_song above.",
-    ],
-    'tblOrganisationLicences' => [
-        'count' => 12,
-        'why'   => 'migrate-organisation-licences.php genuinely drifted from schema.sql: LicenceNumber is a wider, nullable, no-default VARCHAR(255) in the migration vs a NOT-NULL VARCHAR(100) DEFAULT \'\' in schema.sql; ExpiresAt/CreatedAt/UpdatedAt are DATE/DATETIME/DATETIME in the migration vs TIMESTAMP in schema.sql; Notes has no DEFAULT in the migration; LicenceType has no COMMENT in the migration; and the migration\'s own index/constraint names (uk_OrgLicence, idx_OrganisationId, fk_OrgLicences_Org) do not match schema.sql\'s (uniq_OrgLicence, idx_LicenceType + idx_IsActive, fk_OrgLicence_Org). A live install that ran this migration has the OLD shape; reconciling it needs a real ALTER TABLE thought through for existing data (a DATE-to-TIMESTAMP change and a NULL-to-NOT-NULL tightening both need a data pass first), not a text copy — flagged for its own follow-up, not fixed here.',
     ],
     'tblSongArtists' => [
         'count' => 2,

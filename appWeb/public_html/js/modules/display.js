@@ -5,17 +5,33 @@
  *
  * PURPOSE:
  * Provides per-song display controls: font size adjustment, line
- * spacing, verse number toggle, chorus highlighting, presentation
- * mode (fullscreen), and auto-scroll. Settings persist in localStorage.
+ * spacing, verse number toggle, chorus highlighting, and auto-scroll.
+ * Settings persist in localStorage.
+ *
+ * PRESENTATION MODE MOVED OUT (#1714 item 5, 2026-09): this file used to
+ * build its OWN full-screen presentation overlay — a whole-song scrolling
+ * clone with no arrow-key navigation — as a SEPARATE thing from
+ * present-mode.js's overlay (the "Present" toolbar button's one-section-
+ * at-a-time view with arrow keys, a focus trap, foot-pedal and swipe
+ * support). Two overlays meant the "P" key opened the worse one, and the
+ * global "B" key looked up an id (`#presentation-overlay`) that the good
+ * overlay never set — so blanking the screen silently did nothing while
+ * actually presenting. There is now exactly ONE presentation overlay
+ * (present-mode.js), and this file's job is just to call into it — the
+ * three thin wrappers below (`togglePresentationMode()`,
+ * `toggleBlankScreen()`, the presentation-button click in
+ * `bindToolbarEvents()`) and the presentation-aware half of `cleanup()`.
+ * They all dynamically `import('./present-mode.js')` rather than a static
+ * top-level import, so this file loading (eagerly, at app boot) does not
+ * also force-load the presentation module on every page that never
+ * presents anything — see `cleanup()`'s own comment for how it avoids
+ * paying that import even once on a typical navigation.
+ * @see js/modules/present-mode.js the ONE overlay, and its own header note
+ *      on the merge.
+ * @see tests/test-presentation-overlay-merge.js the tree-derived guard
+ *      that keeps this from splitting back into two overlays.
  */
-import { escapeHtml } from '../utils/html.js';
 import { STORAGE_DISPLAY } from '../constants.js';
-/* a11y audit M2 (2026-08-30): the presentation overlay had role="dialog"
-   but no focus management at all — adopts the shared recipe already used
-   by present-mode.js (the model implementation) and js/utils/dialog-a11y.js
-   (the extracted, reusable version of that same recipe). See
-   enterPresentationMode() below. */
-import { openModalDialog } from '../utils/dialog-a11y.js';
 /* #1267 — jumpToSection()'s announce + reduce-motion handling deliberately
    reuses the SAME two helpers service-follow.js's _scrollToComponent()
    already uses for an almost-identical "scroll to a lyric section" job,
@@ -85,8 +101,9 @@ export class Display {
         /** @type {boolean} Whether auto-scroll is active */
         this.autoScrollActive = false;
 
-        /** @type {number|null} setInterval id for the pre-service countdown (#1273) */
-        this.countdownTimer = null;
+        /* The pre-service countdown timer moved to present-mode.js with the
+           rest of presentation mode (#1714 item 5) — it lives there now,
+           scoped to one open overlay, not on this always-alive instance. */
 
         /** Default display preferences */
         this.defaults = {
@@ -351,9 +368,14 @@ export class Display {
             this.toggleAutoScroll();
         });
 
-        /* Presentation mode */
+        /* Presentation mode (#1714 item 5) — this button and the "Present"
+           toolbar button (present-mode.js's own #btn-present) now open the
+           exact same overlay; see this file's header note. Dynamically
+           imported so this always-eager toolbar-binding code doesn't force
+           the presentation module to load on every song page visit, only
+           on the ones where someone actually asks to present. */
         document.getElementById('display-present-btn')?.addEventListener('click', () => {
-            this.enterPresentationMode(lyricsEl);
+            import('./present-mode.js').then((m) => m.openPresentMode());
         });
     }
 
@@ -395,19 +417,16 @@ export class Display {
     }
 
     /**
-     * Toggle presentation mode from keyboard (#125).
+     * Toggle presentation mode from the keyboard (#125) — the "P" key,
+     * wired in app.js's keydown switch. Delegates entirely to
+     * present-mode.js (#1714 item 5): that module decides whether to open
+     * or close, since it's the one holding the "is anything open right
+     * now?" state. Dynamically imported (not a static top-level import) so
+     * loading this always-eager module doesn't also force-load the
+     * presentation module for a page that never presents anything.
      */
     togglePresentationMode() {
-        const overlay = document.getElementById('presentation-overlay');
-        if (overlay) {
-            /* Routes through the SAME close() as every other dismiss path
-               (a11y audit M2) so pressing "P" to close also restores
-               focus + un-inerts the background. */
-            this._closePresentation();
-        } else {
-            const lyricsEl = document.querySelector('.song-lyrics');
-            if (lyricsEl) this.enterPresentationMode(lyricsEl);
-        }
+        import('./present-mode.js').then((m) => m.togglePresentMode());
     }
 
     /** Apply font size to lyrics element */
@@ -574,39 +593,31 @@ export class Display {
      * no keystrokes at all) both call this method directly rather than
      * each re-implementing the scroll/scan logic.
      *
-     * Targets whichever lyrics surface is actually on screen: THIS
-     * module's own fullscreen "Presentation mode" overlay
-     * (`#presentation-overlay .presentation-lyrics` — the "P" key, a
-     * scrolling clone of the whole song; distinct from present-mode.js's
-     * SEPARATE slide-by-slide `.present-lyrics` overlay, which owns its
-     * own Prev/Next and is never touched here) when open, otherwise the
-     * in-page `.song-lyrics`. No-ops when neither exists — this is called
-     * from global key/MIDI handlers with no per-page guard of their own
-     * beyond what they already check before calling it.
+     * Targets the in-page `.song-lyrics`. No-ops when it isn't there — this
+     * is called from global key/MIDI handlers with no per-page guard of
+     * their own beyond what they already check before calling it.
+     *
+     * Presentation mode is deliberately NOT one of the surfaces this
+     * targets (#1714 item 5): present-mode.js's overlay shows one section
+     * at a time and steps between them via its OWN PageDown/PageUp handling
+     * (its `onKey`), and both app.js's keydown case and midi-input.js's
+     * `_dispatch()` already check for that overlay FIRST and route to its
+     * own Prev/Next before ever reaching this method — see either of their
+     * own comments. This method's job is only the plain page.
      *
      * @param {1|-1} dir +1 = next section, -1 = previous section.
      */
     jumpToSection(dir) {
-        const overlay = document.getElementById('presentation-overlay');
-        const surface = overlay
-            ? overlay.querySelector('.presentation-lyrics')
-            : document.querySelector('.song-lyrics');
+        const surface = document.querySelector('.song-lyrics');
         if (!surface) return;
 
         const comps = Array.from(surface.querySelectorAll('.lyric-component'));
         if (comps.length === 0) return;
 
-        /* Coordinate space for nextSectionIndex(): the presentation
-           overlay scrolls ITSELF (overflow-y: auto, position: fixed, top:
-           0 — app.css), so a child's absolute position within it is
-           `rect.top + overlay.scrollTop` (the overlay's own box never
-           moves on screen — only its content does). The in-page lyrics
-           scroll the document instead, the same element startAutoScroll()
-           above already uses — same formula, `window.scrollY` in place of
-           the overlay's own scrollTop. */
-        const scrollY = overlay
-            ? overlay.scrollTop
-            : (window.scrollY || document.documentElement.scrollTop || 0);
+        /* Coordinate space for nextSectionIndex(): the in-page lyrics scroll
+           the document, the same element startAutoScroll() above already
+           uses. */
+        const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
         const tops = comps.map((el) => el.getBoundingClientRect().top + scrollY);
 
         const targetIdx = nextSectionIndex(tops, scrollY, dir);
@@ -630,280 +641,32 @@ export class Display {
     }
 
     /* =====================================================================
-     * PRESENTATION MODE
+     * PRESENTATION MODE — moved to present-mode.js (#1714 item 5)
+     *
+     * `enterPresentationMode()`, `exitPresentationMode()`,
+     * `_closePresentation()`, `toggleBlankScreen()` (the old body),
+     * `startCountdown()`, `stopCountdown()` and `_formatCountdown()` all
+     * lived here, building this file's OWN full-screen overlay. They are
+     * gone outright, not deprecated in place — this file's header explains
+     * why, and present-mode.js is where the blank-screen control and the
+     * countdown live now (`toggleBlank()`/`startCountdown()`/
+     * `stopCountdown()`/`formatCountdown()` there). `togglePresentationMode()`
+     * above and `toggleBlankScreen()` below are the two thin callers that
+     * remain.
      * ===================================================================== */
 
     /**
-     * Enter presentation mode — fullscreen with large text.
-     * @param {HTMLElement} lyricsEl
-     */
-    enterPresentationMode(lyricsEl) {
-        const songPage = lyricsEl.closest('.page-song');
-        if (!songPage) return;
-
-        /* Create presentation overlay */
-        document.getElementById('presentation-overlay')?.remove();
-
-        const overlay = document.createElement('div');
-        overlay.id = 'presentation-overlay';
-        overlay.className = 'presentation-overlay';
-        overlay.setAttribute('role', 'dialog');
-        overlay.setAttribute('aria-label', 'Presentation mode');
-
-        /* Get song title */
-        const title = songPage.querySelector('h1')?.textContent.trim() || '';
-        const songNum = songPage.querySelector('.song-number-badge-lg')?.textContent.trim() || '';
-
-        overlay.innerHTML = `
-            <div class="presentation-header">
-                <div class="presentation-title">
-                    ${songNum ? `<span class="presentation-number">${escapeHtml(songNum)}</span>` : ''}
-                    <span>${escapeHtml(title)}</span>
-                </div>
-                <div class="presentation-controls">
-                    <label class="visually-hidden" for="presentation-countdown-select">Pre-service countdown</label>
-                    <select class="form-select form-select-sm presentation-countdown-select"
-                            id="presentation-countdown-select" aria-label="Pre-service countdown">
-                        <option value="0">Countdown…</option>
-                        <option value="5">5 min</option>
-                        <option value="10">10 min</option>
-                        <option value="15">15 min</option>
-                        <option value="20">20 min</option>
-                    </select>
-                    <button type="button" class="btn btn-dark btn-sm" id="presentation-blank-btn"
-                            aria-pressed="false" aria-label="Blank the screen (press B)" title="Blank screen (B)">
-                        <i class="fa-solid fa-circle-half-stroke me-1" aria-hidden="true"></i> Blank
-                    </button>
-                    <button type="button" class="btn btn-light btn-sm" id="presentation-close-btn"
-                            aria-label="Exit presentation mode">
-                        <i class="fa-solid fa-compress me-1" aria-hidden="true"></i> Exit
-                    </button>
-                </div>
-            </div>
-            <div class="presentation-lyrics">
-                ${lyricsEl.innerHTML}
-            </div>
-            <div class="presentation-countdown" id="presentation-countdown" hidden
-                 title="Click to dismiss the countdown">
-                <div class="presentation-countdown-label">Service begins in</div>
-                <div class="presentation-countdown-time" id="presentation-countdown-time"
-                     role="timer" aria-live="off">0:00</div>
-            </div>`;
-
-        document.body.appendChild(overlay);
-
-        /* Protect lyrics in presentation mode too */
-        const presLyrics = overlay.querySelector('.presentation-lyrics');
-        if (presLyrics) this.protectLyrics(presLyrics);
-
-        /* Enter fullscreen */
-        if (overlay.requestFullscreen) {
-            overlay.requestFullscreen().catch(() => {
-                /* Fullscreen not available — still show overlay */
-            });
-        }
-
-        /* Add presentation class to body */
-        document.body.classList.add('presentation-active');
-
-        /* a11y audit M2 (WCAG 2.4.3, 2.1.1): wire the shared modal-dialog
-           focus recipe — moves focus into the overlay, traps Tab, hides
-           the background from assistive tech (inert), and restores focus
-           on close. `onClose` is this overlay's REAL teardown
-           (exitPresentationMode(), unchanged) — every dismiss path below
-           (Close button, Escape, exiting fullscreen, the "P" key via
-           togglePresentationMode(), and leaving the song page via
-           cleanup()) now funnels through this ONE close() via
-           _closePresentation() so none of them can forget the inert /
-           focus-restore half of the teardown. */
-        this._presentationClose = openModalDialog(overlay, {
-            onClose: () => this.exitPresentationMode(),
-        });
-
-        /* Close button */
-        overlay.querySelector('#presentation-close-btn')?.addEventListener('click', () => {
-            this._closePresentation();
-        });
-
-        /* Blank/black screen toggle (#1273) — operator control; the "B" key
-           (wired in app.js) does the same hands-on-keyboard blackout. */
-        overlay.querySelector('#presentation-blank-btn')?.addEventListener('click', () => {
-            this.toggleBlankScreen();
-        });
-
-        /* Pre-service countdown (#1273) — picking a preset starts/replaces the
-           timer; the "Countdown…" option (value 0) clears it. */
-        overlay.querySelector('#presentation-countdown-select')?.addEventListener('change', (e) => {
-            const mins = parseInt(e.target.value, 10) || 0;
-            if (mins > 0) {
-                this.startCountdown(mins);
-            } else {
-                this.stopCountdown();
-            }
-        });
-
-        /* Tapping the countdown (e.g. on the projector/touch device) dismisses
-           it — Escape exits and "B" blanks regardless, via the key handlers. */
-        overlay.querySelector('#presentation-countdown')?.addEventListener('click', () => {
-            this.stopCountdown();
-        });
-
-        /* Escape-to-close is now handled by openModalDialog() above (it
-           listens for Escape itself and calls the SAME close() this
-           module wires everywhere else) — the private per-open listener
-           this module used to register itself is gone (a11y audit M2). */
-
-        /* Fullscreen change — exit if user exits fullscreen (e.g. the
-           system/browser fullscreen-exit gesture, not this module's own
-           Close button). Routes through _closePresentation() rather than
-           exitPresentationMode() directly so the inert/focus-restore half
-           of the dialog teardown still runs. */
-        document.addEventListener('fullscreenchange', () => {
-            if (!document.fullscreenElement) {
-                this._closePresentation();
-            }
-        }, { once: true });
-    }
-
-    /**
-     * Close the presentation overlay via the SAME path every dismiss
-     * route uses. Falls back to calling exitPresentationMode() directly
-     * when no dialog is currently open (openModalDialog() was never
-     * called, so there is nothing to inert-restore) — keeps this safe to
-     * call unconditionally, e.g. from cleanup() on every page navigation
-     * whether or not presentation mode happens to be active.
-     * @see js/utils/dialog-a11y.js openModalDialog()
-     */
-    _closePresentation() {
-        if (this._presentationClose) { this._presentationClose(); }
-        else { this.exitPresentationMode(); }
-    }
-
-    /** Exit presentation mode */
-    exitPresentationMode() {
-        /* Clear any running pre-service countdown so its interval doesn't
-           keep firing after the overlay is gone (#1273). */
-        this.stopCountdown();
-
-        /* This method IS the dialog's onClose (see openModalDialog() call
-           above) — clear the stored close() so a stale reference can't be
-           called twice, and so _closePresentation() correctly falls back
-           to calling this method directly once the dialog is gone. */
-        this._presentationClose = null;
-
-        document.body.classList.remove('presentation-active');
-        document.getElementById('presentation-overlay')?.remove();
-
-        if (document.fullscreenElement) {
-            document.exitFullscreen().catch(() => {});
-        }
-    }
-
-    /* =====================================================================
-     * PRESENTATION UTILITY SLIDES (#1273)
-     * Blank/black screen + a pre-service countdown — the live-operation
-     * controls worship presenters expect (ProPresenter / WorshipTools ship
-     * these). Pure client-side over the existing presentation overlay; no
-     * song data, no schema, no network.
-     * ===================================================================== */
-
-    /**
-     * Toggle the blank/black screen in presentation mode.
-     *
-     * ELI5: hides the words behind a black screen so the congregation sees
-     * nothing between songs, then brings them back.
-     *
-     * Detailed: flips the `presentation-blank` class on the overlay (CSS
-     * blacks it out and hides the header/lyrics/countdown) and mirrors the
-     * state into the Blank button's `aria-pressed`. No-ops when not in
-     * presentation mode, so the bound "B" key is harmless on other pages.
-     * MDN: https://developer.mozilla.org/en-US/docs/Web/API/Element/classList
+     * Blank (or un-blank) the screen while presenting — the "B" key
+     * (app.js's keydown switch calls this unconditionally, everywhere, so
+     * it must stay a safe no-op off the song page). Delegates to
+     * present-mode.js's `toggleBlankScreen()`, which reaches the ONE open
+     * overlay directly (#1714 item 5) rather than this file's old approach
+     * of looking up `#presentation-overlay` by id — an id the OTHER,
+     * better overlay never set, which is exactly why "B" used to do
+     * nothing while presenting from the "Present" button.
      */
     toggleBlankScreen() {
-        const overlay = document.getElementById('presentation-overlay');
-        if (!overlay) return;
-
-        const blanked = overlay.classList.toggle('presentation-blank');
-
-        const btn = document.getElementById('presentation-blank-btn');
-        if (btn) btn.setAttribute('aria-pressed', blanked ? 'true' : 'false');
-    }
-
-    /**
-     * Start (or restart) a pre-service countdown overlay.
-     *
-     * ELI5: shows a big "Service begins in 5:00" timer that counts down to
-     * zero so people know when to be seated.
-     *
-     * Detailed: anchors on an absolute end timestamp (`Date.now() + minutes`)
-     * and recomputes the remaining seconds on every tick, so the display
-     * can't drift even when a tick is delayed or the tab is throttled. Ticks
-     * every 250ms for a crisp final second; on reaching zero it stops
-     * ticking but leaves "0:00" on screen. Replaces any prior run.
-     *
-     * @param {number} minutes Whole minutes to count down from (clamped 1–180).
-     */
-    startCountdown(minutes) {
-        const layer = document.getElementById('presentation-countdown');
-        const timeEl = document.getElementById('presentation-countdown-time');
-        if (!layer || !timeEl) return;
-
-        /* Clear any previous run first so presets replace cleanly. */
-        this.stopCountdown();
-
-        /* Clamp to a sane range so a stray value can't run away. */
-        const mins = Math.min(180, Math.max(1, Math.floor(minutes) || 0));
-        const endAt = Date.now() + mins * 60 * 1000;
-
-        const render = () => {
-            const remaining = Math.max(0, Math.round((endAt - Date.now()) / 1000));
-            timeEl.textContent = this._formatCountdown(remaining);
-            if (remaining <= 0 && this.countdownTimer) {
-                /* Reached zero — stop ticking but leave 0:00 displayed. */
-                clearInterval(this.countdownTimer);
-                this.countdownTimer = null;
-            }
-        };
-
-        layer.hidden = false;
-        render();
-        this.countdownTimer = setInterval(render, 250);
-    }
-
-    /**
-     * Stop the pre-service countdown and hide its overlay.
-     *
-     * ELI5: turns the countdown timer off.
-     *
-     * Detailed: clears the interval, hides the countdown layer, and resets
-     * the header `<select>` back to "Countdown…" so the control reflects the
-     * off state. Safe to call when nothing is running.
-     */
-    stopCountdown() {
-        if (this.countdownTimer) {
-            clearInterval(this.countdownTimer);
-            this.countdownTimer = null;
-        }
-        const layer = document.getElementById('presentation-countdown');
-        if (layer) layer.hidden = true;
-        const select = document.getElementById('presentation-countdown-select');
-        if (select) select.value = '0';
-    }
-
-    /**
-     * Format whole seconds as `M:SS` (or `H:MM:SS` past an hour).
-     * @param {number} totalSeconds
-     * @returns {string}
-     */
-    _formatCountdown(totalSeconds) {
-        const s = Math.max(0, totalSeconds);
-        const hours = Math.floor(s / 3600);
-        const mins = Math.floor((s % 3600) / 60);
-        const secs = s % 60;
-        const pad = (n) => String(n).padStart(2, '0');
-        return hours > 0
-            ? `${hours}:${pad(mins)}:${pad(secs)}`
-            : `${mins}:${pad(secs)}`;
+        import('./present-mode.js').then((m) => m.toggleBlankScreen());
     }
 
     /* =====================================================================
@@ -913,20 +676,24 @@ export class Display {
     /** Clean up when leaving a song page */
     cleanup() {
         this.stopAutoScroll();
-        /* a11y audit M2: routes through the SAME close() as every other
-           dismiss path — calling exitPresentationMode() directly here
-           would skip un-inerting the background siblings openModalDialog()
-           set, stranding `inert` on the rest of the page after the new
-           page's content has already been swapped in. Safe to call on
-           EVERY navigation (router.js calls cleanup() unconditionally) —
-           _closePresentation() falls back to a no-op-safe
-           exitPresentationMode() when presentation mode was never open. */
-        this._closePresentation();
+        /* #1714 item 5 — the ONE presentation overlay now lives entirely in
+           present-mode.js and is appended to <body>, OUTSIDE the swapped
+           #page-content (rule #32 in .claude/CLAUDE.md: anything fixed to
+           the screen outside the swapped page content must remove itself
+           on EVERY navigation, as its first action, before any early
+           return — a countdown or a round's auto-advance timer left
+           running behind a closed overlay is a real bug, not a cosmetic
+           one). router.js calls this cleanup() unconditionally on every
+           navigation.
+           The DOM check below, rather than an unconditional dynamic
+           import(), means the overwhelming majority of navigations (no
+           presentation overlay open) never pay for loading a module they
+           don't need — the overlay can only exist at all if present-mode.js
+           already ran once to build it, so on the rare navigation where it
+           DOES exist, the import is always a cache hit, not a fresh
+           network fetch. */
+        if (document.querySelector('.presentation-overlay')) {
+            import('./present-mode.js').then((m) => m.closePresentMode());
+        }
     }
-
-    /**
-     * Escape HTML to prevent XSS.
-     * @param {string} str
-     * @returns {string}
-     */
 }
