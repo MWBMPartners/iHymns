@@ -329,7 +329,7 @@ declare(strict_types=1);
                         <li><strong>Sheet music:</strong> songs that have notation can switch to a <strong>sheet-music view</strong> to read the score.</li>
                         <li><strong>Audio playback:</strong> when a recording or tune is linked, play it back from the song page.</li>
                         <li><strong>Compare versions:</strong> when the same song appears in more than one songbook, open <strong>Compare versions</strong> to view the variants side by side.</li>
-                        <li><strong>Presentation mode:</strong> tap <strong>Presentation</strong> (or press <kbd>P</kbd>) for a large, full-screen, one-stanza-at-a-time view suitable for projecting or reading at a distance. Use the arrow keys to move between sections.</li>
+                        <li><strong>Presentation mode:</strong> tap <strong>Present</strong> (or press <kbd>P</kbd>) for a large, full-screen, one-stanza-at-a-time view suitable for projecting or reading at a distance — step through with the arrow keys, a Bluetooth foot pedal, or a swipe on a touchscreen. While presenting, press <kbd>B</kbd> (or tap <strong>Blank</strong>) to black out the screen between songs, and pick a time from the countdown menu to show a &ldquo;Service begins in&hellip;&rdquo; clock before you start.</li>
                         <li><strong>Themes &amp; tags:</strong> where a curator has themed a song, its topics show as tappable chips near the top of the page (e.g. &ldquo;Grace&rdquo;, &ldquo;Communion&rdquo;). Tap one to open a theme page listing every hymn that shares it.</li>
                         <li><strong>Previous / next:</strong> step through the songbook in number order with the <kbd>&larr;</kbd> and <kbd>&rarr;</kbd> arrow keys.</li>
                     </ul>
@@ -978,7 +978,8 @@ declare(strict_types=1);
                             <tr><td><kbd>#</kbd></td><td>Open number pad</td></tr>
                             <tr><td><kbd>Esc</kbd></td><td>Close search / modal</td></tr>
                             <tr><td><kbd>F</kbd></td><td>Toggle favourite (on song page)</td></tr>
-                            <tr><td><kbd>P</kbd></td><td>Presentation mode</td></tr>
+                            <tr><td><kbd>P</kbd></td><td>Presentation mode (one section at a time, with arrow-key navigation)</td></tr>
+                            <tr><td><kbd>B</kbd></td><td>Blank the screen while presenting</td></tr>
                             <tr><td><kbd>&larr;</kbd></td><td>Previous song</td></tr>
                             <tr><td><kbd>&rarr;</kbd></td><td>Next song</td></tr>
                         </tbody>

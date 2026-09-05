@@ -53,6 +53,36 @@
  *  this means most rounds resolve to the plain "lines" basis — no clock, no
  *  Play button, step-by-step only — until per-line timing data exists
  *  somewhere the page can read it.
+ *
+ *  THE ONE PRESENTATION OVERLAY (#1714 item 5, 2026-09). There used to be
+ *  TWO of these. The "Present" toolbar button opened this file's overlay —
+ *  one section at a time, arrow keys, a focus trap, foot-pedal and swipe
+ *  support. The "P" keyboard shortcut opened a SEPARATE, worse one built
+ *  independently in display.js — the whole song scrolling past at once,
+ *  no arrow keys — which happened to be the only place with a blank-screen
+ *  button and a pre-service countdown. Worse still, the global "B" key
+ *  (app.js) blanked the screen by looking up `#presentation-overlay`, an
+ *  id THIS overlay never set, so pressing B while presenting from the good
+ *  overlay did nothing at all — no error, just silence.
+ *
+ *  Fixed by deleting display.js's copy outright and moving its two features
+ *  in here: `openPresentMode()` is now the ONE place that builds a
+ *  presentation overlay, reached from the "Present" button (below), the
+ *  display toolbar's own presentation button (display.js, a thin caller),
+ *  and the "P" key (`togglePresentMode()` below, called by display.js's
+ *  `togglePresentationMode()`, which app.js's keydown switch already
+ *  called). "B" now calls `toggleBlankScreen()` below, which reaches the
+ *  one open overlay directly instead of guessing at an id. See
+ *  `tests/test-presentation-overlay-merge.js` — a tree-derived,
+ *  mutation-proven guard (rule #34 in .claude/CLAUDE.md) that scans every
+ *  file under `js/` for the overlay's own creation fingerprint and fails
+ *  the build if more than one file has it, so this cannot split back into
+ *  two overlays without the test noticing.
+ *
+ *  The countdown is this overlay's SECOND timer (`roundPlayer` above is
+ *  the first) — `close()` must clear both as its very first actions,
+ *  before any early return (rule #32's sibling), or a countdown left
+ *  running behind a closed overlay would keep ticking, invisibly, forever.
  * ========================================================================== */
 
 /**
@@ -303,15 +333,104 @@ export function createRoundAutoAdvance(steps, opts) {
     };
 }
 
+/**
+ * The one open presentation overlay, or null when nothing is presenting.
+ * Deliberately a single slot, not a list — only one of these can ever be
+ * on screen. Holds just enough (`close`/`toggleBlank`) for callers OUTSIDE
+ * this module's closures — the "P"/"B" keys, via display.js's thin
+ * wrappers — to reach the live overlay without this file exposing its
+ * internals. Set once, near the end of `openPresentMode()`'s build; cleared
+ * by `close()` as one of its first actions (see that function below).
+ * @type {{close: Function, toggleBlank: Function}|null}
+ */
+let activePresentation = null;
+
+/** True while a presentation overlay is on screen. */
+export function isPresentModeOpen() {
+    return !!activePresentation;
+}
+
+/**
+ * Close the current presentation overlay. No-ops when nothing is open, so
+ * it is safe to call unconditionally — e.g. from display.js's cleanup(),
+ * which router.js runs on EVERY navigation (rule #32).
+ */
+export function closePresentMode() {
+    if (activePresentation) { activePresentation.close(); }
+}
+
+/**
+ * Open the overlay if it's closed, or close it if it's already open — the
+ * "P" keyboard shortcut's job (app.js calls this via display.js's
+ * `togglePresentationMode()`).
+ */
+export function togglePresentMode() {
+    if (activePresentation) { activePresentation.close(); }
+    else { openPresentMode(); }
+}
+
+/**
+ * Blank (or un-blank) the screen inside the current presentation overlay —
+ * the "B" keyboard shortcut's job (app.js calls this via display.js's
+ * `toggleBlankScreen()`). No-ops when no overlay is open, exactly like the
+ * pre-merge behaviour, except now it actually reaches the overlay people
+ * are really looking at instead of an id nobody set.
+ */
+export function toggleBlankScreen() {
+    if (activePresentation) { activePresentation.toggleBlank(); }
+}
+
+/**
+ * Format whole seconds as `M:SS` (or `H:MM:SS` past an hour) — the
+ * pre-service countdown's readout (#1273, folded in from display.js by the
+ * #1714 merge). Exported standalone and DOM-free, the same reason
+ * `roundTimeline()` above is a plain function rather than a private
+ * closure: a test can check it directly with no browser at all.
+ * @param {number} totalSeconds
+ * @returns {string}
+ */
+export function formatCountdown(totalSeconds) {
+    const s = Math.max(0, totalSeconds);
+    const hours = Math.floor(s / 3600);
+    const mins = Math.floor((s % 3600) / 60);
+    const secs = s % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    return hours > 0
+        ? `${hours}:${pad(mins)}:${pad(secs)}`
+        : `${mins}:${pad(secs)}`;
+}
+
 export function initPresentMode() {
     const btnPresent = document.getElementById('btn-present');
     if (!btnPresent || btnPresent.dataset.wired === '1') return;
     btnPresent.dataset.wired = '1';
+    btnPresent.addEventListener('click', () => openPresentMode());
+}
 
-    btnPresent.addEventListener('click', () => {
-        /* Collect all song components from the rendered page */
-        const comps = document.querySelectorAll('.lyric-component');
-        if (comps.length === 0) return;
+/**
+ * Build and show the ONE presentation overlay (#1714 item 5). Every door
+ * that means "start presenting" calls this SAME function — the "Present"
+ * toolbar button (initPresentMode() above), the display toolbar's own
+ * presentation button (display.js), and the "P" key (togglePresentMode()
+ * above) — so there is exactly one builder, never a second copy of it.
+ */
+export function openPresentMode() {
+    /* Never build a second overlay over the first. togglePresentMode()
+       already sends an open overlay to close() instead of here, but this
+       guard keeps a direct call safe too. */
+    if (activePresentation) return;
+
+    /* Collect all song components from the rendered page.
+       NOTE ON INDENTATION: everything below was, until this merge, the body
+       of the "Present" button's click-handler arrow function one level
+       deeper than it sits now. It has been left at its original depth
+       rather than reflowed line-by-line across ~550 lines purely to change
+       whitespace — this codebase's ESLint config deliberately does not
+       enforce indentation (see eslint.config.js's own doc-block: "a mass
+       auto-format would bury real history in git blame for zero
+       correctness gain"), and the extra level here is cosmetic only. */
+    const comps = document.querySelectorAll('.lyric-component');
+    if (comps.length === 0) return;
 
         const slides = [];
         comps.forEach(comp => {
@@ -414,6 +533,16 @@ export function initPresentMode() {
            sibling, unconditionally cleared the instant the overlay closes —
            see close()'s first statement below. */
         let roundPlayer = null;
+        /* #1273/#1714 — this overlay's OTHER timer: the pre-service
+           countdown, folded in from display.js's old, now-deleted overlay.
+           Same discipline as roundPlayer above: close() clears this one
+           too, as one of its first actions, so a countdown can never keep
+           ticking behind a closed overlay. */
+        let countdownTimer = null;
+        /** Whether the screen is currently blanked (#1273's Blank button /
+         *  the "B" key). Tracked here rather than read back off a CSS class
+         *  so toggleBlank() below has one source of truth. */
+        let blanked = false;
 
         /* The dialog's accessible name. Read from the page heading — the same
            source router.js uses for its route announcement — so a screen reader
@@ -450,10 +579,42 @@ export function initPresentMode() {
         overlay.setAttribute('aria-modal', 'true');
         overlay.setAttribute('aria-label', `Presenting ${songTitle || 'song'}`);
         overlay.tabIndex = -1;
+        /* #1273/#1714 — the operator toolbar (pre-service countdown select
+           + Blank button) and the countdown's own full-screen layer, both
+           folded in from display.js's now-deleted overlay. Positioned with
+           inline styles rather than new app.css rules — see this file's
+           header note on why the merge stays inside just the JS files it
+           was scoped to. `hidden` on the countdown layer starts it hidden
+           via the browser's own `[hidden]{display:none}` UA rule; nothing
+           here also sets an inline `display`, so that default is never
+           fought (startCountdown()/stopCountdown() below toggle both the
+           attribute AND `style.display` together, deliberately — see their
+           own comments). */
         overlay.innerHTML = `
             <button class="present-close" aria-label="Close presentation">&times;</button>
+            <div class="present-toolbar" style="position:fixed;top:1rem;left:1rem;z-index:2;display:flex;align-items:center;gap:0.5rem;">
+                <label class="visually-hidden" for="present-countdown-select">Pre-service countdown</label>
+                <select class="form-select form-select-sm present-countdown-select" id="present-countdown-select"
+                        aria-label="Pre-service countdown" style="width:auto;">
+                    <option value="0">Countdown&hellip;</option>
+                    <option value="5">5 min</option>
+                    <option value="10">10 min</option>
+                    <option value="15">15 min</option>
+                    <option value="20">20 min</option>
+                </select>
+                <button type="button" class="btn btn-outline-light btn-sm present-blank-btn"
+                        aria-pressed="false" aria-label="Blank the screen (press B)" title="Blank screen (B)">
+                    <i class="fa-solid fa-circle-half-stroke me-1" aria-hidden="true"></i>Blank
+                </button>
+            </div>
             <div class="present-label"></div>
             <div class="present-lyrics"></div>
+            <div class="present-countdown" hidden title="Click to dismiss the countdown"
+                 style="position:fixed;inset:0;z-index:3;flex-direction:column;align-items:center;justify-content:center;gap:1rem;background:#000;color:#fff;text-align:center;cursor:pointer;">
+                <div style="font-size:2rem;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;opacity:0.75;">Service begins in</div>
+                <div class="present-countdown-time" role="timer" aria-live="off"
+                     style="font-size:clamp(4rem,22vw,16rem);font-weight:800;line-height:1;font-variant-numeric:tabular-nums;">0:00</div>
+            </div>
             <div class="present-nav">
                 <button class="present-prev" aria-label="Previous"><i class="fa-solid fa-chevron-left me-1"></i>Prev</button>
                 <span class="present-counter"></span>
@@ -466,6 +627,10 @@ export function initPresentMode() {
         const counterEl = overlay.querySelector('.present-counter');
         const prevBtn = overlay.querySelector('.present-prev');
         const nextBtn = overlay.querySelector('.present-next');
+        const blankBtn = overlay.querySelector('.present-blank-btn');
+        const countdownSelect = overlay.querySelector('.present-countdown-select');
+        const countdownLayer = overlay.querySelector('.present-countdown');
+        const countdownTimeEl = overlay.querySelector('.present-countdown-time');
 
         function render(announceSlide = false) {
             const slide = slides[current];
@@ -518,6 +683,78 @@ export function initPresentMode() {
 
         function stopRoundPlayback() {
             if (roundPlayer) { roundPlayer.stop(); roundPlayer = null; }
+        }
+
+        /* ---------------------------------------------------------------
+         * PRESENTATION UTILITY CONTROLS (#1273, folded in by #1714 item 5)
+         * Blank/black screen + a pre-service countdown — moved here,
+         * verbatim in behaviour, from display.js's now-deleted overlay.
+         * --------------------------------------------------------------- */
+
+        /**
+         * Toggle the blank/black screen. Hides every DIRECT child of the
+         * overlay (close button, toolbar, label, lyrics, countdown layer,
+         * nav) via `visibility: hidden` rather than `display: none` — the
+         * same choice display.js's old version made — so the layout
+         * doesn't jump when it's undone, and so "B" (a document-level key
+         * handler, unaffected by visibility) still works to bring it back.
+         * ELI5: hides the words behind a black screen so the congregation
+         * sees nothing between songs, then brings them back.
+         * https://developer.mozilla.org/en-US/docs/Web/CSS/visibility
+         */
+        function toggleBlank() {
+            blanked = !blanked;
+            Array.from(overlay.children).forEach((child) => {
+                child.style.visibility = blanked ? 'hidden' : '';
+            });
+            if (blankBtn) blankBtn.setAttribute('aria-pressed', blanked ? 'true' : 'false');
+        }
+
+        /**
+         * Stop the pre-service countdown and hide its overlay. Safe to call
+         * when nothing is running (close() below calls it unconditionally,
+         * as one of its first actions, per rule #32's sibling).
+         */
+        function stopCountdown() {
+            if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+            if (countdownLayer) {
+                countdownLayer.hidden = true;
+                /* Explicitly cleared (not just relying on [hidden]) so a
+                   later startCountdown() setting display:flex isn't fighting
+                   a stale display value left over from last time. */
+                countdownLayer.style.display = 'none';
+            }
+            if (countdownSelect) countdownSelect.value = '0';
+        }
+
+        /**
+         * Start (or restart) the pre-service countdown. Anchors on an
+         * absolute end timestamp (`Date.now() + minutes`) and recomputes the
+         * remaining seconds on every tick, so the display can't drift even
+         * when a tick is delayed or the tab is throttled. Ticks every 250ms
+         * for a crisp final second; on reaching zero it stops ticking but
+         * leaves "0:00" on screen.
+         * @param {number} minutes Whole minutes to count down from (clamped 1–180).
+         */
+        function startCountdown(minutes) {
+            if (!countdownLayer || !countdownTimeEl) return;
+            stopCountdown();
+            const mins = Math.min(180, Math.max(1, Math.floor(minutes) || 0));
+            const endAt = Date.now() + mins * 60 * 1000;
+
+            const tick = () => {
+                const remaining = Math.max(0, Math.round((endAt - Date.now()) / 1000));
+                countdownTimeEl.textContent = formatCountdown(remaining);
+                if (remaining <= 0 && countdownTimer) {
+                    clearInterval(countdownTimer);
+                    countdownTimer = null;
+                }
+            };
+
+            countdownLayer.hidden = false;
+            countdownLayer.style.display = 'flex';
+            tick();
+            countdownTimer = setInterval(tick, 250);
         }
 
         function roundKindLabel(kind) {
@@ -692,11 +929,21 @@ export function initPresentMode() {
         function close() {
             /* Rule #32's sibling (.claude/CLAUDE.md) — any timer fixed to
                this overlay MUST be cleared the instant it closes, as the
-               very first action, before any early return. This dialog has
-               exactly one such timer: a playing round's auto-advance clock.
-               tests/test-present-round-projector.js proves this line is
-               present and first. */
+               very first action, before any early return. This dialog now
+               has TWO such timers: a playing round's auto-advance clock,
+               and (#1714 item 5) the pre-service countdown folded in from
+               display.js's old, now-deleted overlay. Both are cleared here,
+               first, before anything else runs.
+               tests/test-present-round-projector.js proves the FIRST line
+               here is present and first; tests/test-presentation-overlay-
+               merge.js proves the countdown is cleared here too. */
             stopRoundPlayback();
+            stopCountdown();
+            /* This overlay is no longer "the" open one — clear the module
+               slot before anything else so a caller racing this close()
+               (e.g. the "B" key firing on the same keystroke as Escape)
+               sees "nothing is open" rather than a half-torn-down overlay. */
+            activePresentation = null;
             /* Let the screen sleep normally again (#2079). Paired with the
                acquire below; releasing here rather than later means a device
                is not held awake by a screen nobody is looking at. */
@@ -772,6 +1019,19 @@ export function initPresentMode() {
            was a focusable control with nothing to operate; slide changes are
            already announced via render()'s announce() call above. */
         counterEl.addEventListener('click', (e) => e.stopPropagation());
+
+        /* #1273/#1714 — Blank button + pre-service countdown, folded in
+           from display.js's now-deleted overlay. stopPropagation() for the
+           same reason prev/next above have it: these sit outside
+           `.present-lyrics`, but keeping the pattern consistent costs
+           nothing and protects against a future DOM reshuffle. */
+        blankBtn.addEventListener('click', (e) => { e.stopPropagation(); toggleBlank(); });
+        countdownSelect.addEventListener('change', (e) => {
+            e.stopPropagation();
+            const mins = parseInt(e.target.value, 10) || 0;
+            if (mins > 0) { startCountdown(mins); } else { stopCountdown(); }
+        });
+        countdownLayer.addEventListener('click', (e) => { e.stopPropagation(); stopCountdown(); });
 
         /* Click on lyrics area advances */
         lyricsEl.addEventListener('click', next);
@@ -860,6 +1120,12 @@ export function initPresentMode() {
             }
         }, { passive: true });
 
+        /* #1714 item 5 — this IS now "the" open presentation overlay.
+           Recorded before appendChild() so a "B"/"P" keystroke landing in
+           the same tick as this call already sees it as open. close()
+           above clears this slot as one of its first actions. */
+        activePresentation = { close, toggleBlank };
+
         render();
         document.body.appendChild(overlay);
 
@@ -893,5 +1159,4 @@ export function initPresentMode() {
         if (overlay.requestFullscreen) {
             overlay.requestFullscreen().catch(() => {});
         }
-    });
 }
