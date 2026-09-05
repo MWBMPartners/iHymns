@@ -418,25 +418,46 @@ try {
 }
 
 /* ===================================================================
- * Per-line translations (#1089 / #1100 P1) — the PUBLIC READER.
+ * Per-line translations AND transliterations (#1089 / #1100 P1 / #320)
+ * — the PUBLIC READER.
  *
  * #1089's write layer has been complete since it landed — curators can
- * enter per-line translations today via includes/line_enrichment.php +
- * manage/editor/api2.php's line_translation_upsert, called from
- * editor.js. What was missing was a render site: zero of
- * includes/pages/song.php or any js/modules/*.js ever read
- * tblLyricLineTranslations, so curated work was invisible — untested and
- * unused. This is a deliberately modest first cut: an optional
- * interlinear "Show translation" toggle (translation line beneath its
- * source line). The full bilingual SIDE-BY-SIDE reader is #1100 and is
- * explicitly NOT this — distinct toggles, distinct feature.
+ * enter per-line translations AND transliterations today via
+ * includes/line_enrichment.php + manage/editor/api2.php's
+ * line_translation_upsert, called from editor.js. What was missing was
+ * a render site: for a long time nothing in includes/pages/song.php or
+ * js/modules/*.js ever read tblLyricLineTranslations, so curated work
+ * was invisible — untested and unused. An interlinear "Show
+ * translation" toggle (translation line beneath its source line)
+ * shipped first (#1100 P1); this block extends that SAME reader and
+ * toggle to also surface 'transliteration' rows (#320), which had been
+ * fetched then explicitly discarded ever since (see the old comment
+ * this replaced: "romanizations ... are #1100's bilingual-reader
+ * scope, not this cut" — #1100 never came back to widen the scope, so
+ * a curator entering a romanization got a feature that looked finished
+ * and did nothing). The full bilingual SIDE-BY-SIDE reader remains a
+ * SEPARATE, unbuilt idea — this stays the interlinear (beneath-the-
+ * line) shape throughout.
+ *
+ * A transliteration is NOT a translation: it is the SAME words, spelled
+ * out in a different alphabet so someone who can't read the original
+ * script can still sing along (e.g. Korean 사랑 written as "sarang").
+ * A translation carries a DIFFERENT meaning in another language. They
+ * are kept in the SAME per-line array and behind the SAME toggle
+ * button deliberately — see the doc-block above $hasLineTranslations
+ * below for why — but each row is tagged with its `kind` so the render
+ * loop can style them differently and screen readers can tell them
+ * apart (a visually-hidden "Romanized:" lead-in on transliteration rows
+ * only — translation rows keep their existing, unlabeled treatment).
  *
  * Reuses the SAME scoped reader the song_detail API's `?include=translations`
  * already serves — SongData::getSongDetailExtras() (SongData.php:2226) reads
  * ONE song's approved rows (Status='approved') from tblLyricLineTranslations,
  * keyed by tblLyricLineTranslations.LineId = tblLyricLines.Id (rule #21).
  * Never a second reader (rule #25) — this file reads NOTHING from
- * tblLyricLineTranslations directly.
+ * tblLyricLineTranslations directly. Field names come straight off that
+ * reader's SELECT (lineId / kind / targetLanguage / text / isPrimary) —
+ * checked against SongData.php before writing this, not assumed.
  *
  * Gated on lyricLinesMirrorPresent(): translations anchor on
  * tblLyricLines.Id, and $component['lineIds'] (below, in the render loop)
@@ -448,21 +469,26 @@ try {
  * Skipping the query entirely on an un-migrated install is both cheaper
  * and more honest.
  *
- * Only the PRIMARY (`isPrimary=1`) 'translation'-kind row per line is
- * shown — Apple-Music-TTML-style 'transliteration' (romanization) rows are
- * #1100's bilingual-reader scope, not this cut. A line with primary
- * translations in two languages renders both beneath it (grouped by
+ * Only the PRIMARY (`isPrimary=1`) row per line is shown, for EACH kind —
+ * `IsPrimary` is scoped per (LineId, TargetLanguage, Kind) at the write
+ * layer (line_enrichment.php), so "the primary translation" and "the
+ * primary transliteration" for the same line are independent choices a
+ * curator makes, exactly as intended when e.g. two competing
+ * romanization schemes exist and only one has been approved as the
+ * one to show. A line with primary rows in two languages (of either
+ * kind) renders all of them beneath it (grouped by
  * tblLyricLineTranslations.Id, not deduped to one).
  *
  * No substring/offset slicing happens here — each row's `text` is rendered
  * whole, never sliced (rule #21's mb_substr/code-point requirement governs
  * annotation SPANS, a distinct, unbuilt feature; there is nothing to slice
- * for a whole-line translation).
+ * for a whole-line translation or transliteration).
  *
  * $lineTranslationsByLineId: (int) tblLyricLines.Id => list of
- *   ['language' => BCP-47/free-text tag, 'text' => translated line].
- * Left empty (mirror absent / no approved translations / a DB hiccup) —
- * the render loop below and the toolbar button both check
+ *   ['language' => BCP-47/free-text tag, 'text' => translated/
+ *   transliterated line, 'kind' => 'translation'|'transliteration'].
+ * Left empty (mirror absent / no approved rows / a DB hiccup) — the
+ * render loop below and the toolbar button both check
  * $hasLineTranslations and render NOTHING when empty: no toggle, no dead
  * control (rule from the task spec).
  * =================================================================== */
@@ -478,8 +504,14 @@ try {
         if ($lineExtraSongId !== '') {
             $lineExtras = $songData->getSongDetailExtras($lineExtraSongId, ['translations']);
             foreach (($lineExtras['translations'] ?? []) as $tr) {
-                if (($tr['kind'] ?? '') !== 'translation' || empty($tr['isPrimary'])) {
-                    continue;   /* romanizations + demoted non-primary rows — #1100 scope */
+                /* #320 — both kinds the write layer supports
+                   (line_enrichment.php's LINE_TRANSLATION_KINDS) are
+                   shown; anything else (a future third kind this page
+                   hasn't been taught about yet) is skipped rather than
+                   guessed at. */
+                $kind = (string)($tr['kind'] ?? 'translation');
+                if (($kind !== 'translation' && $kind !== 'transliteration') || empty($tr['isPrimary'])) {
+                    continue;   /* demoted non-primary rows, or an unknown future kind */
                 }
                 $lid = (int)($tr['lineId'] ?? 0);
                 $txt = (string)($tr['text'] ?? '');
@@ -489,6 +521,7 @@ try {
                 $lineTranslationsByLineId[$lid][] = [
                     'language' => (string)($tr['targetLanguage'] ?? ''),
                     'text'     => $txt,
+                    'kind'     => $kind,
                 ];
             }
         }
@@ -499,6 +532,18 @@ try {
        translations picker + songLinks blocks above). */
     $lineTranslationsByLineId = [];
 }
+/* #320 — kept as ONE flag covering both kinds, not two. The toggle
+ * button + the `.lyric-line-translation` show/hide mechanism it drives
+ * (js/modules/song-translations.js) are generic over WHAT'S in the row
+ * — they just reveal every `.lyric-line-translation` element already
+ * sitting (hidden) in the DOM. Splitting this into a second flag would
+ * need a second button + a second class the JS doesn't know to wire,
+ * i.e. inventing a second toggle mechanism where the task explicitly
+ * asked to reuse the one that already exists. The two kinds stay
+ * visually distinguishable per-row instead (see the render loop) —
+ * one control that says "show me the extra reading aids for this
+ * song", one flip reveals whichever of them a curator has actually
+ * entered. */
 $hasLineTranslations = !empty($lineTranslationsByLineId);
 
 /* #299 — inline chord charts. A song "has chords" when ANY component carries a
@@ -1163,22 +1208,29 @@ try {
                 </button>
                 <?php endif; ?>
 
-                <?php /* Per-line translation toggle (#1089 / #1100 P1). Rendered ONLY
-                         when $hasLineTranslations is true (computed above from the
-                         scoped tblLyricLineTranslations read) — the fragment is a
-                         shared-cache response (rule #6) so this decision is baked the
-                         SAME for every visitor of this song, never per-user; the
-                         show/hide STATE itself is purely client-side (song-translations.js,
-                         wired from router.js's afterPageLoad(), toggles `.d-none` on the
-                         `.lyric-line-translation` rows already in the DOM — no re-fetch,
-                         no per-user server render). A song with none of these rows never
-                         gets the button at all, so there is no dead control to click. */ ?>
+                <?php /* Per-line translation / transliteration toggle (#1089 / #1100 P1
+                         / #320). Rendered ONLY when $hasLineTranslations is true
+                         (computed above from the scoped tblLyricLineTranslations read,
+                         now covering BOTH kinds) — the fragment is a shared-cache
+                         response (rule #6) so this decision is baked the SAME for
+                         every visitor of this song, never per-user; the show/hide
+                         STATE itself is purely client-side (song-translations.js,
+                         wired from router.js's afterPageLoad(), toggles `.d-none` on
+                         the `.lyric-line-translation` rows already in the DOM — no
+                         re-fetch, no per-user server render). A song with none of
+                         these rows never gets the button at all, so there is no dead
+                         control to click. One button for both kinds, deliberately —
+                         see the doc-block above $hasLineTranslations for why; the
+                         `title` attribute (static, never rewritten by the JS toggle)
+                         says so plainly, while the visible label stays "Show
+                         translation" so it never drifts out of sync with the two
+                         words song-translations.js hardcodes on click. */ ?>
                 <?php if ($hasLineTranslations): ?>
                 <button type="button" class="btn btn-sm btn-outline-secondary song-toolbar-btn"
                         id="btn-toggle-line-translations"
                         data-line-translations-toggle="1"
                         aria-pressed="false"
-                        title="Show/hide the per-line translation">
+                        title="Show or hide this song's translation and/or romanized (transliterated) lines">
                     <i class="fa-solid fa-closed-captioning me-1" aria-hidden="true"></i>
                     <span data-line-translations-label="1">Show translation</span>
                 </button>
@@ -1436,9 +1488,39 @@ try {
                                  corpus today. */ ?>
                         <p class="lyric-line<?= ($voiceRun !== null && $voiceRun['allBg']) ? ' lyric-line--bg' : '' ?> mb-1"<?php if ($lineId > 0): ?> data-line-id="<?= (int)$lineId ?>"<?php endif; ?><?php if ($roundId > 0): ?> data-round-id="<?= $roundId ?>"<?php endif; ?>><?= ihymnsVoiceLineHtml($line, $voiceSpans[$lineIdx] ?? []) ?></p>
                         <?php foreach ($lineTr as $lt): ?>
-                            <p class="lyric-line-translation small text-muted fst-italic mb-1 d-none"
+                            <?php
+                                /* #320 — a transliteration is the SAME words in a
+                                   different alphabet (so someone who can't read the
+                                   original script can still sing along), not a
+                                   different meaning like a translation — it must not
+                                   look like one. It still shares the
+                                   `.lyric-line-translation` class and the SAME
+                                   data-line-translation-for anchor as a translation
+                                   row, on purpose and NOT just for convenience:
+                                   js/modules/song-markup.js's insertNoteAfterLine()
+                                   walks forward over exactly that class (matched
+                                   against this same data attribute) to find where a
+                                   "my note" belongs, and the ONE toggle button above
+                                   shows/hides every row carrying it — a different
+                                   class here would silently drop this row out of
+                                   both. What changes is the swap of `fst-italic` (the
+                                   "different meaning" cue every translation row
+                                   keeps) for `.lyric-line-transliteration` (app.css —
+                                   upright rather than italic, letters slightly
+                                   tracked out, a thin left rule; a "sound this out"
+                                   cue instead of a "this means" one), plus a
+                                   visually-hidden "Romanized:" lead-in so a screen
+                                   reader hears the same distinction a sighted reader
+                                   sees. Translation rows are left exactly as they
+                                   were — this only adds a marker to the NEW kind. */
+                                $isTranslit = ($lt['kind'] ?? 'translation') === 'transliteration';
+                                $ltClasses = 'lyric-line-translation small text-muted mb-1 d-none'
+                                           . ($isTranslit ? ' lyric-line-transliteration' : ' fst-italic');
+                            ?>
+                            <p class="<?= $ltClasses ?>"
                                data-line-translation-for="<?= $lineId ?>"
-                               <?php if ($lt['language'] !== ''): ?>lang="<?= htmlspecialchars($lt['language']) ?>"<?php endif; ?>><?= htmlspecialchars($lt['text']) ?></p>
+                               <?php if ($isTranslit): ?>data-line-translation-kind="transliteration"<?php endif; ?>
+                               <?php if ($lt['language'] !== ''): ?>lang="<?= htmlspecialchars($lt['language']) ?>"<?php endif; ?>><?php if ($isTranslit): ?><span class="visually-hidden">Romanized: </span><?php endif; ?><?= htmlspecialchars($lt['text']) ?></p>
                         <?php endforeach; ?>
                         <?php /* #2073 commit 8 — close the run wrapper AFTER this line's own
                                  translation paragraph(s), so a translation of the last line in a

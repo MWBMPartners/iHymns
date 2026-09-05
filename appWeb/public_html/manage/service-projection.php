@@ -483,6 +483,12 @@ if ($driverKeysReady && $venues) {
            #22 — never a third hand-written copy of this maths); see
            wireRoundPanel() below for the full "why". */
         import { roundTimeline, createRoundAutoAdvance } from '/js/modules/present-mode.js';
+        /* #2079 — a projector display going to sleep mid-service is the
+           single worst version of the "screen goes dark" fault this whole
+           feature exists to fix, so this page is one of the two remaining
+           surfaces it's wired into. Same shared helper present-mode.js
+           already uses (rule #22) — never a local re-implementation. */
+        import { acquireWakeLock, releaseWakeLock } from '/js/utils/wake-lock.js';
 
         /* JSON_HEX_* so an org-admin-controlled venue/schedule Name containing a
            script-closing sequence (or < > & ' ") can't break out of this inline
@@ -904,6 +910,15 @@ if ($driverKeysReady && $venues) {
         }
 
         function teardown() {
+            /* Let the screen sleep normally again (#2079) — unconditional and
+               first, mirroring present-mode.js's own close(), because this
+               is the ONE place every end-of-session path funnels through
+               (the End button below AND the broadcaster's own
+               onSessionEnded callback). Safe to call even when no session
+               was ever started: releaseWakeLock() is documented as safe to
+               call more times than acquire was — the count never drops
+               below zero, so this is a genuine no-op in that case. */
+            releaseWakeLock();
             if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
             if (broadcaster) { broadcaster.destroy(); broadcaster = null; }
             /* #2073 — the round panel's own auto-advance timer is the OTHER
@@ -939,6 +954,14 @@ if ($driverKeysReady && $venues) {
                 document.getElementById('svc-op-session').textContent = 'Session #' + session.sessionId;
                 showCode(d.code);
                 overlay.classList.add('active');
+                /* Keep the screen awake for as long as this projector is
+                   driving a live service (#2079). Paired with the release in
+                   teardown() above. Deliberately NOT awaited — the request
+                   can be refused (an unsupported browser, an OS/battery
+                   policy) and the projection must carry on exactly the same
+                   either way; the always-visible typed join code is the
+                   fallback either way, same as the QR image. */
+                acquireWakeLock();
                 /* #1840 §6.1/§6.4 — apply the server-resolved corner-bug URL
                    for THIS venue, honouring the operator's current toggle. */
                 currentVenueForLogo = v || null;

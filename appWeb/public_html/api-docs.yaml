@@ -9339,17 +9339,27 @@ paths:
 
   /api.php?action=song_revisions:
     get:
-      operationId: songRevisionsPublic
+      operationId: songRevisionsList
       tags: [Song Metadata]
-      summary: Revision timeline for one song (read-only public view)
+      summary: Revision timeline for one song (verify_songs entitlement)
       description: |
         Lightweight sibling of the editor-only `list_revisions`. Returns
         who/when/action for each revision, without the full before/after
         snapshots (those are editor-only).
 
-        Dormant: undocumented-as-such API-parity spillover — no web/Apple/Android
-        client calls this today (orphan inventory §2.5, remediation X7). The
-        endpoint is live and correct; it simply has no first-party caller yet.
+        Requires the `verify_songs` entitlement — the same one
+        `/manage/revisions` gates its own (unfiltered) listing on, so a role
+        that can see a revision there can see it here too, and one that
+        can't, can't.
+
+        **#2086 correction:** until this fix, the handler selected four
+        columns that do not exist on `tblSongRevisions` (`ChangesJson`,
+        `Notes`, `ReviewedAt`) and joined on a fifth that never has
+        (`CreatedBy`) — every call 500'd, silently, because nothing in this
+        repository ever called it. It is dormant only in the sense that no
+        first-party client calls it yet; it now actually works.
+      security:
+        - bearerAuth: []
       parameters:
         - name: action
           in: query
@@ -9376,6 +9386,8 @@ paths:
                         action:    { type: string, enum: [create, edit, restore, delete] }
                         createdAt: { type: string, format: date-time }
                         username:  { type: string, nullable: true }
+        "400": { description: "`songId` is required." }
+        "403": { description: "Authenticated, but the role lacks `verify_songs`." }
 
   /api.php?action=songs_exist:
     get:
@@ -10560,7 +10572,22 @@ paths:
     get:
       operationId: adminPendingRevisions
       tags: [Admin — Revisions]
-      summary: List every song revision awaiting review
+      summary: List every song revision awaiting review (verify_songs entitlement)
+      description: |
+        Requires the `verify_songs` entitlement — the SAME check
+        `song_revisions` above and `/manage/revisions`'s own (unfiltered)
+        listing use, not an admin-only role list: a `pending` row is
+        already visible to an editor inside that unfiltered listing, so
+        filtering it down to just `pending` here cannot reasonably demand a
+        higher bar than seeing it at all does.
+
+        **#2086 correction:** until this fix, the handler selected four
+        columns that do not exist on `tblSongRevisions` (`ChangesJson`,
+        `Notes`, `ReviewedAt`) and joined on a fifth that never has
+        (`CreatedBy`), and returned them under a `revisions` key instead of
+        the `pending` key documented below — every call 500'd before a
+        response shape even mattered. Both are fixed; the shape below is
+        what the handler actually emits now.
       security:
         - bearerAuth: []
       parameters:
@@ -10586,6 +10613,7 @@ paths:
                         action:    { type: string }
                         createdAt: { type: string, format: date-time }
                         username:  { type: string, nullable: true }
+        "403": { description: "Authenticated, but the role lacks `verify_songs`." }
 
   /api.php?action=admin_revision_review:
     post:

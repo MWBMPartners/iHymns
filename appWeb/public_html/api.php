@@ -11159,36 +11159,68 @@ if ($action !== null) {
 
         /* =================================================================
          * SONG REVISIONS (#313)
+         *
+         * #2086 — both handlers below used to SELECT four columns that do
+         * not exist on tblSongRevisions at all (ChangesJson, Notes,
+         * ReviewedAt) and JOIN on a fifth (CreatedBy) that has also never
+         * existed — the real columns are PreviousData/NewData/UserId (see
+         * appWeb/.sql/schema.sql). Because the DB layer runs mysqli under
+         * MYSQLI_REPORT_STRICT, `prepare()` on a bad column reference
+         * THROWS rather than returning false, so both endpoints 500'd for
+         * every single caller, silently, since the day they were written —
+         * nothing in this repository calls either action, so nothing ever
+         * noticed.
+         *
+         * The two SELECTs below deliberately stay two PLAIN, fully-literal
+         * SQL strings rather than one runtime-shared constant/function: a
+         * separate pre-existing guard (tests/php/test-live-session-channel.
+         * php) walks every literal `->prepare()`/`->query()` argument in
+         * this file and requires each one to be plain, inline SQL text it
+         * can read directly — a shared constant referenced via `.`
+         * concatenation is exactly the shape it cannot follow, and reports
+         * as unparseable. Keeping both queries fully literal keeps THAT
+         * guard's own coverage total. What stops the two from silently
+         * drifting apart again instead is `tests/php/test-read-action-
+         * schema-columns.php`, added alongside this fix: it (a) checks
+         * every `alias.Column` reference in BOTH statements against the
+         * real schema.sql column list, so a wrong column in either one
+         * fails CI immediately rather than sitting unnoticed for months
+         * the way this one did, and (b) separately asserts the shared
+         * SELECT/FROM/JOIN portion below is BYTE-IDENTICAL between the two
+         * — a mechanism, not a comment (rule #35), for the one thing that
+         * actually needs to stay in sync.
          * ================================================================= */
 
         /* -----------------------------------------------------------------
-         * Get revision history for a song (editor+ only)
-         * Parameters: song_id (required)
+         * Get revision history for a song (verify_songs entitlement).
+         * Parameters: songId (required; song_id also accepted for back-compat
+         * with the one shape a caller might already be using).
          * ----------------------------------------------------------------- */
         case 'song_revisions':
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['editor', 'admin', 'global_admin'])) {
-                sendJson(['error' => 'Editor access required.'], 403);
+            if (!$authUser || !userHasEntitlement('verify_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The verify_songs entitlement is required.'], 403);
                 break;
             }
 
-            $revSongId = trim($_GET['song_id'] ?? '');
+            $revSongId = trim((string)($_GET['songId'] ?? $_GET['song_id'] ?? ''));
             if ($revSongId === '') {
-                sendJson(['error' => 'song_id is required.'], 400);
+                sendJson(['error' => 'songId is required.'], 400);
                 break;
             }
 
+            /* UserId is nullable (a user account can be deleted later — ON
+               DELETE SET NULL, see schema.sql), so this is a LEFT JOIN: an
+               old revision whose author's account is gone must still show
+               up, just with a null username, the same way manage/revisions.
+               php's own listing already does — never an INNER JOIN, which
+               would silently drop the row. */
             $db = getDbMysqli();
             $stmt = $db->prepare(
                 'SELECT r.Id AS id, r.SongId AS songId, r.Action AS action,
-                        r.Status AS status, r.ChangesJson AS changesJson,
-                        r.Notes AS notes, r.CreatedAt AS createdAt,
-                        r.ReviewedAt AS reviewedAt,
-                        u.Username AS username,
-                        rv.Username AS reviewedBy
+                        r.CreatedAt AS createdAt, u.Username AS username
                  FROM tblSongRevisions r
-                 JOIN tblUsers u ON u.Id = r.CreatedBy
-                 LEFT JOIN tblUsers rv ON rv.Id = r.ReviewedBy
+                 LEFT JOIN tblUsers u ON u.Id = r.UserId
                  WHERE r.SongId = ?
                  ORDER BY r.CreatedAt DESC
                  LIMIT 100'
@@ -11200,9 +11232,13 @@ if ($action !== null) {
 
             foreach ($revisions as &$rev) {
                 $rev['id'] = (int)$rev['id'];
-                if ($rev['changesJson'] !== null) {
-                    $rev['changesJson'] = json_decode($rev['changesJson'], true);
-                }
+                /* api-docs.yaml documents the reduced {id, action, createdAt,
+                   username} shape for this "lightweight" view — the caller
+                   already knows the songId they asked for, so it is dropped
+                   here even though the SELECT above (matching
+                   admin_pending_revisions, which DOES document songId)
+                   always fetches it. */
+                unset($rev['songId']);
             }
             unset($rev);
 
@@ -11210,40 +11246,41 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
-         * Get all pending song revisions (admin+ only)
+         * Get all pending song revisions (verify_songs entitlement — the
+         * SAME check as song_revisions above and as manage/revisions.php's
+         * own gate; a bare admin-only role list here would have meant an
+         * editor who can already see this exact row inside the full,
+         * unfiltered /manage/revisions listing gets refused by the API for
+         * asking the SAME question with a status filter applied).
          * ----------------------------------------------------------------- */
         case 'admin_pending_revisions':
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
-                sendJson(['error' => 'Admin access required.'], 403);
+            if (!$authUser || !userHasEntitlement('verify_songs', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The verify_songs entitlement is required.'], 403);
                 break;
             }
 
+            /* Same LEFT JOIN reasoning as song_revisions above. */
             $db = getDbMysqli();
             $stmt = $db->prepare(
                 'SELECT r.Id AS id, r.SongId AS songId, r.Action AS action,
-                        r.Status AS status, r.ChangesJson AS changesJson,
-                        r.Notes AS notes, r.CreatedAt AS createdAt,
-                        u.Username AS username
+                        r.CreatedAt AS createdAt, u.Username AS username
                  FROM tblSongRevisions r
-                 JOIN tblUsers u ON u.Id = r.CreatedBy
+                 LEFT JOIN tblUsers u ON u.Id = r.UserId
                  WHERE r.Status = \'pending\'
                  ORDER BY r.CreatedAt ASC
                  LIMIT 200'
             );
             $stmt->execute();
-            $revisions = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $pending = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
 
-            foreach ($revisions as &$rev) {
+            foreach ($pending as &$rev) {
                 $rev['id'] = (int)$rev['id'];
-                if ($rev['changesJson'] !== null) {
-                    $rev['changesJson'] = json_decode($rev['changesJson'], true);
-                }
             }
             unset($rev);
 
-            sendJson(['revisions' => $revisions]);
+            sendJson(['pending' => $pending]);
             break;
 
         /* -----------------------------------------------------------------
