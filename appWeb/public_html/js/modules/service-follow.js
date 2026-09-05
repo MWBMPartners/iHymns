@@ -22,6 +22,15 @@ import { prefersReducedMotion } from '../utils/motion.js';
    SAME identity (CLAUDE.md modularity rule; presence-identity.js's own
    doc-comment has the full "why"). */
 import { deviceId, setPresenceCookie, clearPresenceCookie } from '../utils/presence-identity.js';
+/* #2073 — rounds/canon "you are here". The step SCHEDULE for a round is
+   never sent over the wire (see includes/service_mode.php's own doc-block
+   on serviceMode_cleanState()'s `round` key) — only the step NUMBER is.
+   This end re-derives the schedule itself from the round's own data, which
+   is already sitting in the DOM once the song page has rendered
+   (`.page-song[data-voice-rounds]`), using the SAME pure function
+   present-mode.js's projector uses — reused here rather than re-forked
+   (rule #22), so the two can never disagree about what step N means. */
+import { roundTimeline } from './present-mode.js';
 
 /* sessionStorage key carrying a pending section scroll across a FULL page load
    (the non-SPA fallback path). Not in constants.js: that file is the registry
@@ -39,6 +48,11 @@ const SF_SCROLL_TIMEOUT_MS = 5000;
 const SF_POLL_MS      = 2500;                       // follower poll cadence
 const SF_PRESENCE_KEY = 'ihymns_sf_presence';       // sessionStorage: {token, rev}
 const SF_CODE_RE      = /^[A-Z0-9]{4,12}$/;
+/* #2073 — per-DEVICE (not per-session) so a congregant's usual seat in the
+   choir keeps their pick across services, the same durability class as
+   `deviceId()` itself. Holds a voice NUMBER as a string, or is absent for
+   "All voices" (no round-specific view). */
+const SF_ROUND_VOICE_KEY = 'ihymns_round_voice';
 
 export class ServiceFollow {
     constructor(app) {
@@ -48,6 +62,10 @@ export class ServiceFollow {
         this._pollTimer = null;
         this._polling = false;
         this._pendingScroll = null;
+        /* #2073 — the operator's last-broadcast `state.round` (or null when
+           no round is active). Compared by id on every sync so a NEW round
+           starting is announced once, not on every 2.5s poll tick. */
+        this._roundState = null;
     }
 
     init() {
@@ -215,6 +233,7 @@ export class ServiceFollow {
             this._showBanner();
             this._startPolling();
             this.app.showToast('You’re following the service.', 'success');
+            this._syncRoundState(r.data.state);
             this._applyState(r.data.currentSongId, r.data.componentIndex);
         } catch (_e) {
             this.app.showToast('Could not join the service (network error).', 'danger');
@@ -226,6 +245,7 @@ export class ServiceFollow {
         this.token = null;
         this.rev = 0;
         this._pendingScroll = null;
+        this._roundState = null;   // #2073 — a fresh join must not show a stale round
         this._stopPolling();
         try { sessionStorage.removeItem(SF_PRESENCE_KEY); } catch (_e) {}
         clearPresenceCookie();
@@ -264,7 +284,10 @@ export class ServiceFollow {
                 this.rev = d.revision;
                 try { sessionStorage.setItem(SF_PRESENCE_KEY, JSON.stringify({ token: this.token, rev: this.rev })); } catch (_e) {}
             }
-            if (d.changed === true) { this._applyState(d.currentSongId, d.componentIndex); }
+            if (d.changed === true) {
+                this._syncRoundState(d.state);
+                this._applyState(d.currentSongId, d.componentIndex);
+            }
         } catch (_e) {
             /* transient — retry next tick */
         } finally {
@@ -407,6 +430,190 @@ export class ServiceFollow {
     _removeBanner() {
         const bar = document.getElementById('service-follow-banner');
         if (bar && bar.parentNode) { bar.parentNode.removeChild(bar); }
+    }
+
+    /**
+     * #2073 — react to a broadcast's `state.round` (or its absence). Only
+     * ANNOUNCES on a genuinely NEW round starting (compared by id), never on
+     * every 2.5s poll tick that merely repeats the same one — this method
+     * runs on every poll response, changed or not.
+     *
+     * @param {?Object} state  The decoded `state` object from service_poll /
+     *                         service_join (may be null/undefined/malformed
+     *                         — every shape here degrades to "no round").
+     */
+    _syncRoundState(state) {
+        const round = (state && typeof state === 'object' && state.round && typeof state.round.id === 'number' && state.round.id > 0)
+            ? state.round
+            : null;
+        const isNewRound = !!round && (!this._roundState || this._roundState.id !== round.id);
+        this._roundState = round;
+        this._renderRoundRow();
+        if (isNewRound) {
+            announce('The leader started a round.');
+        }
+    }
+
+    /**
+     * Read the CURRENTLY-displayed song page's own `.page-song[data-voice-rounds]`
+     * (the same attribute present-mode.js's projector reads) and find the ONE
+     * entry matching `roundId`. Returns null on anything short of a clean
+     * match — an un-migrated install, a song with no rounds, the follower
+     * being on a different page than the one the round belongs to, or the
+     * fragment simply not having rendered yet — every one of those is a
+     * silent "nothing to show yet", never an error.
+     *
+     * @param {number} roundId
+     * @returns {?Object} the round's own shape, straight off the DOM
+     */
+    _resolveRoundFromDom(roundId) {
+        try {
+            const pageEl = document.querySelector('.page-song[data-voice-rounds]');
+            if (!pageEl) { return null; }
+            const parsed = JSON.parse(pageEl.dataset.voiceRounds);
+            if (!Array.isArray(parsed)) { return null; }
+            return parsed.find((r) => r && r.id === roundId) || null;
+        } catch (_e) {
+            return null;
+        }
+    }
+
+    _loadRoundVoiceChoice() {
+        try {
+            const raw = localStorage.getItem(SF_ROUND_VOICE_KEY);
+            const n = parseInt(raw, 10);
+            return (Number.isInteger(n) && n > 0) ? n : null;
+        } catch (_e) { return null; }
+    }
+
+    _saveRoundVoiceChoice(n) {
+        try {
+            if (n) { localStorage.setItem(SF_ROUND_VOICE_KEY, String(n)); }
+            else { localStorage.removeItem(SF_ROUND_VOICE_KEY); }
+        } catch (_e) { /* private mode — the choice just doesn't persist */ }
+    }
+
+    /**
+     * Draw (or remove) the small "you are here" row inside the green
+     * follow banner. Deliberately renders NOTHING — not even a placeholder —
+     * when the round's own voice list can't be resolved from the DOM yet
+     * (see `_resolveRoundFromDom()`): a control pointing at nothing is worse
+     * than no control, matching this codebase's usual degrade posture.
+     */
+    _renderRoundRow() {
+        const bar = document.getElementById('service-follow-banner');
+        if (!bar) { return; }   // no active follow — nothing to attach to
+        let row = document.getElementById('service-follow-round-row');
+
+        if (!this._roundState) {
+            if (row && row.parentNode) { row.parentNode.removeChild(row); }
+            return;
+        }
+
+        const round = this._resolveRoundFromDom(this._roundState.id);
+        if (!round || !Array.isArray(round.voices) || round.voices.length === 0) {
+            if (row && row.parentNode) { row.parentNode.removeChild(row); }
+            return;
+        }
+
+        if (!row) {
+            row = document.createElement('div');
+            row.id = 'service-follow-round-row';
+            row.style.cssText = 'margin-top:0.3rem;display:flex;align-items:center;justify-content:center;gap:0.5rem;flex-wrap:wrap;';
+            bar.appendChild(row);
+        }
+        row.innerHTML = '';
+
+        const selectLabelId = 'service-follow-round-voice-label';
+        const label = document.createElement('span');
+        label.id = selectLabelId;
+        label.textContent = 'Your voice:';
+
+        const select = document.createElement('select');
+        select.className = 'form-select form-select-sm d-inline-block w-auto';
+        select.setAttribute('aria-labelledby', selectLabelId);
+        const allOpt = document.createElement('option');
+        allOpt.value = '';
+        allOpt.textContent = 'All voices';
+        select.appendChild(allOpt);
+        round.voices.forEach((v) => {
+            const opt = document.createElement('option');
+            opt.value = String(v.number);
+            opt.textContent = (v.label && String(v.label).trim()) ? v.label : ('Voice ' + v.number);
+            select.appendChild(opt);
+        });
+
+        const savedChoice = this._loadRoundVoiceChoice();
+        const validChoice = round.voices.some((v) => v.number === savedChoice) ? savedChoice : null;
+        select.value = validChoice !== null ? String(validChoice) : '';
+
+        const status = document.createElement('span');
+        status.className = 'small';
+
+        function updateStatus(self) {
+            const chosen = select.value ? parseInt(select.value, 10) : null;
+            status.textContent = self._roundStatusText(round, chosen);
+        }
+
+        select.addEventListener('change', () => {
+            const chosen = select.value ? parseInt(select.value, 10) : null;
+            this._saveRoundVoiceChoice(chosen);
+            updateStatus(this);
+            announce(status.textContent);
+        });
+
+        updateStatus(this);
+
+        row.appendChild(label);
+        row.appendChild(select);
+        row.appendChild(status);
+    }
+
+    /**
+     * "You are here: Voice 2 — waiting to enter" / "…singing: <line>" /
+     * "…finished". No voice picked -> a plain "Round in progress" (nothing
+     * to be "here" about yet). Re-derives the step's line assignments via
+     * `roundTimeline()` — the SAME pure function present-mode.js's
+     * projector uses (rule #22) — from data the round's own DOM entry
+     * already carries, so this can never disagree with what the projector
+     * itself would show for the same step.
+     *
+     * KNOWN, FLAGGED GAP: `.page-song[data-voice-rounds]` does not carry a
+     * round's own timesThrough/bpm/beatsPerLine or a voice's own
+     * entryBasis/entryBeats yet (see present-mode.js's own header) — this
+     * mirrors that file's identical defaulting so the two stay consistent
+     * with each other even while both are working from an incomplete
+     * upstream shape.
+     *
+     * @param {Object} round      one entry from `.page-song[data-voice-rounds]`
+     * @param {?number} chosenVoiceNumber
+     */
+    _roundStatusText(round, chosenVoiceNumber) {
+        if (!chosenVoiceNumber) { return 'Round in progress.'; }
+        const voicesForTimeline = (round.voices || []).map((v) => ({
+            number: v.number,
+            entryBasis: (v.entryMs !== null && v.entryMs !== undefined) ? 'ms' : 'lines',
+            entryLines: v.entryLines || 0,
+            entryBeats: null,
+            entryMs: (v.entryMs !== null && v.entryMs !== undefined) ? v.entryMs : null,
+            timesThrough: null,
+        }));
+        const timeline = roundTimeline(
+            { timesThrough: null, endingMode: round.endingMode, bpm: null, beatsPerLine: null, codaLineIds: round.codaLineIds || [] },
+            voicesForTimeline,
+            round.lineIds || [],
+            {},
+            {}
+        );
+        const total = timeline.steps.length;
+        if (total === 0) { return 'Round in progress.'; }
+        const step = Math.max(0, Math.min((this._roundState && this._roundState.step) || 0, total - 1));
+        const stepData = timeline.steps[step];
+        const mine = (stepData.voices || []).find((v) => v.n === chosenVoiceNumber);
+        const label = 'Voice ' + chosenVoiceNumber;
+        if (!mine || mine.line === -1) { return 'You are here: ' + label + ' — waiting to enter.'; }
+        if (mine.line === -2) { return 'You are here: ' + label + ' — finished.'; }
+        return 'You are here: ' + label + '.';
     }
 
     /* Anonymous same-origin call. X-Requested-With satisfies the api.php CSRF

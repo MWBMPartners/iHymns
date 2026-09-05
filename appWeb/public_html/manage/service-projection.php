@@ -451,6 +451,25 @@ if ($driverKeysReady && $venues) {
                 <button type="button" id="svc-op-toggle" class="btn btn-sm btn-outline-dark">Hide</button>
             </div>
             <div id="svc-op-body"></div>
+            <!-- #2073 — rounds/canon "drive a round" strip. Additive to the
+                 shared ServiceBroadcaster console above it, never a fork of
+                 it (js/modules/service-broadcast.js is untouched): this
+                 page already OWNS the apiCall() the broadcaster calls
+                 through, so it observes that SAME function to learn which
+                 song/section is currently live, then asks the ONE public
+                 song-page endpoint for that song's rounds — no new API
+                 action, no schema change. Hidden until the live song
+                 actually has a round; see wireRoundPanel() below. -->
+            <div id="svc-round-panel" class="d-none mt-2 pt-2 border-top">
+                <div class="d-flex align-items-center flex-wrap gap-2">
+                    <span class="small text-secondary"><i aria-hidden="true" class="bi bi-arrow-repeat me-1"></i>Round:</span>
+                    <select id="svc-round-select" class="form-select form-select-sm w-auto" aria-label="Which round to drive"></select>
+                    <button type="button" id="svc-round-prev" class="btn btn-outline-dark btn-sm">◀ Step</button>
+                    <button type="button" id="svc-round-play" class="btn btn-outline-dark btn-sm">Play</button>
+                    <button type="button" id="svc-round-next" class="btn btn-outline-dark btn-sm">Step ▶</button>
+                    <span id="svc-round-counter" class="small text-secondary"></span>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -459,6 +478,11 @@ if ($driverKeysReady && $venues) {
         /* Module so it can import the shared broadcaster (#1335 rule #26 — the
            projection laptop + the leader device share ONE driver core). */
         import { ServiceBroadcaster } from '/js/modules/service-broadcast.js';
+        /* #2073 — rounds/canon "drive a round" strip. Reuses the SAME pure
+           timeline function present-mode.js's own projector uses (rule
+           #22 — never a third hand-written copy of this maths); see
+           wireRoundPanel() below for the full "why". */
+        import { roundTimeline, createRoundAutoAdvance } from '/js/modules/present-mode.js';
 
         /* JSON_HEX_* so an org-admin-controlled venue/schedule Name containing a
            script-closing sequence (or < > & ' ") can't break out of this inline
@@ -474,6 +498,15 @@ if ($driverKeysReady && $venues) {
            any more; renderQr() below just points an <img> at it. */
         const ROTATE_MS = 30000;
         let session = null, rotateTimer = null, broadcaster = null;
+
+        /* #2073 — round-driver state. `service-broadcast.js` (untouched by
+           this feature — see its own file for why) is the only thing that
+           knows which song/section is currently live; this page learns it
+           by OBSERVING the same `apiCall()` it already owns and passes into
+           that console (apiCallForBroadcaster() below), rather than forking
+           any of the broadcaster's own logic. */
+        let roundActiveSongId = null, roundLastSongId = null, roundLastComponentIndex = null;
+        let roundList = [], roundActiveRound = null, roundActiveTimeline = null, roundStep = 0, roundPlayer = null, roundFetchToken = 0;
 
         const venueSel = document.getElementById('svc-venue');
         const schedSel = document.getElementById('svc-schedule');
@@ -611,6 +644,183 @@ if ($driverKeysReady && $venues) {
             return fetch('/api?action=' + action + (opts.query || ''), init).then(function (r) { return r.json().catch(function () { return {}; }); });
         }
 
+        /* #2073 — the SAME call shape as apiCall() above, wrapped so this page
+           can OBSERVE every `service_broadcast` the console makes (song id +
+           section) without altering what it sends or how it behaves — passed
+           to `new ServiceBroadcaster({apiCall: …})` below INSTEAD of the bare
+           apiCall, never a change to service-broadcast.js itself. */
+        function apiCallForBroadcaster(action, opts) {
+            if (action === 'service_broadcast' && opts && opts.body) {
+                if (opts.body.componentIndex !== undefined) { roundLastComponentIndex = opts.body.componentIndex; }
+                if (opts.body.songId) {
+                    roundLastSongId = opts.body.songId;
+                    onRoundDriverSongChanged(opts.body.songId);
+                }
+            }
+            return apiCall(action, opts);
+        }
+
+        /* ---- Rounds/canon driver strip (#2073) ------------------------------
+           A round is several voices singing the SAME words, staggered. The
+           step-by-step schedule is public data already on the song page
+           itself (`.page-song[data-voice-rounds]`, server-rendered by
+           includes/voice_parts_render.php) — this fetches that SAME public
+           fragment the congregation's own browsers already load
+           (`/api?page=song`, no new API surface) whenever the console
+           changes song, and offers Prev/Play/Next controls that broadcast
+           `state.round` through the EXISTING service_broadcast action (the
+           StateJson `round` key includes/service_mode.php's
+           serviceMode_cleanState() already validates). Entirely additive:
+           a song with no round leaves this panel hidden and the ordinary
+           console untouched. */
+        const roundPanelEl = document.getElementById('svc-round-panel');
+        const roundSelectEl = document.getElementById('svc-round-select');
+        const roundPrevBtn = document.getElementById('svc-round-prev');
+        const roundPlayBtn = document.getElementById('svc-round-play');
+        const roundNextBtn = document.getElementById('svc-round-next');
+        const roundCounterEl = document.getElementById('svc-round-counter');
+
+        function stopRoundPanelPlayback() {
+            if (roundPlayer) { roundPlayer.stop(); roundPlayer = null; }
+        }
+
+        function computeRoundTimeline(round) {
+            /* `.page-song[data-voice-rounds]` is deliberately sparse today
+               (see present-mode.js's own header) — the same defaulting
+               applies here so this panel and the projector can never
+               disagree about what a given round/step means. */
+            const voicesForTimeline = (round.voices || []).map(function (v) {
+                return {
+                    number: v.number,
+                    entryBasis: (v.entryMs !== null && v.entryMs !== undefined) ? 'ms' : 'lines',
+                    entryLines: v.entryLines || 0,
+                    entryBeats: null,
+                    entryMs: (v.entryMs !== null && v.entryMs !== undefined) ? v.entryMs : null,
+                    timesThrough: null,
+                };
+            });
+            return roundTimeline(
+                { timesThrough: null, endingMode: round.endingMode, bpm: null, beatsPerLine: null, codaLineIds: round.codaLineIds || [] },
+                voicesForTimeline,
+                round.lineIds,
+                {},
+                {}
+            );
+        }
+
+        function roundKindLabel(round) {
+            return round.label || ({ round: 'Round', canon: 'Canon', 'partner-song': 'Partner song' }[round.kind] || 'Round');
+        }
+
+        function updateRoundCounter() {
+            const total = roundActiveTimeline ? roundActiveTimeline.steps.length : 0;
+            roundCounterEl.textContent = total > 0 ? ('Step ' + (roundStep + 1) + ' of ' + total) : '';
+            roundPrevBtn.disabled = roundStep <= 0;
+            roundNextBtn.disabled = total === 0 || roundStep >= total - 1;
+            roundPlayBtn.disabled = !roundActiveTimeline || roundActiveTimeline.basis === 'lines' || total < 2;
+            roundPlayBtn.textContent = roundPlayer ? 'Pause' : 'Play';
+            roundPlayBtn.setAttribute('aria-pressed', roundPlayer ? 'true' : 'false');
+        }
+
+        function broadcastRoundStep() {
+            if (!session || !roundActiveRound) { return; }
+            /* includes/service_mode.php's own doc-block on this shape: a
+               round-step broadcast MUST resend the session's current
+               songId/componentIndex, or it silently blanks them for every
+               congregant — both are tracked from apiCallForBroadcaster()
+               above precisely so this call can do that correctly. */
+            apiCall('service_broadcast', { method: 'POST', body: {
+                sessionId: session.sessionId,
+                songId: roundLastSongId,
+                componentIndex: (typeof roundLastComponentIndex === 'number') ? roundLastComponentIndex : null,
+                state: { round: { id: roundActiveRound.id, step: roundStep, playing: !!roundPlayer, startedAt: null, layout: 'split' } },
+            } });
+            updateRoundCounter();
+        }
+
+        function selectRound(round) {
+            stopRoundPanelPlayback();
+            roundActiveRound = round;
+            roundActiveTimeline = computeRoundTimeline(round);
+            roundStep = 0;
+            broadcastRoundStep();
+        }
+
+        function showRoundPanel(rounds) {
+            roundList = rounds;
+            roundSelectEl.innerHTML = '';
+            rounds.forEach(function (r, i) {
+                const opt = document.createElement('option');
+                opt.value = String(i);
+                opt.textContent = roundKindLabel(r);
+                roundSelectEl.appendChild(opt);
+            });
+            roundSelectEl.value = '0';
+            roundPanelEl.classList.remove('d-none');
+            selectRound(rounds[0]);
+        }
+
+        function hideRoundPanel() {
+            stopRoundPanelPlayback();
+            roundList = [];
+            roundActiveRound = null;
+            roundActiveTimeline = null;
+            roundPanelEl.classList.add('d-none');
+        }
+
+        /* Fetches the SAME public song fragment the congregation's own
+           browsers load, purely to read its (deliberately public, non-
+           secret) `data-voice-rounds` attribute — never a new API action.
+           `roundFetchToken` discards a slow response for a song the
+           operator has already moved past (the console can advance songs
+           faster than this fetch resolves on a slow venue connection). */
+        function onRoundDriverSongChanged(songId) {
+            if (songId === roundActiveSongId) { return; }
+            roundActiveSongId = songId;
+            hideRoundPanel();
+            const myToken = ++roundFetchToken;
+            fetch('/api?page=song&id=' + encodeURIComponent(songId), { credentials: 'same-origin' })
+                .then(function (r) { return r.text(); })
+                .then(function (html) {
+                    if (myToken !== roundFetchToken) { return; }   // superseded by a newer song change
+                    const doc = new DOMParser().parseFromString(html, 'text/html');
+                    const el = doc.querySelector('.page-song[data-voice-rounds]');
+                    if (!el) { return; }
+                    const parsed = JSON.parse(el.getAttribute('data-voice-rounds'));
+                    const rounds = Array.isArray(parsed)
+                        ? parsed.filter(function (r) { return r && Array.isArray(r.lineIds) && r.lineIds.length > 0 && Array.isArray(r.voices) && r.voices.length > 0; })
+                        : [];
+                    if (myToken === roundFetchToken && rounds.length > 0) { showRoundPanel(rounds); }
+                })
+                .catch(function () { /* no rounds panel this song — the ordinary console keeps working */ });
+        }
+
+        roundSelectEl.addEventListener('change', function () {
+            const idx = parseInt(roundSelectEl.value, 10);
+            if (Number.isInteger(idx) && roundList[idx]) { selectRound(roundList[idx]); }
+        });
+        roundPrevBtn.addEventListener('click', function () {
+            if (roundStep > 0) { stopRoundPanelPlayback(); roundStep--; broadcastRoundStep(); }
+        });
+        roundNextBtn.addEventListener('click', function () {
+            const total = roundActiveTimeline ? roundActiveTimeline.steps.length : 0;
+            if (roundStep < total - 1) { stopRoundPanelPlayback(); roundStep++; broadcastRoundStep(); }
+        });
+        roundPlayBtn.addEventListener('click', function () {
+            if (roundPlayer) { stopRoundPanelPlayback(); updateRoundCounter(); return; }
+            if (!roundActiveTimeline || roundActiveTimeline.basis === 'lines' || roundActiveTimeline.steps.length < 2) { return; }
+            if (roundStep >= roundActiveTimeline.steps.length - 1) { roundStep = 0; }
+            roundPlayer = createRoundAutoAdvance(roundActiveTimeline.steps, {
+                onStep: function (i) {
+                    roundStep = i;
+                    broadcastRoundStep();
+                    if (i >= roundActiveTimeline.steps.length - 1) { stopRoundPanelPlayback(); updateRoundCounter(); }
+                },
+            });
+            roundPlayer.start(roundStep);
+            broadcastRoundStep();
+        });
+
         /* ---- QR join code (#1339 "buildable half") -------------------------
            Renders a scannable QR of the join URL beside the typed code — an
            ACCELERATOR, never a replacement (rule from the issue brief): the
@@ -696,6 +906,14 @@ if ($driverKeysReady && $venues) {
         function teardown() {
             if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
             if (broadcaster) { broadcaster.destroy(); broadcaster = null; }
+            /* #2073 — the round panel's own auto-advance timer is the OTHER
+               live timer this page can start; rule #32's sibling in
+               .claude/CLAUDE.md applies here exactly as it does to
+               present-mode.js's projector. */
+            hideRoundPanel();
+            roundActiveSongId = null;
+            roundLastSongId = null;
+            roundLastComponentIndex = null;
             session = null;
             overlay.classList.remove('active');
             /* #1840 — clear the corner bug with everything else; the NEXT
@@ -728,7 +946,7 @@ if ($driverKeysReady && $venues) {
                 startRotate();
                 /* Mount the song-driver console (the projection-laptop broadcaster). */
                 broadcaster = new ServiceBroadcaster({
-                    apiCall: apiCall,
+                    apiCall: apiCallForBroadcaster,
                     sessionId: session.sessionId,
                     mount: consoleBody,
                     onSessionEnded: function () { teardown(); },
