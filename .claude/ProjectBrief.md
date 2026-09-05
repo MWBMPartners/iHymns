@@ -1,5 +1,46 @@
 # 📋 iHymns — Project Brief
 
+## 📌 Current state — 2026-09-05 (singing parts, echoes and rounds shipped; v1.3.0)
+
+**Merged to alpha as `8219f456` (PR #2088, 37 commits) and deployed.**
+
+Songs where different groups sing different lines — the women sing two lines, then the men, then
+everyone — are now a real thing the app understands, rather than words typed into the lyrics. Also
+songs with an **echo** (a short phrase answered back) and songs sung in a **round** (groups singing
+the same words starting at different times).
+
+**The headline finding:** most of it already existed. Issue #1137 shipped the database tables for
+exactly this feature and was CLOSED — and nothing was ever connected to them. They had been sitting
+empty ever since. What was missing was the list of allowed values, a way to write the data, a way
+to read it back, and any way for a curator to enter it. A closed issue is not evidence of a working
+feature; that lesson drove the whole issue sweep below.
+
+**What shipped:** four new tables (an echo inside a line, a round, its voices, and a review queue) —
+the three existing ones untouched. A "Who sings" panel in the newer editor. Folding of consecutive
+same-part lines into runs, so a label appears once above a group rather than on every line.
+Projection of a round with playback. Import and export through OpenLyrics, and reading the singer
+information out of Apple Music timed lyrics, which had three separate faults meaning none of it was
+kept. A batch that proposes conversions for the ~22 existing songs into a curator review queue,
+never automatically.
+
+**Fixed along the way:** #2071 (OpenLyrics part attribute discarded on import), #2072 (per-line
+notes written and never read, then wiped), #2075 (four importers turning a marker into a fake
+chorus), #2076 (two version resolvers disagreeing, which broke translations today), #2077 (schema
+drift), #1605 (a vendored library years out of date and loaded on public pages), plus a duplicate
+singing-part bug.
+
+**New rule #51** — per-line data is kept with a line by its identity, never its position. That
+mistake was found FOUR times in one day; the chords instance (#2087) is still live.
+
+**Issue tracker:** all 332 open issues verified against real code. 22 closed, 8 deliberately kept
+open after a second pass refused the closure, 31 comments posted. 22 ranked proposals filed as
+#2079-#2086.
+
+⚠️ **Not verified:** nothing has run against a real database, a real projector, or a compiled
+phone build. The backfill has never been run, so "about 22 songs" is from a four-month-old snapshot
+covering roughly a fifth of the corpus.
+
+
 > **Claude Context File** — This file ensures continuity across development sessions.
 
 ---
