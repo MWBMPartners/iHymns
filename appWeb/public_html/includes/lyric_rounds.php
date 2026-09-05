@@ -726,9 +726,14 @@ function lyricRoundsForVersion(\mysqli $db, int $lyricsId): array
     $vStmt = $db->prepare("SELECT * FROM tblLyricRoundVoices WHERE RoundId IN ({$place}) ORDER BY RoundId, VoiceNumber");
     bindParamSafe(__FUNCTION__ . ':voices', $vStmt, str_repeat('i', count($roundIds)), ...$roundIds);
     $vStmt->execute();
+    /* get_result() may be called only ONCE for an executed statement — a second
+       call returns false, and false->fetch_assoc() is a fatal error. So take the
+       result set once, then read rows from it. Calling it inside the loop
+       condition crashes on any round with more than one voice. (#2073) */
+    $vRes = $vStmt->get_result();
     $voicesByRound = [];
     $allPartIds = [];
-    while ($row = $vStmt->get_result()->fetch_assoc()) {
+    while ($row = $vRes->fetch_assoc()) {
         $voicesByRound[(int)$row['RoundId']][] = $row;
         if ($row['VocalPartId'] !== null) {
             $allPartIds[(int)$row['VocalPartId']] = true;
@@ -747,7 +752,9 @@ function lyricRoundsForVersion(\mysqli $db, int $lyricsId): array
         );
         bindParamSafe(__FUNCTION__ . ':parts', $pStmt, str_repeat('i', count($partIds)), ...$partIds);
         $pStmt->execute();
-        while ($row = $pStmt->get_result()->fetch_assoc()) {
+        /* Same rule as above: one get_result() per execute. */
+        $pRes = $pStmt->get_result();
+        while ($row = $pRes->fetch_assoc()) {
             $musicianName = $row['musician_name'] ?? null;
             unset($row['musician_name']);
             $partsById[(int)$row['Id']] = vocalPartsShape($row, $musicianName !== null ? (string)$musicianName : null);

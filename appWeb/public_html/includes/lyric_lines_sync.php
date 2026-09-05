@@ -813,7 +813,15 @@ function lyricLinesWriteComponents(\mysqli $db, string $songId, array $component
                other best-effort step in this file already is by virtue of
                being a single atomic SQL statement. */
             try {
-                $db->rollback(0, 'ihymns_vp_apply');
+                /* ⚠️ NOT `$db->rollback(0, 'ihymns_vp_apply')`. In mysqli,
+                   rollback()'s second argument names a TRANSACTION, not a
+                   savepoint — that call would roll back the WHOLE transaction,
+                   throwing away the song save this step was only a small part
+                   of, while the caller still reported success. The only way to
+                   unwind to a savepoint is the SQL statement itself. Found by
+                   an independent review of this branch; the bug was in the very
+                   change that introduced the savepoint to make this atomic. */
+                $db->query('ROLLBACK TO SAVEPOINT ihymns_vp_apply');
             } catch (\Throwable $_e2) {
                 if (songRelocateIsTransactionFatal($_e2)) { throw $_e2; }
                 /* The rollback-to-savepoint itself failed (e.g. the
