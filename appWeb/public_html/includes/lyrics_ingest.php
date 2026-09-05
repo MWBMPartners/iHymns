@@ -16,6 +16,39 @@
  * Auth is the CALLER's responsibility — these functions never read $_SERVER /
  * sessions. Parsing (`lyricsIngest_parseTtml`) does no I/O and is unit-tested.
  *
+ * #2073 commit 12 (D2) — VOICE PARTS FROM TTML
+ * ---------------------------------------------
+ * ELI5: Apple Music TTML is the richest "who sings this?" signal iHymns
+ * handles — a `<head>` lists every voice by name, each line says which
+ * voice(s) sing it, and `ttm:role="x-bg"` marks an echo/background phrase —
+ * and until this commit the parser threw all of that away. It now reads the
+ * `<head>` agent definitions, fixes two bugs that mis-shaped the per-word
+ * data (a background-vocal GROUP of several timed words was being read as
+ * ONE fake word; a word never inherited its line's or its group's voice),
+ * and the writer turns the result into real rows in the #1137/#2073
+ * vocal-parts tables — DIRECTLY, not queued for review, because a TTML
+ * `<ttm:agent>` is a STRUCTURED fact the source FILE states, unlike the
+ * text-marker detector's guesses over plain lyric lines (see
+ * `includes/vocal_part_detect.php`'s own doc-block for that distinction).
+ *
+ * DETAILED / WHY: see `vocalPartsFindOrCreate()` (`includes/vocal_parts.php`,
+ * #1137) for the registry write, `vocalPartsAssignLinesForVersion()` /
+ * `vocalPartsAssignWords()` for the line/word assignment rows, and
+ * `vocalPartsKindFromTtmlAgent()` for the TTML2 §12.2.1 `ttm:agent type`
+ * vocabulary map — all three already existed on this branch (#2073 commit 5)
+ * with no caller; this commit is that caller. Offsets and slicing anywhere
+ * in this feature are CODE POINTS, never bytes/UTF-16 (rule #21) — though in
+ * practice this commit never slices a string by offset at all, only splits
+ * whitespace-separated attribute lists and walks whole DOM text nodes.
+ *
+ * @see .claude/vocal-parts-2073-plan.md  "Design pass 6" §7 (the TTML spec
+ *      this commit implements) and "Design pass 7" §1/§10 (its correction —
+ *      the container-span rule is whitespace-only, dropping Pass 6's extra
+ *      "and carries no ttm:role/ttm:agent" clause)
+ * @see https://www.w3.org/TR/ttml2/#metadata-vocabulary-agent  TTML2 §12.2.1
+ *      ttm:agent — the `type` vocabulary (person|group|character|other) this
+ *      file's `vocalPartsKindFromTtmlAgent()` call reads
+ *
  * Copyright (c) 2026 iHymns. All rights reserved.
  */
 
@@ -103,6 +136,82 @@ function _ttmlChildSpans(\DOMElement $el): array
 }
 
 /**
+ * ELI5: "does this element have a real GAP of actual whitespace between any
+ * two of its children?" — that one question is the whole difference between
+ * Apple's two nested-`<span>` shapes: several SEPARATE timed WORDS (spaces
+ * between them, e.g. a background-vocal echo phrase) versus one word spelled
+ * out as several touching SYLLABLES (no space between them at all, e.g.
+ * "Oh" + "yeah" written as two syllable spans that read as "Ohyeah" with no
+ * gap). #2073 D2, "Design pass 7" §10 — the container rule is WHITESPACE
+ * ONLY (an earlier draft, "Design pass 6" §7.1, also required the container
+ * to carry no `ttm:role`/`ttm:agent` of its own; Pass 7 drops that extra
+ * clause on a contradiction and wins by this plan's own stated precedence —
+ * see this file's header doc-block).
+ *
+ * DETAILED / WHY: a direct child TEXT NODE of $el that is non-empty but
+ * TRIMS to empty (i.e. it is made of nothing but spaces/tabs/newlines) is
+ * exactly what XML puts between two sibling elements that were written with
+ * a literal space in the source — `<span>a</span> <span>b</span>` has one
+ * such node between the two spans; `<span>a</span><span>b</span>` (no space
+ * in the source at all) has none. This is a plain boolean scan, no DOM
+ * position/adjacency bookkeeping needed, because TTML never legitimately
+ * puts a "just whitespace" text node ANYWHERE inside a real syllable
+ * container — a syllable container's only text lives inside its child
+ * spans. @see https://www.w3.org/TR/xml/#sec-white-space (XML whitespace,
+ * for why a text node can be present at all here)
+ */
+function _ttmlSpanChildrenHaveWhitespaceGap(\DOMElement $el): bool
+{
+    foreach ($el->childNodes as $child) {
+        if ($child->nodeType === XML_TEXT_NODE && $child->textContent !== '' && trim($child->textContent) === '') {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * ELI5: given the attribute bag `_ttmlMeta()` already collected for a line
+ * or a word, pull out "which voice(s) sing this?" (`ttm:agent`, a
+ * whitespace-separated IDREFS list — a duet line can name two) and "is this
+ * an echo?" (`ttm:role` containing the token `x-bg`). ONE small function so
+ * a `<p>` line and a word's already-inherited merged meta are read the
+ * EXACT same way (rule #35: agreement by shared code, never by two call
+ * sites that merely happen to match today).
+ *
+ * DETAILED / WHY: `_ttmlMeta()` keys its result by the attribute's qualified
+ * DOM name, which is the PREFIXED form (`ttm:agent`) when the source XML
+ * used the `ttm:` prefix and the bare form (`agent`) when it didn't (both
+ * are seen in real files) — this checks both, same as `_ttmlMeta()`'s own
+ * probe list does when collecting them in the first place. `ttm:role` can in
+ * principle carry more than one space-separated token (TTML2 §6.2.9 defines
+ * it as a set); `x-bg` is Apple's own extension token for a background
+ * vocal, not part of the base TTML2 vocabulary, so it is matched by
+ * substring-of-the-token-list rather than an exact-equals on the whole
+ * attribute value.
+ *
+ * @param ?array<string,string> $meta  `_ttmlMeta()`'s return (qualified attr
+ *        name => value), or null when the element/merge carried none
+ * @return array{agentIds:list<string>,isBackground:bool}
+ */
+function _ttmlAgentAndBg(?array $meta): array
+{
+    if ($meta === null) {
+        return ['agentIds' => [], 'isBackground' => false];
+    }
+    $agentRaw = (string)($meta['ttm:agent'] ?? $meta['agent'] ?? '');
+    $agentIds = [];
+    if (trim($agentRaw) !== '') {
+        foreach (preg_split('/\s+/u', trim($agentRaw)) ?: [] as $piece) {
+            if ($piece !== '') { $agentIds[] = $piece; }
+        }
+    }
+    $roleRaw = (string)($meta['ttm:role'] ?? $meta['role'] ?? '');
+    $roleTokens = trim($roleRaw) !== '' ? (preg_split('/\s+/u', trim($roleRaw)) ?: []) : [];
+    return ['agentIds' => $agentIds, 'isBackground' => in_array('x-bg', $roleTokens, true)];
+}
+
+/**
  * Parse a TTML document into a neutral timed-lyrics structure:
  *
  *   [
@@ -110,13 +219,23 @@ function _ttmlChildSpans(\DOMElement $el): array
  *     'hasTiming'         => bool,             // line-level
  *     'hasWordTiming'     => bool,
  *     'hasSyllableTiming' => bool,
+ *     'agents'            => [ 'v1' => ['type','name','meta'], … ],  // #2073 D2 — <head> ttm:agent DEFINITIONS, keyed by xml:id; [] when none
+ *     'hasVoiceParts'     => bool,                                   // #2073 D2 — any agent/echo signal anywhere in the file
  *     'lines' => [
  *       [ 'text','startMs','endMs','languageCode','isInstrumental','meta',
+ *         'agentIds'       => ['v1', …],   // #2073 D2 — this line's OWN ttm:agent IDREFS (never inherited — a <p> has no parent line)
+ *         'isBackground'   => bool,        // #2073 D2 — this line's OWN ttm:role="x-bg"
  *         'words' => [ [ 'text','startMs','endMs','meta',
+ *                        'agentIds'     => ['v1', …],  // #2073 D2 — ALREADY resolved through every enclosing container/line (see the parser's own comment on the word-walk)
+ *                        'isBackground' => bool,        // #2073 D2 — likewise already-inherited
  *                        'syllables' => [ ['text','startMs','endMs','meta'], … ] ], … ] ],
  *       …
  *     ],
  *   ]
+ *
+ * `agentIds`/`isBackground` are derived from `meta` by `_ttmlAgentAndBg()` —
+ * see that function's own doc-block for the exact `ttm:agent`/`ttm:role`
+ * reading rules (#2073 D2).
  *
  * @throws \RuntimeException on malformed XML / not-TTML.
  */
@@ -147,6 +266,60 @@ function lyricsIngest_parseTtml(string $ttml): array
     $language = $root->hasAttribute('xml:lang') ? trim($root->getAttribute('xml:lang')) : null;
     if ($language === '') { $language = null; }
 
+    /* #2073 D2 fix (1 of 3): read the <head><metadata><ttm:agent xml:id=…
+       type=…><ttm:name>…</ttm:name></ttm:agent> voice DEFINITIONS. Before
+       this fix, the parser never looked inside <head> at all — only the
+       per-line/per-word ATTRIBUTE STRING that references one of these ids
+       ("v1") was ever kept (in MetaJson), never what "v1" actually IS. Keyed
+       by xml:id so the writer can find-or-create the SAME tblVocalParts row
+       on every re-ingest (the table's existing uq_Lyrics_Agent unique key,
+       #1137, is exactly this idempotency key — no new schema needed).
+       @see https://www.w3.org/TR/ttml2/#metadata-vocabulary-agent */
+    $agents = [];
+    foreach ($doc->getElementsByTagNameNS('*', 'agent') as $agentEl) {
+        /** @var \DOMElement $agentEl */
+        if (_ttmlLocalName($agentEl) !== 'agent') { continue; }
+        /* TTML/ttm:agent only ever means anything under <head> — require an
+           ancestor by that local name so an unrelated same-named element
+           elsewhere in the document (not valid TTML, but nothing stops a
+           hand-edited file from containing one) is never mistaken for one. */
+        $underHead = false;
+        for ($anc = $agentEl->parentNode; $anc !== null; $anc = $anc->parentNode) {
+            if ($anc instanceof \DOMElement && _ttmlLocalName($anc) === 'head') { $underHead = true; break; }
+        }
+        if (!$underHead) { continue; }
+
+        $agentId = $agentEl->getAttributeNS('http://www.w3.org/XML/1998/namespace', 'id');
+        if ($agentId === '') { $agentId = $agentEl->getAttribute('xml:id'); }
+        if ($agentId === '') { continue; } /* an id-less agent can never be REFERENCED by a line/word — nothing to key it by */
+
+        $agentType = $agentEl->hasAttribute('type') ? strtolower(trim($agentEl->getAttribute('type'))) : '';
+        $agentType = $agentType !== '' ? $agentType : null;
+
+        /* A real file can carry more than one <ttm:name> (e.g. one per
+           language); keep ALL of them losslessly in `meta`, but pick ONE
+           display name — preferring type="full" (TTML2's own "the whole
+           name as one string" type) when present, else the first name at all. */
+        $names = [];
+        $fullName = null;
+        $anyName  = null;
+        foreach ($agentEl->childNodes as $nameEl) {
+            if ($nameEl->nodeType !== XML_ELEMENT_NODE || _ttmlLocalName($nameEl) !== 'name') { continue; }
+            $nameText = trim((string)$nameEl->textContent);
+            if ($nameText === '') { continue; }
+            $nameType = $nameEl->hasAttribute('type') ? strtolower(trim($nameEl->getAttribute('type'))) : null;
+            $names[]  = ['type' => $nameType, 'text' => $nameText];
+            $anyName ??= $nameText;
+            if ($nameType === 'full') { $fullName ??= $nameText; }
+        }
+
+        $agents[$agentId] = [
+            'type' => $agentType,
+            'name' => $fullName ?? $anyName,
+            'meta' => ['type' => $agentType, 'names' => $names],
+        ];
+    }
+
     $pNodes = $doc->getElementsByTagNameNS('*', 'p');
     $lines  = [];
     $hasTiming = false;
@@ -162,10 +335,35 @@ function lyricsIngest_parseTtml(string $ttml): array
         $lineLang = $p->hasAttribute('xml:lang') ? trim($p->getAttribute('xml:lang')) : null;
         if ($lineLang === '') { $lineLang = null; }
 
+        $pMeta = _ttmlMeta($p);
+
         /* Build words + syllables by walking the <p>'s children in order.
            Consecutive leaf <span>s (no whitespace between) are syllables of
            one word; a whitespace text node ends a word; a <span> that itself
-           contains child <span>s is a word with explicit syllables. */
+           contains child <span>s is EITHER:
+             - a true syllable container (its children touch, no whitespace
+               between them — one word, several timed syllables), OR
+             - #2073 D2 fix (2 of 3): a WORD-GROUP container — Apple wraps a
+               background-vocal echo phrase in e.g.
+               `<span ttm:role="x-bg"><span begin=…>He</span> <span
+               begin=…>is</span> <span begin=…>my</span></span>`, i.e.
+               several whitespace-SEPARATED timed words, not syllables of
+               one. Before this fix EVERY nested-span container took the
+               first branch unconditionally, so a 3-word echo group read
+               back as one bogus "word" whose text was the three words
+               jammed together with no space ("Heismy") — see
+               `_ttmlSpanChildrenHaveWhitespaceGap()`'s own doc-block, and
+               this file's header doc-block for why this is a WHITESPACE-only
+               test (not also gated on the container's own attributes, which
+               an earlier plan draft required — dropped by "Design pass 7").
+           A word-group container is walked RECURSIVELY by this SAME loop
+           (`$walk` calls itself), passing its own merged meta down as the
+           new "inherited" baseline — which is also #2073 D2 fix (3 of 3):
+           every word's `meta` is `array_merge(inherited, ownMeta)`, so a
+           word with NO attributes of its own still picks up whichever
+           voice/background flag its enclosing container (or, with no
+           container, its line) declared, instead of the pre-fix behaviour
+           of every word inheriting NOTHING from any ancestor at all. */
         $words = [];
         $cur   = null;
         $flush = function () use (&$cur, &$words) {
@@ -175,51 +373,75 @@ function lyricsIngest_parseTtml(string $ttml): array
         $newWord = static function (): array {
             return ['text' => '', 'startMs' => null, 'endMs' => null, 'meta' => null, 'syllables' => []];
         };
+        $walk = function (\DOMNode $container, ?array $inherited) use (&$walk, &$cur, &$words, $flush, $newWord): void {
+            foreach ($container->childNodes as $node) {
+                if ($node->nodeType === XML_ELEMENT_NODE && _ttmlLocalName($node) === 'span') {
+                    /** @var \DOMElement $node */
+                    $nested  = _ttmlChildSpans($node);
+                    $ownMeta = _ttmlMeta($node);
+                    $merged  = ($inherited !== null || $ownMeta !== null) ? array_merge($inherited ?? [], $ownMeta ?? []) : null;
 
-        foreach ($p->childNodes as $node) {
-            if ($node->nodeType === XML_ELEMENT_NODE && _ttmlLocalName($node) === 'span') {
-                /** @var \DOMElement $node */
-                $nested = _ttmlChildSpans($node);
-                if (!empty($nested)) {
-                    $flush();
-                    $w = $newWord();
-                    $w['startMs'] = _ttmlAttrMs($node, 'begin');
-                    $w['endMs']   = _ttmlAttrMs($node, 'end');
-                    $w['meta']    = _ttmlMeta($node);
-                    foreach ($nested as $syl) {
-                        $st = $syl->textContent;
-                        $sMs = _ttmlAttrMs($syl, 'begin');
-                        $eMs = _ttmlAttrMs($syl, 'end');
-                        $w['syllables'][] = ['text' => $st, 'startMs' => $sMs, 'endMs' => $eMs, 'meta' => _ttmlMeta($syl)];
-                        $w['text'] .= $st;
-                        if ($w['startMs'] === null) { $w['startMs'] = $sMs; }
-                        if ($eMs !== null) { $w['endMs'] = $eMs; }
+                    if (!empty($nested) && _ttmlSpanChildrenHaveWhitespaceGap($node)) {
+                        /* Word GROUP: flush whatever word was mid-build, recurse
+                           with THIS container's merged meta as the new baseline
+                           every word inside it inherits from, then flush again
+                           so nothing bleeds across the container's boundary. */
+                        $flush();
+                        $walk($node, $merged);
+                        $flush();
+                    } elseif (!empty($nested)) {
+                        /* Unchanged shape: a true syllable container. */
+                        $flush();
+                        $w = $newWord();
+                        $w['startMs'] = _ttmlAttrMs($node, 'begin');
+                        $w['endMs']   = _ttmlAttrMs($node, 'end');
+                        $w['meta']    = $merged;
+                        foreach ($nested as $syl) {
+                            $st  = $syl->textContent;
+                            $sMs = _ttmlAttrMs($syl, 'begin');
+                            $eMs = _ttmlAttrMs($syl, 'end');
+                            $w['syllables'][] = ['text' => $st, 'startMs' => $sMs, 'endMs' => $eMs, 'meta' => _ttmlMeta($syl)];
+                            $w['text'] .= $st;
+                            if ($w['startMs'] === null) { $w['startMs'] = $sMs; }
+                            if ($eMs !== null) { $w['endMs'] = $eMs; }
+                        }
+                        $words[] = $w;
+                    } else {
+                        /* Leaf span: one syllable of the word currently being
+                           built (or the first syllable of a brand-new one). */
+                        if ($cur === null) {
+                            $cur = $newWord();
+                            $cur['meta'] = $inherited; /* baseline BEFORE this leaf's own attrs, so a plain word still inherits its line/group */
+                        }
+                        if ($ownMeta !== null) {
+                            $cur['meta'] = array_merge($cur['meta'] ?? [], $ownMeta);
+                        }
+                        $st  = $node->textContent;
+                        $sMs = _ttmlAttrMs($node, 'begin');
+                        $eMs = _ttmlAttrMs($node, 'end');
+                        $cur['syllables'][] = ['text' => $st, 'startMs' => $sMs, 'endMs' => $eMs, 'meta' => $ownMeta];
+                        $cur['text'] .= $st;
+                        if ($cur['startMs'] === null) { $cur['startMs'] = $sMs; }
+                        if ($eMs !== null) { $cur['endMs'] = $eMs; }
                     }
-                    $words[] = $w;
-                } else {
-                    if ($cur === null) { $cur = $newWord(); }
-                    $st  = $node->textContent;
-                    $sMs = _ttmlAttrMs($node, 'begin');
-                    $eMs = _ttmlAttrMs($node, 'end');
-                    $cur['syllables'][] = ['text' => $st, 'startMs' => $sMs, 'endMs' => $eMs, 'meta' => _ttmlMeta($node)];
-                    $cur['text'] .= $st;
-                    if ($cur['startMs'] === null) { $cur['startMs'] = $sMs; }
-                    if ($eMs !== null) { $cur['endMs'] = $eMs; }
-                }
-            } elseif ($node->nodeType === XML_TEXT_NODE) {
-                if (trim($node->textContent) === '') {
-                    $flush(); /* whitespace = word boundary */
-                } else {
-                    if ($cur === null) { $cur = $newWord(); }
-                    $cur['text'] .= $node->textContent;
+                } elseif ($node->nodeType === XML_TEXT_NODE) {
+                    if (trim($node->textContent) === '') {
+                        $flush(); /* whitespace = word boundary */
+                    } else {
+                        if ($cur === null) { $cur = $newWord(); $cur['meta'] = $inherited; }
+                        $cur['text'] .= $node->textContent;
+                    }
                 }
             }
-        }
+        };
+        $walk($p, $pMeta);
         $flush();
 
         /* Normalise each word: a single leaf syllable identical to the word
            carries no extra info, so we don't emit it as a syllable row;
-           genuine multi-syllable words set hasSyllableTiming. */
+           genuine multi-syllable words set hasSyllableTiming. Also resolve
+           each word's OWN (already-inherited, per the fix above) voice/echo
+           signal — see `_ttmlAgentAndBg()`'s doc-block. */
         foreach ($words as &$w) {
             if ($w['startMs'] !== null) { $hasWordTiming = true; }
             if (count($w['syllables']) > 1) {
@@ -227,11 +449,15 @@ function lyricsIngest_parseTtml(string $ttml): array
             } else {
                 $w['syllables'] = []; /* drop the redundant 1:1 syllable */
             }
+            $wSig = _ttmlAgentAndBg($w['meta']);
+            $w['agentIds']     = $wSig['agentIds'];
+            $w['isBackground'] = $wSig['isBackground'];
         }
         unset($w);
 
         $lineText = trim((string) preg_replace('/\s+/u', ' ', $p->textContent));
         $isInstrumental = ($lineText === '');
+        $lineSig = _ttmlAgentAndBg($pMeta);
 
         $lines[] = [
             'text'           => $lineText,
@@ -239,7 +465,9 @@ function lyricsIngest_parseTtml(string $ttml): array
             'endMs'          => $lineEnd,
             'languageCode'   => $lineLang,
             'isInstrumental' => $isInstrumental,
-            'meta'           => _ttmlMeta($p),
+            'meta'           => $pMeta,
+            'agentIds'       => $lineSig['agentIds'],
+            'isBackground'   => $lineSig['isBackground'],
             'words'          => $words,
         ];
     }
@@ -248,11 +476,29 @@ function lyricsIngest_parseTtml(string $ttml): array
         throw new \RuntimeException('no <p> lines found in TTML <body>');
     }
 
+    /* "Has this file got ANY voice-part signal worth writing?" — a cheap
+       short-circuit the writer (lyricsIngest_writeToDb()) uses so the
+       overwhelming majority of plain (single-voice, no echo) TTML files
+       never even requires vocal_parts.php. A declared-but-unused <head>
+       agent still counts (a curator can see it was declared, even if no
+       line ended up referencing it). */
+    $hasVoiceParts = $agents !== [];
+    if (!$hasVoiceParts) {
+        foreach ($lines as $checkLine) {
+            if ($checkLine['agentIds'] !== [] || $checkLine['isBackground']) { $hasVoiceParts = true; break; }
+            foreach ($checkLine['words'] as $checkWord) {
+                if ($checkWord['agentIds'] !== [] || $checkWord['isBackground']) { $hasVoiceParts = true; break 2; }
+            }
+        }
+    }
+
     return [
         'language'          => $language,
         'hasTiming'         => $hasTiming,
         'hasWordTiming'     => $hasWordTiming,
         'hasSyllableTiming' => $hasSyllableTiming,
+        'agents'            => $agents,
+        'hasVoiceParts'     => $hasVoiceParts,
         'lines'             => $lines,
     ];
 }
@@ -262,12 +508,25 @@ function lyricsIngest_parseTtml(string $ttml): array
  * song, UPSERTing on (SongId, Source) — re-ingesting the same source replaces
  * its rows (CASCADE clears old lines/words/syllables) rather than duplicating.
  *
+ * #2073 D2: that same CASCADE also clears every OLD line/word vocal-part
+ * ASSIGNMENT row for this version for free (`tblLyricLineVocalParts.LineId`
+ * / `tblLyricWordVocalParts.WordId` both `ON DELETE CASCADE` back to the
+ * lines/words this function just deleted) — so a re-ingest re-creates them
+ * fresh from the re-parsed file without this function ever deleting them
+ * itself. The PART REGISTRY rows (`tblVocalParts`) are NOT cascaded away
+ * (they have no FK to a line/word) and are correctly reused across a
+ * re-ingest via `vocalPartsFindOrCreate()`'s `TtmlAgentId` match.
+ *
  * @param \mysqli $db
  * @param string  $songId   tblSongs.SongId (must exist).
  * @param array   $parsed   Output of lyricsIngest_parseTtml().
  * @param array   $opts     { source?, sourceUrl?, formatVersion?, isPrimary?,
  *                            isExplicit?, status?, submittedBy?, language? }
- * @return array { lyricsId, lines, words, syllables }
+ * @return array { lyricsId, lines, words, syllables, vocalParts,
+ *                 lineAssignments, wordAssignments } — the last three are
+ *                 always present (0 when the file had no voice signal, or
+ *                 when the #1137 tables are not migrated on this install;
+ *                 #2073 D2)
  * @throws \RuntimeException on a missing song or DB error.
  */
 function lyricsIngest_writeToDb(\mysqli $db, string $songId, array $parsed, array $opts = []): array
@@ -376,6 +635,15 @@ function lyricsIngest_writeToDb(\mysqli $db, string $songId, array $parsed, arra
         );
 
         $nLines = 0; $nWords = 0; $nSyl = 0;
+        /* #2073 D2 — remember which real database Id each parsed line/word
+           ended up at, so the vocal-parts writer below (which runs AFTER
+           every line/word already exists) can turn "line index 3's own
+           ttm:agent" into "tblLyricLines.Id 48291 is sung by part 7" — by
+           IDENTITY, never by re-deriving position later (rule #21/#25's own
+           "never carry per-line data by array position" lesson, applied here
+           to a same-pass hand-off rather than a later rewrite). */
+        $lineIdByIndex = [];
+        $wordIdByIndex = [];
         foreach ($parsed['lines'] as $li => $line) {
             $lineMeta = isset($line['meta']) ? json_encode($line['meta'], JSON_UNESCAPED_UNICODE) : null;
             $isInst   = !empty($line['isInstrumental']) ? 1 : 0;
@@ -388,6 +656,7 @@ function lyricsIngest_writeToDb(\mysqli $db, string $songId, array $parsed, arra
             );
             $lineStmt->execute();
             $lineId = (int)$db->insert_id;
+            $lineIdByIndex[$li] = $lineId;
             $nLines++;
 
             foreach (($line['words'] ?? []) as $wi => $word) {
@@ -397,6 +666,7 @@ function lyricsIngest_writeToDb(\mysqli $db, string $songId, array $parsed, arra
                 $wordStmt->bind_param('iisiis', $lineId, $wi, $wText, $wStart, $wEnd, $wMeta);
                 $wordStmt->execute();
                 $wordId = (int)$db->insert_id;
+                $wordIdByIndex[$li][$wi] = $wordId;
                 $nWords++;
 
                 foreach (($word['syllables'] ?? []) as $si => $syl) {
@@ -413,12 +683,352 @@ function lyricsIngest_writeToDb(\mysqli $db, string $songId, array $parsed, arra
         $wordStmt->close();
         $sylStmt->close();
 
+        /* #2073 D2 — apply the TTML's voice/echo signal to the #1137
+           vocal-parts tables, INSIDE this same transaction: a TTML
+           `<ttm:agent>` is a STRUCTURED, source-declared fact (see this
+           file's header doc-block), so it is written DIRECTLY here, the same
+           way #2071's OpenLyrics `part=` import applies directly — never
+           routed through the text-marker review queue
+           (`tblVocalPartSuggestions`), which exists for GUESSES over plain
+           lyric text, not for a format that already says the answer.
+           Deliberately NOT wrapped in its own try/catch: this runs inside
+           the surrounding try/catch's transaction, so any failure here rolls
+           back the WHOLE ingest via the SAME path a line/word insert failure
+           already takes — the file must never end up half-voiced (some
+           lines/words written, their voice assignments silently dropped)
+           any more than it may end up with half its lines. Skipped entirely
+           (no-op, no error) when either the parse found no voice signal at
+           all or the #1137 tables are not migrated on this install — see
+           `vocalPartsTablesReady()`'s own doc-block for why that gate
+           degrades gracefully rather than throwing. */
+        $vocalCounts = ['vocalParts' => 0, 'lineAssignments' => 0, 'wordAssignments' => 0];
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'vocal_parts.php';
+        if (!empty($parsed['hasVoiceParts']) && vocalPartsTablesReady($db)) {
+            $vocalCounts = _lyricsIngestApplyVocalParts($db, $lyricsId, $source, $parsed, $lineIdByIndex, $wordIdByIndex);
+        }
+
         $db->commit();
-        return ['lyricsId' => $lyricsId, 'lines' => $nLines, 'words' => $nWords, 'syllables' => $nSyl];
+        return ['lyricsId' => $lyricsId, 'lines' => $nLines, 'words' => $nWords, 'syllables' => $nSyl] + $vocalCounts;
     } catch (\Throwable $e) {
         try { $db->rollback(); } catch (\Throwable $_) {}
         throw new \RuntimeException('lyrics ingest write failed: ' . $e->getMessage(), 0, $e);
     }
+}
+
+/**
+ * ELI5: "do these two lists of part ids name the exact same PARTS, ignoring
+ * order?" — used by `_lyricsIngestApplyVocalParts()` to tell whether a
+ * word's voice is genuinely different from its line's (worth its own row)
+ * or just repeats it (leave it to inherit, per the DDL's own override rule —
+ * see `tblLyricWordVocalParts`'s table COMMENT in schema.sql). PURE — a
+ * plain sort-and-compare, split out on its own so it can be truth-tabled
+ * without a live mysqli (this repo's PHP test image has none — see
+ * `tests/php/test-vocal-parts-core.php`'s own doc-block for that same
+ * constraint).
+ *
+ * @param list<int> $a
+ * @param list<int> $b
+ */
+function _lyricsIngestIntSetsEqual(array $a, array $b): bool
+{
+    sort($a);
+    sort($b);
+    return $a === $b;
+}
+
+/**
+ * ELI5: turn what the (now head-agent-aware, container-fixed,
+ * inheritance-fixed) TTML parser found out about WHO SINGS each line/word
+ * into real rows in the #1137/#2073 vocal-parts tables — registry rows for
+ * every `<head>` agent, a line-level assignment per line that named one, a
+ * synthesised "backing" part for a bare `ttm:role="x-bg"` with no named
+ * agent, and a word-level OVERRIDE row only where a word's own (already-
+ * inherited) voice/echo signal genuinely differs from its line's.
+ *
+ * DETAILED / WHY: called ONCE, straight after `lyricsIngest_writeToDb()`
+ * has just inserted every line/word for this ingest — so `$lineIdByIndex` /
+ * `$wordIdByIndex` are freshly-minted real database Ids handed to us by
+ * IDENTITY (the caller's own array index), never re-derived by guessing a
+ * line back from its position/type/text later (the "per-line data survives
+ * by Id or not at all" rule this whole programme keeps re-learning the hard
+ * way — #2072/#2087 and the earlier voice-mark bug this same brief cites).
+ *
+ * Ordering ("head order, then first-reference order for undeclared"): a
+ * PHP associative array preserves insertion order, so building `$ordered`
+ * by first copying `$parsed['agents']` (already in `<head>` document order)
+ * and only THEN discovering ids referenced-but-never-declared (scanning
+ * lines then words, in that same order) produces exactly that ordering with
+ * no separate sort step.
+ *
+ * `$personOrdinal` is read 0-BASED, matching `vocalPartsKindFromTtmlAgent()`'s
+ * OWN doc-block ("the FIRST person-type agent, $personOrdinal === 0, is
+ * 'lead'") — read the ordinal BEFORE bumping it for a person-type agent,
+ * not after. (Flagging this because an earlier plan snippet for this exact
+ * commit — "Design pass 6" §7.2 — incremented first and passed the
+ * incremented value, which would make the FIRST person agent read as
+ * 'soloist' instead of 'lead'. Per this brief's own instruction to report a
+ * plan/reality mismatch loudly rather than silently working around it: this
+ * function follows the ALREADY-LANDED `vocalPartsKindFromTtmlAgent()`
+ * contract, not the plan snippet.)
+ *
+ * @param array<int,int>            $lineIdByIndex   $parsed['lines'] index -> tblLyricLines.Id
+ * @param array<int,array<int,int>> $wordIdByIndex   [$lineIndex][$wordIndex] -> tblLyricWords.Id
+ * @return array{vocalParts:int,lineAssignments:int,wordAssignments:int}
+ * @throws \RuntimeException  bubbles up unmodified from the vocal_parts.php
+ *         core (see the call site's own comment: this is deliberately NOT
+ *         swallowed — a failure here must roll back the whole ingest)
+ */
+function _lyricsIngestApplyVocalParts(\mysqli $db, int $lyricsId, string $source, array $parsed, array $lineIdByIndex, array $wordIdByIndex): array
+{
+    /* 1. Registry — every declared <head> agent, then every id a line/word
+       references that <head> never defined (a hand-edited or third-party
+       file's sloppiness; a genuine Apple Music export never does this). */
+    $ordered = [];
+    foreach (($parsed['agents'] ?? []) as $agentId => $agent) {
+        $ordered[(string)$agentId] = $agent;
+    }
+    foreach ($parsed['lines'] as $line) {
+        foreach (($line['agentIds'] ?? []) as $agentId) {
+            $ordered[$agentId] ??= ['type' => null, 'name' => null, 'meta' => ['undeclared' => true]];
+        }
+        foreach (($line['words'] ?? []) as $word) {
+            foreach (($word['agentIds'] ?? []) as $agentId) {
+                $ordered[$agentId] ??= ['type' => null, 'name' => null, 'meta' => ['undeclared' => true]];
+            }
+        }
+    }
+
+    $personOrdinal = 0;
+    $groupOrdinal  = 0;
+    $partIdByAgent = [];
+    foreach ($ordered as $agentId => $agent) {
+        $kind = vocalPartsKindFromTtmlAgent($agent, $personOrdinal);
+        if (strtolower((string)($agent['type'] ?? '')) === 'person') {
+            $personOrdinal++; /* bumped AFTER reading — see this function's own doc-block */
+        }
+        $label = ($kind === 'group') ? ('Group ' . (++$groupOrdinal)) : null;
+        $meta  = (isset($agent['meta']) && is_array($agent['meta'])) ? $agent['meta'] : null;
+        $partIdByAgent[$agentId] = vocalPartsFindOrCreate(
+            $db,
+            $lyricsId,
+            $kind,
+            label: $label,
+            source: $source,
+            ttmlAgentId: $agentId,
+            singerName: $agent['name'] ?? null,
+            meta: $meta,
+        );
+    }
+
+    /* A role-only background span/line with NO named agent still needs
+       somewhere to record "this is an echo" — one synthesised 'backing'
+       part per lyrics version, keyed by the reserved TtmlAgentId handle
+       'x-bg' so a re-ingest reuses the SAME row (tblVocalParts' EXISTING
+       uq_Lyrics_Agent unique key is exactly this idempotency key — no new
+       column, per this commit's own brief). Built lazily: a file with no
+       bare background signal never creates it at all. */
+    $bgPartId = null;
+    $bgPart = static function () use (&$bgPartId, $db, $lyricsId, $source): int {
+        return $bgPartId ??= vocalPartsFindOrCreate($db, $lyricsId, 'backing', ttmlAgentId: 'x-bg', source: $source, meta: ['synthetic' => true]);
+    };
+
+    /* Stale-agent cleanup: an agent this version used to reference but the
+       just-(re)parsed file no longer does gets its MACHINE-owned part
+       removed. 'x-bg' is always kept in the keep-list (even on a file with
+       no background signal this run) so the synthetic part, once created,
+       is never pruned just because this particular re-ingest happened not
+       to use it — vocalPartsPruneAgents() only deletes rows that already
+       exist, so listing an unused key here is harmless either way. A
+       curator's OWN 'ihymns'-sourced part is never touched (Source is an
+       exact-match filter — see that function's own doc-block). */
+    vocalPartsPruneAgents($db, $lyricsId, $source, array_merge(array_keys($partIdByAgent), ['x-bg']));
+
+    $resolvePartIds = static function (array $agentIds, bool $isBackground) use ($partIdByAgent, $bgPart): array {
+        $ids = [];
+        foreach ($agentIds as $agentId) {
+            if (isset($partIdByAgent[$agentId])) { $ids[] = $partIdByAgent[$agentId]; }
+        }
+        if ($ids === [] && $isBackground) { $ids = [$bgPart()]; }
+        return $ids;
+    };
+
+    $lineAssignments = 0;
+    $wordAssignments = 0;
+    foreach ($parsed['lines'] as $li => $line) {
+        $lineId = $lineIdByIndex[$li] ?? null;
+        if ($lineId === null) {
+            continue; /* defensive only — every parsed line was inserted immediately above */
+        }
+        $lineIsBackground = !empty($line['isBackground']);
+        $linePartIds      = $resolvePartIds($line['agentIds'] ?? [], $lineIsBackground);
+        if ($linePartIds !== []) {
+            vocalPartsAssignLinesForVersion($db, $lyricsId, $lineId, $linePartIds, $lineIsBackground);
+            $lineAssignments++;
+        }
+
+        foreach (($line['words'] ?? []) as $wi => $word) {
+            $wordId = $wordIdByIndex[$li][$wi] ?? null;
+            if ($wordId === null) {
+                continue; /* defensive only — every parsed word was inserted immediately above */
+            }
+            $wordIsBackground = !empty($word['isBackground']);
+            $wordPartIds      = $resolvePartIds($word['agentIds'] ?? [], $wordIsBackground);
+
+            /* The DDL's own override rule (tblLyricWordVocalParts' schema.sql
+               COMMENT): "a word with rows overrides its line parts; a word
+               with none inherits the line" — so a word row is written ONLY
+               when the word's (already fully inherited — see the parser's
+               own comment) effective voice genuinely differs from its
+               line's. Both sides were resolved through the SAME
+               $resolvePartIds() above, so an ordinary word with no override
+               anywhere in its ancestry always compares exactly equal here
+               and is correctly left unwritten. */
+            if ($wordIsBackground === $lineIsBackground && _lyricsIngestIntSetsEqual($wordPartIds, $linePartIds)) {
+                continue;
+            }
+            if ($wordPartIds === []) {
+                continue; /* nothing to assert about this word beyond what the line already says */
+            }
+            foreach ($wordPartIds as $partId) {
+                vocalPartsAssignWords($db, $lyricsId, [$wordId], $partId, $wordIsBackground);
+            }
+            $wordAssignments++;
+        }
+    }
+
+    return [
+        'vocalParts'      => count($partIdByAgent) + ($bgPartId !== null ? 1 : 0),
+        'lineAssignments' => $lineAssignments,
+        'wordAssignments' => $wordAssignments,
+    ];
+}
+
+/**
+ * ELI5: every TTML file ingested since #1064 has ALWAYS stashed the raw
+ * `ttm:agent`/`ttm:role` attribute string into `tblLyricLines.MetaJson` (and
+ * `tblLyricWords.MetaJson`) — nothing ever read it back until this commit,
+ * so those historical ingests are sitting on voice information this feature
+ * could use RIGHT NOW without anyone re-uploading a file. This function
+ * finds them and reports what it found; it does NOT write anything.
+ *
+ * DETAILED / WHY THIS IS READ-ONLY (this is the "provide a backfill path,
+ * but do NOT assume what is in it" instruction this commit's own brief
+ * gives, honoured as narrowly as possible): the `<head><ttm:agent xml:id
+ * type>` DEFINITIONS were never parsed before this commit (the very first
+ * defect this commit fixes) — so NONE of those historical MetaJson blobs
+ * can say what kind of voice "v1" or "v2" actually WAS, only that some
+ * line/word referenced an id by that name. Reading them back can tell you
+ * WHICH lines/words shared a voice and WHICH were background — genuinely
+ * useful — but it CANNOT recover the real kind, name, or gender: turning
+ * this into applied `tblVocalParts` rows would have to guess the SAME
+ * default (`vocalPartsKindFromTtmlAgent()`'s missing-type fallback,
+ * `'lead'`) for every single id in a file, which is almost certainly wrong
+ * for every voice in a real multi-voice recording but at most one of them.
+ * That is precisely the "do not assume what is in them" risk this commit's
+ * own brief calls out — so this function stops at reporting, and does not
+ * offer a mode that writes.
+ *
+ * **The right fix for any ONE song is almost always to re-ingest its
+ * ORIGINAL TTML file** — now that the head-agent bug is fixed, a fresh
+ * ingest captures the real agent types/names correctly. This scan exists
+ * for the case where that original file is no longer available and someone
+ * needs to know, before trusting anything, which lyrics versions have
+ * signal worth a human's attention and how much.
+ *
+ * This function has NO caller anywhere in this commit (dormant, by design —
+ * see this function's own "@see" below for the gap between what the design
+ * plan describes here and what actually got scheduled).
+ *
+ * @param \mysqli $db
+ * @param ?int    $lyricsId  scope to one lyrics version, or null to scan
+ *                           every non-'ihymns' version in the database
+ * @return list<array{lyricsId:int,songId:string,source:string,linesWithSignal:int,distinctAgentIds:list<string>,wordsWithOwnSignal:int}>
+ *         one row per lyrics version that has ANY signal at all;
+ *         `wordsWithOwnSignal` > 0 flags a version whose word-grain data was
+ *         written while the container-span bug (this commit's fix #2 of 3)
+ *         was still live — those word rows are not just "unverified", they
+ *         are known to have been mis-shaped, and re-ingesting the original
+ *         file is the only way to correct them (see this function's own
+ *         "DETAILED / WHY" above).
+ *
+ * @see .claude/vocal-parts-2073-plan.md "Design pass 6" §7.4 specs a full,
+ *      WRITE-APPLYING migration (`migrate-backfill-ttml-vocal-parts.php`)
+ *      built on a scan much like this one. That migration is OUT OF SCOPE
+ *      for this commit (file list = lyrics_ingest.php + its test only) —
+ *      AND, separately, "Design pass 7" §12's own final 17-commit synthesis
+ *      does not schedule that migration in ANY of its 17 commits either.
+ *      Flagging this loudly, as this brief asks, rather than silently
+ *      picking a side: the plan's prose and the plan's own commit list
+ *      disagree about whether that migration exists at all.
+ */
+function lyricsIngestScanMetaJsonForVoiceSignal(\mysqli $db, ?int $lyricsId = null): array
+{
+    $sql = "SELECT ll.LyricsId, ly.SongId, ly.Source, ll.MetaJson
+              FROM tblLyricLines ll
+              JOIN tblLyrics ly ON ly.Id = ll.LyricsId
+             WHERE ly.Source <> 'ihymns' AND ll.MetaJson IS NOT NULL"
+        . ($lyricsId !== null ? ' AND ll.LyricsId = ?' : '');
+    $stmt = $db->prepare($sql);
+    if ($lyricsId !== null) {
+        $stmt->bind_param('i', $lyricsId);
+    }
+    $stmt->execute();
+    $res = $stmt->get_result();
+
+    $byVersion = [];
+    while ($row = $res->fetch_assoc()) {
+        $lid  = (int)$row['LyricsId'];
+        $meta = json_decode((string)$row['MetaJson'], true);
+        $sig  = _ttmlAgentAndBg(is_array($meta) ? $meta : null);
+        if ($sig['agentIds'] === [] && !$sig['isBackground']) {
+            continue;
+        }
+        $byVersion[$lid] ??= [
+            'lyricsId' => $lid, 'songId' => (string)$row['SongId'], 'source' => (string)$row['Source'],
+            'linesWithSignal' => 0, 'distinctAgentIds' => [], 'wordsWithOwnSignal' => 0,
+        ];
+        $byVersion[$lid]['linesWithSignal']++;
+        foreach ($sig['agentIds'] as $agentId) {
+            $byVersion[$lid]['distinctAgentIds'][$agentId] = true;
+        }
+    }
+    $stmt->close();
+
+    if ($byVersion === []) {
+        return [];
+    }
+
+    $ids   = array_keys($byVersion);
+    $place = implode(',', array_fill(0, count($ids), '?'));
+    $wStmt = $db->prepare(
+        "SELECT l.LyricsId, w.MetaJson
+           FROM tblLyricWords w
+           JOIN tblLyricLines l ON l.Id = w.LineId
+          WHERE l.LyricsId IN ($place) AND w.MetaJson IS NOT NULL"
+    );
+    $wStmt->bind_param(str_repeat('i', count($ids)), ...$ids);
+    $wStmt->execute();
+    $wRes = $wStmt->get_result();
+    while ($row = $wRes->fetch_assoc()) {
+        $meta = json_decode((string)$row['MetaJson'], true);
+        $sig  = _ttmlAgentAndBg(is_array($meta) ? $meta : null);
+        if ($sig['agentIds'] === [] && !$sig['isBackground']) {
+            continue;
+        }
+        $lid = (int)$row['LyricsId'];
+        if (isset($byVersion[$lid])) {
+            $byVersion[$lid]['wordsWithOwnSignal']++;
+        }
+    }
+    $wStmt->close();
+
+    foreach ($byVersion as &$version) {
+        $version['distinctAgentIds'] = array_keys($version['distinctAgentIds']);
+        sort($version['distinctAgentIds']);
+    }
+    unset($version);
+
+    return array_values($byVersion);
 }
 
 /* ===========================================================================
