@@ -2,7 +2,9 @@
 
 Auto-loaded by Claude Code on session start. This file codifies **how to work in this repo** — project rules, conventions, architecture guardrails. Paired with `.claude/ProjectBrief.md` (the current state snapshot) and `.claude/ProjectOverview.md` (the original scoping doc).
 
-## 🗣 Plain-English communication (owner-stated 2026-08-29, non-negotiable)
+## 🗣 Plain-English communication (owner-stated 2026-08-29, restated and widened 2026-09-05, non-negotiable)
+
+**This applies to EVERY assistant working in this repository — Claude Code, Codex, or any other — and to every kind of output.** See also `AGENTS.md` at the repo root, which carries the same instruction for tools that read that file instead of this one.
 
 **Write in plain, everyday English — in chat replies, commit messages, code comments, issue text, docs, and everywhere else.** The owner has asked, as a standing preference for every interaction, that we favour ordinary words over jargon so the meaning is clear to a non-specialist. When a technical term is genuinely needed, say it in plain words too — e.g. write "a build number that only ever counts upward and never resets" rather than "a monotonically increasing build number". Using more words is fine, and preferred, when it makes the meaning easier to understand. This does not lower the technical precision of the work; it only changes how we explain it.
 
