@@ -7272,7 +7272,13 @@ try {
            voice-part registry. Body: { songId, part:{ id?, kind, label?,
            singerName?, gender?, musicianId?, sortOrder? } }. `kind` is
            validated against the served IHYMNS_VOCAL_PART_KINDS vocabulary —
-           never free text (rule #43); omitting `id` creates a new part.
+           never free text (rule #43); omitting `id` FINDS-OR-CREATES — a
+           part already matching the given kind/label (or, for a named
+           singer, the same musician/name) on this version is reused rather
+           than a second one being minted (rule #43's find-or-create
+           discipline; a real bug found while building the panel — see
+           vocalPartsUpsert()'s own doc-block + its dedupe-guard comment for
+           the match ladder and why a differing label stays a separate row).
            See vocalPartsUpsert()'s own doc-block for the full field-by-field
            validation (hide-when-equal label fold, implied gender, the
            named-singer musicianId/singerName requirement). ---- */

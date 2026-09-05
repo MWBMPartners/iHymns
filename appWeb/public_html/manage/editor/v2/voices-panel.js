@@ -115,26 +115,30 @@
  *  `window.iHymnsPlaceSearch.attach({pickMode:'value', ...})` call exactly
  *  like `structure-tab.js`'s own "Source work" input two panels up.
  *
- *  CLIENT-SIDE PART DEDUPE — another flagged, load-bearing gap this file
- *  works around rather than silently accepting: `vocal_part_upsert`'s
- *  create branch (`vocalPartsUpsert()` with no `id`) always INSERTs a new
- *  `tblVocalParts` row — it does NOT dedupe against an existing part of
- *  the same kind the way the sibling function `vocalPartsFindOrCreate()`
- *  does (both live in `includes/vocal_parts.php`; no api2 action calls the
- *  latter). Without a client-side guard, ticking a second run of lines and
- *  picking "Add a new part → Women" a second time would mint a SECOND
- *  "Women" part for the same song, splitting one voice's lines across two
- *  rows with no error anywhere — silent, and exactly the kind of thing
- *  rule #43 exists to prevent. `findExistingPartForKind()` below reuses an
- *  existing part (matched the same way the server's own
- *  `vocalPartsFindOrCreate()` would) BEFORE ever calling
- *  `api.upsertVocalPart()`, so the common "assign Women again" gesture
- *  never mints a duplicate. This is a client-side patch over a real gap in
- *  the shipped write core, not a substitute for fixing it there — flagged
- *  loudly in this commit's own report as a follow-up (route
- *  `vocal_part_upsert`'s no-id branch through `vocalPartsFindOrCreate()`
- *  server-side, which also closes the same race between two concurrent
- *  editors that no CLIENT-side check ever can).
+ *  CLIENT-SIDE PART DEDUPE — this used to be the ONLY thing standing
+ *  between a curator and a duplicate "Women" part: `vocal_part_upsert`'s
+ *  create branch (`vocalPartsUpsert()` with no `id`) used to always INSERT
+ *  a new `tblVocalParts` row, with no dedupe of its own — ticking a second
+ *  run of lines and picking "Add a new part → Women" a second time minted a
+ *  SECOND "Women" part, splitting one voice's lines across two rows with no
+ *  error anywhere. THAT HOLE IS NOW CLOSED SERVER-SIDE: `vocalPartsUpsert()`
+ *  itself now runs the same match ladder its sibling `vocalPartsFindOrCreate()`
+ *  always has (see that function's own doc-block in `includes/vocal_parts.php`
+ *  for the exact rules, including what happens when the label differs —
+ *  "Women" and "Ladies" stay two separate rows on purpose). That means a
+ *  script, a future native app, or anyone hitting the API directly is
+ *  ALSO safe now, which this browser-only check never could make them.
+ *  `findExistingPartForKind()` below is KEPT, deliberately, but now purely
+ *  as a nicety: it saves the one network round trip for the everyday
+ *  "assign Women again" gesture and lets the Assign button resolve
+ *  instantly instead of waiting on a request whose answer is already
+ *  known locally. It is NOT required for correctness any more — if this
+ *  file's copy of the matching rule ever drifts from the server's, the
+ *  worst case is one wasted `vocal_part_upsert` call that the server then
+ *  correctly folds into the existing part anyway, never a duplicate.
+ *  (Removing it outright, and the one existing test asserting it runs
+ *  before `api.upsertVocalPart()`, is a reasonable small follow-up, but is
+ *  outside this fix's file list — flagged here rather than done quietly.)
  *
  *  buildVoicesPanel(comp, ctx) -> { el, refresh(), destroy() }
  *    comp : one row from the store's `components` slice (structure-tab.js's
@@ -333,11 +337,13 @@ export function buildVoicesPanel(comp, ctx) {
     function lineIdAt(i) { return componentLineId(comp, i); }
 
     /**
-     * Reuse an existing song part rather than minting a duplicate — see
-     * this file's own "CLIENT-SIDE PART DEDUPE" header note for WHY this
-     * exists at all (`vocal_part_upsert`'s create branch has no such
-     * dedupe of its own). Mirrors the match ladder the server's OWN
-     * (unreachable-from-here) `vocalPartsFindOrCreate()` uses: a
+     * Reuse an existing song part rather than minting a duplicate — see this
+     * file's own "CLIENT-SIDE PART DEDUPE" header note for WHY this is kept
+     * even though `vocal_part_upsert` now does the same check server-side
+     * (a local guess that saves the one round trip on the everyday
+     * "assign Women again" gesture; the server's own copy is what actually
+     * makes this safe, this one is purely a nicety). Mirrors the match
+     * ladder `vocalPartsUpsert()`'s own dedupe guard uses server-side: a
      * named-singer matches by musicianId first, then by a case-folded
      * singerName; every other kind matches by an exact (case-folded)
      * Label when one is given, else the first part of that kind carrying

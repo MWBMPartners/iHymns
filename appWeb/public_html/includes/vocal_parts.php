@@ -2051,16 +2051,22 @@ function vocalPartsFindOrCreate(
 
 /**
  * ELI5: create or edit ONE vocal part — the curator-facing counterpart of
- * `vocalPartsFindOrCreate()` (which is the ingest-facing one). Unlike
- * find-or-create, this NEVER silently reuses another row: an `id` means
- * "edit this exact row", its absence means "make a brand-new one", and a
- * caller who wants find-or-create semantics on create asks for it
- * explicitly (a future editor action, `findOrCreate: true` — see the plan's
- * §4.4) rather than getting it by default here.
+ * `vocalPartsFindOrCreate()` (which is the ingest-facing one). An `id` means
+ * "edit this exact row"; its absence means "find the matching part on this
+ * version, or make one" — the SAME find-or-create discipline
+ * `vocalPartsFindOrCreate()` already gives every other creation path (rule
+ * #43), now closed here too (bug found while building the panel, see the
+ * dedupe-guard block inside the function body for the fix and its match
+ * ladder). A CREATE that lands on an existing match is treated exactly like
+ * an EDIT of that row — any field the caller DID pass (e.g. an explicit
+ * `gender`) is still applied; a field the caller left out simply keeps
+ * whatever the matched row already had, same as any other omitted-means-keep
+ * field on this function.
  *
- * IDOR: an `id` is resolved via `vocalPartsResolvePart($db, $songId, $id)`
- * (this file's own ownership check, §2.2) — a caller can never edit a part
- * that does not belong to a lyrics version of THIS song.
+ * IDOR: an `id` (given, or found by the dedupe guard) is resolved via
+ * `vocalPartsResolvePart($db, $songId, $id)` (this file's own ownership
+ * check, §2.2) — a caller can never edit a part that does not belong to a
+ * lyrics version of THIS song.
  *
  * Input `{id?, kind, label?, singerName?, gender?, musicianId?, sortOrder?}`.
  * Every field is OMITTED-MEANS-KEEP on an UPDATE (`array_key_exists`, the
@@ -2124,6 +2130,75 @@ function vocalPartsUpsert(\mysqli $db, string $songId, array $input, ?int $userI
     }
 
     vocalPartsValidateNamedSingerInputs($kind, $musicianId, $singerName);
+
+    /* ---- Duplicate-part guard (bug fix — a real bug found while building
+       the "Who sings" panel). BEFORE this fix, a CREATE request (`id`
+       absent) always INSERTed a brand-new row, even when this exact voice
+       already existed on the version: mark one run of lines "Women", mark a
+       second run "Women" again, and the song ends up with TWO separate
+       Women parts — one singing group silently split across two rows, with
+       no error anywhere. `vocalPartsFindOrCreate()` (this file, above) has
+       always had the matching check; this was the ONE creation path that
+       skipped it (verified: no api2 action called the sibling function).
+       The panel papered over this in the browser (`findExistingPartForKind()`
+       in voices-panel.js) — a check a curator's own browser session can
+       always be missed by, and that a script, a future native app, or
+       anyone hitting the API directly walks straight past. Fixing it here,
+       where every caller goes through it, is what actually closes it.
+       Match ladder (first hit wins) — mirrors `vocalPartsFindOrCreate()`'s
+       own ladder exactly, so the ingest path and the curator path treat
+       "is this the same voice?" the SAME way (rule #35), extended with the
+       one case that ladder has no caller for yet: a named singer typed by
+       name alone, no musician record:
+         1. named-singer WITH a musicianId  -> same LyricsId + PartKind +
+            MusicianId (the same real person can only have one part here).
+         2. named-singer WITHOUT a musicianId but WITH a singerName -> same
+            LyricsId + PartKind + (MusicianId IS NULL) + that exact
+            SingerName (case-insensitive — the column's own
+            utf8mb4_unicode_ci collation folds case the same way the panel's
+            own `.toLowerCase()` match already did). Scoped to MusicianId
+            IS NULL so a typed "the same name as a REGISTERED musician's"
+            can never collide with that musician's own part.
+         3. every other kind (and a named-singer match that only reaches
+            here because it has neither, which the validation call two
+            lines up has already refused) -> same LyricsId + PartKind +
+            Label <=> $label (NULL-safe, so "no label" only matches another
+            "no label" row).
+       A DIFFERENT label on the SAME kind is deliberately NOT folded into
+       the same part — "Women" and "Ladies" stay two separate rows. Silently
+       merging them would let a later create silently overwrite whatever a
+       curator had typed into the first one's Label, which is a worse
+       surprise than two same-kind parts; a curator who really did mean
+       "rename it" already has an explicit `id`-bearing edit for that. This
+       also matches the vocabulary itself: two "female" parts with different
+       labels are exactly how a curator would represent "Sopranos" and
+       "Altos" as two distinct rows of the one implied gender.
+       On a hit, this reruns the REST of the function as an EDIT of the
+       found row (falls straight into the `$id > 0` branch below) rather
+       than forking a second code path — every field the caller passed
+       still applies (an explicit `gender`, say); a field they left out
+       keeps what the found row already had, via the very same
+       `$existing !== null` fallbacks already written above and below this
+       block for the ordinary edit case. */
+    if ($id === 0) {
+        if ($kind === 'named-singer' && $musicianId !== null) {
+            $dupe = $db->prepare('SELECT Id FROM tblVocalParts WHERE LyricsId = ? AND PartKind = ? AND MusicianId = ? LIMIT 1');
+            bindParamSafe(__FUNCTION__ . ':dupe-musician', $dupe, 'isi', $lyricsId, $kind, $musicianId);
+        } elseif ($kind === 'named-singer' && $singerName !== null) {
+            $dupe = $db->prepare('SELECT Id FROM tblVocalParts WHERE LyricsId = ? AND PartKind = ? AND MusicianId IS NULL AND SingerName = ? LIMIT 1');
+            bindParamSafe(__FUNCTION__ . ':dupe-singer', $dupe, 'iss', $lyricsId, $kind, $singerName);
+        } else {
+            $dupe = $db->prepare('SELECT Id FROM tblVocalParts WHERE LyricsId = ? AND PartKind = ? AND Label <=> ? LIMIT 1');
+            bindParamSafe(__FUNCTION__ . ':dupe-label', $dupe, 'iss', $lyricsId, $kind, $label);
+        }
+        $dupe->execute();
+        $dupeRow = $dupe->get_result()->fetch_assoc();
+        $dupe->close();
+        if ($dupeRow !== null) {
+            $id = (int)$dupeRow['Id'];
+            $existing = vocalPartsResolvePart($db, $songId, $id);
+        }
+    }
 
     /* Gender: a caller's explicit choice always wins (even an explicit
        `null`, which re-derives from the — possibly just-changed — kind);

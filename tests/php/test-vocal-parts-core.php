@@ -43,6 +43,13 @@ declare(strict_types=1);
  * @see appWeb/public_html/includes/lyric_rounds.php      lyricRoundsToFlagFromRows()
  * @see appWeb/public_html/manage/editor/save_song_core.php  the whole-song save funnel
  * @see .claude/vocal-parts-2073-plan.md                  "Design pass 7" §3.1, §4.6 (superseded by the F5 same-day cross-review — the carry described there was REMOVED, not implemented as written)
+ *
+ * SECTION 17 (a later session, same file): a real bug found while building
+ * the "Who sings" panel — `vocalPartsUpsert()`'s CREATE branch (`id`
+ * absent) minted a brand-new `tblVocalParts` row every time, with none of
+ * the same-kind dedupe its sibling `vocalPartsFindOrCreate()` always had.
+ * Marking one run of lines "Women" then a second run "Women" again split
+ * one singing group across two rows, silently. Section 17 proves the fix.
  */
 
 $root = dirname(__DIR__, 2);
@@ -609,6 +616,66 @@ foreach ($rm[1] as $block) {
     }
 }
 assertEq($bestKeys, VOCAL_PARTS_PAYLOAD_KEYS, 'the full "return [...]" literal\'s keys, in order, equal VOCAL_PARTS_PAYLOAD_KEYS exactly');
+
+/* ====================================================================== *
+ * 17 — vocalPartsUpsert() DUPLICATE-PART GUARD (bug found while building
+ *      the "Who sings" panel, task brief for this session).
+ *
+ * BEFORE this fix, a CREATE request (`id` absent) always INSERTed a brand
+ * new `tblVocalParts` row, even when a part naming the exact same voice
+ * already existed on the version: mark one run of lines "Women", mark a
+ * second run "Women" again, and the song ended up with TWO Women parts —
+ * one singing group silently split across two rows, nothing erroring, the
+ * screen looking right. `vocalPartsFindOrCreate()` (the ingest-facing
+ * sibling, proven earlier in this file) always had this check; no api2
+ * action ever called it — verified by hand: `grep -c vocalPartsFindOrCreate
+ * manage/editor/api2.php` returns 0 — so `vocalPartsUpsert()` was the ONE
+ * creation path with the hole (every endpoint that creates a part calls
+ * it, directly or via `vocal_part_upsert`).
+ *
+ * Structural only (this needs a live mysqli to run end-to-end; not
+ * reachable in this DB-less test image — same posture as sections 14/15
+ * above), over the query SHAPES via the `sqlOnly` view (never the opaque
+ * `code` view for the query TEXT itself, since two different queries
+ * against the same table render to the SAME `@SQL:SELECT:tblVocalParts@`
+ * marker there) plus positional checks on the surrounding `code` for
+ * ordering and control flow.
+ * ====================================================================== */
+echo "\n17 — vocalPartsUpsert() duplicate-part guard (no duplicate parts on CREATE)\n";
+
+$upsertCode = $vpUnits['vocalPartsUpsert']['code'] ?? '';
+ok('vocalPartsUpsert() exists and was found as its own analysis unit', $upsertCode !== '');
+
+ok('a named-singer create WITH a musicianId matches an existing part by (LyricsId, PartKind, MusicianId) — the same real person cannot get a second part',
+    llsSqlOnlyContains($vpUnits, 'vocalPartsUpsert', 'SELECT Id FROM tblVocalParts WHERE LyricsId = ? AND PartKind = ? AND MusicianId = ? LIMIT 1'));
+ok('a named-singer create with ONLY a typed name (no musicianId) matches an existing part by (LyricsId, PartKind, MusicianId IS NULL, SingerName) — a case vocalPartsFindOrCreate() itself has no real caller for, so this cannot just delegate to it',
+    llsSqlOnlyContains($vpUnits, 'vocalPartsUpsert', 'SELECT Id FROM tblVocalParts WHERE LyricsId = ? AND PartKind = ? AND MusicianId IS NULL AND SingerName = ? LIMIT 1'));
+ok('every other kind matches an existing part by (LyricsId, PartKind, Label <=> label) — the NULL-safe operator so "no label" only ever matches another "no label" row',
+    llsSqlOnlyContains($vpUnits, 'vocalPartsUpsert', 'SELECT Id FROM tblVocalParts WHERE LyricsId = ? AND PartKind = ? AND Label <=> ? LIMIT 1'));
+
+$posGuard  = strpos($upsertCode, 'if ($id === 0) {');
+$posInsert = strpos($upsertCode, '@SQL:INSERT:tblVocalParts@');
+ok('the dedupe guard is conditioned on this being a genuine CREATE call (checks $id === 0, never runs on an edit-by-id)',
+    $posGuard !== false);
+ok('the guard runs BEFORE the function ever commits to an INSERT (so a match is found ahead of any decision to mint a row)',
+    $posGuard !== false && $posInsert !== false && $posGuard < $posInsert,
+    "guard at $posGuard, INSERT at " . var_export($posInsert, true));
+
+ok('on a match, the found row is RE-RESOLVED so the rest of the function edits that exact row (vocalPartsResolvePart($db,$songId,$id) is called a second time — once for an id the CALLER gave, once here for an id the GUARD found)',
+    substr_count($upsertCode, 'vocalPartsResolvePart($db, $songId, $id)') >= 2);
+
+/* MUTATION PROOF (performed by hand against the real file while writing
+   this fix — not re-run automatically by the suite itself):
+     1. Commented out the `if ($id === 0) { … }` guard block entirely,
+        restoring vocalPartsUpsert() to its pre-fix always-INSERT shape.
+     2. Ran `php tests/php/test-vocal-parts-core.php` — all five checks in
+        this section failed RED (the three llsSqlOnlyContains() checks find
+        nothing because the SQL literals are gone; $posGuard is false; the
+        substr_count() drops to 1).
+     3. Restored the block from source control and re-ran — all five back
+        to PASS, and no other section's pass/fail count moved.
+   This proves the checks are load-bearing (they fail without the fix) and
+   scoped (they touch nothing else the fix didn't). */
 
 /* ====================================================================== */
 echo "\n";
