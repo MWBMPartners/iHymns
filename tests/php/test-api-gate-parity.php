@@ -59,17 +59,34 @@ declare(strict_types=1);
  * php ALSO bare-role-gates these specific destructive cases, beyond its
  * page-level manage_songbooks entitlement — genuine parity, not a miss);
  * `auth_register`'s admin-only-registration-mode check (no sibling
- * manage/*.php CRUD write to diff against); the nine read-only `admin_*`
- * listing/report actions (`admin_users`, `admin_groups`,
- * `admin_activity_log`, `admin_pending_revisions`, `admin_organisations`,
- * `admin_analytics_searches`, `admin_data_health`, `admin_schema_audit`,
- * `admin_migrations_status` — out of scope: the task is WRITE actions
- * only); and `admin_revision_review`, flagged unsure because no
- * manage/*.php page implements its approve/reject-pending-revision
- * workflow at all (manage/revisions.php is a same-named-but-different,
- * read-only audit log gated on `verify_songs`, which also defaults WIDER
- * than admin+ — editor/admin/global_admin — so even guessing that key
- * would not be behaviour-neutral).
+ * manage/*.php CRUD write to diff against); seven of the nine read-only
+ * `admin_*` listing/report actions (`admin_users`, `admin_groups`,
+ * `admin_activity_log`, `admin_organisations`, `admin_analytics_searches`,
+ * `admin_data_health`, `admin_schema_audit`, `admin_migrations_status` —
+ * out of scope: the task was WRITE actions only); and `admin_revision_
+ * review`, flagged unsure because no manage/*.php page implements its
+ * approve/reject-pending-revision workflow at all (manage/revisions.php is
+ * a same-named-but-different, read-only audit log gated on
+ * `verify_songs`).
+ *
+ * #2086 ADDITION — `song_revisions` / `admin_pending_revisions` (READ
+ * actions, a SEPARATE section below, not folded into $GATED)
+ * -----------------------------------------------------------------------
+ * These two were bare-role-gated 500s (wrong SQL columns, fixed
+ * separately) that this guard's own PREVIOUS revision listed as
+ * out-of-scope precisely because `verify_songs` — the entitlement
+ * `/manage/revisions` actually gates its own listing on — defaults WIDER
+ * than admin+ (editor/admin/global_admin), so folding them into $GATED's
+ * equivalence loop (assertion 5, which insists on EXACTLY
+ * ['admin','global_admin']) would have been a false claim for one of them.
+ * `song_revisions`'s old bare check WAS exactly
+ * ['editor','admin','global_admin'] — genuinely behaviour-neutral, proven
+ * below the same way. `admin_pending_revisions`'s old bare check was only
+ * ['admin','global_admin'] — the swap to `verify_songs` is a DELIBERATE
+ * WIDENING (an editor can already see this exact row inside
+ * `/manage/revisions`'s unfiltered listing; refusing the SAME editor a
+ * status-filtered view of the SAME rows was the actual bug), asserted
+ * explicitly as a widening rather than silently assumed equivalent.
  *
  * WHY TREE-DERIVED WHERE IT MATTERS MOST (rule #34)
  * -----------------------------------------------------------------------
@@ -100,6 +117,7 @@ declare(strict_types=1);
  * @see appWeb/public_html/manage/users.php                    page-side view_users gate + create's own doc-comment
  * @see appWeb/public_html/manage/groups.php                   page-side manage_user_groups gate (#1986)
  * @see appWeb/public_html/manage/organisations.php            page-side manage_organisations gate (#1986)
+ * @see appWeb/public_html/manage/revisions.php                page-side verify_songs gate (#2086)
  * @see tests/php/test-api-coverage-batch7.php                the sibling guard this borrows its helpers from
  */
 
@@ -425,6 +443,64 @@ foreach (array_unique(array_column($GATED, 0)) as $entKey) {
 }
 
 /* =========================================================================
+ * #2086 — song_revisions / admin_pending_revisions (READ actions)
+ *
+ * See the file doc-block above for why these live in their OWN section
+ * instead of $GATED: verify_songs's live default is not ['admin',
+ * 'global_admin'], so assertion 5's equivalence check does not apply to
+ * them the same way — one of the two is a deliberate widening, not a
+ * behaviour-neutral swap, and that difference is asserted explicitly
+ * below rather than glossed over.
+ * ========================================================================= */
+
+$revisionsPageSrc = (string)file_get_contents($repo . '/appWeb/public_html/manage/revisions.php');
+
+foreach (['song_revisions', 'admin_pending_revisions'] as $name) {
+    ok("'{$name}' is a real \$action case in api.php",
+        in_array($name, $actionCases, true));
+    $revBody = caseBodyFor($api, '$action', $name);
+    ok("'{$name}' calls userHasEntitlement('verify_songs'",
+        caseBodyContains($revBody, "userHasEntitlement('verify_songs'"));
+}
+
+/* Each one's OWN pre-#2086 bare-role literal, confirmed ABSENT — the two
+   endpoints had DIFFERENT bare checks (three roles vs. two), so this is
+   checked per-action against the exact string that action used to carry,
+   never a shared literal that could miss one of them. */
+$songRevisionsBody = caseBodyFor($api, '$action', 'song_revisions');
+ok("'song_revisions' no longer gates on its old bare in_array(\$authUser['Role'], ['editor', 'admin', 'global_admin']) check (replaced, not just supplemented)",
+    !caseBodyContains($songRevisionsBody, "in_array(\$authUser['Role'], ['editor', 'admin', 'global_admin'])"));
+
+$adminPendingBody = caseBodyFor($api, '$action', 'admin_pending_revisions');
+ok("'admin_pending_revisions' no longer gates on its old bare in_array(\$authUser['Role'], ['admin', 'global_admin']) check (replaced, not just supplemented)",
+    !caseBodyContains($adminPendingBody, "in_array(\$authUser['Role'], ['admin', 'global_admin'])"));
+
+/* Page-side: verify_songs really is manage/revisions.php's OWN gate for
+   the equivalent (unfiltered) listing — not a hand-typed belief. */
+ok('manage/revisions.php really does gate the page on verify_songs',
+    strpos($revisionsPageSrc, "userHasEntitlement('verify_songs'") !== false);
+
+/* verify_songs's live default, parsed from the real ENTITLEMENTS map —
+   never assumed. This is the SAME parse assertion 5 above uses, just
+   compared against three roles instead of two. */
+$verifySongsRoles = null;
+if (preg_match("/'verify_songs'\\s*=>\\s*\\[([^\\]]*)\\]/", $entitlementsSrc, $m)) {
+    $verifySongsRoles = array_map(
+        static fn(string $r): string => trim($r, " \t\n\r\0\x0B'\""),
+        array_filter(explode(',', $m[1]), static fn(string $r): bool => trim($r) !== '')
+    );
+    sort($verifySongsRoles);
+}
+ok("includes/entitlements.php defines a default for 'verify_songs' (could not even find the map entry)",
+    $verifySongsRoles !== null);
+
+ok("'song_revisions' swap is BEHAVIOUR-NEUTRAL: verify_songs's live default is EXACTLY ['admin','editor','global_admin'] — the SAME three roles its old bare check already admitted, no more and no fewer",
+    $verifySongsRoles === ['admin', 'editor', 'global_admin']);
+
+ok("'admin_pending_revisions' swap is a DELIBERATE WIDENING, asserted explicitly rather than silently assumed: verify_songs's live default includes 'editor', which its old bare ['admin','global_admin'] check did not admit",
+    $verifySongsRoles !== null && in_array('editor', $verifySongsRoles, true));
+
+/* =========================================================================
  * REPORT
  * ========================================================================= */
 
@@ -440,5 +516,5 @@ if ($failed > 0 || $mutationFailures) {
     exit(1);
 }
 
-echo "\n{$passed} passed, 0 failed. All twenty F2 gate-parity actions call userHasEntitlement() on the SAME key their sibling manage/*.php page gates the equivalent write on, the nineteen swaps genuinely replaced (not merely supplemented) the bare role check, admin_user_create correctly KEEPS its bare check in the established E1 AND-shape, and every entitlement's live default is proven to be exactly ['admin','global_admin'] — today's admitted set is unchanged.\n";
+echo "\n{$passed} passed, 0 failed. All twenty F2 gate-parity actions call userHasEntitlement() on the SAME key their sibling manage/*.php page gates the equivalent write on, the nineteen swaps genuinely replaced (not merely supplemented) the bare role check, admin_user_create correctly KEEPS its bare check in the established E1 AND-shape, and every entitlement's live default is proven to be exactly ['admin','global_admin'] — today's admitted set is unchanged. The #2086 addition (song_revisions / admin_pending_revisions) is proven separately: both now call userHasEntitlement('verify_songs'), matching manage/revisions.php's own gate, with song_revisions confirmed behaviour-neutral and admin_pending_revisions confirmed as a deliberate, explicit widening rather than a silent one.\n";
 exit(0);
