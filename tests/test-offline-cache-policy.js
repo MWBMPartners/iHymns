@@ -319,7 +319,13 @@ const pageFragment = need('swOfflinePageFragment');
 const PAGES = need('PAGES_CACHE');
 
 if (pageFragment) {
-    for (const page of ['home', 'songbooks', 'songbook', 'search']) {
+    /* #2082 — 'setlist' and 'favorites' joined the original four. Both were
+       left off on the (wrong) assumption that they carry per-user server
+       content like 'settings' does; their real templates are static shells
+       with no server-side per-user read at all (see the "no per-user
+       marker" guard below, which checks that claim against the actual
+       source instead of trusting this comment to stay true). */
+    for (const page of ['home', 'songbooks', 'songbook', 'search', 'setlist', 'favorites']) {
         eq(`page=${page} is an offline-cacheable fragment`,
             pageFragment(`https://www.ihymns.app/api?page=${page}`), page);
     }
@@ -342,22 +348,111 @@ const pagesTrim = need('swPagesKeysToTrim');
 const PAGES_LIMIT = need('PAGES_CACHE_LIMIT');
 if (pagesTrim && typeof PAGES_LIMIT === 'number') {
     /* Search fragments are per-query and would otherwise grow without bound
-       inside one deploy window. They are trimmable; the two entry points a
-       user needs in order to browse offline at all are pinned. */
+       inside one deploy window. They are trimmable; the entry points a user
+       needs in order to browse offline at all are pinned. #2082 added
+       setlist/favorites to that pinned set — a set list is exactly the page
+       someone opens with no signal, so the 121st search result must never be
+       able to evict it. */
     const fragmentKeys = [
         { url: 'https://www.ihymns.app/api?page=home' },
         { url: 'https://www.ihymns.app/api?page=songbooks' },
+        { url: 'https://www.ihymns.app/api?page=setlist' },
+        { url: 'https://www.ihymns.app/api?page=favorites' },
         ...Array.from({ length: PAGES_LIMIT + 5 }, (_v, i) =>
             ({ url: `https://www.ihymns.app/api?page=search&q=term${i}` })),
     ];
     const doomedPages = pagesTrim(fragmentKeys, PAGES_LIMIT);
-    eq('the fragment trim removes exactly the overflow', doomedPages.length, 7);
+    /* 4 pinned entries + (PAGES_LIMIT + 5) trimmable search entries = an
+       overflow of 9 past PAGES_LIMIT (was 7 before #2082 added two more
+       pinned entries to fragmentKeys above). */
+    eq('the fragment trim removes exactly the overflow', doomedPages.length, 9);
     check('the fragment trim never evicts page=home',
         !doomedPages.some(k => k.url.endsWith('page=home')));
     check('the fragment trim never evicts page=songbooks',
         !doomedPages.some(k => k.url.endsWith('page=songbooks')));
+    check('the fragment trim never evicts page=setlist (#2082)',
+        !doomedPages.some(k => k.url.endsWith('page=setlist')));
+    check('the fragment trim never evicts page=favorites (#2082)',
+        !doomedPages.some(k => k.url.endsWith('page=favorites')));
     eq('an under-limit fragment bucket is not trimmed',
         pagesTrim(fragmentKeys.slice(0, 3), PAGES_LIMIT).length, 0);
+}
+
+/* ======================================================================
+ * 3b — #2082: every offline-cacheable fragment is real and safe to share
+ * ====================================================================
+ *
+ * ELI5: this doesn't re-type "setlist and favorites should be on the list"
+ * a second time and compare it to itself — that would pass even if the list
+ * were empty. Instead it takes whatever names ARE on the real list and
+ * checks two real, independent facts about each one on disk.
+ *
+ * Detail — WHY THIS IS THE "DERIVE FROM THE TREE" HALF OF THE #2082 FIX
+ * (CLAUDE.md rule #34): the FULL membership of OFFLINE_PAGE_FRAGMENTS (which
+ * pages deserve a slot in this deliberately small, capped bucket) is a
+ * product decision, not something this tree can mechanically hand you — the
+ * app's nav also links to help/stats/whats-new/themes/terms/privacy, none of
+ * which carry a per-user marker either, and forcing ALL of those onto the
+ * list would be scope well beyond what #2082 found evidence for. What CAN be
+ * derived from the tree, and is checked here, is SAFETY: for whatever names
+ * are on the list right now,
+ *
+ *   (a) a real page template exists at includes/pages/<name>.php — catches a
+ *       renamed/deleted page silently going dead in the offline list; and
+ *   (b) that template never reads $currentUser / getAuthenticatedUser() /
+ *       $_SESSION — the exact grep #2082's own bug report was raised with.
+ *       A page that starts rendering per-user content while still on this
+ *       list would then have ONE visitor's copy served to the next person
+ *       who opens the app on that device from the client-side cache — the
+ *       exact failure 'settings' is correctly excluded from this list to
+ *       avoid.
+ *
+ * PROVEN ABLE TO FAIL: the block below feeds both checks a page that
+ * genuinely fails each property (settings.php really does read
+ * `$currentUser`; a made-up filename really doesn't exist) and asserts they
+ * catch it — so if either check above is ever accidentally weakened into a
+ * tautology, this reproduction goes red first.
+ */
+console.log('\n#2082 — every OFFLINE_PAGE_FRAGMENTS entry is a real, non-per-user page\n');
+
+const OFFLINE_FRAGMENTS = need('OFFLINE_PAGE_FRAGMENTS');
+const PAGES_DIR = path.join(__dirname, '..', 'appWeb', 'public_html', 'includes', 'pages');
+const PER_USER_MARKERS = [/\$currentUser\b/, /getAuthenticatedUser\s*\(/, /\$_SESSION\b/];
+
+function findPerUserMarker(src) {
+    return PER_USER_MARKERS.find(re => re.test(src)) || null;
+}
+
+if (Array.isArray(OFFLINE_FRAGMENTS)) {
+    for (const name of OFFLINE_FRAGMENTS) {
+        const templatePath = path.join(PAGES_DIR, `${name}.php`);
+        const exists = fs.existsSync(templatePath);
+        check(
+            `OFFLINE_PAGE_FRAGMENTS '${name}' has a real page template`,
+            exists,
+            exists ? undefined : `expected a file at ${templatePath}`
+        );
+        if (!exists) continue;
+
+        const src = fs.readFileSync(templatePath, 'utf8');
+        const hit = findPerUserMarker(src);
+        check(
+            `'${name}.php' carries no per-user server marker (safe for a shared client-side cache entry)`,
+            !hit,
+            hit ? `found ${hit} in ${templatePath} — this page can no longer be shared-cache-safe` : undefined
+        );
+    }
+
+    /* Reproduction hook: proves the two checks above are not tautological. */
+    const settingsSrc = fs.readFileSync(path.join(PAGES_DIR, 'settings.php'), 'utf8');
+    check(
+        'PROOF: settings.php DOES carry a per-user marker (so check (b) is not a tautology)',
+        findPerUserMarker(settingsSrc) !== null
+    );
+    check(
+        'PROOF: a made-up page name has no template on disk (so check (a) is not a tautology)',
+        !fs.existsSync(path.join(PAGES_DIR, '__no-such-page__.php'))
+    );
 }
 
 /* ======================================================================
