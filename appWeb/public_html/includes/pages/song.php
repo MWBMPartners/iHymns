@@ -516,12 +516,66 @@ foreach ($components as $_c) {
     }
 }
 
+/* #2073 commit 8 — "who sings this line" (voice parts / echo) + rounds.
+ *
+ * ELI5: some songs mark which lines the men sing, which the women sing, and
+ * whether a phrase is echoed back — and some songs are meant to be sung as
+ * a round (like "Row, Row, Row Your Boat"). This block fetches whatever a
+ * curator has set up for THIS song and works out, line by line, whether it
+ * needs a little coloured group + name badge above it — the actual drawing
+ * happens in includes/voice_parts_render.php, required here.
+ *
+ * DETAILED: `vocalPartsForSong()` never throws by its own documented
+ * contract (an un-migrated install / a song with nothing assigned both
+ * degrade to the same empty shape), but this is wrapped in try/catch
+ * anyway — belt and braces, the same posture the per-line-translations
+ * block just above takes for the identical class of "optional enrichment
+ * that must never be able to blank the whole song page" risk. `$voiceRounds`
+ * is built from vocalPartsForSong()'s raw round rows via
+ * ihymnsVoiceRoundsExpand() — see that function's own doc-block for WHY an
+ * adapter step is needed here rather than reading an already-expanded shape
+ * straight off vocalPartsForSong() (a design-pass gap, flagged there rather
+ * than silently patched around). `$allLineIdsInOrder` is every line id in
+ * this SONG in render order — built from the SAME $components array the
+ * $songHasChords loop just above already walks — because a round can span
+ * more than one component (tblLyricRounds' own schema comment says so), so
+ * a single component's own lineIds are not always enough to resolve it. */
+$voiceRounds = [];
+$roundIdx    = ['noteAt' => [], 'lineRound' => []];
+try {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'voice_parts_render.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'vocal_parts.php';
+    if (!isset($voicePartsDb)) {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+        $voicePartsDb = getDbMysqli();
+    }
+    $_vp = vocalPartsForSong($voicePartsDb, (string)($song['id'] ?? $songId));
+    $_rawRounds = $_vp['rounds'] ?? [];
+    if ($_rawRounds !== []) {
+        $allLineIdsInOrder = [];
+        foreach ($components as $_c) {
+            foreach ((array)($_c['lineIds'] ?? []) as $_lid) {
+                $allLineIdsInOrder[] = (int)$_lid;
+            }
+        }
+        $voiceRounds = ihymnsVoiceRoundsExpand($_rawRounds, $allLineIdsInOrder);
+        $roundIdx    = ihymnsVoiceRoundIndex($voiceRounds);
+    }
+} catch (\Throwable $_e) {
+    /* Missing tables / DB hiccup on an un-migrated install — hide voice
+       parts + rounds rather than block the page (same convention as the
+       translations + chord blocks above). */
+    error_log('[song.php] voice parts / rounds: ' . $_e->getMessage());
+    $voiceRounds = [];
+    $roundIdx    = ['noteAt' => [], 'lineRound' => []];
+}
+
 ?>
 
 <!-- ================================================================
      SONG PAGE — Full lyrics and metadata
      ================================================================ -->
-<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>"<?php if ($songPublicId !== ''): ?> data-song-public-id="<?= htmlspecialchars($songPublicId) ?>"<?php endif; ?><?php if ($songCanonical !== ''): ?> data-song-canonical="<?= htmlspecialchars($songCanonical, ENT_QUOTES) ?>"<?php endif; ?> data-songbook="<?= htmlspecialchars($songbook) ?>"<?php if ($songbookColour !== ''): ?> data-songbook-color="<?= htmlspecialchars($songbookColour) ?>"<?php endif; ?><?php if ($songNumber !== null): ?> data-song-number="<?= (int)$songNumber ?>"<?php endif; ?><?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?><?php if ($hasLineTranslations): ?> data-has-line-translations="1"<?php endif; ?>>
+<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>"<?php if ($songPublicId !== ''): ?> data-song-public-id="<?= htmlspecialchars($songPublicId) ?>"<?php endif; ?><?php if ($songCanonical !== ''): ?> data-song-canonical="<?= htmlspecialchars($songCanonical, ENT_QUOTES) ?>"<?php endif; ?> data-songbook="<?= htmlspecialchars($songbook) ?>"<?php if ($songbookColour !== ''): ?> data-songbook-color="<?= htmlspecialchars($songbookColour) ?>"<?php endif; ?><?php if ($songNumber !== null): ?> data-song-number="<?= (int)$songNumber ?>"<?php endif; ?><?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?><?php if ($hasLineTranslations): ?> data-has-line-translations="1"<?php endif; ?><?php if ($voiceRounds !== []): ?> data-voice-rounds="<?= ihymnsVoiceRoundsDataAttr($voiceRounds) ?>"<?php endif; ?>>
 
     <!-- Breadcrumb navigation with schema.org markup (#151) -->
     <nav aria-label="Breadcrumb" class="mb-3">
@@ -1319,7 +1373,16 @@ foreach ($components as $_c) {
                     <?php endif; ?>
                 </div>
                 <!-- Lyrics lines -->
-                <?php $compChords = (array)($component['chords'] ?? []); ?>
+                <?php
+                    $compChords = (array)($component['chords'] ?? []);
+                    /* #2073 commit 8 — "who sings this line" per-component lookups.
+                       ihymnsVoiceRunsByLineIndex()/…SpansByLineIndex() are PURE and
+                       return [] whenever $component carries no `voices`/`voiceSpans`
+                       key at all (the whole un-annotated corpus today), so this adds
+                       zero behaviour change for a song nobody has assigned voices on. */
+                    $voiceRuns  = ihymnsVoiceRunsByLineIndex($component);
+                    $voiceSpans = ihymnsVoiceSpansByLineIndex($component);
+                ?>
                 <div class="lyric-lines">
                     <?php foreach ($lines as $lineIdx => $line): ?>
                         <?php
@@ -1335,7 +1398,19 @@ foreach ($components as $_c) {
                                Empty string (no chords for this line) → no chord row. The
                                whole chord layer is CSS-hidden until the user toggles it. */
                             $chordHtml = $songHasChords ? ihymns_render_chord_line_html($compChords[$lineIdx] ?? '') : '';
+                            /* #2073 commit 8 — this line's voice-run membership (null when
+                               nobody sings this line as part of a marked group) and which
+                               round (if any) it belongs to, by its stable line id. */
+                            $voiceRun = $voiceRuns[$lineIdx] ?? null;
+                            $roundId  = ($lineId > 0) ? ($roundIdx['lineRound'][$lineId] ?? 0) : 0;
                         ?>
+                        <?php /* 🔴 See includes/voice_parts_render.php's file-header note —
+                                 this wrapper <div> is a SIBLING that CONTAINS the run's <p>
+                                 lines; it is never wrapped INSIDE a <p>, and the chip row
+                                 inside it is aria-hidden (the wrapper's own aria-label already
+                                 carries the accessible name — WCAG 1.3.1 / 4.1.2). */ ?>
+                        <?php if ($voiceRun !== null && $voiceRun['start']): ?><?= ihymnsVoiceRunOpenTag($voiceRun['parts']) ?><?= ihymnsVoiceChipsHtml($voiceRun['parts']) ?><?php endif; ?>
+                        <?php if ($lineId > 0 && isset($roundIdx['noteAt'][$lineId])): ?><?= ihymnsVoiceRoundNoteHtml($roundIdx['noteAt'][$lineId]) ?><?php endif; ?>
                         <?php if ($chordHtml !== ''): ?><div class="lyric-chords" aria-hidden="true"><?= $chordHtml ?></div><?php endif; ?>
                         <?php /* #1266 Phase 2 — data-line-id anchors the per-user markup
                                  (highlight/note) layer to this line's stable tblLyricLines.Id.
@@ -1349,13 +1424,26 @@ foreach ($components as $_c) {
                                  song-markup.js's `[data-line-id]` selector only ever sees real,
                                  anchorable lines (same "absent means unavailable, never a dead
                                  control" shape as $hasLineTranslations gating the translation
-                                 toggle above). */ ?>
-                        <p class="lyric-line mb-1"<?php if ($lineId > 0): ?> data-line-id="<?= (int)$lineId ?>"<?php endif; ?>><?= htmlspecialchars($line) ?></p>
+                                 toggle above).
+                                 #2073 commit 8 — `.lyric-line--bg` marks a WHOLE-LINE echo (every
+                                 part on this line's run is background); `data-round-id` is
+                                 stamped on every subject line of a round so present-mode.js can
+                                 later find them the same way it already finds `.lyric-line`. The
+                                 line's TEXT itself is built by ihymnsVoiceLineHtml(), which
+                                 returns the plain htmlspecialchars()'d text unchanged when this
+                                 line has no sub-line echo spans — so this stays byte-identical
+                                 to the old `htmlspecialchars($line)` for the whole un-annotated
+                                 corpus today. */ ?>
+                        <p class="lyric-line<?= ($voiceRun !== null && $voiceRun['allBg']) ? ' lyric-line--bg' : '' ?> mb-1"<?php if ($lineId > 0): ?> data-line-id="<?= (int)$lineId ?>"<?php endif; ?><?php if ($roundId > 0): ?> data-round-id="<?= $roundId ?>"<?php endif; ?>><?= ihymnsVoiceLineHtml($line, $voiceSpans[$lineIdx] ?? []) ?></p>
                         <?php foreach ($lineTr as $lt): ?>
                             <p class="lyric-line-translation small text-muted fst-italic mb-1 d-none"
                                data-line-translation-for="<?= $lineId ?>"
                                <?php if ($lt['language'] !== ''): ?>lang="<?= htmlspecialchars($lt['language']) ?>"<?php endif; ?>><?= htmlspecialchars($lt['text']) ?></p>
                         <?php endforeach; ?>
+                        <?php /* #2073 commit 8 — close the run wrapper AFTER this line's own
+                                 translation paragraph(s), so a translation of the last line in a
+                                 run stays visually grouped inside it too. */ ?>
+                        <?php if ($voiceRun !== null && $voiceRun['end']): ?></div><?php endif; ?>
                     <?php endforeach; ?>
                 </div>
             </div>

@@ -24,6 +24,15 @@ import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_A
 import { apiFetch } from '../utils/api-client.js';
 import { announce } from '../utils/announce.js';
 import { loadTemplates, pickPrintTemplate, fetchSong, renderTemplateBodyHtml, printCss, applyCustomLayout, downloadPrintPdf, printUsageContextFor, promptForCopies, pdfFilenameFor } from './print.js';
+/* #2073 commit 8 — "who sings this line" (voice parts + echo). The song_detail
+   payload already carries each component's sparse `voices`/`voiceSpans` keys
+   (includes/lyric_lines_read.php, commit 4) with no extra fetch/include needed
+   here; `renderComponentLinesHtml()` is the ONE JS renderer (rule #22 — the
+   twin of includes/voice_parts_render.php, held byte-identical to it by
+   tests/test-voice-render-lockstep.js) that turns a component into the
+   run-wrapped `<p class="lyric-line">` markup this module's two JSON
+   re-renders below used to build by hand with zero voice awareness. */
+import { renderComponentLinesHtml } from './voice-parts-render.js';
 /* #1968 P3 — ProPresenter `.proplaylist` set-list export. `loadPP7()` is the
    SAME lazy protobuf.min.js -> pp7-proto-static.js -> propresenter-export.js
    loader export-ui.js's song/songbook PP7 export already uses (modularity
@@ -65,6 +74,50 @@ function sharedCanWrite(shared) {
     if (!shared) return false;
     if (typeof shared.canWrite === 'boolean') return shared.canWrite;
     return shared.permission === 'edit';
+}
+
+/**
+ * One `.lyric-component` block, re-rendered from a song's JSON `components[]`
+ * (#2073 commit 8).
+ *
+ * ELI5: draws one verse/chorus the same way `includes/pages/song.php` does on
+ * the server — including the little "Women" / "Men" / "Echo" badges above a
+ * group of lines, when a curator has set any up — but here in the browser,
+ * because this module re-orders and re-shows lyrics from data it already has
+ * without asking the server to render HTML for it.
+ *
+ * DETAILED: this is the ONE place that used to be TWO hand-written, byte-
+ * identical copies of the same tiny template — the arrangement-editor
+ * preview (`_showArrangementModal()`'s `renderPreview()`) and the custom-
+ * arrangement playback re-render (`applyCustomArrangement()`) — each with
+ * `${lines.map(l => '<p class="lyric-line mb-1">'+escapeHtml(l)+'</p>').join('')}`
+ * baked in and NO voice awareness at all. Extracting it (modularity rule) is
+ * what let both sites pick up voice/echo rendering in one place instead of
+ * two, via `renderComponentLinesHtml()` — the JS twin of
+ * `includes/voice_parts_render.php`, held byte-identical to it by
+ * `tests/test-voice-render-lockstep.js` (rule #35).
+ *
+ * `renderComponentLinesHtml()` also now emits `data-line-id` on every line
+ * (`comp.lineIds[i]`, when present) — something the OLD hand-rolled template
+ * never did — so `js/modules/song-markup.js` (highlight/notes) and a future
+ * round-follow "you are here" marker keep working on a custom arrangement
+ * too, not just the song's default order. A REPEATED component (an
+ * arrangement like `[0,1,0]`) does produce duplicate `data-line-id` values on
+ * the page; a `document.querySelector('[data-line-id="…"]')` call then finds
+ * only the FIRST occurrence — a pre-existing limitation of using the DOM to
+ * address a repeated verse by id, not something this change introduces or
+ * attempts to invent a synthetic id to paper over.
+ *
+ * @param {{type?:string,lines?:string[],lineIds?:number[],voices?:Array,voiceSpans?:Array,label?:string}} comp
+ * @returns {string} a complete `<div class="lyric-component …">…</div>` block.
+ */
+function renderArrangedComponentHtml(comp) {
+    const label = fullLabel(comp);
+    const typeClass = 'lyric-' + (comp.type || 'verse');
+    return `<div class="lyric-component ${escapeHtml(typeClass)}" role="group" aria-label="${escapeHtml(label)}">
+        <div class="lyric-label" aria-hidden="true">${escapeHtml(label)}</div>
+        <div class="lyric-lines">${renderComponentLinesHtml(comp)}</div>
+    </div>`;
 }
 
 /**
@@ -2165,13 +2218,7 @@ export class SetList {
             preview.innerHTML = workingArr.map(idx => {
                 const comp = components[idx];
                 if (!comp) return '';
-                const label = fullLabel(comp);
-                const lines = Array.isArray(comp.lines) ? comp.lines : [];
-                const typeClass = 'lyric-' + (comp.type || 'verse');
-                return `<div class="lyric-component ${escapeHtml(typeClass)}" role="group" aria-label="${escapeHtml(label)}">
-                    <div class="lyric-label" aria-hidden="true">${escapeHtml(label)}</div>
-                    <div class="lyric-lines">${lines.map(l => `<p class="lyric-line mb-1">${escapeHtml(l)}</p>`).join('')}</div>
-                </div>`;
+                return renderArrangedComponentHtml(comp);
             }).join('');
         };
 
@@ -2839,13 +2886,7 @@ export class SetList {
         lyricsEl.innerHTML = songEntry.arrangement.map(idx => {
             const comp = songData.components[idx];
             if (!comp) return '';
-            const label = fullLabel(comp);
-            const lines = Array.isArray(comp.lines) ? comp.lines : [];
-            const typeClass = 'lyric-' + (comp.type || 'verse');
-            return `<div class="lyric-component ${escapeHtml(typeClass)}" role="group" aria-label="${escapeHtml(label)}">
-                <div class="lyric-label" aria-hidden="true">${escapeHtml(label)}</div>
-                <div class="lyric-lines">${lines.map(l => `<p class="lyric-line mb-1">${escapeHtml(l)}</p>`).join('')}</div>
-            </div>`;
+            return renderArrangedComponentHtml(comp);
         }).join('');
     }
 

@@ -20,6 +20,17 @@
 
 import { apiFetch } from '../utils/api-client.js';
 import { fetchMyOrgs } from './org-logo.js';   /* #1840 — the shared my_organisations fetch */
+/* #2073 commit 8 — "who sings this line" (voice parts + echo) in print/PDF
+   output. renderLyrics() below already interleaves a per-line CHORD row and
+   uses `<div class="print-line">` rather than `<p>`, so — unlike
+   js/modules/setlist.js's two simple re-renders — it calls these smaller
+   PRIMITIVES directly inside its own existing loop instead of routing
+   through the composite `renderComponentLinesHtml()`. Both paths share the
+   SAME underlying pieces (run detection, chip HTML, span-aware line HTML,
+   held byte-identical to the PHP renderer by
+   tests/test-voice-render-lockstep.js) — only the outer assembly differs,
+   because print's own line shape genuinely differs from song.php's. */
+import { voiceRunsByLineIndex, voiceSpansByLineIndex, voiceRunOpenTag, voiceChipsHtml, voiceLineHtml } from './voice-parts-render.js';
 
 /* Block-type registry — drives BOTH the renderer (below) and the editor's palette.
    `label` = editor display; `options` = editable per-block option keys + defaults. */
@@ -239,18 +250,38 @@ function renderLyrics(song, block) {
        set in printCss). Defaults (left / md=1em) preserve the prior rendering. */
     const align = (block.align === 'center' || block.align === 'right') ? block.align : 'left';
     const scale = block.size === 'lg' ? '1.15em' : block.size === 'sm' ? '0.9em' : '1em';
+    /* #2073 commit 8 — chip/span option names for THIS surface (print/PDF):
+       no ARIA (a printed page has no screen reader) and no data-* attributes
+       (nothing here is ever queried back out of the DOM) — the chip text and
+       the italic/dashed CSS in css/print.css (`.print-line--bg`) carry the
+       "this is an echo" meaning on their own, same as the on-screen version. */
+    const printVoiceOpts = {
+        chipClass: 'print-voice-chip', rowClass: 'print-voice-chips',
+        runClass: 'print-voice-run', spanClass: 'print-voice-span',
+        a11y: false, dataAttrs: false,
+    };
     const body = order.map((comp) => {
         const lines = Array.isArray(comp.lines) ? comp.lines : [];
         const chords = Array.isArray(comp.chords) ? comp.chords : [];
         const typeClass = 'lyric-' + esc(String(comp.type || 'verse'));
         const label = (block.showLabels !== false)
             ? `<div class="print-label">${esc(componentLabel(comp))}</div>` : '';
+        const voiceRuns = voiceRunsByLineIndex(comp);
+        const spansByLine = voiceSpansByLineIndex(comp);
         const linesHtml = lines.map((line, i) => {
             const chord = (block.showChords && chords[i])
                 ? String(Array.isArray(chords[i]) ? chords[i].join(' ') : chords[i]).trim() : '';
             const chordHtml = chord ? `<div class="print-chord">${esc(chord)}</div>` : '';
-            const text = (line && String(line).trim()) ? esc(line) : '&nbsp;';
-            return `${chordHtml}<div class="print-line">${text}</div>`;
+            /* #2073 commit 8 — a run wrapper here is a plain <div>, a SIBLING
+               of each line's own <div class="print-line">, exactly the same
+               "chip never nests inside the line" shape song.php uses (rule
+               #22's ONE renderer, applied to a different outer skeleton). */
+            const run = voiceRuns[i] || null;
+            const openHtml = (run && run.start) ? voiceRunOpenTag(run.parts, printVoiceOpts) + voiceChipsHtml(run.parts, printVoiceOpts) : '';
+            const closeHtml = (run && run.end) ? '</div>' : '';
+            const bgClass = (run && run.allBg) ? ' print-line--bg' : '';
+            const text = (line && String(line).trim()) ? voiceLineHtml(line, spansByLine[i] || [], printVoiceOpts) : '&nbsp;';
+            return `${openHtml}${chordHtml}<div class="print-line${bgClass}">${text}</div>${closeHtml}`;
         }).join('');
         return `<div class="print-component ${typeClass}">${label}${linesHtml}</div>`;
     }).join('');
@@ -492,6 +523,25 @@ export function printCss(pageOptions) {
     .lyric-chorus .print-line, .lyric-refrain .print-line { font-style: italic; }
     .print-line { margin: 0.05em 0; }
     .print-chord { font-family: 'Courier New', monospace; font-weight: bold; color: ${cMuted}; white-space: pre-wrap; margin: 0.15em 0 0; }
+    /* #2073 commit 8 — "who sings this line" (voice parts + echo). Reuses
+       the SAME muted-grey variables the rules above already collapse to
+       pure black under ink-saver/high-contrast mode, so these inherit that
+       mono-friendly behaviour automatically, with no separate flag of their
+       own; the chip's WORDS + the reply icon + italics/dashes carry the
+       "echo" meaning, never colour alone (WCAG 1.4.1) — matching
+       css/app.css's on-screen .lyric-voice-* rules this template mirrors.
+       `.print-voice-run` is a plain block wrapper (a SIBLING of each
+       `.print-line`, never wrapped around it — see
+       includes/voice_parts_render.php's file header for why that matters). */
+    .print-voice-run { margin: 0.15em 0; }
+    .print-voice-chips { display: block; margin-bottom: 0.1em; }
+    .print-voice-chip { display: inline-block; font-size: ${Math.max(7, fontPt - 5)}pt; font-weight: bold;
+        text-transform: uppercase; letter-spacing: 0.04em; border: 1px solid ${cMuted2};
+        border-radius: 3px; padding: 0.05em 0.4em; margin-right: 0.3em; }
+    .print-voice-chip--bg { border-style: dashed; font-style: italic; text-transform: none; }
+    .print-line--bg { font-style: italic; padding-left: 0.8em; color: ${cMuted}; }
+    .print-voice-span { text-decoration: underline dotted; }
+    .print-voice-span--bg { font-style: italic; }
     .print-text { margin: 0 0 0.8em; }
     .print-permalink { margin: 0.8em 0; font-size: ${fontPt - 2}pt; color: ${cMuted2}; }
     .print-permalink-url { font-family: 'Courier New', monospace; font-weight: bold; }
