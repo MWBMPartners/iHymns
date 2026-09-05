@@ -23,6 +23,13 @@ import { shortTag, fullLabel, typeColor, typeTextColor } from '../utils/componen
 import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, SHARE_ID_RE, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
 import { announce } from '../utils/announce.js';
+/* #2079 — keep the screen on while the set-list playback bar is showing.
+   Shared helper, already wired into presentation mode (present-mode.js).
+   Paired further down, in the methods that build and tear down the bar.
+   Never re-implement the request/release logic locally.
+   (Deliberately not naming those two methods here WITH their parentheses —
+   see the caution note above the class constructor, below, for why.) */
+import { acquireWakeLock, releaseWakeLock } from '../utils/wake-lock.js';
 import { loadTemplates, pickPrintTemplate, fetchSong, renderTemplateBodyHtml, printCss, applyCustomLayout, downloadPrintPdf, printUsageContextFor, promptForCopies, pdfFilenameFor } from './print.js';
 /* #2073 commit 8 — "who sings this line" (voice parts + echo). The song_detail
    payload already carries each component's sparse `voices`/`voiceSpans` keys
@@ -532,6 +539,41 @@ export class SetList {
         /** @type {boolean} Set when getAll() hit a JSON parse error — a
          *  corrupt cache must never drive an authoritative replace (review #2). */
         this._loadError = false;
+
+        /** @type {boolean} whether the set-list playback bar currently holds
+         *  the screen-wake lock (#2079).
+         *
+         *  CAUTION FOR FUTURE EDITS: never write the two literal characters
+         *  "()" directly after the name of the render method that builds
+         *  this bar, anywhere ABOVE that method's own definition further
+         *  down this file (comments included) — test-setlist-playback.js
+         *  locates that method by searching the whole file for that exact
+         *  substring, and an earlier, unrelated match (even inside a
+         *  comment) shifts the span its "tears the bar down before any
+         *  early return" proof reads from onto the wrong stretch of the
+         *  file. That is why the rest of this note, and the render
+         *  method's own doc-comment on why this flag exists, both spell
+         *  the name out WITHOUT its parentheses.
+         *
+         *  Tracked explicitly rather than inferred from the bar's own
+         *  presence in the DOM, because router.js calls the render method
+         *  TWICE in a row on every song-page navigation (see its own
+         *  comment there) and the bar element gets removed and rebuilt
+         *  BOTH times even when nothing about the active navigation
+         *  changed. Tying acquire/release to the DOM element's lifetime
+         *  would fire two overlapping, un-awaited real
+         *  wakeLock.request()/release() calls a few lines apart — and
+         *  since those resolve as separate promise chains with no
+         *  ordering guarantee, the second request can land before the
+         *  first release's own cleanup runs, so the module ends up
+         *  holding a sentinel from one call while the OTHER call's
+         *  release just wiped the shared reference to it — a real wake
+         *  lock left running with nothing left able to release it later.
+         *  This flag makes acquire/release idempotent across repeat calls
+         *  that reach the same "should the bar be showing" answer, so
+         *  calling that render method twice back to back is exactly as
+         *  safe as calling it once. */
+        this._wakeLockHeld = false;
     }
 
     /** Initialise — re-render the sync bar whenever auth state flips. */
@@ -2699,6 +2741,19 @@ export class SetList {
         this.activeSetListId = null;
         document.getElementById('setlist-song-nav')?.remove();
         document.body.classList.remove('has-playlist-bar');
+        /* Let the screen sleep normally again (#2079). This is the OTHER
+           place the bar disappears besides the render method's own
+           teardown below (see that method's own doc-comment for why it
+           isn't named here with its parentheses) — the "Leave set list
+           playback" button calls this directly, with no navigation in
+           between — so it needs the same paired release. Flag-gated (see
+           the constructor's doc-comment on
+           _wakeLockHeld) so this is a no-op if the bar somehow wasn't
+           holding the lock. */
+        if (this._wakeLockHeld) {
+            this._wakeLockHeld = false;
+            releaseWakeLock();
+        }
     }
 
     /**
@@ -2716,13 +2771,23 @@ export class SetList {
         document.body.classList.remove('has-playlist-bar');
 
         const songPage = document.querySelector('.page-song');
-        if (!songPage) return;
+        const songId = songPage?.dataset.songId;
+        const nav = songId ? this.getNavigation(songId) : null;
 
-        const songId = songPage.dataset.songId;
-        if (!songId) return;
-
-        const nav = this.getNavigation(songId);
-        if (!nav) return;
+        if (!nav) {
+            /* Nothing to show on this page (not a song page, no song id, or
+               no active set list) — let the screen sleep again if the
+               bar we just tore down above had been holding it awake
+               (#2079). This is the "same teardown" the bar's own removal
+               happens in, which is exactly where the paired release needs
+               to sit — see the constructor's _wakeLockHeld doc-comment for
+               why it's flag-gated rather than unconditional. */
+            if (this._wakeLockHeld) {
+                this._wakeLockHeld = false;
+                releaseWakeLock();
+            }
+            return;
+        }
 
         const navEl = document.createElement('div');
         navEl.id = 'setlist-song-nav';
@@ -2775,6 +2840,20 @@ export class SetList {
            line — a fixed bar with no matching padding is the classic way to
            make the final verse unreadable. */
         document.body.classList.add('has-playlist-bar');
+        /* Keep the screen awake for as long as the bar is showing (#2079) —
+           a phone or tablet propped up to drive a whole service would
+           otherwise dim and lock mid-song. Paired with the release in the
+           `if (!nav)` branch above and in clearPlaylistContext(); flag-gated
+           (see the constructor's _wakeLockHeld doc-comment) so re-rendering
+           the SAME bar (router.js calls this method twice per song
+           navigation) does not release and re-request the lock. Deliberately
+           NOT awaited — the request can be refused (low battery, an
+           unsupported browser) and the bar must render exactly the same
+           either way. */
+        if (!this._wakeLockHeld) {
+            this._wakeLockHeld = true;
+            acquireWakeLock();
+        }
 
         navEl.querySelector('.playlist-bar-exit')?.addEventListener('click', () => {
             this.clearPlaylistContext();
