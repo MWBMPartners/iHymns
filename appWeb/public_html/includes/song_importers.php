@@ -854,6 +854,21 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             );
             $order = 0;
             foreach ($song['components'] as $comp) {
+                /* #2071 — the OpenLyrics importer may stamp a NON-numeric
+                   '_voiceSource' string key onto this same array (sitting
+                   alongside the numeric component list) once a document
+                   uses `<lines part="…">`. `lyricLinesWriteComponents()`'s
+                   own normaliser already skips a non-array entry exactly
+                   like it (`includes/lyric_lines_sync.php:568`); this
+                   un-migrated fallback loop needs the identical guard so a
+                   pre-#1235 install doesn't try to read `$comp['type']` off
+                   a plain string (PHP's "illegal string offset" — a
+                   spurious extra tblSongComponents row, not a crash, but
+                   still wrong data written from a key this loop was never
+                   meant to see). */
+                if (!is_array($comp)) {
+                    continue;
+                }
                 $type   = (string)($comp['type'] ?? 'verse');
                 $cNum   = isset($comp['number']) ? (int)$comp['number'] : 0;
                 $lines  = json_encode($comp['lines'] ?? [], JSON_UNESCAPED_UNICODE);
@@ -3392,6 +3407,91 @@ function _bulkImport_openLyricsParseLines(\SimpleXMLElement $linesNode): array
 }
 
 /**
+ * ELI5 (#2071): an OpenLyrics `<lines part="…">` block says WHO sings it —
+ * "women", "men", "cantor", or — because the spec allows literally any text
+ * at all — something iHymns has never heard of. This turns that free text
+ * into one of iHymns' 21 voice-part kinds, or, when the word is genuinely
+ * unrecognised, the weakest claim that is still LOSSLESS: "this is some
+ * kind of group", carrying the raw word verbatim as its display label
+ * rather than discarding it — the exact rule #45 pattern
+ * `_bulkImport_openLyricsVerseType()` above already applies to an
+ * unrecognised verse `name` (#2075's own fix, just above this function).
+ *
+ * DETAIL — resolution order:
+ *   1. `vocalPartsKindFromWord()` — the ONE shared word→kind resolver
+ *      `includes/vocal_parts.php` itself already names "an OpenLyrics
+ *      `part=` importer" as an intended caller of, in that function's own
+ *      doc-block (rule #22/#35: reuse the one table, never keep a second
+ *      copy of it here). It folds case/whitespace, then matches an exact
+ *      marker word — which already covers every one of the 21 kinds' own
+ *      `openlyrics` export keywords too ("women"→`female`, "solo"→
+ *      `soloist`, "men"→`male`, "cantor"→`cantor`, …, since those keywords
+ *      were themselves chosen to be a marker word of their kind) — then a
+ *      "Group 2" / "Part 1" / "Side A"-style ordinal, then a bare kind key
+ *      or alias.
+ *   2. a genuinely unrecognised word (a person's own name, a non-English
+ *      term, a typo) resolves to `['kind' => 'group', 'label' => <the raw
+ *      word, first code point upper-cased, clipped to `tblVocalParts.Label`'s
+ *      120-code-point column width>]` — NEVER `null`. An OpenLyrics
+ *      `part=` attribute is a STRUCTURED signal (the format spent an actual
+ *      attribute on it), not a plain-text heuristic guess the way
+ *      `includes/vocal_part_detect.php` (#2075) has to hedge — so this
+ *      always resolves to SOMETHING a curator can see and re-classify,
+ *      never a dropped attribute.
+ *
+ * WHY THIS ISN'T ON `includes/vocal_parts.php` ITSELF: that file's write
+ * half is being built by a commit running CONCURRENTLY with this one, in
+ * the same #2073 branch — this stays a LOCAL, PURE, importer-only helper
+ * built entirely from that file's already-public, already-landed
+ * vocabulary, so the two pieces of work never need to touch the same
+ * lines of the same file.
+ *
+ * @param string $part  the raw `<lines part="…">` attribute value, exactly
+ *                       as the document wrote it (untrimmed is fine — this
+ *                       function trims)
+ * @return array{kind:string,label:?string}  never null — see point 2 above
+ * @see https://docs.openlyrics.org/en/latest/dataformat.html#lines  "can be any arbitrary text"
+ * @see appWeb/public_html/includes/vocal_parts.php                  vocalPartsKindFromWord(), IHYMNS_VOCAL_PART_KINDS
+ * @see .claude/vocal-parts-2073-plan.md                             "Design pass 6" §3.2 (this resolution order) / "Design pass 2" §1.3 (the fallback rule, `## 1.3` table)
+ */
+function _bulkImport_openLyricsResolveVoicePart(string $part): array
+{
+    /* Lazy require (this file's own established convention — see
+       `_bulkImport_classifyMarker()`'s identical `vocal_part_detect.php`
+       require just above): only an OpenLyrics document that actually uses
+       `part=` ever pays for loading the vocabulary map. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'vocal_parts.php';
+
+    $trimmed = trim($part);
+    if ($trimmed === '') {
+        return ['kind' => 'group', 'label' => null];
+    }
+
+    $found = vocalPartsKindFromWord($trimmed);
+    if ($found !== null) {
+        return $found;
+    }
+
+    /* Fallback — never drop the word (the whole point of #2071). Clip to
+       tblVocalParts.Label's own column width so a pathological attribute
+       can't overflow it; upper-case only the FIRST code point, exactly as
+       #2075's sibling label fallback does, so a word that already carries
+       its own capitalisation ("McKenzie") is not mangled. */
+    $clipped = function_exists('mb_substr') ? mb_substr($trimmed, 0, 120, 'UTF-8') : substr($trimmed, 0, 120);
+    if ($clipped === '') {
+        return ['kind' => 'group', 'label' => null];
+    }
+    if (function_exists('mb_substr') && function_exists('mb_strtoupper')) {
+        $firstChar = mb_substr($clipped, 0, 1, 'UTF-8');
+        $rest      = mb_substr($clipped, 1, null, 'UTF-8');
+        $label     = mb_strtoupper($firstChar, 'UTF-8') . $rest;
+    } else {
+        $label = ucfirst($clipped);
+    }
+    return ['kind' => 'group', 'label' => $label];
+}
+
+/**
  * Parse one OpenLyrics XML document into a neutral structure (no songbook
  * abbreviation / number / SongId resolution — the caller does that, since it
  * depends on the live DB auto-increment).
@@ -3519,6 +3619,21 @@ function _bulkImport_parseOpenLyrics(string $body): array
        only after the loop finishes. */
     $warnings = [];
 
+    /* #2071 — ELI5: did ANY component in this whole document end up with a
+     * voice-part assignment? Detail: `$components['_voiceSource']` (a
+     * non-numeric key sitting alongside the numeric component list — see
+     * where it is set, AFTER the <verseOrder> resolution block further
+     * down, whose own doc-block explains why the ordering matters) is the
+     * "structured importer" stamp `includes/lyric_lines_sync.php`'s write
+     * core reads to know these `voices` cells came from a real format
+     * attribute, never a plain-text guess. It is set ONLY when at least one
+     * `<lines part="…">`
+     * actually resolved, so a document that never uses `part=` produces the
+     * byte-identical pre-#2071 `components` shape (rule #33's own "a file
+     * with none of the new feature in it must round-trip unchanged" test).
+     */
+    $anyVoiceInSong = false;
+
     $components = [];
     if (isset($xml->lyrics->verse)) {
         foreach ($xml->lyrics->verse as $verse) {
@@ -3538,12 +3653,66 @@ function _bulkImport_parseOpenLyrics(string $body): array
             if ($language === '' && $verseLang !== '') {
                 $language = $verseLang;
             }
-            $lines = []; $chords = []; $notes = [];
+            $lines = []; $chords = []; $notes = []; $voices = []; $anyVoice = false;
             foreach (($verse->lines ?? []) as $linesNode) {
+                /* #2071 — ELI5: OpenLyrics lets a <lines> block say WHO sings
+                 * it (`part="women"`) and how many times it repeats
+                 * (`repeat="3"`) — both are attributes on the OPENING tag,
+                 * which `_bulkImport_openLyricsParseLines()` below strips
+                 * (its own preg_replace regex is untouched by this fix — see
+                 * that function's doc-block). Reading them off the raw
+                 * SimpleXML node HERE, before the strip, is what makes this a
+                 * fix rather than a rewrite: nothing about how the tag is
+                 * parsed changes, only what happens BEFORE it is.
+                 *
+                 * DETAIL: `part` is read per <lines> BLOCK, never per
+                 * physical <br/>-separated line inside it — OpenLyrics has no
+                 * finer grain than one voice per block. An attribute-less
+                 * block (the shape iHymns' OWN exporter writes for a plain
+                 * slide chunk — see `manage/editor/format-export.js`
+                 * buildOpenLyrics()) is untouched: `$voice` stays null and
+                 * every line in it gets a null `voices` cell, exactly as
+                 * before this fix.
+                 *
+                 * @see https://docs.openlyrics.org/en/latest/dataformat.html#lines
+                 */
+                $partRaw   = isset($linesNode['part'])   ? trim((string)$linesNode['part'])   : '';
+                $repeatRaw = isset($linesNode['repeat']) ? trim((string)$linesNode['repeat']) : '';
+                $voice     = $partRaw !== '' ? _bulkImport_openLyricsResolveVoicePart($partRaw) : null;
+                /* OpenLyrics defines `repeat` as an integer >= 2 (a bare
+                   <lines> with no attribute already means "sung once"; "1"
+                   would be a no-op nobody writes on purpose). Anything
+                   outside 2..99 is a malformed/meaningless value — ignored,
+                   never guessed at. */
+                $repeatN = ($repeatRaw !== '' && ctype_digit($repeatRaw) && (int)$repeatRaw >= 2 && (int)$repeatRaw <= 99)
+                    ? (int)$repeatRaw
+                    : 0;
+                $first = true;
                 foreach (_bulkImport_openLyricsParseLines($linesNode) as $ln) {
+                    $note = $ln['note'];
+                    /* #2071 — "the nearest thing OpenLyrics has to an echo"
+                       (the issue's own words): there is no per-line
+                       structured slot for a repeat count anywhere in the
+                       #2073 write contract today (only `chords`/`notes`/
+                       `voices` are wired — see includes/lyric_lines_sync.php),
+                       so — mirroring the plan's own worked example (Design
+                       pass 6 §3.1) — it rides the ALREADY-LANDED per-line
+                       `notes` channel (#2072) as a human-readable annotation
+                       on the block's FIRST line, rather than being dropped
+                       on the floor OR silently expanded into N literal
+                       copies of the text (which would change what the song
+                       actually says — the task this fix must not do). */
+                    if ($first && $repeatN > 0) {
+                        $note = ($note !== '' ? $note . ' · ' : '') . 'Repeat ×' . $repeatN;
+                    }
                     $lines[]  = $ln['text'];
                     $chords[] = $ln['chords'];
-                    $notes[]  = $ln['note'];
+                    $notes[]  = $note;
+                    $voices[] = $voice !== null ? [$voice] : null;
+                    if ($voice !== null) {
+                        $anyVoice = true;
+                    }
+                    $first = false;
                 }
             }
             if (!empty($lines)) {
@@ -3552,11 +3721,16 @@ function _bulkImport_parseOpenLyrics(string $body): array
                     $comp['label'] = $label;
                     $warnings[] = "verse name \"{$rawName}\" was not recognised — kept as a label";
                 }
-                /* Carry enrichment only when present (chordless/noteless/mono-lingual
-                   verses stay byte-identical to the pre-#1130 component shape). */
+                /* Carry enrichment only when present (chordless/noteless/mono-lingual/
+                   voiceless verses stay byte-identical to the pre-#1130/#2071 component
+                   shape). */
                 if ($verseLang !== '') { $comp['language'] = $verseLang; }
                 foreach ($chords as $c) { if ($c !== '') { $comp['chords'] = $chords; break; } }
                 foreach ($notes as $n)  { if ($n !== '') { $comp['notes']  = $notes;  break; } }
+                if ($anyVoice) {
+                    $comp['voices'] = $voices;
+                    $anyVoiceInSong = true;
+                }
                 $components[] = $comp;
                 $nameToIndices[strtolower(trim($rawName))][] = count($components) - 1;
             }
@@ -3598,6 +3772,28 @@ function _bulkImport_parseOpenLyrics(string $body): array
                 $arrangement = $resolved;
             }
         }
+    }
+
+    /* #2071 — the "structured importer" stamp `vocalPartsApplyComponentVoices()`
+       (the #2073 write core) reads to know these `voices` cells are a real
+       OpenLyrics attribute, not a plain-text guess (`IHYMNS_VOCAL_SOURCES_STRUCTURED`
+       in includes/vocal_parts.php already reserves `'openlyrics'` for exactly
+       this). Sparse: absent entirely for a `part=`-free document, which is
+       what keeps that (overwhelmingly common) case byte-identical to today —
+       see `lyricLinesWriteComponents()`'s own `is_array($c)` guard, which
+       already skips a non-array entry like this one sitting inside the
+       numeric `components` list (`includes/lyric_lines_sync.php:568`).
+     *
+     * DELIBERATELY set HERE — after the <verseOrder> resolution block above,
+     * never before it — because that block's own identity-suppression check
+     * does `range(0, count($components) - 1)`. `$components` is (still, at
+     * that point) a plain 0-based numeric list; stamping this key any
+     * earlier would make `count()` see N+1 entries for an N-component song
+     * and silently break identity suppression for any document combining
+     * `<verseOrder>` with `part=` (a real bug this fix caught on its OWN
+     * first functional test run — see the commit-11 report). */
+    if ($anyVoiceInSong) {
+        $components['_voiceSource'] = 'openlyrics';
     }
 
     $result = [
