@@ -216,10 +216,143 @@ data class Song(
  *                   (e.g., a single chorus that repeats).
  * @property lines Ordered list of lyric lines for this component. Each string
  *                 represents one line of text as it should be displayed.
+ * @property voices Which voice(s) sing each contiguous run of lines — "the
+ *              men sing lines 3-6" (#2073, commit 16,
+ *              `.claude/vocal-parts-2073-plan.md` design pass 7 / pass 3
+ *              §4.1+§6.5). ELI5: who's singing right now, grouped into
+ *              blocks. DETAILED: a brand new, SPARSE wire key — most songs
+ *              won't carry it for a while yet, and even a song WITH voice
+ *              parts assigned only carries it on the components a curator
+ *              actually touched. Defaults to an empty list (not `null`) so
+ *              an absent key on the wire — every song response today, and
+ *              every already-bundled `songs.json` asset — decodes to "no
+ *              runs" rather than needing a null-check at every call site;
+ *              this mirrors [Song.subtitle]'s "empty string, not nullable"
+ *              precedent immediately above in this same file, just for a
+ *              list instead of a string. `ignoreUnknownKeys = true` on the
+ *              shared `Json {}` parser (`SongViewModel.kt`) already makes an
+ *              UNRECOGNISED wire key silently ignored; the default value
+ *              here is what additionally makes a recognised-but-ABSENT key
+ *              safe (`kotlinx.serialization` is strict about a missing
+ *              required property regardless of `ignoreUnknownKeys` — a
+ *              property needs its OWN default to degrade gracefully).
+ *              DEFERRED: nothing renders this list yet — that is a
+ *              separate, later commit; this property exists purely so the
+ *              app can start reading the value without crashing.
+ * @property voiceSpans Which voice sings a PART of one line's text — an
+ *              echo on just the last few words rather than the whole line
+ *              (#2073). Same sparse/default-empty/deferred-rendering
+ *              reasoning as [voices] above.
  */
 @Serializable
 data class SongComponent(
     val type: String,
     val number: Int? = null,
-    val lines: List<String>
+    val lines: List<String>,
+    val voices: List<VoiceRun> = emptyList(),
+    val voiceSpans: List<VoiceSpan> = emptyList()
+)
+
+// =============================================================================
+// VOICE PARTS (#2073) — "who sings this run of lines / this bit of a line"
+// =============================================================================
+
+/**
+ * One contiguous run of lines sung by the same voice part(s) within a single
+ * [SongComponent] — e.g. "lines 0 through 3, sung by the women".
+ *
+ * ELI5: "From here to here, it's the women singing."
+ *
+ * DETAILED (#2073): Mirrors the web project's `lyricLinesFoldVoiceRuns()`
+ * wire shape (`.claude/vocal-parts-2073-plan.md` design pass 3 §4.1/§6.5).
+ * [from]/[to] are 0-based, INCLUSIVE indexes into the OWNING component's
+ * `lines` list — never a `tblLyricLines.Id` (that identity is a SEPARATE
+ * server concept this simplified Android model doesn't carry at all today);
+ * resolve a run's actual text via `lines.subList(from, to + 1)`.
+ *
+ * @property from First line index (0-based, inclusive) this run covers.
+ * @property to Last line index (0-based, inclusive) this run covers.
+ * @property parts The part(s) singing this run — almost always one; more
+ *              than one models, e.g., a duet or two named singers sharing a
+ *              line.
+ */
+@Serializable
+data class VoiceRun(
+    val from: Int,
+    val to: Int,
+    val parts: List<VoicePart>
+)
+
+/**
+ * One named voice part attached to a [VoiceRun] (or, without [enters],
+ * embedded in a [VoiceSpan]) — "the women", "echo", "Soloist: Sarah".
+ *
+ * ELI5: A label for who's singing, plus whether it's an echo.
+ *
+ * DETAILED (#2073): [kind] is the open, app-validated vocabulary key from
+ * the web project's `includes/vocal_parts.php`'s `IHYMNS_VOCAL_PART_KINDS`
+ * map — deliberately a plain [String], never a Kotlin `enum class`
+ * (`.claude/CLAUDE.md` rule #20: a growable vocabulary is VARCHAR/String +
+ * an app-level allow-list, never a closed enum — a Kotlin `enum class`
+ * here would fail exactly the same way a fixed set would server-side the
+ * day a new kind is added, since `kotlinx.serialization` throws on an
+ * unrecognised enum constant with no built-in "unknown case" fallback).
+ * [bg] marks a background/echo
+ * part (a whole-LINE echo rides here; a sub-line echo rides on [VoiceSpan]
+ * instead, never both at once). [enters] is `true` only on the run where
+ * this part first appears relative to the immediately-preceding run in the
+ * same component (server-computed adjacency) — present on [VoiceRun.parts]
+ * but genuinely absent from the smaller shape embedded in
+ * [VoiceSpan.part], hence nullable-with-default here rather than a second,
+ * near-duplicate class.
+ *
+ * @property id The underlying `tblVocalParts.Id` — stable across saves; use
+ *              THIS for chip identity when re-rendering, never [label] text.
+ * @property kind Open vocabulary key, e.g. `"women"`, `"men"`,
+ *              `"named-singer"`.
+ * @property label Human-facing label, e.g. `"Women"`, or a named singer's
+ *              display name.
+ * @property bg `true` for a background/echo part.
+ * @property enters `true` only when this part is entering fresh in this
+ *              run; `null`/absent on the trimmed copy nested inside
+ *              [VoiceSpan.part] — see the class-level doc comment above.
+ */
+@Serializable
+data class VoicePart(
+    val id: Int,
+    val kind: String,
+    val label: String,
+    val bg: Boolean = false,
+    val enters: Boolean? = null
+)
+
+/**
+ * A sub-line echo/voice-part assignment — some voice singing only PART of
+ * one line's text, e.g. just the last three words.
+ *
+ * ELI5: "Just this bit of the line is a different voice."
+ *
+ * DETAILED (#2073): Mirrors the web project's `lyricLinesFoldVoiceSpans()`
+ * wire shape. [start]/[end] are Unicode CODE-POINT offsets into the
+ * REFERENCED line's text (`.claude/CLAUDE.md` rule #21 — never a byte or
+ * UTF-16 offset; slice with `text.codePoints()`/`String(Character.toChars
+ * (...))`, never a raw Kotlin `String` index, which is UTF-16 code-unit
+ * based and would misalign on any line containing a surrogate-pair
+ * character), [end] EXCLUSIVE. SPARSE on [SongComponent.voiceSpans] —
+ * present only when at least one span exists anywhere in that component.
+ *
+ * @property line 0-based index into the owning component's `lines` list —
+ *              the line this span slices (same indexing convention as
+ *              [VoiceRun.from]/[VoiceRun.to]).
+ * @property start Start code-point offset into that line's text (inclusive).
+ * @property end End code-point offset into that line's text (exclusive).
+ * @property part The part singing this span. No `enters` here — that
+ *              concept only applies to a whole run, not a sub-line slice.
+ */
+@Serializable
+data class VoiceSpan(
+    val line: Int,
+    val start: Int,
+    val end: Int,
+    val part: VoicePart
 )
