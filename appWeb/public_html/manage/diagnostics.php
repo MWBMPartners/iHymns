@@ -226,6 +226,66 @@ $DIAGNOSTICS_PRESETS = [
         . "LIMIT 50;",
     'Current DB + version' =>
         "SELECT DATABASE() AS db, VERSION() AS mysql_version, NOW() AS server_time;",
+
+    /* ---------------------------------------------------------------------
+     * Forensics presets (2026-09-06).
+     *
+     * ELI5: canned answers to "is this actually true on the real server?" —
+     * the questions that cannot be settled by reading the code, because the
+     * code only says what SHOULD have happened.
+     *
+     * WHY THESE FOUR EXIST. Several pieces of work stalled on facts nobody
+     * could check from a laptop: how many songs really carry group markings
+     * written as lyrics, how many songs a version-resolver bug actually
+     * affected, and — most importantly — which of two possible shapes the
+     * organisation-licences table is really in, given that its expiry column
+     * decides whether copyrighted songs may be shown and the migration and
+     * the schema file disagreed about its type. Every one of those is a
+     * one-line SELECT away, and every one was previously guessed at.
+     *
+     * All four are counts and column shapes only: no lyric text, no names,
+     * no keys. Safe to run on production and safe to paste into a ticket.
+     * ------------------------------------------------------------------ */
+    'Forensics — corpus + known-bug counts' =>
+        "SELECT\n"
+        . "  (SELECT COUNT(*) FROM tblSongs)                                  AS songs_total,\n"
+        . "  (SELECT COUNT(*) FROM tblLyricLines)                             AS lyric_lines_total,\n"
+        . "  (SELECT COUNT(DISTINCT ly.SongId) FROM tblLyricLines l\n"
+        . "     JOIN tblLyrics ly ON ly.Id = l.LyricsId\n"
+        . "    WHERE l.LineText REGEXP '^[[:space:]]*(WOMEN|MEN|ALL|LADIES|GENTS|GIRLS|BOYS|CHOIR|CONGREGATION|LEADER|CANTOR|SOLO|UNISON|SOPRANO|ALTO|TENOR|BASS|DUET|ECHO|RESPONSE|DESCANT)([[:space:].:]|$)')\n"
+        . "                                                                   AS songs_with_group_markers,\n"
+        . "  (SELECT COUNT(*) FROM tblLyricLines\n"
+        . "    WHERE LOCATE(CONVERT(UNHEX('C2A0') USING utf8mb4), LineText) > 0\n"
+        . "      AND LineText REGEXP '^[[:space:]]*(WOMEN|MEN|ALL|LADIES|BOYS|GIRLS)')\n"
+        . "                                                                   AS nbsp_marker_lines,\n"
+        . "  (SELECT COUNT(DISTINCT a.SongId) FROM tblLyrics a\n"
+        . "     JOIN tblLyrics b ON b.SongId = a.SongId\n"
+        . "    WHERE a.Source = 'ihymns' AND b.Source <> 'ihymns'\n"
+        . "      AND b.Status = 'approved' AND b.IsPrimary = 1)               AS songs_hit_by_resolver_bug,\n"
+        . "  (SELECT COUNT(*) FROM tblLyricLines WHERE MetaJson IS NOT NULL)  AS lines_with_unread_singer_data,\n"
+        . "  (SELECT COUNT(*) FROM tblLyricLines WHERE Note IS NOT NULL AND Note <> '') AS lines_with_a_note;",
+
+    'Forensics — group markings by songbook' =>
+        "SELECT s.SongbookAbbr, COUNT(DISTINCT s.SongId) AS songs\n"
+        . "FROM tblLyricLines l\n"
+        . "JOIN tblLyrics ly ON ly.Id = l.LyricsId\n"
+        . "JOIN tblSongs  s  ON s.SongId = ly.SongId\n"
+        . "WHERE l.LineText REGEXP '^[[:space:]]*(WOMEN|MEN|ALL|LADIES|CHOIR|CONGREGATION|LEADER|CANTOR|SOLO|UNISON|SOPRANO|ALTO|TENOR|BASS)([[:space:].:]|$)'\n"
+        . "GROUP BY s.SongbookAbbr\n"
+        . "ORDER BY songs DESC;",
+
+    'Forensics — licences table: which shape is live?' =>
+        "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA\n"
+        . "FROM INFORMATION_SCHEMA.COLUMNS\n"
+        . "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblOrganisationLicences'\n"
+        . "ORDER BY ORDINAL_POSITION;",
+
+    'Forensics — lyric + vocal tables: created, and in use?' =>
+        "SELECT TABLE_NAME, TABLE_ROWS\n"
+        . "FROM INFORMATION_SCHEMA.TABLES\n"
+        . "WHERE TABLE_SCHEMA = DATABASE()\n"
+        . "  AND (TABLE_NAME LIKE 'tblLyric%' OR TABLE_NAME LIKE 'tblVocal%')\n"
+        . "ORDER BY TABLE_NAME;",
 ];
 
 /* =========================================================================
