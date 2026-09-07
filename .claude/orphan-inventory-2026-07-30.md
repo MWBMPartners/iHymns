@@ -258,7 +258,7 @@ Nothing outside migrations/schema-admin mentions them. Grouped by evident proven
 | `tblSongRoyaltyIds` | `SongData.php:2230` | none | same |
 | `tblSongScriptureRefs` | `SongData.php:2239` | none | same |
 | `tblVocalParts` | `SongData.php:2251` (per-Lyrics rows, not a taxonomy) | none — no seed, no writer | same |
-| `tblContentLicences` | `includes/licences.php:117,162` | none in repo (catalogue rows exist only in `.sql/.fulldata/ihymns-full.sql`) | gating family; a fresh schema-only install reads an empty catalogue |
+| `tblContentLicences` | `includes/licences.php:117,162` | the gating-facts and org-licence migrations | gating family; a schema-only install that has not run those migrations reads an empty catalogue. **Corrected 2026-09-07** — this row used to say the rows came only from `.sql/.fulldata/ihymns-full.sql`. They never did: that dump held a `CREATE TABLE` and zero `INSERT`s for this table. |
 | (`tblCreditPersonLinks`) | `index.php:541`, `pages/person.php:287` | none | **deliberate** legacy fallback (`if (empty($linksUnified)) try { … }`) for pre-backfill installs — dead on migrated installs by design |
 
 False positives corrected by hand: `tblWorkExternalLinks`, `tblSongbookExternalLinks` — written
@@ -539,6 +539,8 @@ diffing the JSONL outputs is the interim regeneration path until §8's guard lan
   `tblApiKeyUsage`).
 - §6.3's reverse direction (checked-but-unlabelled entitlements) — not fully verified whether
   `/manage/entitlements` renders overrides for unlabelled keys; needs a page-logic read.
-- `tblContentLicences` (§3.2) — `.fulldata/ihymns-full.sql` seeds it; whether production was
-  installed from fulldata (making the reader non-empty there) is a runtime fact.
+- `tblContentLicences` (§3.2) — **corrected 2026-09-07**: `.fulldata/ihymns-full.sql` did NOT seed
+  it (zero `INSERT`s for this table). The rows come from the gating-facts and org-licence
+  migrations. Whether production has run those is still a runtime fact this document cannot settle.
+  That dump has since been untracked entirely (#2096).
 - The rg multi-root anomaly (§0.1a) is characterised by reproduction, not root-caused.

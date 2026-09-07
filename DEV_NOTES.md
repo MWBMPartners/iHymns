@@ -933,11 +933,13 @@ For shared hosting without SSH:
 4. Visit `/manage/setup` (create admin account)
 5. Sign in and use the Song Editor's bulk importer (`/manage/editor/import2.php`) to add song content
 
-#### One-Shot Alternative
+#### The old one-shot dump is gone (and was already broken)
 
-```bash
-mysql -u user -p ihymns < appWeb/.sql/.fulldata/ihymns-full.sql
-```
+`appWeb/.sql/.fulldata/ihymns-full.sql` used to be offered here as a shortcut. It is no longer in
+the repository. It was last refreshed on 1 June 2026 and had drifted a long way from reality: it
+creates 80 tables against a current schema of 166, and contains no `tblLyricLines` — the table song
+lyrics have lived in since #1235. Loading it today produces a database that cannot hold a lyric.
+Use the numbered steps above instead.
 
 ### DB-Direct Reads (epic #1010, WS-J #1020)
 
@@ -1047,9 +1049,7 @@ appWeb/
 │   ├── migrate-*.php                  # Individual, idempotent migrations
 │   ├── migrate-users.php             # Legacy user/setlist migration
 │   ├── cleanup.php                    # Token/session cleanup
-│   ├── backup.php / restore.php       # Database backup / restore
-│   └── .fulldata/
-│       └── ihymns-full.sql            # Manually-refreshed schema+data snapshot (~6.8 MB; not auto-regenerated)
+│   └── backup.php / restore.php       # Database backup / restore
 └── public_html/
     ├── includes/
     │   ├── db_mysql.php               # MySQLi connection factory

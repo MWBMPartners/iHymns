@@ -87,8 +87,23 @@ genuine, public-domain-hymn or synthetic sample files drawn from other
 MIT-licensed open-source ProPresenter projects (`ChrisMBarr/propresenter-parser`,
 `bussnet/propresenter7-php-lib`) — used to cross-validate the decoder/encoder
 against real, independently-produced files rather than only iHymns's own
-round-trip. Full source list, licences, and the copyright-safety triage that
-kept every copyrighted sample out of the repo: `.claude/propresenter-reference-sources.md`.
+round-trip. Full source list, licences, and the copyright-safety triage:
+`.claude/propresenter-reference-sources.md`.
+
+**Correction (2026-09-07).** This paragraph previously claimed the triage "kept every copyrighted
+sample out of the repo". That was not true, and it is worth saying so plainly rather than quietly
+rewording it. Two separate sets of copyrighted material had been committed:
+
+- Seventeen ProPresenter sample files under `_temp/`, including commercially published worship
+  songs. Untracked in `cea84808` (issue #2096).
+- A database dump at `appWeb/.sql/.fulldata/ihymns-full.sql` holding the full lyrics of about 3,500
+  songs, of which roughly 1,300 carried a copyright statement naming publishers such as Thankyou
+  Music and Integrity Music. Untracked in the same batch.
+
+Both were removed from the current files. **Untracking does not remove them from the project's
+history**, which is a separate and much more expensive job — tracked in #2096. The statement above
+now describes the reference fixtures under `tests/fixtures/propresenter/` only, which is what the
+triage actually covered.
 
 ### Apple app (`appApple/`)
 

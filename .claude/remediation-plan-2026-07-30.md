@@ -546,9 +546,12 @@ deep-architect tier (project-rules §17).
   (`if (empty($linksUnified))`, index.php:541); it is the un-migrated-install safety net.
 - **The `app_status` emit of `captcha_provider` / `ads_enabled` / `motd`** — do not remove
   emitted fields (native decoder risk); X6 fixes the seed DESCRIPTIONS, M2 makes `motd` real.
-- **`ihymns-full.sql` seeded `tblContentLicences` rows** — leave; the licence-store
-  consolidation is a filed follow-up (B0.2), and Batch 2's branch (f) makes the LIVE store
-  authoritative without a data migration.
+- **`ihymns-full.sql` seeded `tblContentLicences` rows** — **this was never true (corrected
+  2026-09-07).** That dump held a `CREATE TABLE` for the table and zero `INSERT`s into it. The rows
+  come from the gating-facts and org-licence migrations. The conclusion below is unchanged: leave
+  it; the licence-store consolidation is a filed follow-up (B0.2) and Batch 2's branch (f) makes the
+  LIVE store authoritative without a data migration. The dump itself has since been untracked
+  (#2096) as it was three months stale and full of copyrighted lyrics.
 - **v1 editor + its API** — out of scope; owned by epic #1601's retirement plan
   (project-rules §20.4), already guarded by `test-v1-consumer-deorphan.php`.
 - **`schema-audit.php:36-37`'s comment** — actually accurate on close read (the includes exist

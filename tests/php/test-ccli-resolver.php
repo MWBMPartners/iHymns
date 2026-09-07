@@ -690,9 +690,39 @@ if ($smUnit !== null) {
 $schemaSql = (string)file_get_contents($APPWEB . '/.sql/schema.sql');
 ok('G1  schema.sql no longer SEEDS ccli_validation_enabled',
    !str_contains($schemaSql, "('ccli_validation_enabled'"));
-ok('G2  the full-data dump no longer seeds it either',
-   !str_contains((string)file_get_contents($APPWEB . '/.sql/.fulldata/ihymns-full.sql'),
-                 "('ccli_validation_enabled'"));
+/* G2 used to read one specific file, appWeb/.sql/.fulldata/ihymns-full.sql. That file has
+   been untracked (#2096), which would have quietly turned this check into one that always
+   passes — it would "prove" the key is absent from a file that is absent. Worse than no
+   check, because the tick would still be read as coverage (rule #34).
+   So ask the real question of the WHOLE folder instead: does ANY .sql file anywhere under
+   appWeb/.sql/ seed this key? That is derived from the tree rather than from a filename
+   somebody typed, so it also covers any seed file added in future. */
+/* Walk the folder properly rather than using glob(). glob() skips folders whose
+   name starts with a dot, which would have silently missed .sql/.fulldata/ —
+   exactly the file this check used to be about. A scanner that quietly looks in
+   fewer places than you think is worse than no scanner, because the tick still
+   reads as coverage (rule #34). */
+$sqlSeedFiles = [];
+$sqlDir = $APPWEB . '/.sql';
+if (is_dir($sqlDir)) {
+    $walker = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($sqlDir, FilesystemIterator::SKIP_DOTS)
+    );
+    foreach ($walker as $entry) {
+        if ($entry->isFile() && strtolower($entry->getExtension()) === 'sql') {
+            $sqlSeedFiles[] = $entry->getPathname();
+        }
+    }
+    sort($sqlSeedFiles);
+}
+$g2Offenders  = [];
+foreach ($sqlSeedFiles as $sqlFile) {
+    if (str_contains((string)file_get_contents($sqlFile), "('ccli_validation_enabled'")) {
+        $g2Offenders[] = basename($sqlFile);
+    }
+}
+ok('G2  no .sql file under appWeb/.sql/ seeds it either (' . count($sqlSeedFiles) . ' file(s) checked)',
+   $g2Offenders === [], implode(', ', $g2Offenders));
 ok('G3  a cleanup migration exists for installs that already have the row',
    is_file($APPWEB . '/.sql/migrate-remove-ccli-validation-setting.php'));
 $registrySrc = (string)file_get_contents($PUBLIC . '/manage/includes/migration-registry.php');

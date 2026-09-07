@@ -41,6 +41,55 @@ Temporary Items
 _temp/
 
 # ----------------------------------------------------------------------------
+# Local-only database dump (#2096, 2026-09-07)
+# ----------------------------------------------------------------------------
+#
+# appWeb/.sql/.fulldata/ihymns-full.sql was a hand-made snapshot of the whole
+# database, lyrics and all. It is kept locally but must never be pushed again,
+# for two separate reasons:
+#
+#   1. It held the full lyrics of roughly 3,500 songs, about 1,300 of which
+#      carry a copyright statement naming publishers such as Thankyou Music and
+#      Integrity Music. This repository is public.
+#   2. It was three months stale and actively misleading. It creates 80 tables
+#      where the current schema.sql has 166, and it contains no tblLyricLines at
+#      all — the table song lyrics have lived in since #1235. Anyone following
+#      the old README instructions got a database that could not store a lyric.
+#
+# Nothing in the app, the build or CI ever read it. This was checked by running
+# the two test files that mention it with the file genuinely absent: both still
+# pass. The tool that generated it was deliberately switched off and then
+# deleted, and the song data it read from is gone too, so it cannot be
+# regenerated.
+#
+# A fresh install uses appWeb/.sql/schema.sql plus "Apply all pending" on
+# /manage/setup-database. That is the only supported route.
+#
+# ⚠️ Same warning as above: a rule here does not untrack a file git already
+# follows. tests/test-no-tracked-scratch.js is what actually enforces this.
+appWeb/.sql/.fulldata/
+
+# ----------------------------------------------------------------------------
+# Raw Claude Code conversation logs (2026-09-07)
+# ----------------------------------------------------------------------------
+#
+# .claude/sessions/ holds two very different things. Keep the hand-written
+# *-HANDOFF.md notes — those are the ones that actually carry work forward, they
+# are plain text any person or tool can read, and all ten of them together come
+# to about 224 KB.
+#
+# The raw .jsonl conversation logs are a different matter: twelve of them, 162
+# MB, and nothing can read them back. Claude Code looks for a conversation in a
+# folder named after the full path of the project on that particular machine, so
+# a log copied into the repo is never found on any other computer, or even on
+# the same computer in a different folder. tools/sync-claude-session.sh only
+# ever copied one way — there has never been a script that puts one back.
+#
+# So they were 162 MB carried in every clone, delivering nothing. Write a
+# handoff note instead; that is what every .claude/ document already points at.
+.claude/sessions/*.jsonl
+
+# ----------------------------------------------------------------------------
 # Windows
 # ----------------------------------------------------------------------------
 Thumbs.db

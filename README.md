@@ -205,13 +205,13 @@ php appWeb/.sql/install.php
 
 Or use the **web-based installer** at `/manage/setup-database.php` (accessible during initial setup or as a global admin): run **Install Tables**, then click **Apply all pending** to bring every migration up to date.
 
-**One-shot alternative** (a point-in-time schema + sample-song snapshot, handy for local dev):
-
-```bash
-mysql -u user -p ihymns < appWeb/.sql/.fulldata/ihymns-full.sql
-```
-
-This file is a manually-refreshed export, not auto-regenerated — always follow it with **Apply all pending** on `/manage/setup-database` afterwards to bring the schema up to the current `schema.sql`.
+> **A note on the old one-shot database dump.** Earlier versions of this file described loading
+> `appWeb/.sql/.fulldata/ihymns-full.sql` as a shortcut. That is no longer a supported route and the
+> file is no longer in the repository. It was last refreshed on 1 June 2026 and had drifted badly:
+> it creates 80 tables where the current schema has 166, and it does not contain `tblLyricLines` at
+> all — which is where song lyrics have lived since #1235. Following those old instructions today
+> gives you a database that is missing most of the app and cannot store a single lyric line.
+> Use `schema.sql` plus **Apply all pending**, as described just above.
 
 ### 3. Create admin user
 
