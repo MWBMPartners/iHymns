@@ -81,12 +81,43 @@
       ] },
       "expect": "<div class=\"lyric-round-note\" role=\"note\" aria-label=\"Partner song for 3 voices. Voice 3 enters 3 lines after Voice 1.\" data-round-id=\"503\"><i class=\"fa-solid fa-rotate me-1\" aria-hidden=\"true\"></i>Partner song &middot; 3 voices &middot; Voice 3 enters after 3 lines</div>" },
 
-    { "name": "a 'beats' basis voice is described via its guaranteed entryLines fallback (also proves the singular 'line' wording)",
+    { "name": "#2089 -- a voice set in BEATS says beats, not the lines number it also happens to carry",
+      "_why": "This case used to expect 'enters after 1 line' and was described as a deliberate fallback. It was not: EntryLines is always filled in as a rough equivalent even when the curator chose beats, so the note quietly reported a number the curator never typed. Nothing looked broken, which is what made it worse than saying nothing.",
       "round": { "id": 505, "kind": "round", "lineIds": [400, 401], "voices": [
         {"number": 1, "entryBasis": "lines", "entryLines": 0, "entryMs": null},
         {"number": 2, "entryBasis": "beats", "entryLines": 1, "entryBeats": 4, "entryMs": null}
       ] },
-      "expect": "<div class=\"lyric-round-note\" role=\"note\" aria-label=\"Round for 2 voices. Voice 2 enters 1 line after Voice 1.\" data-round-id=\"505\"><i class=\"fa-solid fa-rotate me-1\" aria-hidden=\"true\"></i>Round &middot; 2 voices &middot; Voice 2 enters after 1 line</div>" },
+      "expect": "<div class=\"lyric-round-note\" role=\"note\" aria-label=\"Round for 2 voices. Voice 2 enters 4 beats after Voice 1.\" data-round-id=\"505\"><i class=\"fa-solid fa-rotate me-1\" aria-hidden=\"true\"></i>Round &middot; 2 voices &middot; Voice 2 enters after 4 beats</div>" },
+
+    { "name": "#2089 -- exactly one beat is written 'beat', not 'beats'",
+      "round": { "id": 507, "kind": "round", "lineIds": [400, 401], "voices": [
+        {"number": 1, "entryBasis": "lines", "entryLines": 0, "entryMs": null},
+        {"number": 2, "entryBasis": "beats", "entryLines": 1, "entryBeats": 1, "entryMs": null}
+      ] },
+      "expect": "<div class=\"lyric-round-note\" role=\"note\" aria-label=\"Round for 2 voices. Voice 2 enters 1 beat after Voice 1.\" data-round-id=\"507\"><i class=\"fa-solid fa-rotate me-1\" aria-hidden=\"true\"></i>Round &middot; 2 voices &middot; Voice 2 enters after 1 beat</div>" },
+
+    { "name": "#2089 -- half and third beats are real in music, so decimals survive, but trailing zeros do not",
+      "_why": "The column is DECIMAL(8,3), so a whole number arrives as 4.000 and half a beat as 2.500. Printing those raw looks like a machine talking.",
+      "round": { "id": 508, "kind": "round", "lineIds": [400, 401], "voices": [
+        {"number": 1, "entryBasis": "lines", "entryLines": 0, "entryMs": null},
+        {"number": 2, "entryBasis": "beats", "entryLines": 1, "entryBeats": 2.5, "entryMs": null}
+      ] },
+      "expect": "<div class=\"lyric-round-note\" role=\"note\" aria-label=\"Round for 2 voices. Voice 2 enters 2.5 beats after Voice 1.\" data-round-id=\"508\"><i class=\"fa-solid fa-rotate me-1\" aria-hidden=\"true\"></i>Round &middot; 2 voices &middot; Voice 2 enters after 2.5 beats</div>" },
+
+    { "name": "a voice set in LINES still says lines -- and exactly one line is written 'line' (the singular coverage the old beats case used to carry)",
+      "round": { "id": 509, "kind": "round", "lineIds": [400, 401], "voices": [
+        {"number": 1, "entryBasis": "lines", "entryLines": 0, "entryMs": null},
+        {"number": 2, "entryBasis": "lines", "entryLines": 1, "entryMs": null}
+      ] },
+      "expect": "<div class=\"lyric-round-note\" role=\"note\" aria-label=\"Round for 2 voices. Voice 2 enters 1 line after Voice 1.\" data-round-id=\"509\"><i class=\"fa-solid fa-rotate me-1\" aria-hidden=\"true\"></i>Round &middot; 2 voices &middot; Voice 2 enters after 1 line</div>" },
+
+    { "name": "#2089 -- a 'beats' voice with no beats value recorded falls back to lines rather than saying nothing",
+      "_why": "An un-migrated or half-written row can name beats as the basis without carrying a number. Silence would hide the voice entirely; the lines figure is always present, so it is the honest last resort.",
+      "round": { "id": 510, "kind": "round", "lineIds": [400, 401], "voices": [
+        {"number": 1, "entryBasis": "lines", "entryLines": 0, "entryMs": null},
+        {"number": 2, "entryBasis": "beats", "entryLines": 3, "entryBeats": null, "entryMs": null}
+      ] },
+      "expect": "<div class=\"lyric-round-note\" role=\"note\" aria-label=\"Round for 2 voices. Voice 2 enters 3 lines after Voice 1.\" data-round-id=\"510\"><i class=\"fa-solid fa-rotate me-1\" aria-hidden=\"true\"></i>Round &middot; 2 voices &middot; Voice 2 enters after 3 lines</div>" },
 
     { "name": "a round covering no lines at all renders nothing (an inconsistent/un-migrated round -- never point a note at nothing)",
       "round": { "id": 506, "kind": "round", "lineIds": [], "voices": [
