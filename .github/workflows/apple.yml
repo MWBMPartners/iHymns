@@ -6,6 +6,21 @@
 # (apple-deploy.yml, #1400) triggered on alpha/beta/main.
 name: Apple CI
 
+# ⚠️ NOTE 2026-09-07 — the `push:` trigger below is DEAD. `feat/apple-universal`
+# was squash-merged and deleted; `git ls-remote --heads origin` now returns only
+# alpha, archive/alpha, beta and main. So the push half of this trigger can never
+# fire on any branch, and Apple CI runs on exactly one event: a pull request that
+# touches `appApple/**`.
+#
+# Combined with the Apple build not being a required check, that means a red
+# appApple PR can auto-merge and then NOTHING re-runs the build — the breakage
+# stays invisible until the next unrelated appApple pull request, which may be
+# weeks later.
+#
+# Deliberately NOT changed here: pointing this at [alpha, beta, main] is the
+# obvious repair, but it interacts with the branch-protection decision the owner
+# still has to make, and `apple-deploy.yml` triggers on those same three branches.
+# Both halves are tracked together in #1526.
 on:
   push:
     branches: [feat/apple-universal]

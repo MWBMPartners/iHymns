@@ -7,9 +7,64 @@
 >
 > Renamed from `apple-native-handoff.md` on 2026-08-01. Two documents both called "handoff" meant a
 > resumer could open either and believe they had the whole picture; the owner asked for one.
-> Apple-programme content last updated 2026-07-07.
+> Apple-programme content last updated 2026-07-07 — **and largely superseded. A dated correction
+> block sits immediately below this note (2026-09-07); read that before anything else in this file.**
 
+
+---
+
+## ⛔ CORRECTION — 2026-09-07 — most of this file is out of date, read this first
+
+**Everything below the next heading was written on 2026-07-07/08 and much of it is no longer true.**
+It was re-checked on 2026-09-07 by reading the tree, querying GitHub and probing the live site — not
+by trusting any document, this one included. Where a claim below is wrong, the original text has been
+left in place and flagged rather than quietly reworded, so the drift stays visible.
+
+The single biggest thing to know: **the Apple app has never been uploaded anywhere.** Not to
+TestFlight, not to the App Store. The reasons are now tracked under epic **#2105**.
+
+### What was believed vs what is actually true
+
+| # | This file says | Actually true on 2026-09-07 | Evidence |
+|---|---|---|---|
+| 1 | The work is "all local/unpushed/no-PR" on branch **`feat/apple-universal`**, "44 commits ahead of alpha". | **All merged long ago; that branch no longer exists.** 72 commits have touched `appApple/`, most recently 2026-09-05. | `git ls-remote --heads origin` returns only `alpha`, `archive/alpha`, `beta`, `main`. |
+| 2 | "**NEXT ACTION**: Cut `feat/apple-universal` … Build P0-1 (XcodeGen project) + P0-2 (iHymnsKit scaffold)". | **All of Phase 0, Phase 1, the deferred backlog and Phase 2 are built.** 451 Swift files, ~69,500 lines, 1,067 tests. Following those five steps would recreate work that already exists. | `find appApple -name '*.swift' \| wc -l` → 451. |
+| 3 | The backend-for-Apple PHP is on `alpha` only and "must reach the web docroots … before the native app can authenticate". | **On `main` and `beta` too, and live in production.** | `git show origin/main:appWeb/public_html/api.php` contains `auth_apple`, `account_delete`, `analytics_ingest`, `apns_register`, `access_tiers`. `curl https://ihymns.app/api?action=app_status` → HTTP 200. |
+| 4 | Universal Links are unprovable because the AASA file "serves the `TEAMID` placeholder today". | **All four hosts *and* Apple's own cache serve the real identifier `Y5XK559SV9.app.ihymns`.** | `curl` against `dev.`, `beta.`, `ihymns.app`, `www.ihymns.app` and `app-site-association.cdn-apple.com/a/v1/ihymns.app` — all HTTP 200 with the real value. |
+| 5 | "**GitHub org already has the Apple secrets** (APPLE_CERTIFICATE/…/ASC_API_KEY/ISSUER/KEY_ID) → use direct-cert-import Fastlane". | **Not at repository level** — `gh secret list` shows only the SFTP and opcache secrets. The one real archive attempt (2026-07-10) failed with `No Accounts` and `No profiles for 'app.ihymns' were found`. ⚠️ **Organisation level could not be checked** (`HTTP 403: You must be an org admin`), so confirm rather than assume. | #2101. |
+| 6 | (Not mentioned at all.) | **The TestFlight pipeline is switched off.** `APPLE_DEPLOY_ENABLED` is unset, so the build-and-upload job is skipped — while the run still shows a green tick, because the guard job succeeds. | #2101. Run `31958364727`, 2026-08-16: `Build + upload (Fastlane): skipped`. |
+| 7 | (Not mentioned at all.) | **There is no app icon.** Not one image file exists anywhere under `appApple/`. App Store Connect refuses an upload without one. This is the hardest blocker and it appeared in no document before now. | #2100. |
+| 8 | "488 tests" (and "333", "375", "449", "495" earlier in the same file). | **1,067 tests across 156 suites.** | `grep -rhoE '^\s*@Test' appApple/Packages/iHymnsKit/Tests/ \| wc -l`. |
+| 9 | The comment in `RootContainerView.swift:73` — "tvOS/watch keep `PhaseZeroSkeletonView`". | **Stale.** All three app shells render real views (`RootContainerView`, `TVRootView`, `WatchRootView`); `PhaseZeroSkeletonView` is now dead code that nothing instantiates. | Read the three `@main` files under `appApple/Apps/`. |
+| 10 | (Implied throughout — "PHASE 1 COMPLETE", "all client parity".) | **Four Phase-1 issues were reopened on 2026-08-01** after an audit found their "ALL COMPLETE" checklists false: **#180** (no presentation auto-scroll, no reading-progress indicator, lyrics freely copyable), **#181** (no tag screen, no batch operations, no set list duplicate, no import/export, no macOS printing), **#182** (no global font size, no default songbook, no Reduce Motion/Transparency), **#190** (legal pages are not bundled offline). Those audits are current and correct. | The reopening comments on each issue. |
+
+### Things this file gets right and that are still true
+
+- Phase 0, Phase 1 and Phase 2 are genuinely built, and the CI build is genuinely green — run
+  `33973411634` (2026-09-05) passed every step: quality gates, SwiftLint, the full test suite, the
+  macOS app build, the tvOS app build, and the iOS and watchOS package cross-compiles.
+- The architecture described in the strategy document is the architecture that exists: four thin app
+  shells over one shared Swift package, XcodeGen-generated project, Swift 6 strict concurrency,
+  minimum OS 26 everywhere.
+- The owner-provisioning list is still the right list, and
+  `appApple/dev-docs/Provisioning-Runbook.md` §1 is still accurate *as a procedure* (its §2 status
+  claims are not — that file carries its own correction note).
+- `#1412`'s OpenDyslexic fonts really are bundled, and the CarPlay entitlement really was granted.
+
+### How to actually resume the Apple programme
+
+Read **epic #2105** first, then #2100 (app icon) and #2101 (deploy switch) — in that order, because
+turning the deploy switch on before the icon exists means the first upload is rejected. Do not follow
+the "HOW TO RESUME" line or the "NEXT ACTION" section below; both describe a starting point that was
+passed months ago.
+
+---
 ## ▶ HOW TO RESUME AFTER QUOTA RESET (paste this one line)
+
+> ⚠️ **DO NOT PASTE THE LINE BELOW (noted 2026-09-07).** It names branch `feat/apple-universal`,
+> which no longer exists, and describes the work as unpushed with no pull requests — it was all merged
+> months ago. Its test count and its "next steps" are both wrong. Kept verbatim only so the drift stays
+> visible. To resume, read epic **#2105**, then **#2100** and **#2101**.
 > **"Resume the Apple native app build — read `.claude/apple-native-status.md`, don't re-plan, autonomously continue (don't ask each step), NO PRs without consent. PHASE 0 IS DONE (#1393–#1401). PHASE 1 IN PROGRESS on `feat/apple-universal`: DONE = #180 song display, #1436 search, #1437 songbooks browse, #183 SOTD+Home, #1398 login/account, #181 favourites+setlists, #182 Settings, #1412 dyslexia+CVD/theme modes, #188 a11y, #187 offline caching+storage UI, #184 audio/PDF/MIDI/MusicXML media, #186 Universal-Links deep-link routing + sharing + Handoff, #185 nav/UX consolidation, #189 consent-gated analytics (no-ATT), #190 onboarding+help/legal/acknowledgements (333 tests, 0 lint, macOS BUILD SUCCEEDED) + backend #1401/#1402/#1403. **★★ PHASE 1 + THE #1438–#1450 BACKLOG + THE PHASE-1 REVIEW GATE + ALL ACTIONABLE FOLLOW-UPS ARE COMPLETE** (all client #180–#190/#1412 + backend #1401/#1402/#1403/#1448 + 12 backlog + review-gate fixes + follow-ups #1451/#1452/#1453/#1454/#1455/#1457/#1460; **488 tests, 0 lint, macOS BUILD SUCCEEDED**; all local/unpushed/no-PR; 44 commits ahead of alpha, 61 platform-apple issues closed). NEXT = OWNER decisions only, nothing left to autonomously build: (1) **deploy/promote** the backend-for-apple PHP (#1401/#1402/#1403/#1448/#1452/#1453) to live docroots; (2) **owner provisioning** (SIWA Key ID+`.p8`, OpenDyslexic OTF, real Team ID, App-Store-Connect + CarPlay long-leads per `apple-native-owner-runbook.md`); (3) **on-device/simulator testing** (#1458; local CoreSimulator is Xcode-26.6-skewed); (4) **owner-decision follow-ups** #1456 (server stats — conflicts with anonymous-analytics privacy model), #1459 (review residuals), #1461 (web `/compare` route needs a web comparison feature first); (5) full Wiki/README/CHANGELOG sync at promotion time. Then the Phase-1 dev-team-review gate. Verify each via swift build/test + `xcodebuild -sdk macosx` (simulator can't run locally — CoreSimulator is a point-release behind; macOS build is the proof)."**
 
 ## 🆕 2026-08-03 — #1752 catalogue-expansion decode/render (on `claude/wave3-fixes`, NOT `feat/apple-universal`)
@@ -121,6 +176,14 @@ That single instruction is enough — everything else it needs is in this file +
 - Docs sweep (Wiki + DEV_NOTES/LICENSING/Project_plan/PROJECT_STATUS/README/SECURITY + .claude/) = P4 final task.
 
 ## NEXT ACTION (when owner approves)
+
+> ⚠️ **SUPERSEDED — do not do any of this (noted 2026-09-07).** All five steps are done. The branch in
+> step 1 was created, used and deleted; the XcodeGen project in step 3 exists and builds green in CI; the
+> quality gates, `IHModels`, the contract fixtures, the `IHAPI` actor and the end-to-end slice in steps 4
+> and 5 are all shipped. Following this list would recreate roughly 69,500 lines of existing code.
+> The real next actions are **#2100** (there is no app icon) then **#2101** (the deploy pipeline is
+> switched off) — in that order. Kept verbatim so the drift stays visible.
+
 Execute **First 5 actions** from strategy §3.6:
 1. Cut `feat/apple-universal`; "Apple v1.0" milestone + labels; create Phase-0 issues; update #895/#180–#190/#1104/#1115.
 2. Owner portal runbook FIRST (App ID capabilities §3.1.2 + CarPlay application + GitHub-secrets web-UI names).

@@ -96,7 +96,10 @@ Token in **Keychain only** (`kSecClassGenericPassword`, service `app.ihymns.toke
 - **Native = catalogue consumer + live-worship operator. Curation stays web** (`/manage/*` out of native scope).
 - **iPhone/iPad/Mac/visionOS = full editors** of user content (favourites, setlists, requests, live control). **tvOS = display/projector + browse. watchOS = glance + remote.** Neither TV nor Watch presents a full text-entry editor (HIG-correct, keeps thin shells thin).
 
-### 2.1 Feature-parity matrix (● Full · ◐ Reduced · — N/A)
+### 2.1 Feature-parity matrix (● Full · ◐ Reduced · ○ **not built** · — N/A)
+
+*(The ○ symbol and the ⚠️ row markers were added on 2026-09-07 — see the correction
+note below the table. Everything else is the original 2026-07-04 plan.)*
 | Capability | iPhone | iPad | Mac | tvOS | watch | vision | Native treatment |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|---|
 | Search text / number | ● | ● | ● | ◐ | ◐ | ● | `.searchable`/⌘K/Siri dictation; watch dictation+scribble |
@@ -108,20 +111,53 @@ Token in **Keychain only** (`kSecClassGenericPassword`, service `app.ihymns.toke
 | Song of the Day (hemisphere+country) | ● | ● | ● | ● | ● | ● | Home hero + widget/complication/Top Shelf |
 | Favourites (synced) | ● | ● | ● | ◐ | ◐ | ● | `favorites_sync` + offline queue |
 | Setlists create/reorder/tag | ● | ● | ● | — | ◐ | ● | Drag-reorder (iPad drag-drop, Mac reorder); watch=viewer/tick-off |
-| Setlists LIVE-share/schedule/templates | ● | ● | ● | ◐ | ◐ | ● | Share sheet w/ canonical URL; schedule→Smart Stack relevance |
-| Offline save (songs+audio) | ● | ● | ● | ◐ | ◐ | ● | GRDB+FTS5 + audio cache; tvOS cache-only (purgeable); watch=fav lyrics |
+| ⚠️ Setlists LIVE-share/~~schedule/templates~~ | ● | ● | ● | ◐ | ◐ | ● | Share sheet w/ canonical URL; schedule→Smart Stack relevance |
+| ⚠️ Offline save (songs+audio) | ● | ● | ● | ◐ | ◐ | ● | GRDB+FTS5 + audio cache; tvOS cache-only (purgeable); watch=fav lyrics |
 | Audio MP3 · MIDI | ● | ● | ● | ●/◐ | ◐/— | ● | AVPlayer+NowPlaying/AirPlay; AVMIDIPlayer |
 | PDF sheet · MusicXML | ● | ● | ● | — | — | ●/◐ | PDFKit+QuickLook (no PDFKit on tvOS/watch); MusicXML=download/share |
 | Themes light/dark/high-contrast/CVD | ● | ● | ● | ● | ◐ | ● | System appearance + Increase Contrast; CVD accent = in-app setting |
-| i18n language/script/region | ● | ● | ● | ◐ | ◐ | ● | Native pickers; tvOS/watch inherit account pref |
+| ⚠️ i18n language/script/region — **NOT BUILT** | ○ | ○ | ○ | ○ | ○ | ○ | Native pickers; tvOS/watch inherit account pref |
 | Live Follow #1268 (host+join) | ● | ● | ● | ◐ | ◐ | ● | `LiveFollowEngine`; tvOS joins as display; watch=glance+remote |
 | Service Mode #1335 (operator/congregant/projector) | ● | ● | ● | ● | ◐ | ● | tvOS=projector; phone/iPad/Mac/vision=operator/congregant; watch=remote |
-| Content gating/tiers (dormant) | ● | ● | ● | ● | ● | ● | Render locked states from `access_tiers` caps; **no client enforcement**; no-op like web |
-| Song requests | ● | ● | ● | — | — | ● | Native form + "My requests" |
+| ⚠️ Content gating/tiers (dormant) — **NOT BUILT** | ○ | ○ | ○ | ○ | ○ | ○ | Render locked states from `access_tiers` caps; **no client enforcement**; no-op like web |
+| ⚠️ Song requests (form yes, "My requests" no) | ◐ | ◐ | ◐ | — | — | ◐ | Native form + "My requests" |
 | Share cards / deep links | ● | ● | ● | ◐ | ◐ | ● | Universal Links on canonical URLs |
 | Help / legal / first-run | ● | ● | ● | ◐ | ◐ | ● | TipKit coach marks + in-app manual (#9) |
 
+> ## ⚠️ THIS MATRIX IS THE PLAN, NOT THE BUILD — corrected 2026-09-07
+>
+> Read every ● above as **"intended"**, not "shipped". The matrix was written before any code existed
+> and has never been re-checked against the tree. On 2026-09-07 it was, and six rows are wrong. They
+> are marked ⚠️ in the table itself; the detail is here.
+>
+> | Row | Matrix claims | Actually in the code |
+> |---|---|---|
+> | **Content gating / tiers** | ● Full on all six platforms — "Render locked states from `access_tiers` caps". | **Nothing.** A case-insensitive search of all 451 Swift files for `accessTier`, `access_tiers`, `tier_check`, `canViewLyrics`, `canPlayAudio`, `requiresCcli`, `contentGating` returns only the word "licence" in the open-source acknowledgements screen. The app has never called `?action=access_tiers`. Tracked as **#2103**. |
+> | **i18n language / script / region** | ● Full — "Native pickers". | **No translation infrastructure at all** — no `.xcstrings`, no `.lproj`, no `String(localized:)` anywhere. Every string is hard-coded English. There is also no language-preference code (`preferredLanguage` / `X-Preferred-Languages` → zero files), so the server's per-user language filtering is never requested. |
+> | **watchOS column** (search ◐, song display ◐, favourites ◐, setlists ◐, offline save ◐) | A companion that browses, shows favourites and ticks off a set list. | **The watch app is a live-service remote and nothing else.** `IHFeatures/WatchRelay/WatchRootView.swift` renders `WatchRemoteView` alone — no browsing, no favourites, no lyrics, no set lists, no complications. Tracked as **#1418**. |
+> | **Setlists LIVE-share / schedule / templates** | ● Full. | Sharing works. **Schedule and templates do not exist** — no Swift file mentions `setlist_schedule` or `setlist_template`. Nor collaborators (`setlist_collab`), nor listing/revoking share links (`setlist_share_list` / `setlist_share_revoke`). |
+> | **Song requests** | ● — "Native form + **'My requests'**". | The form exists (`SongRequestView.swift` → `?action=song_request`). **"My requests" does not** — nothing calls `my_song_requests`. |
+> | **Offline save (songs+audio)** | ● Full — "GRDB+FTS5 + audio cache". | Saving works, and the audio cache works with proper ETag revalidation. **But nothing reads the cached song list back**, so with no network the catalogue screen shows an error rather than the songs already on the device — and search fails with it. Tracked as **#2102**. |
+>
+> Rows that *are* accurate as built, for balance: search, song display with all component types, chords,
+> per-line translations, metadata and credits, songbooks browse with the unofficial badge, Song of the
+> Day, favourites sync, set list create/reorder, audio and MIDI, PDF sheet music, themes including
+> high-contrast and colour-vision modes, Live Follow, Service Mode with the tvOS projector, share cards
+> and deep links, and help/legal/first-run. Those are real and wired.
+>
+> **The lesson worth keeping:** a planning matrix that is never re-checked reads exactly like a status
+> report, and this one was being cited as evidence of completeness. If a row here is ever used to
+> answer "is that done?", verify it in the tree first.
+
+
 **Takeaway:** iPhone/iPad/Mac/visionOS = 100% parity floor. tvOS drops editing/requests/PDF/full-i18n, gains the projector role. watchOS = companion (glance/favourites/setlist tick-off/live remote).
+
+> ⚠️ **Corrected 2026-09-07:** the watchOS half of that sentence is not what was built. There is no
+> glance, no favourites, no set list tick-off — the watch app is the **live remote only**
+> (`IHFeatures/WatchRelay/WatchRootView.swift` renders `WatchRemoteView` and nothing else). This
+> matters beyond accuracy: an App Store listing that describes a watch companion, backed by an app
+> that only works during a live service, is the kind of mismatch that earns one-star reviews. Either
+> build the browsing half (#1418) or describe the watch app honestly for version one.
 
 ### 2.2 Per-platform UX blueprint (signature surfaces on top of the shared IHFeatures)
 - **iPhone** — Liquid Glass `TabView` (Home·Songbooks·Setlists·Live·Search). Home=SOTD hero + resume + live banner + favourites shelf. Song=full-bleed lyrics + floating glass toolbar. Swipe adjacent songs; pinch lyric type; long-press line→enrichment; haptics on join/broadcast song-change. **Dynamic Island + Live Activity** (now-singing; host gets Next/Prev as App-Intent buttons). StandBy/Lock widgets. Action Button/Control Center = "Join live service".

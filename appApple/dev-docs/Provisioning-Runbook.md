@@ -296,22 +296,69 @@ Apple's key-creation screen lets you tick **multiple services on one key** (Sign
 
 > **Added 2026-07-10. Tracking issue: #1474.** A grounded readiness assessment of the repo as it stands, so we know exactly what gates a TestFlight upload vs an App Store submission. **DONE** = in the repo/working. **OWNER** = your Apple-portal / App-Store-Connect / GitHub-secret action. **CODE** = a source change we must make first. Every claim is anchored to a file.
 
+> ## ⛔ CORRECTION — 2026-09-07 — the status claims in this section are out of date
+>
+> **§2's *procedures* are still accurate and still worth following** — the Apple-portal steps, the
+> certificate and API-key creation, the TestFlight walkthrough and the simulator instructions have not
+> changed. **What is out of date is every claim about what is done and what is blocking.**
+>
+> Re-checked on 2026-09-07 by reading the tree, querying GitHub and probing the live site. The original
+> text below is left in place and flagged rather than reworded, so the drift stays visible. Tracked
+> under epic **#2105**.
+>
+> | # | This section says | Actually true on 2026-09-07 |
+> |---|---|---|
+> | 1 | §2.1, headed "**⛔ The remaining cross-cutting blocker**": the Apple backend is on `alpha` only, "**NOT on `beta` or `main`/production**", so sign-in, sync and deletion "silently fail on any TestFlight/App-Store build today". | **Resolved.** `auth_apple`, `account_delete`, `analytics_ingest`, `apns_register` and `access_tiers` are all present in `api.php` on `origin/main` and `origin/beta`, and production answers: `curl https://ihymns.app/api?action=app_status` → HTTP 200. |
+> | 2 | §2.1 step 1 and §2.3.A.2: production and `beta.` serve a stale static AASA with `"appID": "TEAMID.ltd.mwbmpartners.ihymns"`, and Apple's own cache is stale too. | **Resolved, including Apple's cache.** `dev.`, `beta.`, `ihymns.app`, `www.ihymns.app` **and** `app-site-association.cdn-apple.com/a/v1/ihymns.app` all return HTTP 200 with `"appID": "Y5XK559SV9.app.ihymns"`. |
+> | 3 | §2.1's "✅ RESOLVED — in-app account deletion". | **Still correct** — re-verified. `AccountView.swift:53-55` presents `AccountDeleteView`; `SessionController.swift:343-348` calls `apiClient.accountDelete`. (Noted only because issue #1474's own body still lists it as a blocker; this file was right and the issue was not.) |
+> | 4 | §2.0: "**514** Swift-Testing `@Test`s" (also §2.4 and §2.6). | **1,067 tests across 156 suites.** `grep -rhoE '^\s*@Test' appApple/Packages/iHymnsKit/Tests/ \| wc -l` |
+> | 5 | §2.0: "Apple `MARKETING_VERSION = 0.1.0`". | **`MARKETING_VERSION = 1.0.0`** (`appApple/Config/Versioning.xcconfig`). |
+> | 6 | §2.0: "**Deploy pipeline** ✅ `push alpha → TestFlight INTERNAL` …" and §2.2's verdict "the *pipeline* is ready". | **The pipeline is switched OFF.** The repository variable `APPLE_DEPLOY_ENABLED` is unset, so the build-and-upload job is **skipped on every run** — while the run still shows a **green tick**, because only the guard job runs. The nine signing secrets are absent at repository level. The one real archive attempt (2026-07-10) failed with `No Accounts` and `No profiles for 'app.ihymns' were found`. ⚠️ Organisation-level secrets could **not** be checked (`HTTP 403: You must be an org admin`) — confirm, do not assume. See **#2101**. |
+> | 7 | Nowhere in this file. | **⛔ There is no app icon.** Not one image file exists anywhere under `appApple/`; no asset catalogue in any app target; no `ASSETCATALOG_COMPILER_APPICON_NAME` set; nothing hidden by `.gitignore`. App Store Connect refuses an upload without one, and tvOS additionally needs a **layered** icon and a **Top Shelf** banner. **This is now the hardest blocker to a first TestFlight build**, and it appeared in no document before 2026-09-07. See **#2100**. |
+> | 8 | §2.3.B.4: "App Store metadata + screenshots". | **Still genuinely outstanding.** `ls appApple/fastlane/` → `Appfile`, `Fastfile`. No `metadata/` directory. |
+>
+> ### The blocker list, corrected
+>
+> | Item | Status |
+> |---|---|
+> | Backend live on production | ✅ done |
+> | AASA body on production + Apple's cache | ✅ done |
+> | In-app account deletion (App Review 5.1.1(v)) | ✅ done |
+> | Export compliance declared | ✅ done (`project.yml` lines 108 and 260) |
+> | **App icon** | ⛔ **#2100** — hardest blocker, was recorded nowhere |
+> | **Deploy switch + signing secrets** | ⛔ **#2101** — pipeline built but switched off |
+> | App Store metadata + screenshots | ⛔ still outstanding |
+>
+> **Order matters:** fix the icon before turning the deploy switch on, or the first upload is rejected.
+>
+> Two decisions are also still genuinely open and worth an explicit answer before submission: the
+> **minimum operating system of 26.0** on every platform (only devices on OS 26 or later can install
+> the app — a much smaller audience than the website reaches), and the **Universal Purchase** platform
+> toggles.
+
 ## 2.0 What's already built (facts)
 
 | Area | State | Where |
 |------|-------|-------|
-| **CI (build+test, no signing)** | ✅ SwiftLint + `swift test` (**514** Swift-Testing `@Test`s, up from 495 — #1478 added 5 test files for account deletion) + LOC/no-secrets/**privacy-manifest** guards + macOS build | `.github/workflows/apple.yml` |
-| **Deploy pipeline** | ✅ `push alpha → TestFlight INTERNAL`, `push beta → TestFlight EXTERNAL`, `push main → App Store` | `.github/workflows/apple-deploy.yml` |
+| **CI (build+test, no signing)** | ✅ SwiftLint + `swift test` (~~**514**~~ → **1,067** Swift-Testing `@Test`s across 156 suites, corrected 2026-09-07) + LOC/no-secrets/**privacy-manifest** guards + macOS build | `.github/workflows/apple.yml` |
+| **Deploy pipeline** | ⚠️ **Written, but SWITCHED OFF** (corrected 2026-09-07) — `APPLE_DEPLOY_ENABLED` is unset so the build-and-upload job is skipped on every run, while the run still shows a green tick. See #2101. Mapping when enabled: `push alpha → TestFlight INTERNAL`, `push beta → TestFlight EXTERNAL`, `push main → App Store` | `.github/workflows/apple-deploy.yml` |
 | **Fastlane lanes** | ✅ `test` / `alpha` / `beta` / `release` — `build_app` (gym) → `upload_to_testflight` (pilot) / `upload_to_app_store` (deliver); **manual signing** (no `match`); ASC API-key auth | `appApple/fastlane/Fastfile` |
 | **Binaries uploaded** | ✅ **iOS** (with embedded **Watch** + **Widgets**) + **tvOS** `.ipa` | Fastfile `prepare_signed_archives` |
 | **App targets** | ✅ `iHymns` (iOS), `iHymnsTV`, `iHymnsWatch`, `iHymnsWidgets` — each a 1-file `@main` shell over the `iHymnsKit` package (correct thin-shell design). **No separate macOS/visionOS native targets** — those ship via **Universal-Purchase compatibility** ("Designed for iPad" running on Apple-Silicon Mac / visionOS). | `appApple/Apps/*` |
-| **Version** | Apple `MARKETING_VERSION = 0.1.0`, `CURRENT_PROJECT_VERSION = 202607070001` (UTC-timestamp build no.) — separate from the web app's `0.2750.0` | `appApple/Config/Versioning.xcconfig` |
+| **Version** | Apple `MARKETING_VERSION` is **`1.0.0`** (corrected 2026-09-07 — this row used to say `0.1.0`), `CURRENT_PROJECT_VERSION = 202607070001` (UTC-timestamp build no.) — separate from the web app's `0.2750.0` | `appApple/Config/Versioning.xcconfig` |
 | **Deployment target** | ⚠️ **26.0** on every platform (iOS/macOS/tvOS/watchOS/visionOS) | `appApple/Config/Shared.xcconfig` |
 | **Privacy manifests** | ✅ per target (`iHymns`/`TV`/`Watch`/`Widgets`) | `appApple/Apps/*/Sources/PrivacyInfo.xcprivacy` |
 | **IAP / StoreKit** | ✅ none — **free app** (paid tiers are future #1434/#1411) | (no `import StoreKit`) |
 | **App API environment** | `defaultForBuild`: `#if DEBUG → dev`, else (**Release = TestFlight + App Store**) **→ `prod` (`ihymns.app`)** | `iHymnsKit/Sources/IHAPI/APIEnvironment.swift` |
 
 ## 2.1 ⛔ The remaining cross-cutting blocker (read first)
+
+> ⚠️ **RESOLVED — this whole section is out of date (2026-09-07).** The backend IS on `beta` and
+> `main` and live in production, and every AASA — including Apple's own cache — now serves the real
+> `Y5XK559SV9.app.ihymns`. The *procedure* below (curl the body, not the status code) is still the
+> right way to check, and is worth re-running after any future promotion. But the finding it
+> describes no longer holds. The real remaining blockers are #2100 (no app icon) and #2101 (the
+> deploy pipeline is switched off). Kept verbatim so the drift stays visible.
 
 **The fact:** the app's backend is only on `alpha` (→ `dev.ihymns.app`). `auth_apple`, `account_delete`, `analytics_ingest` and the AASA responder merged to **alpha** (#1464) but are **NOT on `beta` or `main`/production**. A **Release build points at `prod` (`ihymns.app`)** — which lacks those endpoints — so **Sign in with Apple, account-sync and account-deletion silently fail on any TestFlight/App-Store build today.**
 
@@ -392,6 +439,11 @@ Everything in §2.2, **plus**:
 
 ### A. Remaining blockers — still true, don't mark these done
 
+> ⚠️ **Both items below are now DONE (2026-09-07)** — despite the heading's instruction, which was
+> correct when written. Item 1 (backend on production) and item 2 (AASA body on production) were both
+> verified resolved by direct probe. What replaced them: **#2100** (no app icon) and **#2101** (deploy
+> switch off). The genuinely outstanding App-Store item is §2.3.B's metadata and screenshots.
+
 1. ⛔ **Backend live on production `ihymns.app`** (blocker #1, §2.1) — required or SIWA/sync/delete fail for real users. Verify with the same curl-the-body pattern as §2.1 step 1, against `https://ihymns.app`.
 2. ⛔ **AASA on production must show the REAL appID in the BODY — a `200` status alone is not enough.** ⚠️ **Correction (verified 2026-07-10):** the earlier "301 on all envs" finding (2026-07-08) is stale — `ihymns.app`, `www.ihymns.app`, and `beta.ihymns.app` all now return `200 application/json`. But their **body** still shows `"appID": "TEAMID.ltd.mwbmpartners.ihymns"` — a **stale legacy static AASA file** (placeholder Team ID + old bundle id) that predates the #1401 responder; `last-modified` on those three is **2026-06-26**, well before the #1464 merge. Only **`dev.ihymns.app`** serves the real responder today (`"appID": "Y5XK559SV9.app.ihymns"`). **Verify with the body, not the status:**
    ```
@@ -449,7 +501,7 @@ There is **no `appApple/fastlane/metadata/` committed** — every field below is
 | Test | Simulator | Needs real signed device / TestFlight |
 |------|-----------|----------------------------------------|
 | UI / navigation / layout, Dynamic Type, dark mode, each platform's shell | ✅ run each target's scheme in its Simulator | — |
-| Unit / package tests (the 514 `@Test`s) | ✅ `swift test` / Xcode test action (macOS host) | — |
+| Unit / package tests (**1,067** `@Test`s — corrected 2026-09-07) | ✅ `swift test` / Xcode test action (macOS host) | — |
 | Instruments profiling (memory, hangs, energy) | ✅ (approximate — Sim uses the Mac CPU/GPU, **not** representative of device perf) | ✅ real device for true perf/energy |
 | **Sign in with Apple (native)** | **N/A today** — no native SIWA button exists yet (backend-only, #1402); native sign-in is Password/Email-Code and *is* testable in Simulator | — |
 | **Universal Links** (`applinks:ihymns.app`) + Handoff | ❌ associated-domains behave differently in Sim | ✅ real device + AASA body showing the correct `appID` (not just a `200` — see §2.3.A.2) |
@@ -608,6 +660,13 @@ So a realistic pre-launch sequence is:
 
 ## 2.6 Readiness checklist
 
+> ⚠️ **The status paragraph below is out of date (corrected 2026-09-07).** The backend-to-production
+> promotion it names as blocking is **done**, and so is the AASA `appID` on `beta.` and production
+> (Apple's own cache included) — so the "both currently return 200 but with the WRONG legacy appID"
+> warning no longer applies. The test count is now **1,067**, not 514. What genuinely remains: the
+> **app icon** (#2100), the **deploy switch and signing secrets** (#2101), and **App Store metadata
+> and screenshots**. Kept verbatim so the drift stays visible.
+>
 > **Status (2026-07-10):** dev-side is done — in-app **account deletion ✅ (#1478)**, **export compliance ✅ declared** (`ITSAppUsesNonExemptEncryption`, `iHymns`+`iHymnsTV`), the native app builds with 514 tests green, and web SIWA + the CSP entry shipped. The unticked items below are **owner actions** (Apple-portal provisioning + App Store metadata/screenshots — full click-by-click steps are §2.2/§2.3 above) and the **backend-to-production promotion** (blocker #1, §2.1) — which also gates the AASA showing the correct `appID` on `beta.`/production (§2.3.A.2; both currently return `200` but with the WRONG legacy appID, so a bare-200 check would false-green them).
 
 **TestFlight (internal) — minimum to first upload:**
