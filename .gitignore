@@ -24,8 +24,21 @@ Icon?
 Network Trash Folder
 Temporary Items
 .apdisk
-_temp/*
-_temp/_ProPresenter Sample Files/*
+# Local developer scratch. `_temp/` holds the owner's own ProPresenter exports,
+# which carry copyrighted worship lyrics and must never be committed — the
+# committed test fixtures are LYRIC-SANITISED derivatives produced from them by
+# tools/pp7-sanitise-fixture.js (see tests/fixtures/propresenter/README.md).
+#
+# The trailing slash makes this recursive, unlike the `_temp/*` it replaces:
+# that older pair of rules only covered direct children and one named
+# sub-folder, so a new sub-folder was never ignored at all.
+#
+# ⚠️ A rule here does NOT untrack a file git is already following. Twelve of
+# these were committed before the rules existed and stayed tracked for months
+# despite them. If you add a path here, also run `git rm --cached <path>`.
+# tests/test-no-tracked-scratch.js fails the build if anything under _temp/ is
+# tracked again, because this comment on its own already failed to prevent it.
+_temp/
 
 # ----------------------------------------------------------------------------
 # Windows
@@ -305,6 +318,71 @@ SourceSongData/*
 # Legacy SQLite copy of the user DB (holds password hashes — must never land
 # in the repo; recover from git history if a deployment hasn't migrated).
 SQLite/
+
+# ----------------------------------------------------------------------------
+# Files that ARE tracked on purpose even though a broader rule above would
+# otherwise hide them (found while building tests/test-no-tracked-scratch.js)
+#
+# ELI5: a few small placeholder files live inside folders we tell git to
+# mostly ignore. The empty `.gitkeep` files just hold a folder's shape in
+# git (git does not track empty folders at all); the `.htaccess` files stop
+# a web server from listing or serving that folder's contents. Both were
+# committed once, on purpose, before the broader rule existed — and, same
+# as the story at the top of this file, adding a rule afterwards does not
+# untrack a file git is already following. The difference here is that
+# that is exactly what was wanted, so it is written down below instead of
+# being an accident nobody explained.
+#
+# Detail: `appWeb/data_share/*` (added for the DB-direct rewrite so the
+# regenerated song/setlist data isn't committed) and `SQLite/` (added so the
+# legacy password-hash copy is never committed) both also match these
+# scaffolding files as an unintended side effect of being broad, directory-
+# wide patterns. A negation on the FILE alone is not enough here — git's own
+# rule is "it is not possible to re-include a file if a parent directory of
+# that file is excluded" (see `git help gitignore`), and `SQLite/` and the
+# `*` in `appWeb/data_share/*` both exclude the FOLDER as a whole, not just
+# its contents. So each folder is re-opened (`!folder/`) and then
+# immediately re-closed one level down (`folder/*`) before naming the one
+# or two files that should stay tracked — NEVER just `!folder/` on its own,
+# because on `SQLite/` in particular that would blank-check the very folder
+# `data_health_admin.php` writes the real password-hash-bearing
+# `ihymns.db` into, undoing the whole reason that rule exists. With the
+# `folder/*` re-close in place, only the named files are exempt — anything
+# else dropped into these folders (a stray export, a real ihymns.db) is
+# still ignored exactly as before.
+!appWeb/data_share/.htaccess
+!appWeb/data_share/SQLite/
+appWeb/data_share/SQLite/*
+!appWeb/data_share/SQLite/.gitkeep
+!appWeb/data_share/SQLite/.htaccess
+!appWeb/data_share/setlist_json/
+appWeb/data_share/setlist_json/*
+!appWeb/data_share/setlist_json/.gitkeep
+!appWeb/data_share/setlist_json/.htaccess
+!appWeb/data_share/song_data/
+appWeb/data_share/song_data/*
+!appWeb/data_share/song_data/.gitkeep
+!appWeb/data_share/song_data/.htaccess
+
+# The vendored mPDF engine (rule #39 — vendored under appWeb/private_html/lib/
+# outside every web docroot, committed wholesale because shared hosting has
+# no Composer step at deploy time) ships its OWN `tmp/` folder (mPDF's
+# working-file cache, upstream's placeholder to keep it present) and its
+# `paragonie/random_compat` dependency ships its OWN `dist/` folder (signing
+# keys for that package's release, nothing to do with OUR build output).
+# Those folder names collide with this project's generic "ignore build/cache
+# output named tmp/ or dist/" rules above, purely by coincidence of naming.
+# Same open-then-reclose shape as above: mPDF actually WRITES working files
+# into its `tmp/` folder at runtime, so a bare `!tmp/` would start tracking
+# whatever it drops there next time someone runs `git add`. Re-closing with
+# `tmp/*` keeps that safe and exempts only the one placeholder file it ships.
+!appWeb/private_html/lib/pdf/vendor/mpdf/mpdf/tmp/
+appWeb/private_html/lib/pdf/vendor/mpdf/mpdf/tmp/*
+!appWeb/private_html/lib/pdf/vendor/mpdf/mpdf/tmp/.gitignore
+!appWeb/private_html/lib/pdf/vendor/paragonie/random_compat/dist/
+appWeb/private_html/lib/pdf/vendor/paragonie/random_compat/dist/*
+!appWeb/private_html/lib/pdf/vendor/paragonie/random_compat/dist/random_compat.phar.pubkey
+!appWeb/private_html/lib/pdf/vendor/paragonie/random_compat/dist/random_compat.phar.pubkey.asc
 
 # ----------------------------------------------------------------------------
 # Vendor libraries — generated by tools/download-vendor.sh (#354 / #526)
