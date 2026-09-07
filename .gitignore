@@ -24,7 +24,8 @@ Icon?
 Network Trash Folder
 Temporary Items
 .apdisk
-_temp/
+_temp/*
+_temp/_ProPresenter Sample Files/*
 
 # ----------------------------------------------------------------------------
 # Windows
