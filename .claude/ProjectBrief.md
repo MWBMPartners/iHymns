@@ -1,6 +1,88 @@
 # 📋 iHymns — Project Brief
 
-## 📌 Current state — 2026-09-05 (singing parts, echoes and rounds shipped; v1.3.0)
+## 📌 Current state — 2026-09-07 (repository hygiene, a public-exposure finding, Apple work next)
+
+**Working branch `fix/untrack-temp-copyrighted-samples`, two commits, not yet pushed.**
+
+### The finding that matters most
+
+**This repository is public.** No forks, no stars, so real-world exposure is small — but three
+things that should not have been readable were:
+
+1. Seventeen ProPresenter sample files under `_temp/`, including commercially published worship
+   songs. Untracked in `cea84808`. **Twelve are still live on `alpha`** until that branch merges.
+2. `appWeb/.sql/.fulldata/ihymns-full.sql` — the full lyrics of about 3,500 songs, roughly 1,300
+   carrying a copyright statement naming publishers such as Thankyou Music and Integrity Music.
+   Untracked in `f3eba1cd`.
+3. The global-admin password hash, in the old SQLite database. Gone from the current files since
+   5 June 2026 but **still in history**. The owner has already changed that password.
+
+Untracking removes a file going forward. It does **not** remove it from history. Doing that means
+rewriting every commit identifier in the project, which would break the commit links quoted in 322
+open issues, every handoff, and several rules in `CLAUDE.md`. **Owner decision outstanding: make the
+repository private (free, instant, complete) or keep it public and pay for a history rewrite.**
+Tracked as #2096.
+
+### What the dump investigation found
+
+`ihymns-full.sql` served no purpose at all, which was checked rather than assumed — the two test
+files that mention it were run with the file genuinely absent and both still passed. It was also
+three months stale and actively harmful: it creates 80 tables against a current schema of 166 and
+contains no `tblLyricLines`, so anyone following the one-shot install notes in `README.md` and
+`DEV_NOTES.md` got a database that could not store a single lyric. Those notes are removed. It
+cannot be regenerated — the generator was deliberately disabled, then deleted, and its input data
+is gone too.
+
+A false note in `orphan-allowlist.php` claiming catalogue rows "ship only in" that file (they never
+did — it held zero such rows) is most likely why a 6.9 MB file looked load-bearing for months. Fixed
+there and in the two `.claude/` documents that repeated it. `LICENSING.md`'s claim that the triage
+"kept every copyrighted sample out of the repo" is corrected in place rather than quietly reworded.
+
+### Session transcripts: 162 MB that could never have worked
+
+Twelve raw conversation logs were committed so a developer on another machine could resume a
+session. That was mechanically impossible: Claude Code looks for a conversation in a folder named
+after **the full path of the project on that machine**, so a log inside the repository is by
+definition in the wrong place — and `sync-claude-session.sh` only ever copied one way. The logs are
+now ignored and untracked (local copies kept). The script is two-way: `--restore` puts a log where
+Claude Code on the current machine will genuinely find it, working the folder out from the
+repository's own location. What actually carries work forward is the 224 KB of hand-written
+`<date>-HANDOFF.md` notes, which stay.
+
+### Issue tracker reconciled against real code
+
+Twenty-two issues checked line by line against `origin/alpha` rather than against commit messages.
+Eight confirmed finished and closed with evidence; #2077 closed with a correction (its guard landed
+under #2078's pull request, and an earlier comment saying otherwise was stale). #2078 deliberately
+kept open — the code is right but the migration card has not been run on the shared database, so
+the drift is still there in reality.
+
+**Live production defect found:** `https://www.ihymns.app/sitemap.xml` still returns the old flat
+format with today's date stamped on every URL — the exact bug #2023 describes. The fix is complete
+and its guard passes 104 checks, but it is sitting on `alpha` and has never been promoted.
+
+### Also this session
+
+- **Rule #51** added: per-line song data is kept with a line by its identity, never its position.
+  That one mistake was found three separate times in a single day.
+- **Plain-English rule now recorded in six places** (`CLAUDE.md`, `AGENTS.md`,
+  `project-rules.md` §22, `standing-directives.md` §11, and two machine-wide files), because the
+  owner has had to ask three times.
+- **All free GitHub security features enabled and verified**: secret scanning, push protection,
+  non-provider patterns, validity checks, AI detection, Dependabot security updates.
+- **A test-runner defect found that explains a lot of bad reporting.** `tools/run-php-tests.php`
+  line 96 keeps only one of the two output streams, so roughly 198 of 279 test files have their
+  `FAIL:` lines silently thrown away. Being fixed. Until it lands, judge the PHP suite by its exit
+  code, not by reading the log.
+- **Swagger UI was wrongly reported as missing.** It has existed for some time at
+  `/manage/api-docs`, pinned to 5.32.11 with integrity hashes and a local fallback fetched at
+  deploy. It works on shared hosting because it is only PHP and static files.
+
+Full record: `.claude/sessions/2026-09-07-HANDOFF.md`.
+
+---
+
+## 📌 Previous state — 2026-09-05 (singing parts, echoes and rounds shipped; v1.3.0)
 
 **Merged to alpha as `8219f456` (PR #2088, 37 commits) and deployed.**
 
