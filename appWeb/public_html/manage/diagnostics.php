@@ -245,6 +245,14 @@ $DIAGNOSTICS_PRESETS = [
      *
      * All four are counts and column shapes only: no lyric text, no names,
      * no keys. Safe to run on production and safe to paste into a ticket.
+     *
+     * @lyrics-version-exempt: (#2076) these are SQL TEXT handed to an admin to
+     * run by hand, not PHP that resolves a lyrics version for the app. The
+     * shared resolver picks THE ONE version a reader should see; these queries
+     * deliberately count ACROSS versions — one of them exists precisely to
+     * measure how many songs have more than one, which is the condition the
+     * resolver bug turned on. Calling the resolver here would defeat the
+     * question being asked.
      * ------------------------------------------------------------------ */
     'Forensics — corpus + known-bug counts' =>
         "SELECT\n"
