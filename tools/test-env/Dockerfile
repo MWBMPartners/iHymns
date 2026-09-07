@@ -43,6 +43,25 @@
 FROM php:8.3-cli
 
 # The database extensions the application code expects to be present.
+# The "intl" extension handles text in scripts other than English — Greek,
+# Korean, Chinese — and accented letters. Four test files check that a song
+# title in one of those scripts is still searchable and still matches its
+# duplicates. Without this extension PHP has no Normalizer class, the app
+# quietly falls back to a weaker method, and those four tests fail.
+#
+# They were being written off as "known failures". They were not: the tests were
+# right and this image was missing a piece. GitHub's own test machines install
+# this extension by default, so leaving it out here meant a developer's results
+# and the results that gate a merge disagreed with each other, which is the
+# worst possible arrangement.
+#
+# It needs the ICU development library, which is why there is an apt-get step
+# before it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libicu-dev \
+    && docker-php-ext-install intl \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN docker-php-ext-install mysqli pdo_mysql
 
 # Node and npm, from Debian's own packages — no version pinning needed, since
