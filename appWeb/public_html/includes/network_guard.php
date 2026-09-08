@@ -199,6 +199,60 @@ function _ihymnsIpv4MappedToDotted(string $ip): ?string
 }
 
 /**
+ * The two address ranges PHP's own filter does not refuse, but we must (#2111).
+ *
+ * ELI5: PHP has a built-in way of asking "is this a private address?", and we use
+ * it. But it was written before two kinds of address became reserved, so it still
+ * answers "that one is fine" for both. This function covers those two, and nothing
+ * else — everything else is left to the built-in check.
+ *
+ * The two, and why each matters:
+ *
+ *   100.64.0.0/10 — "carrier-grade NAT" (RFC 6598). Internet providers and several
+ *     hosting companies use these addresses for their own internal plumbing. They
+ *     look like ordinary public addresses to PHP's filter, which predates the
+ *     standard, so a request aimed at one would sail straight through. That is the
+ *     same class of mistake as letting a request reach 169.254.169.254, which is
+ *     how servers get talked into handing over their own cloud credentials.
+ *
+ *   224.0.0.0/4 — multicast. Not somewhere a normal web request should ever go, and
+ *     on some networks reaching it has side effects.
+ *
+ * HOW THIS WAS FOUND, because it is worth recording: includes/webhooks.php had
+ * grown its OWN copy of this check, which rule #49 forbids. Before replacing that
+ * copy with this shared one, both were run against the same list of addresses — and
+ * the supposedly-authoritative shared version turned out to be the WEAKER of the
+ * two. It called 100.64.0.1 and 224.0.0.1 public; the "wrong" private copy did not.
+ * Consolidating without comparing first would have quietly made the app less safe.
+ *
+ * Only IPv4 is handled here. IPv6's private and reserved ranges ARE understood by
+ * PHP's filter, so there is nothing to add for them.
+ *
+ * @param string $ip A textual address. Anything that is not a plain IPv4 address
+ *                   returns false, leaving the verdict to the checks around it.
+ * @return bool true when the address is in one of the two ranges above.
+ */
+function _ihymnsIpv4RangeFilterVarMisses(string $ip): bool
+{
+    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+        return false;
+    }
+    $b = array_map('intval', explode('.', $ip));
+    if (count($b) !== 4) {
+        return false;
+    }
+    /* 100.64.0.0/10 — carrier-grade NAT (RFC 6598) */
+    if ($b[0] === 100 && $b[1] >= 64 && $b[1] <= 127) {
+        return true;
+    }
+    /* 224.0.0.0/4 — multicast */
+    if ($b[0] >= 224 && $b[0] <= 239) {
+        return true;
+    }
+    return false;
+}
+
+/**
  * ELI5: does this hostname (or literal IP) lead to a private/internal
  * address? WHY: an admin-typed outbound base URL is trusted input from a
  * privileged operator, but "trusted" still isn't "immune to a typo or a
@@ -272,6 +326,11 @@ function ihymnsHostResolvesPrivate(string $host): bool
         foreach ($candidates as $candidate) {
             if (!filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
                 return true;                          /* a private/reserved address among the resolutions */
+            }
+            /* PHP's own filter does not know about two ranges that we must still
+               refuse, so they are checked here as well (#2111, 2026-09-08). */
+            if (_ihymnsIpv4RangeFilterVarMisses($candidate)) {
+                return true;
             }
         }
     }
