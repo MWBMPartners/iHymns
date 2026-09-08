@@ -66,3 +66,34 @@ only already-redacted placeholders.
 But it is best-effort and always will be. It cannot catch a password you typed while debugging, a
 customer's email address in a test file, or a database dump pasted into a prompt, because none of
 those look like anything in particular. **Before you share a log with anyone, read it.**
+
+---
+
+## ⚠️ A trap that has already bitten once (2026-09-08)
+
+**Switching to a branch that still tracks these files, then updating it, DELETES your local copies.**
+
+It happened on 2026-09-08 and cost three files their unsaved edits. The mechanism is worth
+understanding, because it is not obvious and it will happen again to anyone who is not expecting it:
+
+1. On `alpha` (after the untracking), these files are ignored and sit on disk untouched.
+2. `beta` and `main` **still track** them. So does any older checkout of `alpha`.
+3. Checking out one of those branches makes the files **tracked** again.
+4. Updating that branch to a commit which removes them makes git delete them from disk — correctly,
+   as far as git is concerned, because it is now managing them.
+
+Recovery is possible for anything that was ever committed:
+
+```bash
+# write the file back WITHOUT staging it (git checkout -- <path> would stage it)
+git show <commit-before-the-deletion>:<path> > <path>
+```
+
+But **anything you had edited and not committed is gone**, because unstaged content never enters
+git's storage at all. That is exactly what was lost on 2026-09-08.
+
+**So: before switching away from `alpha`, copy anything here that you care about to somewhere outside
+the repository.** This will stop being a trap once `alpha` is promoted to `beta` and `main`
+(tracked as #2097), because then no branch tracks these files any more.
+
+The same applies to `_temp/` and `appWeb/.sql/.fulldata/`.
