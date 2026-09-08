@@ -158,8 +158,26 @@ assistant working here — Claude Code, Codex, Claude in the browser, ChatGPT �
 output: chat replies, progress reports, code comments, commit messages, pull‑request text, issue
 text, documentation, and anything a user will ever see.
 
-The owner has now asked for this three times. Asking a third time means it is still not being done
-well enough, so treat it as a hard requirement on a par with the modularity rule.
+**Asked for a FOURTH time on 2026-09-08.** Previously 2026-08-29, 2026-09-05 and 2026-09-07.
+
+Four asks means writing it down again is not the answer. It is already recorded in six places, and
+it was recorded in all six BEFORE this fourth ask. **Another copy would be exactly the mistake
+rule #35 warns about — a written statement is not a mechanism.**
+
+So it is worth being precise about what actually goes wrong, because it is not ignorance of the rule:
+
+- **The pull is strongest under a long task list.** Jargon is shorter, and under pressure the shortest
+  phrasing wins. It also *sounds* more precise, which makes it feel like the safer choice. It is not:
+  a sentence the reader has to decode is a sentence that can be misunderstood.
+- **It slips most in progress reports and issue text**, not in code comments — because those are
+  written fastest and feel like notes rather than deliverables. They are not; the owner reads them.
+- **Naming a thing is not explaining it.** Writing "the SSRF guard" and moving on fails the rule even
+  though every word is accurate. The test is: would somebody who has never opened this codebase know
+  what was just said?
+
+**The check to run before sending anything:** pick the two or three densest sentences and ask whether
+a capable colleague outside this project would follow them. If not, rewrite those two or three. Not
+the whole thing — just the ones carrying the weight.
 
 **What it means in practice**
 

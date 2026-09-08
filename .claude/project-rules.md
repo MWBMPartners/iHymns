@@ -555,7 +555,15 @@ until an admin pastes the key on `/manage/configuration`.
 
 The short version lives in `.claude/CLAUDE.md` and the standing-directive version in
 `.claude/standing-directives.md` §11. This section is the detailed expansion, and exists because the
-owner has now had to ask three separate times — which means the earlier two recordings of the rule
+owner has now had to ask **four** separate times (2026-08-29, 2026-09-05, 2026-09-07, 2026-09-08),
+and by the fourth ask it was already recorded in six places. So the recording was never the problem,
+and a seventh copy would be the very mistake rule #35 names: a written statement is not a mechanism.
+Where it actually slips: under a long task list (jargon is shorter, and *sounds* more precise); in
+progress reports and issue text more than in code comments, because those are written fastest and
+feel like notes rather than deliverables; and in naming a thing instead of explaining it — "the SSRF
+guard" is accurate and still fails the rule. The check that works is to take the two or three densest
+sentences before sending and ask whether a colleague who has never opened this project would follow
+them. The earlier recordings of the rule
 were not enough on their own.
 
 **The rule.** Write the way you would explain something to a capable colleague who does not work on
