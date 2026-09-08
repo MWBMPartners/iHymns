@@ -58,8 +58,11 @@ import { EVT_AUTH_CHANGED } from '../constants.js';
 const ENDPOINT = '/api?action=my_song_requests';
 
 /* =========================================================================
- * PURE HELPERS — called by tests/test-my-song-requests-ui.js, which asserts
- * the values they RETURN. Nothing in that test reads this file's source.
+ * PURE HELPERS — called by tests/test-batch8-ui-helpers.js, which imports this
+ * module, runs these functions and asserts the values they RETURN. Nothing in
+ * that test reads this file's source. (Until #2110 this line named a file
+ * called tests/test-my-song-requests-ui.js, which had never existed — the test
+ * was real all along, only the name written here was wrong.)
  * ========================================================================= */
 
 /**
