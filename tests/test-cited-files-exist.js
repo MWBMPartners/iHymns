@@ -191,6 +191,36 @@ const files = SCAN_DIRS.flatMap((d) => {
     return fs.existsSync(full) ? collectFiles(full, SCAN_EXTS) : [];
 });
 
+/* Two kinds of broken reference, and only one of them is worth failing a build over.
+   (Narrowed 2026-09-08 after the owner pushed back, rightly.)
+
+   ELI5: there is a difference between a comment that says "look over there for an
+   example" and one that says "don't worry, a machine is already checking this".
+   Only the second kind is a promise, and only a broken promise should stop the build.
+
+   The argument, in full, because it changed this file's design:
+
+     The first version failed on ANY comment naming a test file that was not there.
+     That treats a comment as a contract, and comments are not contracts — they are
+     there to help somebody understand the code. Break the build over a stale
+     cross-reference and the sensible response is to stop writing cross-references,
+     which leaves the codebase worse than it started.
+
+     Look at what this scan actually caught. THREE were claims of protection
+     ("kept in sync by X", "@see … the guard over this page"). Those genuinely
+     mislead: a reviewer reads one, believes something is watching, and stops
+     checking — rule #35's failure, one level up. FOUR were ordinary pointers with
+     the wrong filename. Worth tidying, not worth failing a build.
+
+   So: a reference is a PROMISE when the words around it claim protection. Anything
+   else is a pointer — still reported, so it gets fixed, but it does not fail. */
+const PROMISE_WORDS = /\b(kept in sync|keeps? (?:them|these|it|the two)|@see|guard(?:ed|s)? (?:by|over)|asserted by|covered by|enforced by|CI guard|checked by|proven by|banned by|caught by|verified by|fails? (?:the )?build)\b/i;
+
+/* Look at the sentence the reference sits in — 200 characters either side, which
+   comfortably covers a doc-block line and its neighbours without wandering into an
+   unrelated paragraph. */
+const isPromise = (src, at) => PROMISE_WORDS.test(src.slice(Math.max(0, at - 200), at + 200));
+
 const broken  = [];
 let citations = 0;
 let excused   = 0;
@@ -212,7 +242,7 @@ for (const file of files) {
         const cited = m[0];
         if (exists(cited)) continue;
         if (explainedAsGone(src, m.index, m.index + cited.length)) { excused++; continue; }
-        broken.push({ where: `${rel}:${lineAt(src, m.index)}`, cited });
+        broken.push({ where: `${rel}:${lineAt(src, m.index)}`, cited, promise: isPromise(src, m.index) });
     }
 }
 
@@ -242,18 +272,33 @@ if (files.length < MIN_FILES || citations < MIN_CITATIONS) {
     process.exit(1);
 }
 
-if (broken.length > 0) {
-    console.log(`FAIL: ${broken.length} comment(s) point at a test file that does not exist:\n`);
-    for (const b of broken) {
+const promises = broken.filter((b) => b.promise);
+const pointers = broken.filter((b) => !b.promise);
+
+if (pointers.length > 0) {
+    console.log(`NOTE: ${pointers.length} comment(s) point at a test file that is not there.`);
+    console.log('These are ordinary cross-references, not claims that something is being');
+    console.log('checked — so they do NOT fail the build. They are still worth correcting,');
+    console.log('because somebody will follow one and find nothing.\n');
+    for (const b of pointers) {
         console.log(`  ${b.where}`);
         console.log(`      names: ${b.cited}   — not on disk`);
     }
     console.log('');
-    console.log('A comment that names a guard is read as a promise that something is already');
-    console.log('checking. Either write the file it names, or change the sentence to say what is');
-    console.log('actually true. If the file genuinely used to exist and was taken out, say so in');
-    console.log('the same sentence ("the retired …", "this used to be …") and this guard will');
-    console.log('leave it alone.');
+}
+
+if (promises.length > 0) {
+    console.log(`FAIL: ${promises.length} comment(s) claim a test is protecting something, and that test does not exist:\n`);
+    for (const b of promises) {
+        console.log(`  ${b.where}`);
+        console.log(`      names: ${b.cited}   — not on disk`);
+    }
+    console.log('');
+    console.log('This kind of sentence is read as a promise that something is already');
+    console.log('checking, so a reviewer stops checking. Either write the file it names, or');
+    console.log('change the sentence to say what is actually true. If the file genuinely used');
+    console.log('to exist and was taken out, say so in the same sentence ("the retired …",');
+    console.log('"this used to be …") and this guard will leave it alone.');
     process.exit(1);
 }
 
