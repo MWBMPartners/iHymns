@@ -58,10 +58,15 @@ declare(strict_types=1);
  * through either the HTML or the CSS surface, independent of whatever tier
  * gate `includes/content_gating.php` applies elsewhere.
  *
- * NOT YET WIRED TO A CONSUMER: this commit lands the module + its guard
- * (`tests/php/test-html-sanitizer.php`) only. `manage/print-templates.php`
- * (E's upload path) and `manage/print-pdf.php` (the PDF endpoint) are later
- * commits of the same remainder (P3/P7 in the plan's §10 commit table).
+ * (Corrected 2026-09-08: this said "not yet wired to a consumer". That was
+ * true when written and is not now — `includes/print_custom_layout.php`
+ * requires this file and calls `ihymnsSanitizeHtml()` at line 297 to clean
+ * an uploaded print layout before it is stored, and `manage/print-pdf.php`
+ * calls it too. Left as a correction rather than a silent reword: a
+ * reviewer told a security bouncer has no consumer will treat changing its
+ * rules as low-risk, but this one is what stands between an uploaded HTML
+ * layout and a PDF/print render — get it wrong and an attacker's HTML
+ * reaches the page.)
  *
  * @see .claude/print-templates-1767-remainder-plan.md §5  the full design this file implements (follow it EXACTLY — permanently-maintained attack surface)
  * @see tests/php/test-html-sanitizer.php               the mutation-proven functional truth table (§5.5)

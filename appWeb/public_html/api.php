@@ -6247,13 +6247,23 @@ if ($action !== null) {
 
         /* =================================================================
          * APNs BRIDGE (#1410, Apple Phase-2 PR-13) — push-token registration
-         * ONLY. Entirely DORMANT: nothing in this codebase calls
-         * includes/apns.php's apnsSend() yet, and even a future caller that
-         * does gets a guaranteed `not_configured` no-op until an owner
-         * provisions a real Apple APNs Auth Key (see apns.php's file-header
-         * "NOT IN SCOPE" note — no admin-UI card ships in this change).
+         * ONLY. A future caller of includes/apns.php's apnsSend() gets a
+         * guaranteed `not_configured` no-op until an owner provisions a real
+         * Apple APNs Auth Key (see apns.php's file-header "NOT IN SCOPE"
+         * note — no admin-UI card ships in this change).
          * `tblApnsTokens` shipped live-dormant in #1511; every read/write
          * below is apnsTokensTableExists()-gated.
+         *
+         * (Corrected 2026-09-08: this said "nothing in this codebase calls
+         * apnsSend() yet". That was true when written and is not now — this
+         * very file reaches it from five call sites via
+         * liveActivitySessionPush() (includes/live_activity_push.php), which
+         * pushes Live Activity updates whenever a set-list's live session
+         * changes. Left as a correction rather than a silent reword, because
+         * a reader who believes "entirely dormant" would think an APNs key
+         * can be provisioned with no other effect than the registration
+         * endpoint above coming alive — in fact it also switches on live
+         * push traffic to real devices via a completely different code path.)
          * ================================================================= */
         case 'apns_register': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -7077,9 +7087,16 @@ if ($action !== null) {
          * a congregant with no editor role must still be able to save a
          * personal note.
          *
-         * DORMANT: no client calls any of these three actions yet — Phase 2
-         * (a SEPARATE later commit) wires one. Applying the #1266 Phase 1
-         * migration and deploying this code changes no existing behaviour.
+         * (Corrected 2026-09-08: this said "no client calls any of these
+         * three actions yet". That was true when written and is not now —
+         * `js/modules/song-markup.js` calls all three: `user_markup_list`
+         * at line 168, `user_markup_upsert` at lines 684/707, and
+         * `user_markup_delete` at lines 670/729, wiring up the note and
+         * highlight popover on the song page. Left as a correction rather
+         * than a silent reword, because a private per-user note is real
+         * user data now — anyone weighing a destructive change to this
+         * table should not read "dormant" and assume there is nothing to
+         * lose.)
          * ================================================================= */
 
         /* -----------------------------------------------------------------
