@@ -98,7 +98,7 @@ public struct SongComponent: Sendable, Hashable, Codable {
     /// later commit (`.claude/vocal-parts-2073-plan.md` design pass 7's
     /// commit-16 scope note) — this struct can decode the value today
     /// without anything yet reading it.
-    public let voices: [VoiceRun]? = nil
+    public let voices: [VoiceRun]?
 
     /// Which voice sings a PART of one line's text — an echo on just the
     /// last few words, rather than the whole line.
@@ -112,7 +112,57 @@ public struct SongComponent: Sendable, Hashable, Codable {
     /// EXCLUSIVE; slice with `String` value semantics over `Character`/
     /// `Unicode.Scalar`, never `NSRange`/UTF-16 `.utf16` length, the day this
     /// is actually rendered. DEFERRED rendering, same as `voices`.
-    public let voiceSpans: [VoiceSpan]? = nil
+    public let voiceSpans: [VoiceSpan]?
+
+    /// The name a curator gave this section, when they gave it one (#1907).
+    ///
+    /// ELI5: most sections are just "Verse 1" or "Chorus". Occasionally somebody
+    /// names one properly — "Kyrie", or the language a verse is sung in, such as
+    /// "isiZulu". This carries that name so the heading can show it.
+    ///
+    /// The server leaves the key out entirely unless a name was set, so this is
+    /// optional and will usually be nothing. It is DISPLAY ONLY — `type` stays the
+    /// thing that decides how a section behaves, is exported and is matched
+    /// (repository rule #45). Never use this to work out what kind of section it is.
+    public let label: String?
+
+    /// Build one by hand. The two singing-part values default to "not supplied",
+    /// so the places that build a component in tests need no change.
+    ///
+    /// ELI5: this lets older code keep saying "make me a verse with these lines"
+    /// without having to mention singing parts it does not care about.
+    ///
+    /// Why this initialiser has to exist at all: until 2026-09-08 `voices` and
+    /// `voiceSpans` were written as `let voices: [VoiceRun]? = nil`. A constant
+    /// that is already given a value is one Swift can never fill in from the
+    /// server's answer — the compiler says so directly ("immutable property will
+    /// not be decoded because it is declared with an initial value which cannot
+    /// be overwritten") — so every singing part the server sent was thrown away
+    /// at the front door. Removing `= nil` fixes the decoding but also changes
+    /// the automatic initialiser, so this spells one out with defaults instead.
+    public init(
+        type: String,
+        number: Int,
+        lines: [String],
+        chords: [String?]?,
+        language: String?,
+        lineIds: [Int],
+        lineLanguages: [String?]?,
+        voices: [VoiceRun]? = nil,
+        voiceSpans: [VoiceSpan]? = nil,
+        label: String? = nil
+    ) {
+        self.type = type
+        self.number = number
+        self.lines = lines
+        self.chords = chords
+        self.language = language
+        self.lineIds = lineIds
+        self.lineLanguages = lineLanguages
+        self.voices = voices
+        self.voiceSpans = voiceSpans
+        self.label = label
+    }
 }
 
 /// One contiguous run of lines sung by the same voice part(s) within a
