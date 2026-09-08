@@ -71,6 +71,12 @@ const testFiles = fs.readdirSync(TESTS_DIR)
 
 if (testFiles.length === 0) {
     console.error(`No test files found in ${TESTS_DIR} — that's almost certainly a bug in this runner, not an empty suite.`);
+    /* Print the verdict here too (found by a cross-model review, 2026-09-08).
+       Anything reading this output looks for a single TEST RESULT line, and
+       leaving it out on the one path where NOTHING ran is exactly backwards:
+       that is the moment a reader most needs to be told, and a missing line
+       reads far too easily as "nothing to report". */
+    console.log('TEST RESULT: FAIL (no test files found)');
     process.exit(1);
 }
 

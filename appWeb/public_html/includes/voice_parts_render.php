@@ -197,8 +197,32 @@ function _ihymnsVoiceFormatMs(int $ms): string
  */
 function _ihymnsVoiceFormatBeats(float $beats): string
 {
-    $clean = rtrim(rtrim(number_format(max(0.0, $beats), 3, '.', ''), '0'), '.');
-    return $clean === '' ? '0' : $clean;
+    /* A value that is not a real number cannot be described. Callers already
+       skip these, but returning something harmless here means a future caller
+       cannot accidentally print "inf beats". This MUST behave the same as the
+       JavaScript twin, which returns '0' in the same situation. */
+    if (!is_finite($beats)) {
+        return '0';
+    }
+    /* Work in whole thousandths, not in decimal formatting.
+       ELI5: instead of asking "print this number with three decimal places",
+       we turn it into a whole number of thousandths and build the text
+       ourselves.
+       Why it has to be done this way: PHP and JavaScript round decimals
+       differently in the last place, and the disagreement is NOT consistent.
+       With the old code 1.0005 came out as "1.001" in PHP and "1" in
+       JavaScript, while 2.0005 gave "2.001" in both. An inconsistent
+       disagreement is far harder to notice than a consistent one, and it
+       matters here because the server draws this note when the page first
+       loads and the browser redraws it after an edit — so the wording could
+       change under the reader for no visible reason.
+       Multiplying and rounding to a whole number is the SAME operation in
+       both languages, so both now give the same answer even where that answer
+       is a little surprising. Being identical matters more than being pure. */
+    $thousandths = (int)round(max(0.0, $beats) * 1000);
+    $whole       = intdiv($thousandths, 1000);
+    $frac        = rtrim(str_pad((string)($thousandths % 1000), 3, '0', STR_PAD_LEFT), '0');
+    return $frac === '' ? (string)$whole : $whole . '.' . $frac;
 }
 
 /* ---------------------------------------------------------------------
@@ -660,7 +684,7 @@ function ihymnsVoiceRoundNoteHtml(array $round): string
             $when             = 'at ' . _ihymnsVoiceFormatMs((int)$entryMs);
             $visibleClauses[] = "Voice {$num} enters {$when}";
             $ariaClauses[]    = "Voice {$num} enters {$when} after Voice 1";
-        } elseif ($basis === 'beats' && $entryBeats !== null) {
+        } elseif ($basis === 'beats' && $entryBeats !== null && is_finite((float)$entryBeats)) {
             /* #2089. A voice has THREE possible ways of saying when it comes in
                — after so many lines, after so many beats, or at a stopwatch time
                — and `entryBasis` says which one the curator actually chose. This

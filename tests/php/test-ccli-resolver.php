@@ -705,8 +705,13 @@ ok('G1  schema.sql no longer SEEDS ccli_validation_enabled',
 $sqlSeedFiles = [];
 $sqlDir = $APPWEB . '/.sql';
 if (is_dir($sqlDir)) {
+    /* CATCH_GET_CHILD: if one folder in there cannot be opened, skip it and
+       carry on rather than throwing and killing the whole test file. A single
+       awkward folder should not be able to take out 40-odd other assertions. */
     $walker = new RecursiveIteratorIterator(
-        new RecursiveDirectoryIterator($sqlDir, FilesystemIterator::SKIP_DOTS)
+        new RecursiveDirectoryIterator($sqlDir, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::LEAVES_ONLY,
+        RecursiveIteratorIterator::CATCH_GET_CHILD
     );
     foreach ($walker as $entry) {
         if ($entry->isFile() && strtolower($entry->getExtension()) === 'sql') {
@@ -715,14 +720,31 @@ if (is_dir($sqlDir)) {
     }
     sort($sqlSeedFiles);
 }
-$g2Offenders  = [];
+$g2Offenders   = [];
+$g2Unreadable  = [];
 foreach ($sqlSeedFiles as $sqlFile) {
-    if (str_contains((string)file_get_contents($sqlFile), "('ccli_validation_enabled'")) {
+    $sqlText = @file_get_contents($sqlFile);
+    if ($sqlText === false) {
+        /* A file we could not open is NOT a file we checked (found by a
+           cross-model review, 2026-09-08). The old code cast false to an
+           empty string, and an empty string does not contain the banned key,
+           so an unreadable file counted as PASS *and* went into the "files
+           checked" total. That is the worst possible outcome: the tick and
+           the count both say it was covered when nothing was read at all.
+           Rule #34 — a scanner that quietly looks at less than it claims is
+           worse than no scanner, because its green reads as coverage. */
+        $g2Unreadable[] = basename($sqlFile);
+        continue;
+    }
+    if (str_contains($sqlText, "('ccli_validation_enabled'")) {
         $g2Offenders[] = basename($sqlFile);
     }
 }
-ok('G2  no .sql file under appWeb/.sql/ seeds it either (' . count($sqlSeedFiles) . ' file(s) checked)',
-   $g2Offenders === [], implode(', ', $g2Offenders));
+$g2Checked = count($sqlSeedFiles) - count($g2Unreadable);
+ok('G2  no .sql file under appWeb/.sql/ seeds it either (' . $g2Checked . ' of ' . count($sqlSeedFiles) . ' file(s) read)',
+   $g2Offenders === [] && $g2Unreadable === [],
+   ($g2Offenders !== [] ? 'seeds it: ' . implode(', ', $g2Offenders) . '. ' : '')
+   . ($g2Unreadable !== [] ? 'could not be read, so cannot be vouched for: ' . implode(', ', $g2Unreadable) : ''));
 ok('G3  a cleanup migration exists for installs that already have the row',
    is_file($APPWEB . '/.sql/migrate-remove-ccli-validation-setting.php'));
 $registrySrc = (string)file_get_contents($PUBLIC . '/manage/includes/migration-registry.php');

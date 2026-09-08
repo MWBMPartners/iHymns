@@ -443,25 +443,64 @@ if (trackedAndIgnored.length === 0) {
  * comfortably. The 82-813 MB files in the same folder were never
  * committed. See check 2 in the header comment for the full reasoning.
  * ------------------------------------------------------------------- */
+/* Measure what git will actually COMMIT, not what happens to be on disk.
+   ELI5: we ask git how big the stored copy of each file is, rather than
+   looking at the file in the folder.
+   Why the difference matters (found by a cross-model review, 2026-09-08):
+   the two can disagree. Stage a 60 MB file, then shorten your local copy
+   without staging that change, and a disk measurement sees the short one
+   and passes — while the commit still carries 60 MB. Deleting the local
+   copy passed too, because a missing file was simply counted as
+   unmeasurable and the check tolerates a few of those. Both are real ways
+   an oversized commit could have walked straight past this guard.
+   `git ls-files -s` gives the stored identifier for each tracked file, and
+   `git cat-file --batch-check` turns those into sizes in one pass, so this
+   stays a single fast call rather than one per file. */
 const sized = [];
 let unstatable = 0;
-for (const p of trackedFiles) {
-    try {
-        sized.push({ path: p, size: fs.statSync(path.join(REPO, p)).size });
-    } catch {
-        /* A tracked path missing from disk (e.g. mid git-mv) isn't a size
-           problem — count it so the sanity check below can still notice
-           if this happens to nearly everything, which would mean the
-           checkout itself is broken rather than one stray file. */
-        unstatable++;
+{
+    /* "<mode> <object-id> <stage>\t<path>", NUL-separated so a path with a
+       space or a newline in it cannot break the parse. */
+    const staged = splitNul(git(['ls-files', '-s', '-z']).stdout)
+        .map((entry) => {
+            const tab = entry.indexOf('\t');
+            if (tab === -1) return null;
+            const bits = entry.slice(0, tab).split(' ');
+            return bits.length >= 2 ? { oid: bits[1], path: entry.slice(tab + 1) } : null;
+        })
+        .filter(Boolean);
+
+    /* One call for every size, rather than one call per file. */
+    const byOid = new Map();
+    if (staged.length > 0) {
+        const batch = git(['cat-file', '--batch-check'], staged.map((e) => e.oid).join('\n') + '\n').stdout || '';
+        for (const line of batch.split('\n')) {
+            /* "<object-id> <type> <size>", or "<something> missing" */
+            const parts = line.trim().split(' ');
+            if (parts.length === 3 && parts[1] === 'blob') {
+                byOid.set(parts[0], Number(parts[2]));
+            }
+        }
+    }
+
+    for (const entry of staged) {
+        const size = byOid.get(entry.oid);
+        if (typeof size === 'number' && Number.isFinite(size)) {
+            sized.push({ path: entry.path, size });
+        } else {
+            /* git could not tell us the size — count it so the sanity check
+               below still notices if this happens to nearly everything, which
+               would mean the repository itself is broken rather than one file. */
+            unstatable++;
+        }
     }
 }
 
 check(
-    'nearly every tracked path could be measured on disk (sanity: this is a real, populated checkout)',
+    'nearly every tracked file could be sized by git (sanity: this is a real, populated repository)',
     sized.length >= trackedFiles.length * 0.9,
-    `    only ${sized.length} of ${trackedFiles.length} tracked paths exist on disk (${unstatable} missing) — ` +
-    'that is too many to be normal churn; the checkout this ran against may be incomplete.'
+    `    only ${sized.length} of ${trackedFiles.length} tracked files could be sized by git (${unstatable} could not) — ` +
+    'that is too many to be normal; the repository this ran against may be incomplete.'
 );
 
 const tooLarge = sized.filter((f) => f.size > MAX_TRACKED_BYTES).sort((a, b) => b.size - a.size);

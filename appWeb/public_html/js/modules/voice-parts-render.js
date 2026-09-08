@@ -117,8 +117,20 @@ function formatMs(ms) {
  * later re-render produce identical wording.
  */
 function formatBeats(beats) {
-    const clean = Math.max(0, Number(beats)).toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
-    return clean === '' ? '0' : clean;
+    // Deliberately the SAME arithmetic as _ihymnsVoiceFormatBeats() in
+    // includes/voice_parts_render.php — see the long comment there for why this
+    // works in whole thousandths instead of asking for three decimal places.
+    // Short version: the two languages round the last decimal place
+    // differently, and not consistently, so the note's wording could change
+    // between the server's first draw and the browser's redraw.
+    const n = Number(beats);
+    if (!Number.isFinite(n)) {
+        return '0';
+    }
+    const thousandths = Math.round(Math.max(0, n) * 1000);
+    const whole = Math.floor(thousandths / 1000);
+    const frac = String(thousandths % 1000).padStart(3, '0').replace(/0+$/, '');
+    return frac === '' ? String(whole) : `${whole}.${frac}`;
 }
 
 /* ---------------------------------------------------------------------

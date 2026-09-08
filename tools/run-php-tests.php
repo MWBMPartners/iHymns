@@ -143,6 +143,11 @@ sort($files);
 
 if (!$files) {
     fwrite(STDERR, "No PHP test files found in tests/php/ — that is almost certainly wrong.\n");
+    /* Print the verdict here too (found by a cross-model review, 2026-09-08).
+       See the matching comment in tools/run-node-tests.js: the path where
+       nothing ran is the one a reader most needs told about, and a missing
+       verdict line reads as "nothing to report". */
+    echo "TEST RESULT: FAIL (no test files found)\n";
     exit(1);
 }
 
