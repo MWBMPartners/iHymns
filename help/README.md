@@ -14,6 +14,7 @@
 | [External Links & Works](external-links-and-works.md) | Find songs, songbooks and people elsewhere on the web; understand Works (groupings of the same composition across sources) |
 | [Favorites](favorites.md) | Save and manage your favorite songs |
 | [Musical Key, Tempo & Time Signature](musical-keys.md) | See a song's recorded key, tempo and time signature, and how it feeds Transpose |
+| [Who Sings Each Part](who-sings-each-part.md) | Voice-part labels, echoes, and songs sung in a round |
 | [Set Lists](setlists.md) | Build a running order, follow it hands-free while you lead, and share it with your team |
 | [Setlist Templates & Service Plans](setlist-templates.md) | Reuse the shape of a service and drop your songs into it |
 | [Exporting](exporting.md) | Download song words into your projection software's format |

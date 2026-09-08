@@ -17,8 +17,20 @@
 - **Fix:** If you see the generic message, it's worth a retry — the server likely never got the request. If you instead see a specific "not found" / "removed" card, that's the correct explanation, not an error to troubleshoot
 
 #### Search returns no results
-- **Cause:** Fuse.js's client-side search index may not have loaded
-- **Fix:** Clear browser cache and reload. Check the browser console for errors on the search request
+- **Cause:** Search is a live request to the server on every keystroke, so a genuinely empty result
+  means either the words really do not match anything, or the request never reached the database —
+  a dropped connection, or the site sitting in its maintenance state
+- **Fix:** Check your connection first. If other pages are loading, look at whether the site is
+  showing its "temporarily unavailable" message, which is what a database outage produces (a clean
+  503, never stale results). Clearing the browser cache does not help here — there is nothing cached
+  to clear
+
+> **Corrected 2026-09-08.** This entry used to blame "Fuse.js's client-side search index" not having
+> loaded, and prescribe clearing the browser cache. That cannot help, because there is no client-side
+> index: Fuse.js and the whole browser-side song corpus were removed in WS-J #1020, and search has
+> been a live MySQL full-text query ever since (`js/modules/search.js` says so in its own header).
+> A remedy that cannot work is worse than no remedy — it sends someone off clearing caches while the
+> real cause goes unexamined.
 
 #### "Access denied" when accessing the Song Editor
 - **Cause:** Your user account doesn't have the `editor` role or above
@@ -57,8 +69,20 @@
 - **Fix:** Put both devices on the exact same site address. If they already are, the session may simply have expired — see [[Live Follow & Service Mode]] for the freshness/lifetime rules
 
 #### MIDI audio not playing
-- **Cause:** Browser may not support MIDI playback, or the MIDI file is missing
-- **Fix:** MIDI playback requires Web MIDI API support. Not all songbooks have MIDI files (only CP, JP, MP)
+- **Cause:** Either the song simply has no MIDI file, or the small music library the app uses to play
+  one failed to load
+- **Fix:** Not all songbooks have MIDI files — only CP, JP and MP do. If the song does have one,
+  reload the page (a hard reload if you can) and check the browser console: the app downloads the
+  `.mid` file, reads the notes out of it itself, and plays them through a synthesiser built on the
+  browser's Web Audio support using the Tone.js library, which is fetched on first use. A blocked or
+  failed Tone.js download is the usual culprit
+
+> **Corrected 2026-09-08.** This entry used to say "MIDI playback requires Web MIDI API support".
+> It does not, and saying so would wrongly tell most people their browser cannot play MIDI — the Web
+> MIDI API is for talking to physical MIDI hardware and is absent from Safari and Firefox.
+> `js/modules/audio.js` spells the real pipeline out and explains why the app deliberately does
+> **not** test for native MIDI support: doing so "would give a false negative on every modern browser
+> even though our synth-based playback works fine" (#602).
 
 ### Live Follow / Service Mode
 
@@ -158,10 +182,22 @@ A: See [[User Accounts & Roles]]. In short: User = setlist sync, Editor = edit s
 A: Ask an Admin or Global Admin to assign you the `editor` role via `/manage/users`.
 
 **Q: I forgot my password. What do I do?**
-A: Click "Forgot password?" on the sign-in modal. Enter your username or email to receive a reset token. In the current version, the token is displayed directly (email delivery coming soon).
+A: Click "Forgot password?" on the sign-in box and enter your username or email address. A reset link
+is emailed to the address on the account. Nothing is shown on screen — the page gives you the same
+confirmation either way, on purpose, so that it can't be used to find out whether an account exists.
+The link is good for an hour and works once. If it does not arrive, check your spam folder; if it
+still hasn't, an admin can see whether the message went out in the activity log.
 
 **Q: Can I change my username?**
-A: Not currently. Usernames are permanent and lowercase.
+A: Yes — go to Settings and use the "Change username" form. You confirm with your current password,
+and the new name has to follow the same rules as registration: lowercase, 3 to 100 characters, made
+up of letters, numbers, underscores, dots and hyphens, and not already taken by somebody else.
+
+> **Corrected 2026-09-08.** These two answers were both wrong. The first said the reset token was
+> "displayed directly (email delivery coming soon)" — email delivery has been live for some time
+> (`api.php:4995` sends through `EmailService`), and telling somebody not to check their inbox is
+> about the most user-facing way a stale document can fail. The second said usernames were permanent;
+> the `auth_change_username` action and its Settings form have both existed for a while.
 
 **Q: Who is the Global Admin?**
 A: The first person to create an account (either via `/manage/setup` or the public registration API) automatically becomes the Global Admin.
@@ -189,7 +225,14 @@ A: A shared **live** set-list link stops serving once the set-list's own expiry 
 A: Any modern browser with ES module support: Chrome 80+, Firefox 78+, Safari 14+, Edge 80+.
 
 **Q: What PHP version is required?**
-A: PHP 8.5+ with the `mysqli` extension. There is no PDO or SQLite dependency — PDO was fully removed from the codebase.
+A: PHP 8.4 or 8.5, with the `mysqli` extension. Those are the two versions CI runs the whole PHP test
+suite against (`.github/workflows/test.yml`), so they are the pair that is actually proven to work.
+There is no PDO or SQLite dependency — PDO was fully removed from the codebase.
+
+> **Corrected 2026-09-08.** This answer said "PHP 8.5+", which would turn away a perfectly good
+> 8.4 host that CI tests on every run. Worth knowing that the repo currently carries three different
+> floors — this page said 8.5, CI proves 8.4 and 8.5, and `README.md` says 8.1+ (a number nothing in
+> CI exercises). The honest answer is the one CI can back.
 
 **Q: Can I use SQLite or SQL Server instead of MySQL?**
 A: No. MySQL 5.7+ / MariaDB 10.3+ is the only supported database, via `getDbMysqli()`. See [[Database & Migrations]].

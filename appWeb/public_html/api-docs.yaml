@@ -158,6 +158,40 @@ info:
     `auth_email_login_verify`) is the primary path surfaced in the UI;
     username/password (`auth_login`) is the fallback.
 
+    ### Every POST to `api.php` must carry `X-Requested-With: XMLHttpRequest`
+
+    This applies to the WHOLE of `api.php`, not to one tag or one endpoint. A
+    POST that arrives without the header
+
+    ```
+    X-Requested-With: XMLHttpRequest
+    ```
+
+    is refused with `403 {"error":"Cross-site POST blocked: missing or invalid
+    X-Requested-With header."}` — before the `action` is dispatched, and before
+    any API key, token or body is read. This is deliberate: a browser cannot
+    attach a custom header to a cross-site request without a preflight this
+    server never grants, so requiring it makes cross-site request forgery
+    impossible for every write in one place.
+
+    There are exactly TWO exceptions, and they exist because their callers
+    physically cannot set a custom header: `song_request_submit` (a plain HTML
+    `<form>` POST, the no-JavaScript fallback for the /request page) and
+    `client_error_report` (a `navigator.sendBeacon()` target, and the Beacon
+    API forbids custom headers). Both are checked against `Origin`/`Referer`
+    for the same origin instead.
+
+    **This matters most to callers that are NOT browsers.** A server-to-server
+    integration — a lyrics pusher, a presentation-app shim — will never send a
+    browser header by accident, so its very first request fails with a 403.
+    Send the header explicitly.
+
+    **2026-09-08 note.** This paragraph is new. The requirement itself is old,
+    but it was written down only inside the Editor API v2 tag description and
+    two unrelated endpoint descriptions — never here, and never on
+    `lyrics_ingest` or `service_drive`, the two endpoints an outside integrator
+    actually calls. Both now say it themselves as well.
+
     ## Entitlements
 
     Admin and editor endpoints are gated by **capabilities**, not just roles.
@@ -1683,6 +1717,14 @@ paths:
         - **Auth:** an API key with scope `lyrics:ingest` (mint at
           `/manage/api-keys`). Send `Authorization: Bearer ihk_live_…` or
           `X-API-Key: …`.
+        - **You must also send the header `X-Requested-With: XMLHttpRequest`.**
+          `api.php` refuses EVERY POST that lacks it with a `403`, before the
+          API key is even read — see the Authentication section at the top of
+          this page. A server-to-server pusher will never send a browser header
+          by accident, so this is the first thing to get right.
+          *(2026-09-08: this requirement was not written down anywhere near
+          this endpoint, so a caller following this page hit an undocumented
+          403 on its very first request.)*
         - Ingested lyrics default to `status: pending_review` — a curator
           approves before they go live.
         - Re-ingesting the same `(songId, source)` **replaces** its rows
@@ -1716,6 +1758,14 @@ paths:
           schema:
             type: string
             enum: [lyrics_ingest]
+        - name: X-Requested-With
+          in: header
+          required: true
+          description: >-
+            Must be exactly `XMLHttpRequest`. Enforced on every POST to
+            api.php; a request without it is rejected 403 before the API key is
+            read.
+          schema: { type: string, enum: [XMLHttpRequest] }
       requestBody:
         required: true
         content:
@@ -1812,12 +1862,43 @@ paths:
           description: Missing songId/ttml or bad request
         "401":
           description: Missing / invalid / unscoped API key
+        "403":
+          description: >-
+            The `X-Requested-With: XMLHttpRequest` header was missing. Refused
+            by api.php's site-wide POST guard, before the API key is read.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: "Cross-site POST blocked: missing or invalid X-Requested-With header."
         "405":
           description: POST required
         "413":
           description: Payload exceeds the 4 MiB limit
         "422":
           description: TTML parse / write failure (e.g. not a TTML document, unknown song)
+        "429":
+          description: >-
+            This API key's own rate limit was exceeded. Carries `Retry-After`
+            (seconds — 60 for a per-minute limit, 3600 for a per-hour one),
+            plus `X-RateLimit-Limit` and `X-RateLimit-Window`. For an
+            unattended pusher this is the response most worth handling: wait
+            the stated number of seconds and retry.
+          headers:
+            Retry-After:
+              schema: { type: integer, example: 60 }
+              description: Seconds to wait before retrying.
+            X-RateLimit-Limit:
+              schema: { type: integer, example: 600 }
+            X-RateLimit-Window:
+              schema: { type: string, enum: [minute, hour] }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: "Rate limit exceeded (600 per minute). Retry later."
 
   /api.php?action=songs_index:
     get:
@@ -1912,7 +1993,22 @@ paths:
       description: |
         Identifies gaps in the sequential numbering of songs within a songbook.
         Compares the range 1 to max song number against existing entries.
-        Useful for editors to find songs that have not been added yet.
+
+        **Sign-in required, and an editor's role with it.** The caller must be
+        authenticated (Bearer token or session cookie) AND hold the role
+        `editor`, `admin` or `global_admin`. Anyone else gets a `403`.
+
+        **2026-09-08 correction.** This entry declared no `security` at all and
+        listed no 401 or 403, and the sentence above used to read "Useful for
+        editors to find songs that have not been added yet" — which reads as a
+        hint about who would find it handy, not as a hard gate. It is a hard
+        gate. The missing `security` block also broke the "Try it out" button
+        on /manage/api-docs: with no scheme declared, Swagger UI sends no
+        Authorization header, so the call failed for a signed-in admin too,
+        with nothing on this page to explain why.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
       parameters:
         - name: action
           in: query
@@ -1961,6 +2057,17 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: Songbook parameter is required.
+        "403":
+          description: >-
+            Not signed in, or signed in without an editor's role — the caller's
+            role must be `editor`, `admin` or `global_admin`. Note this is a
+            403 and not a 401 even when no credential was sent at all.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Editor access required.
 
   /api.php?action=song_detail:
     get:
@@ -4131,6 +4238,20 @@ paths:
         Create a new user account. The first registered user automatically
         receives the `global_admin` role; all subsequent users get the `user`
         role. Returns a bearer token valid for 30 days.
+
+        **Registration can be switched off for the public.** When the server
+        setting `registration_mode` is `admin_only` AND at least one account
+        already exists, this endpoint requires an authenticated caller whose
+        role is `admin` or `global_admin`; everyone else is refused with a
+        `403`. The very first account on a brand-new install is always allowed
+        through, so an operator can never lock themselves out.
+        *(2026-09-08: neither the restricted mode nor its 403 was documented
+        here, so a sign-up flow built against a restricted install failed with
+        nothing on this page to explain it.)*
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+        - {}
       parameters:
         - name: action
           in: query
@@ -4162,6 +4283,19 @@ paths:
                   description: Display name (defaults to username if omitted)
                   maxLength: 100
                   example: John Doe
+                captcha_token:
+                  type: string
+                  description: >-
+                    CAPTCHA challenge answer (#947/#340). Required ONLY when an
+                    admin has enabled the challenge for this form (see
+                    `app_status.captcha.forms`); ignored otherwise. A missing or
+                    invalid answer is refused with the 403 documented below,
+                    carrying `reason: "captcha_required"`.
+                    2026-09-08: this field was missing from this schema, so a
+                    client generated from this page had nowhere to put the
+                    answer. It was described only in prose on `auth_login` — and
+                    a sentence saying two endpoints agree is not a mechanism
+                    (rule #35).
       responses:
         "201":
           description: Account created
@@ -4175,6 +4309,28 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            EITHER registration is restricted to administrators
+            (`registration_mode = admin_only` with at least one account already
+            present) and the caller is not a signed-in admin, OR the CAPTCHA challenge is enabled for this form and the supplied
+            `captcha_token` was missing or invalid. Machine-readable: the body
+            carries `reason: "captcha_required"` — branch on the status plus
+            that, never on the sentence (rule #35). Re-render/reset the widget
+            and retry. This 403 shape is identical across every gated endpoint.
+            *(2026-09-08: previously undocumented on this endpoint.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                registrationRestricted:
+                  value:
+                    error: Registration is restricted to administrators.
+                captchaRequired:
+                  value:
+                    error: Please complete the verification challenge and try again.
+                    reason: captcha_required
         "405":
           description: Method not allowed
           content:
@@ -4880,6 +5036,19 @@ paths:
                   type: string
                   description: Username or email address
                   example: john.doe
+                captcha_token:
+                  type: string
+                  description: >-
+                    CAPTCHA challenge answer (#947/#340). Required ONLY when an
+                    admin has enabled the challenge for this form (see
+                    `app_status.captcha.forms`); ignored otherwise. A missing or
+                    invalid answer is refused with the 403 documented below,
+                    carrying `reason: "captcha_required"`.
+                    2026-09-08: this field was missing from this schema, so a
+                    client generated from this page had nowhere to put the
+                    answer. It was described only in prose on `auth_login` — and
+                    a sentence saying two endpoints agree is not a mechanism
+                    (rule #35).
       responses:
         "200":
           description: Reset token generated (always returns 200)
@@ -4900,6 +5069,21 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            The CAPTCHA challenge is enabled for this form and the supplied
+            `captcha_token` was missing or invalid. Machine-readable: the body
+            carries `reason: "captcha_required"` — branch on the status plus
+            that, never on the sentence (rule #35). Re-render/reset the widget
+            and retry. This 403 shape is identical across every gated endpoint.
+            *(2026-09-08: previously undocumented on this endpoint.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Please complete the verification challenge and try again.
+                reason: captcha_required
 
   /api.php?action=auth_reset_password:
     post:
@@ -4983,6 +5167,19 @@ paths:
                   type: string
                   format: email
                   example: user@example.com
+                captcha_token:
+                  type: string
+                  description: >-
+                    CAPTCHA challenge answer (#947/#340). Required ONLY when an
+                    admin has enabled the challenge for this form (see
+                    `app_status.captcha.forms`); ignored otherwise. A missing or
+                    invalid answer is refused with the 403 documented below,
+                    carrying `reason: "captcha_required"`.
+                    2026-09-08: this field was missing from this schema, so a
+                    client generated from this page had nowhere to put the
+                    answer. It was described only in prose on `auth_login` — and
+                    a sentence saying two endpoints agree is not a mechanism
+                    (rule #35).
       responses:
         "200":
           description: Request accepted (always 200, even if email not found)
@@ -5003,6 +5200,21 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "403":
+          description: >-
+            The CAPTCHA challenge is enabled for this form and the supplied
+            `captcha_token` was missing or invalid. Machine-readable: the body
+            carries `reason: "captcha_required"` — branch on the status plus
+            that, never on the sentence (rule #35). Re-render/reset the widget
+            and retry. This 403 shape is identical across every gated endpoint.
+            *(2026-09-08: previously undocumented on this endpoint.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Please complete the verification challenge and try again.
+                reason: captcha_required
 
   /api.php?action=auth_email_login_verify:
     post:
@@ -5829,6 +6041,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "401":
+          description: >-
+            Not signed in.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Not authenticated.
 
   /api.php?action=tier_check:
     get:
@@ -5945,7 +6167,10 @@ paths:
                     items:
                       $ref: "#/components/schemas/AdminUser"
         "403":
-          description: Admin access required
+          description: >-
+            The caller's role must be `admin` or `global_admin`. This one is a raw role check, not an
+            entitlement — there is no key to retune at /manage/entitlements.
+            (2026-09-08: previously the bare phrase "Admin access required".)
           content:
             application/json:
               schema:
@@ -5981,7 +6206,10 @@ paths:
                     items:
                       $ref: "#/components/schemas/AdminGroup"
         "403":
-          description: Admin access required
+          description: >-
+            The caller's role must be `admin` or `global_admin`. This one is a raw role check, not an
+            entitlement — there is no key to retune at /manage/entitlements.
+            (2026-09-08: previously the bare phrase "Admin access required".)
           content:
             application/json:
               schema:
@@ -6321,7 +6549,13 @@ paths:
         "400":
           description: Missing name, or name too long
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_user_groups` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "409":
           description: Group name already in use
 
@@ -6354,7 +6588,13 @@ paths:
         "400":
           description: Missing id or name
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_user_groups` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Group id not found
         "409":
@@ -6388,7 +6628,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_user_groups` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Group id not found
         "422":
@@ -6437,7 +6683,13 @@ paths:
         "400":
           description: Missing group_id or user_id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_user_groups` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Group or user not found
 
@@ -6482,7 +6734,13 @@ paths:
         "400":
           description: Missing user_id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_user_groups` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: User id not found
 
@@ -6522,7 +6780,13 @@ paths:
         "400":
           description: Validation error (name shape, level bounds, missing display_name)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_access_tiers` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "409":
           description: Tier name already in use
 
@@ -6555,7 +6819,13 @@ paths:
         "400":
           description: Validation error
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_access_tiers` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Tier id not found
 
@@ -6587,7 +6857,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_access_tiers` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Tier id not found
         "422":
@@ -6669,7 +6945,10 @@ paths:
                     type: integer
                     example: 0
         "403":
-          description: Admin access required
+          description: >-
+            The caller's role must be `admin` or `global_admin`. This one is a raw role check, not an
+            entitlement — there is no key to retune at /manage/entitlements.
+            (2026-09-08: previously the bare phrase "Admin access required".)
           content:
             application/json:
               schema:
@@ -6817,6 +7096,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SuccessResponse"
+        "403":
+          description: >-
+            The `assign_user_tier` entitlement is required.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Admin access required.
 
   /api.php?action=admin_set_user_ccli:
     post:
@@ -6849,6 +7138,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SuccessResponse"
+        "403":
+          description: >-
+            The `manage_user_licences` entitlement is required.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Admin access required.
 
   # ===========================================================================
   # OFFLINE / PWA  (bulk fetch endpoints for the service worker)
@@ -6953,19 +7252,42 @@ paths:
       operationId: popularSongs
       tags: [Discovery]
       summary: Most-viewed songs over the trailing window
+      description: |
+        Counts views in `tblSongHistory` over a trailing window and returns the
+        busiest songs first. Hidden songs and songs in a disabled songbook are
+        excluded, and the caller's language preference is applied after the
+        limit — so the list can come back shorter than `limit` asked for.
+
+        **2026-09-08 correction.** Every parameter and the response key on this
+        entry were wrong, and wrong in the quiet way: a client built from the
+        old page sent `days=30`, silently got a SEVEN-day window instead
+        (`days` is not read at all — the real control is `period`, which
+        defaults to `week`), then read `response.popular`, which has never
+        existed — the list has always come back under `songs`. So the feature
+        rendered empty with no error anywhere. `limit` was also documented as
+        default 12 / max 50; the code defaults to 20 and clamps to 1..100. All
+        of it is corrected below.
       parameters:
         - name: action
           in: query
           required: true
           schema: { type: string, enum: [popular_songs] }
-        - name: days
+        - name: period
           in: query
           required: false
-          schema: { type: integer, default: 30, minimum: 1, maximum: 365 }
+          description: >-
+            How far back to count: `week` = 7 days, `month` = 30, `year` = 365,
+            `all` = effectively for ever. Anything unrecognised falls back to
+            the 7-day window rather than erroring.
+          schema:
+            type: string
+            enum: [week, month, year, all]
+            default: week
         - name: limit
           in: query
           required: false
-          schema: { type: integer, default: 12, minimum: 1, maximum: 50 }
+          description: How many rows to rank. Clamped to 1..100.
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
       responses:
         "200":
           description: Ranked list of popular songs
@@ -6974,10 +7296,27 @@ paths:
               schema:
                 type: object
                 properties:
-                  popular:
+                  songs:
                     type: array
                     items:
-                      $ref: "#/components/schemas/SongSummary"
+                      type: object
+                      properties:
+                        songId:       { type: string, example: CP-0202 }
+                        title:        { type: string, example: Amazing Grace }
+                        number:       { type: integer, example: 202 }
+                        songbook:     { type: string, example: CP }
+                        songbookName: { type: string, nullable: true, example: Christian Praise }
+                        language:     { type: string, nullable: true, example: en }
+                        views:        { type: integer, example: 180 }
+                  period:
+                    type: string
+                    description: The period actually used, echoed back verbatim from the request.
+                    example: week
+                  fallback:
+                    type: boolean
+                    description: >-
+                      Present and true ONLY when the database was unreachable —
+                      `songs` is then an empty list rather than an error.
 
   /api.php?action=tags:
     get:
@@ -7062,14 +7401,23 @@ paths:
         client; no web/Apple/Android client calls the JSON action today (orphan
         inventory §2.5, remediation X7). The endpoint is live and correct; it
         simply has no first-party caller yet.
+
+        **2026-09-08 correction.** This entry used to name the parameter
+        `slug`, and asserted in this very paragraph that "the endpoint is live
+        and correct". The endpoint is; the documented parameter was not. The
+        handler has only ever read `tag`, so a call written from this page
+        (`?action=songs_by_tag&slug=communion`) always came back
+        `400 {"error":"Tag slug is required."}` — and neither that 400 nor the
+        404 for an unknown tag was listed below. Both are now.
       parameters:
         - name: action
           in: query
           required: true
           schema: { type: string, enum: [songs_by_tag] }
-        - name: slug
+        - name: tag
           in: query
           required: true
+          description: The tag's slug (`tblSongTags.Slug`), not its name or id.
           schema: { type: string, example: communion }
       responses:
         "200":
@@ -7082,12 +7430,39 @@ paths:
                   tag:
                     type: object
                     properties:
-                      id: { type: integer }
-                      name: { type: string }
-                      slug: { type: string }
+                      id:          { type: integer }
+                      name:        { type: string }
+                      slug:        { type: string }
+                      description: { type: string, nullable: true }
                   songs:
                     type: array
-                    items: { $ref: "#/components/schemas/SongSummary" }
+                    description: >-
+                      Visible songs from servable songbooks only, ordered by
+                      title. Each row carries `id`, `title`, `songbook` and
+                      `number` — a narrower shape than `SongSummary`.
+                    items:
+                      type: object
+                      properties:
+                        id:       { type: string, example: CP-0202 }
+                        title:    { type: string, example: Amazing Grace }
+                        songbook: { type: string, example: CP }
+                        number:   { type: integer, example: 202 }
+        "400":
+          description: "`tag` was missing or empty."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Tag slug is required.
+        "404":
+          description: No tag has that slug.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Tag not found.
 
   # /api.php?action=suggest — REMOVED in #307 (the old header-search autocomplete
   # was dead: js/modules/search.js `_initAutocomplete` had zero callers, so the
@@ -7371,6 +7746,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "401":
+          description: >-
+            Not signed in.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Unauthorized
 
   /api.php?action=setlist_schedule_current:
     get:
@@ -7404,6 +7789,16 @@ paths:
                         properties:
                           ScheduledDate: { type: string, format: date }
                           Notes:         { type: string }
+        "401":
+          description: >-
+            Not signed in.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Unauthorized
 
   /api.php?action=setlist_schedule_upcoming:
     get:
@@ -7438,6 +7833,16 @@ paths:
                         ScheduledDate: { type: string, format: date }
                         Notes:         { type: string }
                         name:          { type: string, nullable: true }
+        "401":
+          description: >-
+            Not signed in.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Unauthorized
 
   # ===========================================================================
   # SETLISTS — COLLABORATION (#398)
@@ -7492,6 +7897,16 @@ paths:
           description: Missing fields, invalid email, or self-invite
         "404":
           description: Setlist not owned by caller, or no user with that email
+        "401":
+          description: >-
+            Not signed in.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Unauthorized
 
   /api.php?action=setlist_token_update:
     post:
@@ -7609,6 +8024,16 @@ paths:
                         editCount: { type: integer }
                         revoked:   { type: boolean }
                         expiresAt: { type: string, format: date-time, nullable: true }
+        "401":
+          description: >-
+            Not signed in.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Unauthorized
 
   /api.php?action=setlist_share_revoke:
     post:
@@ -7644,6 +8069,16 @@ paths:
         "403": { description: Caller does not own this link }
         "404": { description: No such link }
         "409": { description: Edit links not migrated on this server }
+        "401":
+          description: >-
+            Not signed in.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Unauthorized
 
   /api.php?action=setlist_collab_list:
     get:
@@ -7679,6 +8114,16 @@ paths:
                         email:      { type: string, format: email }
                         permission: { type: string, enum: [view, edit] }
                         invitedAt:  { type: string, format: date-time }
+        "401":
+          description: >-
+            Not signed in.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Unauthorized
 
   /api.php?action=setlist_collab_remove:
     post:
@@ -7712,6 +8157,16 @@ paths:
                 properties:
                   ok:      { type: boolean }
                   removed: { type: integer, minimum: 0 }
+        "401":
+          description: >-
+            Not signed in.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Unauthorized
 
   /api.php?action=setlist_collab_shared_with_me:
     get:
@@ -7805,6 +8260,16 @@ paths:
                               arrangement:
                                 type: array
                                 items: { type: integer }
+        "401":
+          description: >-
+            Not signed in.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Unauthorized
 
   /api.php?action=setlist_collab_update:
     post:
@@ -9056,21 +9521,35 @@ paths:
       operationId: songHistory
       tags: [Song Metadata]
       summary: Recently viewed songs for the caller
-      description: Backed by `tblSongHistory`; gated on analytics consent.
+      description: |
+        Backed by `tblSongHistory`. Sign-in required. Returns **at most the 50
+        most recently viewed distinct songs**, newest first — repeat views of
+        the same song collapse to one row anchored to its latest view. Hidden
+        songs and songs in a disabled songbook drop out (the history row
+        survives, so restoring the song brings it back), and the caller's
+        language preference is applied afterwards, so fewer than 50 can come
+        back.
+
+        **2026-09-08 corrections.** Two claims here were wrong. (1) A `limit`
+        parameter was documented (default 50, up to 500). The handler never
+        reads it — the query ends in a hardcoded `LIMIT 50` — so a caller
+        asking for 200 entries silently got 50, with no error to notice. The
+        parameter has been removed rather than reworded, because there is
+        nothing to send. (2) It said the endpoint was "gated on analytics
+        consent". It is not: the only gate is being signed in. Consent governs
+        whether a view is RECORDED by `song_view`, not whether this read is
+        served.
       security:
         - bearerAuth: []
+        - cookieAuth: []
       parameters:
         - name: action
           in: query
           required: true
           schema: { type: string, enum: [song_history] }
-        - name: limit
-          in: query
-          required: false
-          schema: { type: integer, default: 50, minimum: 1, maximum: 500 }
       responses:
         "200":
-          description: History entries, newest first
+          description: Up to 50 distinct songs, most recently viewed first.
           content:
             application/json:
               schema:
@@ -9081,10 +9560,27 @@ paths:
                     items:
                       type: object
                       properties:
-                        songId:   { type: string }
-                        title:    { type: string }
-                        songbook: { type: string }
-                        viewedAt: { type: string, format: date-time }
+                        songId:        { type: string, example: CP-0202 }
+                        title:         { type: string, example: Amazing Grace }
+                        number:        { type: integer, example: 202 }
+                        songbook:      { type: string, example: CP }
+                        songbookName:  { type: string, nullable: true, example: Christian Praise }
+                        language:      { type: string, nullable: true, example: en }
+                        viewedAt:      { type: string, format: date-time }
+                        viewedAtEpoch: { type: integer, description: The same moment as seconds since 1970, for clients that would rather not parse a date. }
+                  fallback:
+                    type: boolean
+                    description: >-
+                      Present and true ONLY when the database was unreachable —
+                      `history` is then an empty list rather than an error.
+        "401":
+          description: Not signed in.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Not authenticated.
 
   /api.php?action=song_history_backfill:
     post:
@@ -9503,6 +9999,21 @@ paths:
             instead of returning a JSON body.
         "400":
           description: Missing `title`, a field over its length cap, or an invalid `email`
+        "403":
+          description: >-
+            JSON (JS) path only. The CAPTCHA challenge is enabled for the
+            `song_request` form and the supplied `captcha_token` was missing or
+            invalid; the body carries `reason: "captcha_required"`. On the
+            form-encoded (no-JS) path the same refusal comes back as a 302 to
+            /request with the message in `error`.
+            *(2026-09-08: previously undocumented on this endpoint.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Please complete the verification challenge and try again.
+                reason: captcha_required
         "405":
           description: Non-POST method
         "429":
@@ -9619,7 +10130,11 @@ paths:
         case only public templates are returned. `slotTypes` is the server's ONE
         slot-type registry — build a picker from it rather than hardcoding a
         copy — and `canEdit` states, per template, whether THIS caller may
-        update or delete it (owner-only); never re-derive that from `createdBy`.
+        update or delete it (its author, or anyone holding
+        `manage_setlist_templates`); never re-derive that from `createdBy`.
+        *(2026-09-08: this sentence used to say "owner-only", contradicting the
+        `canEdit` property's own description a few lines below and the code,
+        which both include the `manage_setlist_templates` admin override.)*
       security:
         - bearerAuth: []
         - {}
@@ -9832,7 +10347,11 @@ paths:
       tags: [Setlists]
       summary: Delete a setlist template you created
       description: >
-        Owner-only. Set lists already built from the template are UNAFFECTED —
+        The template's author, or a caller holding `manage_setlist_templates`.
+        (2026-09-08: this opened "Owner-only.", contradicting its own 403
+        description immediately below, which correctly describes the #1698
+        admin override that the code implements.)
+        Set lists already built from the template are UNAFFECTED —
         a plan is copied into the set list when it is applied, and the copy keeps
         a snapshot of the template's name, so deleting a template can never empty
         somebody's service.
@@ -9869,8 +10388,12 @@ paths:
             The caller neither created this template nor holds the
             `manage_setlist_templates` entitlement (the #1698 admin override,
             which is what makes a template whose author's account was erased
-            manageable again) — or `is_public` was true without
-            `publish_public_templates`. Nothing is changed.
+            manageable again). Nothing is changed.
+            (2026-09-08: this used to end "— or `is_public` was true without
+            `publish_public_templates`", copied from the save/update endpoints.
+            This request body carries only `id`; there is no `is_public` field
+            here and the handler never checks that entitlement, so the clause
+            described a refusal that can never happen.)
         "404": { description: No such template }
 
   # ===========================================================================
@@ -9881,9 +10404,21 @@ paths:
     get:
       operationId: organisationGet
       tags: [Organisations]
-      summary: Fetch one organisation by id
-      security:
-        - bearerAuth: []
+      summary: Fetch one organisation by id or slug
+      description: |
+        Public read of one ACTIVE organisation. Look it up by either its
+        numeric `id` or its `slug` — send exactly one; sending neither is a
+        400. An organisation with `IsActive = 0` is treated as not existing.
+
+        **2026-09-08 correction.** Three things on this entry were wrong.
+        (1) It declared `security: bearerAuth`, implying a token was needed;
+        the handler performs no authentication at all, so anyone may read this
+        anonymously. (2) It documented only `id`, marked required — hiding the
+        `slug` lookup entirely, and overstating `id`, which is only needed when
+        no `slug` is sent. (3) The 200 was described as "Organisation detail
+        (members, licences, parent)"; there is no members list and no licences
+        list in the response. The real fields are set out below, and the 400
+        and 404 (both previously undocumented) are now listed.
       parameters:
         - name: action
           in: query
@@ -9891,11 +10426,61 @@ paths:
           schema: { type: string, enum: [organisation] }
         - name: id
           in: query
-          required: true
+          required: false
+          description: The organisation's numeric id. Send this OR `slug`.
           schema: { type: integer }
+        - name: slug
+          in: query
+          required: false
+          description: >-
+            The organisation's URL slug. Send this OR `id`. When both are
+            present `id` wins.
+          schema: { type: string, example: st-marys }
       responses:
         "200":
-          description: Organisation detail (members, licences, parent)
+          description: The organisation, its immediate children, and how many members it has.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organisation:
+                    type: object
+                    properties:
+                      id:           { type: integer }
+                      name:         { type: string }
+                      slug:         { type: string }
+                      parentOrgId:  { type: integer, nullable: true }
+                      description:  { type: string, nullable: true }
+                      licenceType:  { type: string, nullable: true }
+                      children:
+                        type: array
+                        description: Active organisations whose parent is this one, by name.
+                        items:
+                          type: object
+                          properties:
+                            id:   { type: integer }
+                            name: { type: string }
+                            slug: { type: string }
+                      memberCount:
+                        type: integer
+                        description: How many rows tblOrganisationMembers holds for this org. A count only — the members themselves are never returned here.
+        "400":
+          description: Neither `id` nor `slug` was supplied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Organisation id or slug required.
+        "404":
+          description: No ACTIVE organisation has that id or slug.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Organisation not found.
 
   /api.php?action=organisation_create:
     post:
@@ -9930,6 +10515,16 @@ paths:
                 properties:
                   ok: { type: boolean }
                   id: { type: integer }
+        "401":
+          description: >-
+            Not signed in.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Not authenticated.
 
   /api.php?action=my_organisations:
     get:
@@ -9987,6 +10582,16 @@ paths:
                               alt:    { type: string, nullable: true }
                               width:  { type: integer, nullable: true }
                               height: { type: integer, nullable: true }
+        "401":
+          description: >-
+            Not signed in.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Not authenticated.
 
   # ===========================================================================
   # CONTENT ACCESS
@@ -10001,30 +10606,59 @@ paths:
         Combines tier membership, CCLI validity, org-licence, and
         platform-specific restrictions (`tblContentRestrictions`) into
         a single yes/no with reason.
+
+        Callable anonymously. A Bearer token or the session cookie is
+        OPTIONAL — send one and the answer accounts for the signed-in user's
+        tier, licence and organisation membership; send nothing and the
+        anonymous answer is returned. There is no 401 on this endpoint.
+
+        **2026-09-08 correction.** Until this date the parameters documented
+        here did not exist. This entry said you send `songId` (marked
+        required) plus an optional `kind`; the handler has only ever read
+        `entity_type` and `entity_id`, so every call written from this page
+        failed with an undocumented `400`. Two smaller claims were wrong in
+        the same block: the 200 was documented as carrying a `tier` field
+        (`checkContentAccess()` returns only `allowed` and `reason`), and
+        `platform` was documented as a closed list of `pwa|apple|android`
+        (the code treats it as free text, compared without regard to upper or
+        lower case). All four are corrected below.
       security:
         - bearerAuth: []
+        - cookieAuth: []
+        - {}
       parameters:
         - name: action
           in: query
           required: true
           schema: { type: string, enum: [content_access] }
-        - name: songId
+        - name: entity_type
           in: query
           required: true
-          schema: { type: string }
-        - name: kind
+          description: >-
+            What kind of thing is being checked — `song`, `songbook` or
+            `feature`. This is the `EntityType` column a restriction rule is
+            written against.
+          schema: { type: string, example: song }
+        - name: entity_id
           in: query
-          required: false
-          description: What aspect is being accessed
-          schema:
-            type: string
-            enum: [lyrics, audio, sheet_music, offline]
-            default: lyrics
+          required: true
+          description: >-
+            Which one — a SongId (`CP-0202`) for `song`, a songbook
+            abbreviation for `songbook`, a feature key (e.g. `audio_playback`)
+            for `feature`.
+          schema: { type: string, example: CP-0202 }
         - name: platform
           in: query
           required: false
-          description: Current platform for platform-specific rules
-          schema: { type: string, enum: [pwa, apple, android] }
+          description: >-
+            Which platform is asking, so platform-specific rules
+            (`block_platform`) can be applied. Free text, compared without
+            regard to upper or lower case — deliberately NOT a closed list,
+            because the value also arrives from the native apps' own header.
+            The admin rule editor offers `PWA`, `Apple`, `Android`, `Amazon`
+            and `Web`, but any string is accepted and simply matches no rule
+            if nothing targets it.
+          schema: { type: string, default: PWA, example: Apple }
       responses:
         "200":
           description: Access decision
@@ -10032,13 +10666,29 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [allowed, reason]
                 properties:
                   allowed: { type: boolean }
                   reason:
                     type: string
-                    description: Human-readable reason when denied
-                    nullable: true
-                  tier:    { type: string, nullable: true }
+                    description: >-
+                      Why access was refused, in words meant for a person. An
+                      EMPTY STRING (not null, and not absent) when `allowed`
+                      is true.
+                    example: "Licence required."
+              examples:
+                allowed:
+                  value: { allowed: true, reason: "" }
+                denied:
+                  value: { allowed: false, reason: "Licence required." }
+        "400":
+          description: "`entity_type` or `entity_id` was missing."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: entity_type and entity_id are required.
 
   # ===========================================================================
   # ADMIN — RESTRICTIONS / REVISIONS / MAINTENANCE
@@ -10059,6 +10709,16 @@ paths:
       responses:
         "200":
           description: Rule list sorted by priority
+        "403":
+          description: >-
+            The `manage_content_restrictions` entitlement is required.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Admin access required.
 
   /api.php?action=admin_restriction_create:
     post:
@@ -10096,6 +10756,16 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "403":
+          description: >-
+            The `manage_content_restrictions` entitlement is required.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Admin access required.
 
   /api.php?action=admin_restriction_delete:
     post:
@@ -10121,6 +10791,16 @@ paths:
       responses:
         "200":
           description: Deleted
+        "403":
+          description: >-
+            The `manage_content_restrictions` entitlement is required.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Admin access required.
 
   # ===========================================================================
   # ADMIN — SONGBOOKS  (#719 PR 2a)
@@ -10189,7 +10869,13 @@ paths:
                       client can route feedback to the right field/step
                       without matching `error`'s prose (rule #35).
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "409":
           description: Abbreviation already in use
 
@@ -10268,7 +10954,13 @@ paths:
         "400":
           description: Validation error (missing id, missing name, bad colour, bad BCP 47 tag, bad new abbreviation)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Songbook id not found
         "409":
@@ -10316,7 +11008,13 @@ paths:
         "400":
           description: Songbook id required
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Songbook id not found
         "422":
@@ -10433,7 +11131,13 @@ paths:
         "400":
           description: Empty or malformed display_order map
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
 
   /api.php?action=admin_songbooks_auto_colour_fill:
     post:
@@ -10562,7 +11266,13 @@ paths:
         "400":
           description: No/invalid file upload, or the abbreviation fails validation
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "409":
           description: Abbreviation already exists
         "422":
@@ -10643,18 +11353,51 @@ paths:
       responses:
         "200":
           description: Updated
+        "403":
+          description: >-
+            The caller's role must be `admin` or `global_admin`.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Admin access required.
 
   /api.php?action=admin_cleanup:
     post:
       operationId: adminCleanup
       tags: [Admin — Maintenance]
-      summary: Run the token / activity-log cleanup sweep
+      summary: Delete expired tokens and stale login/analytics rows
       description: |
-        Same routine as `appWeb/.sql/cleanup.php` — expires magic-link
-        tokens, trims old `tblLoginAttempts`, and prunes the activity
-        log. Safe to run from cron.
+        A housekeeping sweep, safe to run from cron. It deletes exactly five
+        things and nothing else:
+
+        - expired API tokens (`tblApiTokens`);
+        - email sign-in tokens that have expired or already been used;
+        - password-reset tokens that have expired or already been used;
+        - login attempts older than 30 days;
+        - analytics events older than 90 days (skipped without error on an
+          install where that table has not been created yet).
+
+        **The caller's role must be `global_admin`.** A plain `admin` is
+        refused with a 403.
+
+        **2026-09-08 correction.** Everything this entry said was wrong, in
+        both directions. It claimed the action was the "same routine as
+        `appWeb/.sql/cleanup.php`" and that it "prunes the activity log". It
+        does neither. It has never touched `tblActivityLog`; the real
+        `cleanup.php` script deletes from nine-plus tables — including the
+        activity log, live-follow sessions, the QR cache, the two webhook
+        tables and the read-rate-limit counter — none of which this action
+        goes near. Anyone who wired this into cron believing it kept the
+        activity log trimmed would have found that log growing without bound,
+        silently. The permission was also unstated (it said only "admin" by
+        implication and listed no 403) and the 200 body was described as
+        "counts per table" with no shape. All corrected here.
       security:
         - bearerAuth: []
+        - cookieAuth: []
       parameters:
         - name: action
           in: query
@@ -10662,7 +11405,43 @@ paths:
           schema: { type: string, enum: [admin_cleanup] }
       responses:
         "200":
-          description: Cleanup summary (counts per table)
+          description: How many rows were deleted from each table.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  deleted:
+                    type: object
+                    properties:
+                      apiTokens:       { type: integer }
+                      emailTokens:     { type: integer }
+                      resetTokens:     { type: integer }
+                      loginAttempts:   { type: integer }
+                      analyticsEvents:
+                        type: integer
+                        description: Always 0 where tblAppAnalyticsEvents has not been migrated.
+              example:
+                ok: true
+                deleted:
+                  apiTokens: 12
+                  emailTokens: 3
+                  resetTokens: 1
+                  loginAttempts: 480
+                  analyticsEvents: 9021
+        "403":
+          description: >-
+            The caller's role is not `global_admin`. A plain `admin` is refused
+            here, unlike most of the admin family.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Global admin access required.
+        "405":
+          description: POST method required.
 
   /api.php?action=admin_export:
     get:
@@ -10741,6 +11520,16 @@ paths:
       responses:
         "200":
           description: Org list with member counts + licence tier
+        "403":
+          description: >-
+            The caller's role must be `admin` or `global_admin`.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Admin access required.
 
   # ===========================================================================
   # ADMIN — ORGANISATIONS  (#719 PR 2c; admin_organisation_create added #1996)
@@ -10877,7 +11666,13 @@ paths:
         "400":
           description: Validation error (missing id/name/slug, parent loop, unknown licence_type)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_organisations` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Organisation not found
         "409":
@@ -10911,7 +11706,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_organisations` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Organisation not found
         "422":
@@ -10945,7 +11746,13 @@ paths:
         "400":
           description: Missing org_id / user_id, or unknown role
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_organisations` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
 
   /api.php?action=admin_organisation_member_role_change:
     post:
@@ -10971,7 +11778,13 @@ paths:
         "400":
           description: Missing fields or unknown role
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_organisations` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Member not found in this organisation
 
@@ -11003,7 +11816,13 @@ paths:
         "400":
           description: Missing org_id / user_id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_organisations` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
 
   # ===========================================================================
   # ORG-ADMIN  (#719 PR 2c, #707, #726)
@@ -11925,7 +12744,13 @@ paths:
         "400":
           description: Validation error (missing name, name too long, bad birth/death date)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_musicians` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "409":
           description: A person with that name is already registered
 
@@ -11961,7 +12786,13 @@ paths:
         "400":
           description: Validation error (missing name, name too long, bad birth/death date)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_musicians` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "409":
           description: A person with that name is already registered
 
@@ -12011,7 +12842,13 @@ paths:
         "400":
           description: Validation error or name field doesn't match (use rename instead)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_musicians` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Person not found
 
@@ -12060,7 +12897,13 @@ paths:
         "400":
           description: Validation error or name field doesn't match (use rename instead)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_musicians` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Person not found
 
@@ -12110,7 +12953,13 @@ paths:
         "400":
           description: Missing fields, name too long, or new_name same as old
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_musicians` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Person not found
         "409":
@@ -12161,7 +13010,13 @@ paths:
         "400":
           description: Missing fields, name too long, or new_name same as old
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_musicians` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Person not found
         "409":
@@ -12230,7 +13085,13 @@ paths:
         "400":
           description: Missing source_id / target_id, or they're equal
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_musicians` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Source or target person not found
 
@@ -12296,7 +13157,13 @@ paths:
         "400":
           description: Missing source_id / target_id, or they're equal
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_musicians` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Source or target person not found
 
@@ -12348,7 +13215,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_musicians` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Person not found
         "422":
@@ -12407,7 +13280,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_musicians` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Person not found
         "422":
@@ -12695,7 +13574,13 @@ paths:
         "400":
           description: Validation error (missing name, bad slug/MBID shape)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_tunes` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "409":
           description: Name or MusicBrainz Work MBID already used by another tune
 
@@ -12743,7 +13628,13 @@ paths:
         "400":
           description: Validation error or missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_tunes` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Tune not found
         "409":
@@ -12797,7 +13688,13 @@ paths:
         "400":
           description: Missing or identical source_id/target_id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_tunes` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Source or target tune not found
 
@@ -12843,7 +13740,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_tunes` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Tune not found
 
@@ -12886,7 +13789,13 @@ paths:
         "400":
           description: Validation error (missing name, bad slug shape, unrecognised kind)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_publishers` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "409":
           description: IPI or ISNI already used by another publisher
         "503":
@@ -12935,7 +13844,13 @@ paths:
         "400":
           description: Validation error or missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_publishers` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Publisher not found
         "409":
@@ -12985,7 +13900,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_publishers` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Publisher not found
         "503":
@@ -13038,7 +13959,13 @@ paths:
         "400":
           description: Missing or identical source_id/target_id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_publishers` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Source or target publisher not found
         "503":
@@ -13089,7 +14016,13 @@ paths:
         "400":
           description: Validation error (missing title, unusable slug, bad ISWC/MusicBrainz-MBID shape, non-numeric CCLI, out-of-range first_published_year, unknown parent_id)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_works` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "409":
           description: Slug, ISWC, CCLI, BOWI or MusicBrainz Work MBID already used by another Work
         "503":
@@ -13144,7 +14077,13 @@ paths:
         "400":
           description: Validation error, missing id, bad ISWC/MusicBrainz-MBID shape, non-numeric CCLI, out-of-range first_published_year, or unknown parent_id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_works` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Work not found
         "409":
@@ -13192,7 +14131,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_works` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Work not found
         "503":
@@ -13264,7 +14209,13 @@ paths:
         "400":
           description: Missing id, or constituents is not an array
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_works` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Work not found
         "503":
@@ -13343,7 +14294,13 @@ paths:
         "400":
           description: Missing id, members is not an array, or one or more song_id values are unknown (the response names them)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_works` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Work not found
         "503":
@@ -13421,7 +14378,13 @@ paths:
         "400":
           description: Missing id, or links is not an array
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_works` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Work not found
         "503":
@@ -13476,7 +14439,13 @@ paths:
         "400":
           description: Missing name, or the name has no usable slug characters
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_tags` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
 
   /api.php?action=admin_tag_update:
     post:
@@ -13515,7 +14484,13 @@ paths:
         "400":
           description: Missing id/name, or the name has no usable slug characters
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_tags` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Tag not found
 
@@ -13558,7 +14533,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_tags` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Tag not found
         "409":
@@ -13614,7 +14595,13 @@ paths:
         "400":
           description: Missing or identical source_id/target_id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_tags` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: One or both tags not found
 
@@ -13658,7 +14645,13 @@ paths:
                         stdName: { type: string }
                         score:   { type: number, format: float, description: Fuzzy match score, 0.84–1.0. }
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_tags` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
 
   # ===========================================================================
   # ADMIN — CATALOGUES / "COLLECTIONS"  (#941/#1765, API-coverage batch 4b-i A4)
@@ -13719,7 +14712,13 @@ paths:
         "400":
           description: Validation error (missing/over-length title, bad visibility, bad slug/colour/identifier shape)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "409":
           description: Slug already taken by another catalogue
         "503":
@@ -13771,7 +14770,13 @@ paths:
         "400":
           description: Validation error or missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Collection not found
         "503":
@@ -13815,7 +14820,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Collection not found
         "503":
@@ -13865,7 +14876,13 @@ paths:
         "400":
           description: Missing catalogue_id/song_id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Song not found (or not currently visible)
         "503":
@@ -13908,7 +14925,13 @@ paths:
         "400":
           description: Missing catalogue_id/song_id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "503":
           description: Collections registry not migrated on this environment yet
 
@@ -13962,7 +14985,13 @@ paths:
         "400":
           description: No/invalid file upload
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "422":
           description: The MARCXML record has no title (245 $a)
         "503":
@@ -14024,7 +15053,13 @@ paths:
         "400":
           description: Validation error (missing/no-slug-derivable name, bad colour/identifier shape)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "409":
           description: Slug already taken
         "503":
@@ -14099,7 +15134,13 @@ paths:
         "400":
           description: Validation error or missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Series not found
         "409":
@@ -14145,7 +15186,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Series not found
         "503":
@@ -14199,7 +15246,13 @@ paths:
         "400":
           description: No/invalid file upload
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "422":
           description: The MARCXML record has no title (245 $a)
         "503":
@@ -14265,7 +15318,13 @@ paths:
                   error:  { type: string }
                   fields: { type: object, additionalProperties: { type: string } }
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_languages` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
 
   /api.php?action=admin_language_update:
     post:
@@ -14311,7 +15370,13 @@ paths:
         "400":
           description: Validation failed (see the `fields` map)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_languages` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Language not found
 
@@ -14351,7 +15416,13 @@ paths:
         "400":
           description: Missing code
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_languages` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Language not found, or the value already matched
 
@@ -14394,7 +15465,13 @@ paths:
         "400":
           description: Missing code
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_languages` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Language not found
         "409":
@@ -14465,7 +15542,13 @@ paths:
         "400":
           description: Missing/identical from_tag+to_tag, or to_tag is not a grammatically valid BCP 47 tag
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_languages` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: from_tag no longer appears in the live audit scan (already remapped)
         "409":
@@ -14561,7 +15644,13 @@ paths:
         "400":
           description: Type id is required
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_external_link_types` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Link type not found
         "503":
@@ -14639,7 +15728,13 @@ paths:
                   name:           { type: string }
                   pattern_count:  { type: integer, description: Patterns actually inserted after cleanup/validation. }
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_external_link_types` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "409":
           description: A link type with that slug already exists
         "422":
@@ -14725,7 +15820,13 @@ paths:
         "400":
           description: Missing name, empty/unrecognised blocks list
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Template not found (update with a bad id)
         "503":
@@ -14770,7 +15871,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Source template not found
         "503":
@@ -14810,7 +15917,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Template not found
         "503":
@@ -14855,7 +15968,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "404":
           description: Template not found
         "503":
@@ -14905,7 +16024,13 @@ paths:
         "400":
           description: Empty HTML, missing/duplicated {{content}} token, over the 256 KiB cap, or the template doesn't exist yet (must be saved first)
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "503":
           description: Print templates not migrated on this environment yet
 
@@ -14946,7 +16071,13 @@ paths:
         "400":
           description: Missing id
         "403":
-          description: Admin access required
+          description: >-
+            The `manage_songbooks` entitlement is required (`admin` and `global_admin` hold
+            it by default, and an operator may retune that at
+            /manage/entitlements). 2026-09-08: this used to read only "Admin
+            access required", which names no entitlement — true by default, but
+            useless the moment an operator changes the mapping, and no name to
+            look up when you hit the 403.
         "503":
           description: Print templates not migrated on this environment yet
 
@@ -15179,7 +16310,10 @@ paths:
                         query: { type: string }
                         hits:  { type: integer }
         "403":
-          description: Admin access required
+          description: >-
+            The caller's role must be `admin` or `global_admin`. This one is a raw role check, not an
+            entitlement — there is no key to retune at /manage/entitlements.
+            (2026-09-08: previously the bare phrase "Admin access required".)
         "503":
           description: tblSearchQueries not yet created — run /manage/setup-database
 
@@ -15215,7 +16349,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/AdminDataHealthResponse"
         "403":
-          description: Admin access required
+          description: >-
+            The caller's role must be `admin` or `global_admin`. This one is a raw role check, not an
+            entitlement — there is no key to retune at /manage/entitlements.
+            (2026-09-08: previously the bare phrase "Admin access required".)
         "503":
           description: Database unreachable (response includes detail)
 
@@ -15245,7 +16382,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/AdminSchemaAuditResponse"
         "403":
-          description: Admin access required
+          description: >-
+            The caller's role must be `admin` or `global_admin`. This one is a raw role check, not an
+            entitlement — there is no key to retune at /manage/entitlements.
+            (2026-09-08: previously the bare phrase "Admin access required".)
 
   /api.php?action=admin_migrations_status:
     get:
@@ -15275,7 +16415,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/AdminMigrationsStatusResponse"
         "403":
-          description: Admin access required
+          description: >-
+            The caller's role must be `admin` or `global_admin`. This one is a raw role check, not an
+            entitlement — there is no key to retune at /manage/entitlements.
+            (2026-09-08: previously the bare phrase "Admin access required".)
 
   /api.php?action=admin_songbook_health:
     get:
@@ -15296,6 +16439,16 @@ paths:
       responses:
         "200":
           description: Health summary per songbook
+        "403":
+          description: >-
+            The caller's role must be `editor`, `admin` or `global_admin`.
+            *(2026-09-08: previously undocumented — a mechanical diff of the status codes api.php emits against the codes each path item lists found 25 of these.)*
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Editor access required.
 
   # ===========================================================================
   # API-COVERAGE BATCH 5 — curator workflows (#1969)
@@ -17916,7 +19069,13 @@ paths:
         "400":
           description: Validation error (missing/oversized title or body, bad action_url shape, missing target_user/target_role, invalid environment/expiry, or no active recipients matched)
         "403":
-          description: Admin access required
+          description: >-
+            The manage_notifications entitlement is required (global_admin by
+            default). 2026-09-08: this used to read "Admin access required",
+            which was wrong in a way that mattered — a user with the plain
+            `admin` role is refused, because manage_notifications defaults to
+            global_admin alone. The sibling admin_notification_delete below has
+            always said this correctly; the two now agree.
         "404":
           description: "audience=user: no user matched target_user"
 
@@ -19763,7 +20922,17 @@ paths:
 
         Rate-limited PER KEY (600 / min) — never per-IP. A separate,
         generous per-IP probe cap (300 / min) exists only to bound
-        pre-authentication lookups from an unidentified caller.
+        pre-authentication lookups from an unidentified caller. Either cap,
+        once hit, answers `429` with a `Retry-After` of 60 seconds.
+
+        **You must also send the header `X-Requested-With: XMLHttpRequest`.**
+        `api.php` refuses EVERY POST that lacks it with a `403`, before the
+        driver key is even looked at — see the Authentication section at the
+        top of this page. An unattended shim will never send a browser header
+        by accident, so this is the first thing to get right.
+        *(2026-09-08: this requirement was documented nowhere near this
+        endpoint, so an automation written from this page failed its very first
+        request with an undocumented 403.)*
       security:
         - driverKeyAuth: []
         - driverKeyAuthHeader: []
@@ -19772,6 +20941,14 @@ paths:
           in: query
           required: true
           schema: { type: string, enum: [service_drive] }
+        - name: X-Requested-With
+          in: header
+          required: true
+          description: >-
+            Must be exactly `XMLHttpRequest`. Enforced on every POST to
+            api.php; a request without it is rejected 403 before the driver key
+            is read.
+          schema: { type: string, enum: [XMLHttpRequest] }
       requestBody:
         required: true
         content:
@@ -19825,6 +21002,16 @@ paths:
         "400":
           description: Unknown songId, or no venue could be resolved
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: >-
+            The `X-Requested-With: XMLHttpRequest` header was missing. Refused
+            by api.php's site-wide POST guard, before the driver key is read.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: "Cross-site POST blocked: missing or invalid X-Requested-With header."
         "404":
           description: Unknown or ended session for this key's organisation/venue/channel (one opaque message)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -19833,6 +21020,21 @@ paths:
         "422":
           description: songRef was sent — not supported yet
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: >-
+            Either the per-key cap (600 / min) or the pre-authentication
+            per-IP probe cap (300 / min) was hit. Wait the number of seconds in
+            `Retry-After` and retry.
+          headers:
+            Retry-After:
+              schema: { type: integer, example: 60 }
+              description: Seconds to wait before retrying.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Too many requests. Please try again later.
         "503":
           description: Driver keys are not available yet (tblServiceDriverKeys not migrated)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -25073,6 +26275,18 @@ components:
         website:
           type: string
           description: Honeypot — MUST be left empty by real clients
+        captcha_token:
+          type: string
+          description: >-
+            CAPTCHA challenge answer (#947/#340). Required ONLY when an admin
+            has enabled the challenge for the `song_request` form (see
+            `app_status.captcha.forms`); ignored otherwise. A missing or
+            invalid answer is refused with a 403 carrying
+            `reason: "captcha_required"` on the JSON path, or a 302 back to
+            /request with the message in `error` on the no-JS form path.
+            2026-09-08: this field was missing from this schema, so a client
+            generated from this page had nowhere to put the answer. It was
+            described only in prose on `auth_login`.
 
     # -------------------------------------------------------------------------
     # User & auth models

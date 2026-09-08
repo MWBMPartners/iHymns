@@ -94,8 +94,11 @@ round-trip. Full source list, licences, and the copyright-safety triage:
 sample out of the repo". That was not true, and it is worth saying so plainly rather than quietly
 rewording it. Two separate sets of copyrighted material had been committed:
 
-- Seventeen ProPresenter sample files under `_temp/`, including commercially published worship
-  songs. Untracked in `cea84808` (issue #2096).
+- Twelve ProPresenter sample files under `_temp/_ProPresenter Sample Files/`, including commercially
+  published worship songs. Untracked in `cea84808` (issue #2096). (An earlier draft of this note said
+  seventeen. The number of files git was actually tracking, counted from that commit, is twelve —
+  there are more files in that folder on the developer's own machine, but only twelve were ever
+  committed.)
 - A database dump at `appWeb/.sql/.fulldata/ihymns-full.sql` holding the full lyrics of about 3,500
   songs, of which roughly 1,300 carried a copyright statement naming publishers such as Thankyou
   Music and Integrity Music. Untracked in the same batch.

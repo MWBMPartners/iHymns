@@ -72,7 +72,7 @@ The full schema is defined in `appWeb/.sql/schema.sql`.
 
 ### Song Deletion — Recoverable (#1694 / #1695, epic #1692)
 
-Deleting a song is a **soft delete**, not a row removal — deliberately, because 38 of the 41 foreign keys elsewhere in the schema that reference `tblSongs(SongId)` are `ON DELETE CASCADE`, so a hard delete used to take the song's components, credits, media links and its *entire revision history* with it, recoverable only from a database backup.
+Deleting a song is a **soft delete**, not a row removal — deliberately, because 42 of the 46 foreign keys elsewhere in the schema that reference `tblSongs(SongId)` are `ON DELETE CASCADE` (the other 4 are `ON DELETE SET NULL`) — counted from `schema.sql` on 2026-09-08, up from the 38-of-41 this line used to quote, so a hard delete used to take the song's components, credits, media links and its *entire revision history* with it, recoverable only from a database backup.
 
 `tblSongs.IsDeleted` hides the song from every filtered read; the row (and everything cascading from it) stays intact. `DeletedAt` / `DeletedBy` / `DeletedReason` / `DeleteNote` record when, who, and why — `DeletedReason` is `VARCHAR`, app-validated against `songDeleteReasons()` in `includes/song_soft_delete.php` rather than an `ENUM` (rule #20). `/manage/deleted-songs` lists deleted songs with **Restore** and **Purge** actions; visiting a soft-deleted song's URL now returns HTTP 410 Gone (not a generic 404) — see [[Architecture]].
 
@@ -89,7 +89,7 @@ Every soft delete, restore, and purge notifies every `purge_songs` holder, fired
 
 The MusicBrainz-shaped catalogue expansion models musicians, works and tunes as first-class entities with industry identifiers, disambiguation and profile pages. Most of the schema pre-existed; #1741 P1 extended it in one additive, dormant pass (rule #20 — never a second migration to add a value; every growable vocabulary is `VARCHAR`, app-validated, not `ENUM`).
 
-> **Naming note (#1746 / #1741 P2):** the musician family was **renamed** from `tblCreditPeople*` to `tblMusician*`. The base tables are `tblMusician…`; the old `tblCreditPeople` / `tblCreditPerson*` names survive as **compat `VIEW`s** (`schema.sql` ~:2769-2799) so existing code/queries keep resolving. Always write the base-table name in new code.
+> **Naming note (#1746 / #1741 P2):** the musician family was **renamed** from `tblCreditPeople*` to `tblMusician*`. The base tables are `tblMusician…`; the old `tblCreditPeople` / `tblCreditPerson*` names survive as **compat `VIEW`s** — `tblCreditPeople`, `tblCreditPersonLinks`, `tblCreditPersonIPI`, `tblCreditPersonIdentifiers`, `tblCreditPersonExternalLinks`, `tblCreditPersonAliases` and `tblCreditPersonMembers`, all declared together near the end of `schema.sql` (named rather than line-numbered, because the line number given here had already drifted by ~120 lines by 2026-09-08) so existing code/queries keep resolving. Always write the base-table name in new code.
 
 | Table | Purpose |
 |---|---|
@@ -122,7 +122,7 @@ This batch landed several feature families as additive, dormant, forward-looking
 | `tblServiceDriverKeys` | Org-scoped external-driver credentials for the `service_drive` endpoint (#1770) — lets a presentation app drive the current song. |
 | `tblPrintTemplateCustomLayout` | Uploadable full-page custom HTML print layouts (#1767 remainder P7), passed through the allowlist sanitiser on save and at render. Pairs with the new `tblPrintTemplates.OrgId` (org-scoped templates). |
 | `tblIaFetchCache` / `tblIaImportCandidates` | IA-reconcile audit bookkeeping (#94 Phase 1) — cached archive.org OCR fetches + scored reconcile candidates. **Audit data, not song content**; the tool never writes a song. |
-| `tblOrganisationLogos` | Per-organisation branding images for Print Templates (#1830) — one row per `(OrgId, Kind, Variant)`; `Kind` is a `VARCHAR` app-validated against the 10-entry `IHYMNS_ORG_LOGO_KINDS` registry (`includes/org_logo_helpers.php`: primary / full / horizontal / stacked / emblem / logotype / secondary / monochrome / reversed / favicon), `Variant` reserves a dormant light/dark axis (v1 only writes `default`). SVG rows store the hardened sanitiser's output in `ContentSanitised` (the only serve-readable column) plus the untouched upload in the dormant `ContentOriginal`; PNG/APNG rows store the validated original unchanged. See [[Security]] for the sanitiser detail. |
+| `tblOrganisationLogos` | Per-organisation branding images for Print Templates (#1830) — one row per `(OrgId, Kind, Variant)`; `Kind` is a `VARCHAR` app-validated against the 10-entry `IHYMNS_ORG_LOGO_KINDS` registry (`includes/org_logo_helpers.php`: primary / full / horizontal / stacked / emblem / logotype / secondary / monochrome / reversed / favicon), `Variant` is a real theme-paired rendition of the same `Kind` — `default`, `light` or `dark`, validated against `IHYMNS_ORG_LOGO_VARIANTS`. Once a kind has a `default` upload, the admin card offers optional light and dark slots beside it; removing the `default` row cascades to its theme versions, and the show/hide toggle works on the whole kind at once, so neither an orphaned variant nor a half-hidden kind can be produced through the interface. **Corrected 2026-09-08** — this line described the axis as dormant with only `default` ever written, which stopped being true when #1840 wired up the admin controls (see `manage/organisations.php`'s `logo_upload` / `logo_remove` handlers, and [[Architecture]], which already described #1840 correctly). SVG rows store the hardened sanitiser's output in `ContentSanitised` (the only serve-readable column) plus the untouched upload in the dormant `ContentOriginal`; PNG/APNG rows store the validated original unchanged. See [[Security]] for the sanitiser detail. |
 
 **Column families added on existing tables (all dormant until their feature is switched on):**
 
@@ -170,16 +170,23 @@ The serving gate (`includes/song_media_visibility.php`) is the ONE place that de
 |---|---|
 | `tblUserGroups` | Groups with version channel access flags (Alpha/Beta/RC/RTW) |
 | `tblUsers` | Accounts with role, group link, EmailVerified, LastLoginAt, LoginCount, AccessTier, CcliNumber, CcliVerified, and the `Status` / `StatusChangedAt` lifecycle pair (#1698 — `active` / `disabled` / `deleted`; see [[User Accounts & Roles]]) |
-| `tblSessions` | Server-side admin panel sessions |
 | `tblApiTokens` | Bearer tokens for PWA/native app auth (64-char hex, 30-day expiry). As of the 2026-08-28/29 API-coverage program, the same token also authenticates against the song-editor API (`manage/editor/api2.php` + the legacy `api.php` shim), `manage/places-api.php`, and `manage/print-pdf.php` — see [[Architecture]] § API coverage. |
 | `tblPushTokens` | (API-coverage plan C1, 2026-08-28) Android/FireOS push registration tokens — `Provider` (`fcm` \| `adm`, `VARCHAR` not `ENUM`, rule #20) discriminates ordinary-Android Google FCM from Fire-OS-only Amazon ADM in one table rather than forking a near-identical second one. `UNIQUE(Provider, Token)`; `UserId` FK, `CASCADE` on delete. Distinct from the existing (undocumented-here) `tblApnsTokens` (Apple) and `tblPushSubscriptions` (Web Push/VAPID, keyed by browser endpoint URL). **Entirely dormant** until `includes/fcm.php` is keyed AND a live trigger calls its `fcmSend()` — neither is true yet; see [[Native Apps (Apple & Android)]] § Push notifications. Migration: `migrate-add-push-tokens.php`. |
 | `tblPasswordResetTokens` | Single-use password reset tokens (48-char hex, 1-hour expiry) |
 | `tblEmailLoginTokens` | Magic link tokens + 6-digit codes for passwordless email login (10-min expiry) |
-| `tblUserGroupMembers` | Many-to-many user-to-group membership |
-| `tblUserPermissions` | Fine-grained per-user permission overrides (NULL = inherit from role) |
 | `tblLoginAttempts` | Brute force tracking (IP, username, success/failure, timestamp) |
 | `tblAccessTiers` | Content access tier definitions (id, name, level, description) |
-| `tblUserPurchases` | Purchase and subscription tracking (user, tier, payment reference, expiry) |
+
+> **Corrected 2026-09-08.** Four rows were removed from this list, because the tables they named no
+> longer exist: `tblSessions`, `tblUserGroupMembers`, `tblUserPermissions` and `tblUserPurchases`.
+> All four were `schema.sql`-only declarations — no migration ever created them on a real install and
+> no line of application code ever read or wrote them — so a fresh install was creating four tables
+> nothing had ever referenced. They were dropped in the 2026-07-30 orphan-inventory sweep; the
+> headstone comments explaining each are at `appWeb/.sql/schema.sql:980-998` and `:1410-1427`. In
+> particular: admin sessions are cookie/token based (`tblApiTokens` plus PHP's own session store),
+> group membership is the single `tblUsers.GroupId` column rather than a join table, per-user
+> permission overrides never shipped at all, and `tblUserPurchases` was a guessed 2019-vintage
+> monetisation shape.
 
 ### User Data Tables
 
@@ -211,9 +218,13 @@ The serving gate (`includes/song_media_visibility.php`) is the ONE place that de
 |---|---|
 | `tblActivityLog` | Audit trail for admin actions (edits, logins, imports) |
 | `tblAppSettings` | Key-value runtime configuration store |
-| `tblMigrations` | Schema migration version tracking |
 | `tblIntAppsSync` | MWBM-IntAppsAPI gateway local snapshot + refresh bookkeeping (Epic #1725) — one dormant table, keyed `(Scope, Channel, AppSlug)`; empty/unread until an admin enables the integration on `/manage/configuration`. See [[Architecture]] § External integrations. |
 | `tblQrCache` | Server-side cache of CueRCode-generated QR images (#1920), keyed by a sha256 of the canonical payload+options JSON. Additive, dormant until the CueRCode key is configured; a 90-day TTL + 20,000-row belt bound growth (`appWeb/.sql/cleanup.php`). Read/written only via `includes/qr_cache.php`, composed behind `cuercodeGenerateCached()` in the ONE CueRCode client. See [[Architecture]] § QR. |
+
+> **Corrected 2026-09-08.** `tblMigrations` ("schema migration version tracking") was removed from
+> this list. It was dropped on 2026-07-30 for the same reason as the four above — declared in
+> `schema.sql`, created by nothing, read by nothing. Migrations are tracked by
+> `manage/includes/migration-registry.php` together with sentinel rows in `tblAppSettings`.
 
 ---
 
@@ -221,34 +232,65 @@ The serving gate (`includes/song_media_visibility.php`) is the ONE place that de
 
 iHymns uses a tiered content access system to gate premium features such as audio playback, MIDI files, and PDF sheet music.
 
-### The 5 Tiers
+### The five seeded tiers
 
-| Level | Tier Name | Access |
+| Level | Tier name | What it opens up |
 |---|---|---|
-| 0 | **Free** | Lyrics only (browse, search, setlists) |
-| 1 | **Basic** | Lyrics + song metadata extras |
-| 2 | **Standard** | Basic + MIDI audio playback |
-| 3 | **Premium** | Standard + PDF sheet music downloads |
-| 4 | **Ultimate** | All content, including future premium features |
+| 0 | `public` — Public | Public-domain songs only. No sign-in needed. |
+| 10 | `free` — Free | All song lyrics, including copyrighted ones. Sign-in needed. |
+| 20 | `ccli` — CCLI Licensed | Full lyrics plus recorded-audio playback, on a verified live CCLI licence. |
+| 30 | `premium` — Premium | Audio playback, MIDI and PDF sheet-music downloads, offline saving. |
+| 40 | `pro` — Professional | Everything, including API access and bulk export. |
+
+These are the rows `appWeb/.sql/schema.sql:2134` seeds into `tblAccessTiers`. Two things worth
+knowing before you write a gate against them:
+
+- **`Level` is what comparisons use, and an admin can change it.** The numbers above are the shipped
+  starting point; `/manage/tiers` edits them per install, so read the live value rather than
+  hard-coding one.
+- **What a tier can do never comes from its name.** Capabilities live in the `TIER_CAPS` registry in
+  `includes/access_tier_validation.php` — seven of them as their own columns on `tblAccessTiers`
+  (the camelCase keys those emit are the native-app API contract), and every newer one inside the
+  single `Capabilities` JSON column. Adding a gateable feature is one line in that registry plus its
+  migration card, never a new column and never a per-tier matrix written out by hand.
+
+> **Corrected 2026-09-08.** This table used to list Free (0), Basic (1), Standard (2), Premium (3)
+> and Ultimate (4). Every column was wrong. "Basic", "Standard" and "Ultimate" appear nowhere in the
+> codebase; `public` and `ccli` were missing entirely; and the levels run in tens rather than ones,
+> so someone implementing a `>= 2` check against the old table would have got the answer wrong for
+> every user.
 
 ### Tier Resolution
 
-Users can have a **personal tier** (set on `tblUsers.AccessTier`) and an **organisation-level tier** (inherited from their user group via `tblAccessTiers`). When both exist, the **highest tier wins** — ensuring that a user belonging to a Premium organisation still gets Premium access even if their personal tier is Free.
+A person can have a **personal tier** (`tblUsers.AccessTier`) and an **organisation tier** worked out
+from the organisations they belong to. The **higher of the two wins**, compared by the live
+`tblAccessTiers.Level`, so a member of an organisation holding a Premium licence keeps Premium access
+even if their own tier says Free.
 
-Resolution order:
+The organisation half is resolved by `resolveEffectiveTier()` in `includes/ccli_validator.php`:
 
-1. Read the user's personal `AccessTier` level from `tblUsers`
-2. Read the tier level associated with the user's group(s)
-3. Take `MAX(personal_tier, org_tier)` as the effective tier
-4. Gate feature access based on the effective tier level
+1. Read the person's own `AccessTier` from `tblUsers`
+2. Find every organisation they are a member of via `tblOrganisationMembers`, and walk up the
+   `tblOrganisations.ParentOrgId` chain so a branch church also inherits its parent body's licences
+3. Collect every **live** (active, unexpired) licence along that chain — both the legacy one stored
+   directly on the organisation row and the several that can sit in `tblOrganisationLicences`
+4. Map each licence to the tier it confers through `tblLicenceTypes.ConfersTier`, keeping the highest
+5. Take whichever is higher, the personal tier or that organisation tier, as the effective tier
+
+> **Corrected 2026-09-08.** This section used to say the organisation tier was "inherited from their
+> user group via `tblAccessTiers`". It is not: the strings `tblUserGroups` and `GroupId` do not
+> appear once in `ccli_validator.php`. **User groups and content tiers are unrelated** — groups
+> decide which release channel (Alpha / Beta / RC / RTW) somebody may open, and have nothing to do
+> with content access. Treating them as one axis is what produced the error.
 
 ### Related Tables
 
-- `tblAccessTiers` — defines each tier (id, name, level, description)
-- `tblUserPurchases` — records purchases/subscriptions that grant a user a specific tier (includes payment reference, start date, expiry date)
-- `tblUsers.AccessTier` — the user's current personal tier (FK to `tblAccessTiers`)
+- `tblAccessTiers` — defines each tier (id, name, level, description, capability flags)
+- `tblUsers.AccessTier` — the person's own tier, as a `VARCHAR(20)` holding a tier **name**. It echoes `tblAccessTiers.Name` but carries **no foreign key**, and that is deliberate: an unknown or retired tier name degrades to "no requirement" instead of blocking a save or a read. `schema.sql` cites this column as its worked example of the pattern
 - `tblUsers.CcliNumber` — the user's CCLI licence number (validated format)
 - `tblUsers.CcliVerified` — whether the CCLI number has been verified (0/1)
+
+> **Corrected 2026-09-08.** This list also used to name `tblUserPurchases` as the table recording purchases and subscriptions. There is no such table: it was a guessed 2019-vintage shape declared only in `schema.sql`, never created by any migration, never read or written by any code, and dropped on 2026-07-30 alongside `tblSessions`, `tblUserPermissions` and `tblMigrations` (headstone at `appWeb/.sql/schema.sql:980-998`). And `tblUsers.AccessTier` was described as a foreign key to `tblAccessTiers`; it is not one, deliberately — see the corrected entry above.
 
 ---
 
@@ -263,7 +305,13 @@ User groups control access to release channels:
 | RC Testers | No | No | Yes | Yes |
 | Public | No | No | No | Yes |
 
-Access is the **union** of all group memberships — if any group grants access to a channel, the user has it. Users have a primary `group_id` on the `users` table, with additional memberships via `user_group_members`.
+Each user belongs to exactly one group, recorded in the single `tblUsers.GroupId` column. That
+group's four flags are the whole answer.
+
+> **Corrected 2026-09-08.** This paragraph said access was "the union of all group memberships", with
+> a primary `group_id` plus extra memberships in a `user_group_members` join table. There is no such
+> table (it was dropped on 2026-07-30, having never been read by any code), and the column is
+> `tblUsers.GroupId`, not `users.group_id` — this codebase has no snake_case tables or columns.
 
 ---
 

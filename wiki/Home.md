@@ -22,9 +22,17 @@ iHymns provides searchable hymn and worship song lyrics from multiple songbooks,
 
 | Platform | Technology | Status |
 |---|---|---|
-| Web PWA | PHP 8.5+, Bootstrap 5.3.6, Vanilla JS (ES modules), Fuse.js | Core + Enhanced complete |
-| Apple (iOS/iPadOS/tvOS/visionOS/macOS/watchOS) | Swift 6.3, SwiftUI | Phase 1+2 code-complete, unreleased |
-| Android (+ Fire OS, Android TV) | Kotlin 2.1, Jetpack Compose | Scaffold / in progress |
+| Web PWA | PHP 8.4 / 8.5, MySQL, Bootstrap 5.3.6, vanilla JS (ES modules) | Core + Enhanced complete |
+| Apple (iOS/iPadOS/tvOS/visionOS/macOS/watchOS) | Swift 6 language mode, SwiftUI | Phase 1+2 code-complete, unreleased |
+| Android (+ Fire OS, Android TV) | Kotlin 2.4, Jetpack Compose | Scaffold / in progress |
+
+> **Corrected 2026-09-08.** Three things in this table were wrong. **Fuse.js** was listed as part of
+> the web stack — it and the whole browser-side song corpus were removed in WS-J #1020, and search
+> has been a live MySQL full-text query ever since. **PHP 8.5+** overstates the floor: CI runs the
+> full PHP suite on 8.4 *and* 8.5, so 8.4 is proven and turning it away would block a perfectly good
+> host. And the language versions were both stale — nothing in the repo mentions Swift 6.3
+> (`Shared.xcconfig` sets the language mode to 6.0 and the shared package declares tools version
+> 6.2), and the Kotlin plugins are pinned at 2.4.10, not 2.1.
 
 ---
 
@@ -79,7 +87,28 @@ iHymns provides searchable hymn and worship song lyrics from multiple songbooks,
 | `v1.x.x` | Phase 1 stable (current) |
 | `v2.x.x` | Phase 2 (iLyrics dB integration) |
 
-Versioning is **tag-free** (#1963 → #1965). The authoritative `MAJOR.MINOR` is committed in `includes/infoAppVer.php`; `deploy.yml` classifies the Conventional-Commit prefixes on each alpha push (`feat:` → minor bump, `feat!:`/`BREAKING CHANGE:` → major bump, everything else → build-only) and, on a clear signal, commits the new `MAJOR.MINOR` back to the branch — never a git tag. The displayed **build number** is `git rev-list --count HEAD`, shown alongside the version in Settings → About. See [[Development Setup]] § Versioning and [[Deployment & CI-CD]] for the full pipeline.
+Versioning is **tag-free** (#1963 → #1965). The authoritative `MAJOR.MINOR.PATCH` is committed in
+`includes/infoAppVer.php`; `deploy.yml` classifies the Conventional-Commit prefixes on each alpha
+push and, on a clear signal, commits the new version back to the branch — never a git tag. There are
+three levels that move it and one that does not:
+
+| Signal on the squash-merge | Effect |
+|---|---|
+| `feat:` | Minor bump (and the patch digit resets to 0) |
+| `feat!:` / `fix!:` / any `!` / a line-anchored `BREAKING CHANGE:` | Major bump |
+| A body line reading exactly `Release: patch` (case-insensitive, whole line) | Patch bump — the third digit only, nothing else moves. This is the deliberate "this is a bug-fix release" signal, which matters for the app stores even though the web ships continuously |
+| Everything else — `fix`, `chore`, `docs`, `refactor`, `perf`, `ci`, or an unlabelled subject with no `Release: patch` footer | Build-only: the visible version does not move at all, just the build number |
+
+The **build number** is a separate field, `git rev-list --count HEAD`, injected on every deploy and
+shown as its own row in Settings → About. It never enters the version's patch digit. See
+[[Development Setup]] § Versioning and [[Deployment & CI-CD]] for the full pipeline.
+
+> **Corrected 2026-09-08.** This paragraph described the committed anchor as `MAJOR.MINOR` and said
+> "everything else → build-only", which hid a real mechanism: since the marketing-version /
+> build-number split the anchor is a full three-part version, and a deliberate patch release can be
+> asked for with a `Release: patch` footer (implemented as `re_patch` in
+> `.github/workflows/scripts/classify-bump.sh`). Somebody following the old wording would not have
+> known a patch release was possible, let alone how to request one.
 
 ---
 

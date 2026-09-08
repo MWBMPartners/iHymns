@@ -27,7 +27,7 @@
 | Apple Universal (iOS / iPadOS / macOS / tvOS / watchOS / visionOS) | Swift 6.3, SwiftUI, one SwiftPM package (`iHymnsKit`) shared across four thin app shells | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
 | Android / Fire OS | Kotlin, Jetpack Compose | Scaffold / in progress |
 
-The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning every Apple platform, with native-only extras — Sign in with Apple, an offline-first cache, Universal Links, Home Screen widgets — layered on top of web-app feature parity. It is in active development and not yet published to the App Store or TestFlight; see the [Native Apps](iHymns.wiki/Native-Apps-(Apple-&-Android).md) wiki page for current status.
+The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning every Apple platform, with native-only extras — Sign in with Apple, an offline-first cache, Universal Links, Home Screen widgets — layered on top of web-app feature parity. It is in active development and not yet published to the App Store or TestFlight; see the [Native Apps](wiki/Native-Apps-(Apple-&-Android).md) wiki page for current status.
 
 ---
 
@@ -44,6 +44,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Number search** — numeric keypad with physical keyboard support; configurable live search.
 - **Default songbook** — pre-selects in number search, keyboard quick-jump, and shuffle.
 - **Formatted lyrics** — verse, chorus, refrain, bridge with optional numbering and chorus highlighting.
+- **Who sings each line** (#2073) — where a hymn marks parts for different groups ("the women sing these two lines, then the men, then everyone"), that is recorded as real information about who sings, not as words of the song. A small label sits above each group's lines, a phrase echoed back by another group is shown as an echo, and a song sung in a round gets an extra Presentation-mode slide showing the staggered order each voice comes in. Screen readers announce the grouping properly; the label never leaks into the projected words. Imports from OpenLyrics and similar formats keep these markings instead of dropping them, and a curator review queue at `/manage/vocal-parts-review` turns markings already sitting in old lyric text into real assignments.
 - **Multi-language medleys** (#858) — per-component language overrides apply correct screen-reader pronunciation, browser hyphenation, and JSON-LD `inLanguage` indexing.
 - **Multi-level list sorting** (#1786) — a **Sort ▾** control on every catalogue list (songbooks, a songbook's songs, favourites, search results, theme / musician / tune / publisher / work / identifier pages) builds up to 3 sort levels; remembered per surface on the device and synced to the account when signed in.
 
@@ -148,7 +149,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 
 - **Search engine visibility** (#2025) — a Settings card lets an admin choose, independently for each of the three site copies (production, beta preview, dev), whether it should be listed by search engines like Google. Production is listed by default; the beta and dev copies are hidden by default, so an in-progress song page on a preview site can't turn up in a web search alongside the real one. Switching a copy off is a full search-engine hide (it stops appearing in the sitemap, tells search engines not to list any of its pages, and drops its sitemap link from `robots.txt`) while the site itself keeps working normally for everyone the whole time. The site's sitemap (`/sitemap.xml`) was also hardened the same day: it's generated live from the database with an honest last-changed date per entry, split into a paginated index so it never runs into the sitemap size limits as the catalogue grows, and reuses a cached response when nothing has changed since a crawler's last visit.
 - **Guided setup wizards** — eight step-by-step wizards, all built on one shared stepper framework, walk an admin through the setup screens that most benefit from a bit of hand-holding instead of a bare form: adding a new external-link provider, songbook, live-service venue, organisation or song; connecting an external service (IntAppsAPI, CueRCode, CAPTCHA, email, Sign in with Apple, outbound webhooks) from the **Settings** page; getting a brand-new install running end to end from **Database Setup**; and safely turning content locking on from the **Gating Hub**. Every wizard is purely additive — the classic manual form or switch it walks through is always still there, unchanged — and each one finishes with a live connection test, a real preview, or a plain summary of what it just did before anything changes.
-- **The backend is fully API-covered** — the Web/PWA and both native apps (Apple, Android/FireOS) reach every admin/curator capability, not just consumer reads, through `api.php` and the editor API (`manage/editor/api2.php`) exclusively; there is no `/manage/*.php` write reachable only from a browser session. The 2026-08-28/29 API-coverage program added roughly 90 new `admin_*`/`org_admin_*` registry-CRUD and org-self-service actions and gave the editor API `Authorization: Bearer` support (alongside the existing session cookie) so a native curator app can authenticate the same way `api.php` already does. A standing, mutation-tested guard (`tests/php/test-manage-action-api-coverage.php`) derives the full action list from the source tree on every run and fails if a new admin page ever grows an action without API coverage or an explicit web-only reason — see the [Architecture](iHymns.wiki/Architecture.md) wiki page.
+- **The backend is fully API-covered** — the Web/PWA and both native apps (Apple, Android/FireOS) reach every admin/curator capability, not just consumer reads, through `api.php` and the editor API (`manage/editor/api2.php`) exclusively; there is no `/manage/*.php` write reachable only from a browser session. The 2026-08-28/29 API-coverage program added roughly 90 new `admin_*`/`org_admin_*` registry-CRUD and org-self-service actions and gave the editor API `Authorization: Bearer` support (alongside the existing session cookie) so a native curator app can authenticate the same way `api.php` already does. A standing, mutation-tested guard (`tests/php/test-manage-action-api-coverage.php`) derives the full action list from the source tree on every run and fails if a new admin page ever grows an action without API coverage or an explicit web-only reason — see the [Architecture](wiki/Architecture.md) wiki page.
 - **Song Editor** — the granular per-edit **v2 editor** (#1601) is the default at `/manage/editor/` (redirects there automatically; the previous whole-song editor remains available via `?legacy=1` while the migration completes); every change auto-saves as you make it. Multi-select bulk actions — **verify**, **tag** (add or remove), **move**, **delete** and **export** — now run directly in the v2 editor's bulk toolbar (#1628). Eight tabs: Metadata, Structure (lyrics, a chords box, the Arrangement running-order editor, per-component language overrides #858, per-line translations/annotations #1088, section types sourced from a live `tblSongPartTypes` registry #1869), Credits, Links, Tags, **Media** (#853), Preview, Revisions.
 - **Metadata that fills itself in** (#1862, epic #1863) — the Metadata tab derives the copyright display line live from Copyright Year(s)/Holder (a free-text override remains for a genuinely custom statement), suggests Public Domain from a credited contributor's death date or an admin-configurable publication-year fallback (never auto-ticked), and shows Audio/Sheet-music availability as a read-only line derived from the Media tab — the old manual checkboxes are gone. Across the app, every field that references a registry (Tune Name, Copyright Holder, Publisher, group members, song/songbook pickers, …) is now a find-or-create search-select rather than free text (#1863, #1864–#1869).
 - **Revision history** — every save writes `tblSongRevisions`; a per-song Revisions tab (a History modal in the legacy editor) with per-revision Restore + global audit log at `/manage/revisions` (#400). The v2 Revisions tab also shows a per-revision **field-level diff** before you restore, and a **Field history** view (#1122) — one row per field showing who last changed it and when, with a per-field **Revert** that undoes just that one field as a new edit (never rewriting history) without discarding other changes. Restore semantics differ by editor version too: v2 restores the state a revision *left* the song in; the legacy editor restored the state *before* that edit.
@@ -162,12 +163,12 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 
 ## Admin Portal
 
-Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. 48 destinations registered in the shared admin nav (`manage/includes/admin-links.php`), organised as Dashboard + 7 groups (the #1822 reorg split the live-service pages into their own group and gave every group a plain-English name).
+Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. 49 destinations registered in the shared admin nav (`manage/includes/admin-links.php`), organised as Dashboard + 7 groups (the #1822 reorg split the live-service pages into their own group and gave every group a plain-English name).
 
 | Group | Surfaces |
 | --- | --- |
 | **Dashboard** | Library + activity snapshot, quick-links |
-| **Songs** | Song Editor · Song Requests · Edit History (`/manage/revisions`) · Missing Numbers · Find Duplicates (`/manage/duplicate-songs`) · Deleted Songs (`/manage/deleted-songs`, #1694) |
+| **Songs** | Song Editor · Song Requests · Edit History (`/manage/revisions`) · Missing Numbers · Find Duplicates (`/manage/duplicate-songs`) · Voice-part suggestions (`/manage/vocal-parts-review`, #2073) · Deleted Songs (`/manage/deleted-songs`, #1694) |
 | **Song Library** | Songbooks · Songbook Series · Collections (`/manage/catalogues`) · Works (`/manage/works`) · Tunes (`/manage/tunes`, #1748) · Publishers (`/manage/publishers`) · Musicians (`/manage/musicians`, incl. Add in Bulk + a registry-duplicate review companion at `/manage/musician-duplicates`, #1785) · Languages · Tags & Themes (`/manage/tags`) · Link Types (`/manage/external-link-types`) · Print Templates · Scan Import (`/manage/ia-reconcile`) |
 | **Live Services** | Venues (`/manage/venues`) · Projector Screen (`/manage/service-projection`) · Lead a Service (`/manage/service-lead`) |
 | **People** | Users · User Groups · Organisations · My Organisations · My CCLI Report (`/manage/my-ccli-report`, #1861) |
@@ -233,7 +234,7 @@ npm run dev    # PHP dev server at http://localhost:8000
 
 ## Database Setup
 
-iHymns uses MySQL with a `tblCamelCase` schema spanning 166 tables (`CREATE TABLE` statements in `appWeb/.sql/schema.sql`). The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](iHymns.wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
+iHymns uses MySQL with a `tblCamelCase` schema spanning 166 tables (`CREATE TABLE` statements in `appWeb/.sql/schema.sql`). The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
 
 ### Database prerequisites
 
@@ -322,7 +323,7 @@ iHymns/
 │   └── .bulk_import_uploads/  Staging for bulk-import ZIPs
 ├── appApple/             Native Apple Universal app (Swift / SwiftUI, iHymnsKit package) — Phase 1 + Phase 2 code-complete, consolidated and CI-compiled, unreleased
 ├── appAndroid/           Android app (Kotlin / Compose) — scaffold / in progress
-├── iHymns.wiki/          GitHub wiki (cloned alongside as a sibling — see below)
+├── wiki/                 Developer & user wiki pages, tracked in this repository
 ├── help/                 User documentation
 ├── Project_Plan.md       Detailed project plan
 ├── PROJECT_STATUS.md     Current status tracker
@@ -330,7 +331,12 @@ iHymns/
 └── DEV_NOTES.md          Developer notes & deployment setup
 ```
 
-The wiki sibling-clone pattern: clone the wiki repo alongside the main checkout so it stays in sync without polluting the app tree:
+**Correction (2026-09-07).** This section used to list a folder called `iHymns.wiki/` in the tree, and
+several links above pointed into it. That folder is **not part of this repository** — it is ignored by
+git on purpose, because it is where you may optionally clone GitHub's own separate wiki repository if
+you want a local copy. Every one of those links was therefore dead on GitHub. The wiki pages that
+really are tracked here live in **`wiki/`**, and the links now point there. If you do want the
+separate GitHub wiki checked out alongside this one, this still works and is still ignored by git:
 
 ```bash
 git clone https://github.com/MWBMPartners/iHymns.wiki.git
@@ -349,7 +355,7 @@ git clone https://github.com/MWBMPartners/iHymns.wiki.git
 | [`PROJECT_STATUS.md`](PROJECT_STATUS.md) | Current progress tracker. |
 | [`CHANGELOG.md`](CHANGELOG.md) | All changes by version. |
 | [`DEV_NOTES.md`](DEV_NOTES.md) | Deployment, secrets, architecture decisions. |
-| `iHymns.wiki/` | **Comprehensive developer & user documentation** — API reference, database & migrations, deployment, security, PWA features, setlists & arrangements. Sibling-cloned (see Project Structure above). |
+| [`wiki/`](wiki/) | **Comprehensive developer & user documentation** — API reference, database & migrations, deployment, security, PWA features, setlists & arrangements. Tracked in this repository; also published as the GitHub wiki. |
 
 ---
 

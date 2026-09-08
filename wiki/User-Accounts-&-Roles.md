@@ -38,26 +38,36 @@ Users are assigned to groups that control access to release channels. This enabl
 
 ### How It Works
 
-- Each user has a **primary group** (`users.group_id`)
-- Users can belong to **additional groups** via `user_group_members` (many-to-many)
-- Access is the **union** of all group permissions — if any group grants a channel, the user has it
+- Each user belongs to exactly **one** group, recorded in the single `tblUsers.GroupId` column
+- That group's four channel flags are the whole answer — there is no second, per-user override
 - The application checks group access to gate entry to non-RTW deployments:
   - `dev.ihymns.app` (Alpha) → requires `access_alpha = 1`
   - `beta.ihymns.app` (Beta) → requires `access_beta = 1`
 
-### Per-User Permission Overrides
+> **Corrected 2026-09-08.** This section used to say a user could belong to several groups at once
+> through a `user_group_members` join table, and that channel access was the union of them all.
+> There is no such table, and the running app has never worked that way: group membership has
+> always been the one `tblUsers.GroupId` column, which the `admin_group_member_add` action updates
+> directly. The table was declared in `schema.sql`, nothing ever read it, and it was dropped on
+> 2026-07-30 — see the headstone comment at `appWeb/.sql/schema.sql:1410`.
 
-The `user_permissions` table allows fine-grained overrides per user:
+### Fine-grained permissions — the role-to-entitlement matrix
 
-| Permission | Default (from role) | Override |
-|---|---|---|
-| `can_edit_songs` | editor+ | Grant to `user`, or revoke from `editor` |
-| `can_manage_users` | admin+ | Grant to `editor`, or revoke from `admin` |
-| `can_view_admin` | editor+ | Grant or revoke individually |
-| `can_share_setlists` | all | Revoke for specific users |
-| `can_access_api` | all | Revoke for specific users |
+Anything finer-grained than the four roles above is expressed as an **entitlement**: a named
+capability (`edit_songs`, `edit_users`, `manage_organisations`, `view_diagnostics`, and so on) that each role either
+holds or does not. An admin edits the role → entitlement matrix at `/manage/entitlements`, and every
+page and API action asks the same question through `userHasEntitlement()` in
+`includes/entitlements.php`. That is the only mechanism — there is no way to grant or revoke a
+capability for one individual person while leaving their role alone.
 
-`NULL` means inherit from role. `1` = explicitly granted. `0` = explicitly denied.
+> **Corrected 2026-09-08.** This page previously described a "Per-User Permission Overrides"
+> feature: a `user_permissions` table holding five named flags (`can_edit_songs`,
+> `can_manage_users`, `can_view_admin`, `can_share_setlists`, `can_access_api`) with
+> `NULL`/`1`/`0` meaning inherit/grant/deny. **That feature never shipped.** The table existed only
+> as a declaration in `schema.sql`; no migration ever created it on a real install and no line of
+> application code ever read or wrote it. It was dropped on 2026-07-30, and `schema.sql`'s own
+> headstone comment (line 1420) says so in as many words. Role-based gating through
+> `tblUsers.Role` plus the entitlements matrix above is, and always was, the live mechanism.
 
 ---
 
@@ -88,7 +98,7 @@ Used by: PWA frontend, native iOS/Android apps
 | Mechanism | Bearer tokens in `Authorization` header |
 | Token format | 64-character lowercase hex (32 random bytes) |
 | Token lifetime | 30 days |
-| Storage (server) | `api_tokens` table in MySQL |
+| Storage (server) | `tblApiTokens` table in MySQL (**corrected 2026-09-08** — this said `api_tokens`; there are no snake_case tables in this codebase) |
 | Storage (PWA) | `localStorage` (`ihymns_auth_token`) |
 | Storage (iOS) | Keychain (recommended) |
 | Storage (Android) | EncryptedSharedPreferences (recommended) |
@@ -149,7 +159,7 @@ User enters credentials → POST auth_login
     ├── Look up user by email (may not exist yet)
     ├── Generate 48-char hex token + 6-digit code (10-min expiry)
     ├── Invalidate any previous unused tokens for this email
-    ├── Send email with magic link + code (TODO: email delivery)
+    ├── Send email with magic link + code via EmailService
     └── Return 200 (always, to prevent email enumeration)
 
 2a. User clicks magic link → POST auth_email_login_verify { token }
@@ -178,8 +188,10 @@ User enters credentials → POST auth_login
     ├── Look up user by username or email
     ├── Generate reset token (48 hex chars, 1-hour expiry)
     ├── Delete any existing tokens for this user
-    ├── Store new token in password_reset_tokens table
-    └── Return success (+ dev token in non-production)
+    ├── Store new token in the tblPasswordResetTokens table
+    ├── Send the reset email via EmailService (template `password-reset`)
+    └── Return the same success body either way, so the response can't be used
+        to find out whether an account exists
 
 2. User enters token + new password → POST auth_reset_password
     ├── Validate token (exists, not expired, not used)
@@ -190,7 +202,13 @@ User enters credentials → POST auth_login
     └── Return success
 ```
 
-**Note:** In production, the reset token should be delivered via email. Currently, the token is returned in the API response (`_dev_token`) for development/testing purposes.
+> **Corrected 2026-09-08.** This spot used to carry a note saying the reset token was returned in
+> the API response as `_dev_token` "for development/testing", with email delivery still to come.
+> **That is not true and has not been for some time.** `auth_forgot_password` sends a real email
+> through `EmailService::sendTemplate('password-reset', …)` (`api.php:4995`), and `_dev_token`
+> appears nowhere in `api.php` or anywhere under `manage/`. The token is never shown on screen. The
+> passwordless magic-link flow above sends for real in the same way (`api.php:5249`). The note is
+> worth recording rather than deleting silently, because it told people not to check their inbox.
 
 ---
 
@@ -200,22 +218,51 @@ In addition to role-based access, iHymns uses a **content tier** system to gate 
 
 ### Tier Levels
 
-| Level | Tier | Gated Features |
+| Level | Tier name | What it opens up |
 |---|---|---|
-| 0 | Free | Lyrics only |
-| 1 | Basic | Lyrics + song metadata extras |
-| 2 | Standard | Basic + MIDI audio playback |
-| 3 | Premium | Standard + PDF sheet music downloads |
-| 4 | Ultimate | All content |
+| 0 | `public` — Public | Public-domain songs only. No sign-in needed. |
+| 10 | `free` — Free | All song lyrics, including copyrighted ones. Sign-in needed. |
+| 20 | `ccli` — CCLI Licensed | Full lyrics plus audio playback, on a verified live CCLI licence. |
+| 30 | `premium` — Premium | Audio playback, MIDI and PDF sheet-music downloads, offline saving. |
+| 40 | `pro` — Professional | Everything, including API access and bulk export. |
+
+These are the five tiers seeded into `tblAccessTiers` by `appWeb/.sql/schema.sql:2134`. The `Level`
+number is what every comparison is made against, and an admin can edit it per install on
+`/manage/tiers` — so treat the numbers above as the shipped starting point, not constants. What each
+tier can actually *do* comes from the `TIER_CAPS` registry in
+`includes/access_tier_validation.php`, never from the tier's name.
+
+> **Corrected 2026-09-08.** This table used to list five tiers named Free (0), Basic (1), Standard
+> (2), Premium (3) and Ultimate (4). Every column was wrong: "Basic", "Standard" and "Ultimate" do
+> not exist anywhere in the codebase, `public` and `ccli` were missing, and the levels run in tens
+> rather than ones. Anyone writing a gate against the old table would have got every level
+> comparison wrong.
 
 ### Tier Resolution (Personal vs Organisation)
 
 Each user may have:
 
-- A **personal tier** stored on `tblUsers.AccessTier` (set by purchase, admin override, or default)
-- An **organisation tier** inherited from their user group membership
+- A **personal tier**, stored on `tblUsers.AccessTier`
+- An **organisation tier**, worked out from the organisations they belong to and the licences those
+  organisations hold
 
-The effective tier is always the **higher** of the two: `MAX(personal_tier, org_tier)`. This means a user in a Premium organisation automatically gets Premium access regardless of their personal tier setting.
+The effective tier is always the **higher** of the two, compared by the live `tblAccessTiers.Level`
+value. So a member of an organisation holding a Premium licence gets Premium access whatever their
+personal tier says.
+
+The organisation half is resolved by `resolveEffectiveTier()` in `includes/ccli_validator.php`. It
+starts from `tblOrganisationMembers`, walks up the `tblOrganisations.ParentOrgId` chain (so
+membership of a branch church also inherits the parent body's licences), collects every live licence
+on that chain — both the legacy one recorded directly on the organisation row and the several that
+can sit in `tblOrganisationLicences` — and maps each licence to the tier it confers via
+`tblLicenceTypes.ConfersTier`. Expired licences confer nothing.
+
+> **Corrected 2026-09-08.** This section used to say the organisation tier was "inherited from their
+> user group membership". It is not, and never was: the strings `tblUserGroups` and `GroupId` do not
+> appear once in `ccli_validator.php`. **User groups and content tiers are two completely separate
+> things** — groups control which release channel (Alpha / Beta / RC / RTW) a person may open, and
+> have nothing to do with content access. Conflating the two is what produced the error, so it is
+> worth saying plainly.
 
 ### CCLI Licence Validation
 
@@ -250,8 +297,9 @@ A valid CCLI licence may unlock additional content usage rights depending on the
 | Setlists (synced) | — | Yes | Yes | Yes | Yes |
 | Share setlists | Yes | Yes | Yes | Yes | Yes |
 | Song requests | Yes | Yes | Yes | Yes | Yes |
-| MIDI audio playback | — | Tier 2+ | Tier 2+ | Tier 2+ | Yes |
-| PDF sheet music | — | Tier 3+ | Tier 3+ | Tier 3+ | Yes |
+| MIDI file | — | `premium`+ | `premium`+ | `premium`+ | `premium`+ |
+| PDF sheet music | — | `premium`+ | `premium`+ | `premium`+ | `premium`+ |
+| Recorded audio playback | — | `ccli`+ | `ccli`+ | `ccli`+ | `ccli`+ |
 | Song editor | — | — | Yes | Yes | Yes |
 | Delete songs (recoverable — see [[Database & Migrations]]) | — | — | Yes | Yes | Yes |
 | Purge songs (permanent, irreversible) | — | — | — | Yes | Yes |
@@ -261,6 +309,15 @@ A valid CCLI licence may unlock additional content usage rights depending on the
 | My CCLI Report (own org only, `/manage/my-ccli-report`, #1861) | — | Yes¹ | Yes¹ | Yes¹ | Yes¹ |
 | App settings | — | — | — | — | Yes |
 | Assign global_admin | — | — | — | — | Yes |
+
+> **Corrected 2026-09-08.** The three content rows above used to read "Tier 2+" and "Tier 3+",
+> naming tier levels that do not exist (see the corrected tier table earlier on this page), and gave
+> Global Admin a blanket "Yes". A role does not confer a tier: `resolveEffectiveTier()` reads the
+> person's own `tblUsers.AccessTier` and their organisations' licences, and neither it nor
+> `includes/access_resolver.php` contains a single mention of `global_admin`. Note too that this
+> whole tier column is **dormant** unless an operator has switched content gating on
+> (`tblAppSettings.content_gating_enabled = '1'`); with the switch off — the shipped default —
+> nothing here is enforced at all.
 
 ¹ `My CCLI Report`'s entitlement (`view_org_ccli_report`) is open to every signed-in role by default —
 it's a role-level kill-switch, not the real access control. The REAL scoping is structural: the page's
@@ -348,7 +405,7 @@ operator action (an un-run migration, or schema drift). It never falls back to a
 | `includes/account_lifecycle.php` | The erasure core |
 | `manage/includes/auth.php` → `setUserActive()` | The ONE state writer |
 | `appWeb/.sql/migrate-user-account-status.php` | The ONE migration |
-| `tests/php/test-account-lifecycle.php` | 100 behavioural assertions |
+| `tests/php/test-account-lifecycle.php` | 111 behavioural assertions (the number the run itself prints) |
 
 ---
 
@@ -356,17 +413,23 @@ operator action (an un-run migration, or schema drift). It never falls back to a
 
 | Table | Purpose |
 |---|---|
-| `users` | Account records (username, email, password hash, role, group). `Status` + `StatusChangedAt` carry the lifecycle state above (#1698) |
-| `user_groups` | Group definitions with version access flags |
-| `user_group_members` | Many-to-many group membership |
-| `user_permissions` | Per-user permission overrides |
-| `sessions` | Admin panel sessions |
-| `api_tokens` | Bearer tokens (64-char hex, 30-day expiry) |
-| `password_reset_tokens` | Reset tokens (48-char hex, 1-hour expiry, single-use) |
-| `user_setlists` | Server-side setlist sync |
-| `user_favorites` | Server-side favorites sync |
+| `tblUsers` | Account records (username, email, password hash, role, group). `Status` + `StatusChangedAt` carry the lifecycle state above (#1698) |
+| `tblUserGroups` | Group definitions with the four release-channel access flags |
+| `tblApiTokens` | Bearer tokens (64-char hex, 30-day expiry) |
+| `tblPasswordResetTokens` | Reset tokens (48-char hex, 1-hour expiry, single-use) |
+| `tblUserSetlists` | Server-side setlist sync |
+| `tblUserFavorites` | Server-side favourites sync |
 
 See [[Database & Migrations]] for full schema details.
+
+> **Corrected 2026-09-08.** Every name in this table was previously written in `snake_case`
+> (`users`, `user_groups`, `api_tokens`, …). This codebase has no `snake_case` tables at all — they
+> are all `tblCamelCase`, and a query written from the old list would simply have failed. Worse,
+> three of the rows named tables that **no longer exist under any name**: `user_group_members`,
+> `user_permissions` and `sessions` were all dropped from `schema.sql` on 2026-07-30 in the
+> orphan-inventory sweep, because each was a `schema.sql`-only declaration that no migration created
+> and no application code ever touched. The headstone comments explaining why sit at
+> `appWeb/.sql/schema.sql:980-998` and `:1410-1427`.
 
 ---
 

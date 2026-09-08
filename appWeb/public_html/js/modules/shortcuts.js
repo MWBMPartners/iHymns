@@ -94,7 +94,17 @@ export class Shortcuts {
                             </div>
                             <div class="shortcut-row">
                                 <dt><kbd>P</kbd></dt>
-                                <dd>Presentation mode</dd>
+                                <dd>Presentation mode (one section at a time)</dd>
+                            </div>
+                            <!-- #1714 left-over. That fix made the B key work
+                                 and updated /help's shortcut table, but this
+                                 second, on-screen list still had no B row — so
+                                 the app was describing its own shortcuts two
+                                 different ways. app.js's keydown switch handles
+                                 'b'/'B' -> display.toggleBlankScreen(). -->
+                            <div class="shortcut-row">
+                                <dt><kbd>B</kbd></dt>
+                                <dd>Blank the screen while presenting</dd>
                             </div>
                             <div class="shortcut-row">
                                 <dt><kbd>L</kbd></dt>
@@ -120,9 +130,19 @@ export class Shortcuts {
                                 <dt><kbd>+</kbd> / <kbd>-</kbd></dt>
                                 <dd>Font size</dd>
                             </div>
+                            <!-- Corrected 2026-09-08. This row used to read
+                                 "Close overlay / search". Escape has not closed
+                                 anything to do with search since #812 removed the
+                                 header search bar — app.js's Escape branch now only
+                                 hides this overlay, and its own comment says so
+                                 ("There is nothing left to close on this path").
+                                 Search is a page of its own now, which you leave by
+                                 navigating away. Escape does also leave Presentation
+                                 mode (present-mode.js), which is worth saying here
+                                 because the P row sits a few lines above. -->
                             <div class="shortcut-row">
                                 <dt><kbd>Esc</kbd></dt>
-                                <dd>Close overlay / search</dd>
+                                <dd>Close this overlay or Presentation mode</dd>
                             </div>
                             <div class="shortcut-row">
                                 <dt><kbd>?</kbd></dt>
@@ -144,6 +164,18 @@ export class Shortcuts {
                             <div class="shortcut-row">
                                 <dt><kbd>Backspace</kbd></dt>
                                 <dd>Delete last digit</dd>
+                            </div>
+                            <!-- Added 2026-09-08. app.js has always cleared a
+                                 half-typed song number on Escape, right beside the
+                                 Enter and Backspace handling this list already
+                                 documents — but only those two were ever listed, so
+                                 the way out of a mistyped number was undocumented.
+                                 Note this happens BEFORE the general Escape branch,
+                                 so while you are mid-number Escape cancels the
+                                 number rather than closing this overlay. -->
+                            <div class="shortcut-row">
+                                <dt><kbd>Esc</kbd></dt>
+                                <dd>Cancel the number you are typing</dd>
                             </div>
                         </dl>
                     </div>

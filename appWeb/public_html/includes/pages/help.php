@@ -9,7 +9,8 @@
  * Sign in with Apple, naming &amp; signing out signed-in devices),
  * searching, reading a song (musical key/tempo/time signature,
  * transpose/chords, sheet music, audio, compare versions, Presentation
- * mode), sharing &amp; exporting songs to projection software (incl.
+ * mode), who sings each part (voice-part labels, echoes and rounds),
+ * sharing &amp; exporting songs to projection software (incl.
  * chords travelling both ways with a ProPresenter file), favourites,
  * setlists (incl. templates &amp; service plans, sharing by link,
  * printing &amp; PDF), collections/series, Song of the Day, personal
@@ -23,7 +24,27 @@
  *
  * Loaded via AJAX: api.php?page=help
  *
- * Last updated: 2026-08-28 — under Account &amp; Signing In, noted that
+ * Last updated: 2026-09-08 — two corrections. (a) The Esc row in the
+ * shortcut table had said &ldquo;Close search / modal&rdquo; ever since
+ * #812 removed the header search bar; Escape has closed nothing
+ * search-related since then, so it now names what Escape really does. The
+ * matching row in the keyboard-shortcuts overlay
+ * (js/modules/shortcuts.js) was wrong in the same way and was fixed in
+ * the same change. (b) Two claims in the new &ldquo;Who Sings Each
+ * Part&rdquo; topic below were checked against the code and did not hold
+ * — see the note beside that topic&rsquo;s bullet list.
+ * Previous update 2026-09-07 — added a &ldquo;Who Sings Each Part&rdquo;
+ * topic, immediately after Reading a Song. The voice-part / echo / round
+ * feature shipped with help for CURATORS only (manage/help.php's
+ * &ldquo;Voice-part Suggestions&rdquo; section, which describes the review
+ * queue) — a reader who opened a song and saw a &ldquo;Women&rdquo; label
+ * above two lines had nothing anywhere explaining what it was. Also
+ * corrected the keyboard-shortcuts overlay (js/modules/shortcuts.js) to
+ * list the B key, which this page already documents.
+ * Previous update 2026-09-05 — corrected the Presentation-mode bullet and
+ * the shortcut table: P opens the one full-screen view (one section at a
+ * time, arrow keys), and B blanks the screen while presenting.
+ * Previous update 2026-08-28 — under Account &amp; Signing In, noted that
  * a signed-in device can now be given a name of its own (not just its
  * platform); under Sharing &amp; Exporting Songs, that a ProPresenter
  * export now carries a song's chords along with it; and under Admin
@@ -333,6 +354,98 @@ declare(strict_types=1);
                         <li><strong>Themes &amp; tags:</strong> where a curator has themed a song, its topics show as tappable chips near the top of the page (e.g. &ldquo;Grace&rdquo;, &ldquo;Communion&rdquo;). Tap one to open a theme page listing every hymn that shares it.</li>
                         <li><strong>Previous / next:</strong> step through the songbook in number order with the <kbd>&larr;</kbd> and <kbd>&rarr;</kbd> arrow keys.</li>
                     </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Who sings each part (#2073) — voice parts, echoes and rounds.
+             The feature shipped in 8219f456 with admin-side help only
+             (manage/help.php's "Voice-part Suggestions" section, which is
+             about the curator review queue). A reader opening a song and
+             seeing a "Women" label above two lines had nothing at all
+             explaining what it meant, so this topic covers the reader's
+             half. Placed immediately after "Reading a Song" because that
+             is where the labels are seen. -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-voice-parts"
+                        aria-expanded="false"
+                        aria-controls="help-voice-parts">
+                    <i class="fa-solid fa-users me-2" aria-hidden="true"></i>
+                    Who Sings Each Part
+                </button>
+            </h2>
+            <div id="help-voice-parts" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        Plenty of hymns and worship songs give different lines to different
+                        groups &mdash; the women sing two lines, then the men, then everybody
+                        together. Where someone has recorded that for a song, iHymns shows it
+                        rather than leaving you to guess.
+                    </p>
+                    <?php /* Corrected 2026-09-08, before this topic was ever deployed —
+                             the two bullets below were checked against the code in review
+                             and both were wrong, so no reader was ever shown them. Recorded
+                             here anyway so the mistakes are not repeated.
+
+                             (1) The first bullet offered "Everyone" as one of the labels a
+                             reader can see. It never appears. The group everybody sings in
+                             is labelled "All" on screen: see the 'all' kind in
+                             includes/vocal_parts.php, whose label is "All". "Everyone
+                             sings." is only that kind's internal description, which is never
+                             shown, and a song whose words say "EVERYONE:" is turned into a
+                             label reading "All" by the same file's marker map.
+
+                             (2) The Echoes bullet described the whole-line treatment (set in
+                             from the margin, italics, a line down the side) and then said an
+                             echo can be "a whole line, or just a few words inside a line",
+                             implying one description covered both. It does not. A whole-line
+                             echo gets css/app.css's .lyric-line--bg plus the run's dashed
+                             .lyric-voice-run--bg border. An echo of a few words inside a
+                             line is a span that gets .lyric-voice-span--bg instead: a dotted
+                             underline and a small return arrow, with no indent and no line
+                             down the side, because it sits in the middle of a sentence. */ ?>
+                    <ul>
+                        <li>
+                            <strong>A small label above the lines.</strong> You&rsquo;ll see a short
+                            label &mdash; &ldquo;Women&rdquo;, &ldquo;Men&rdquo;, &ldquo;All&rdquo;,
+                            &ldquo;Choir&rdquo;, or a named singer &mdash; sitting just above the run of
+                            lines it applies to. These labels are shown in capitals on the page, so you
+                            will see WOMEN, MEN, ALL. If several lines in a row are sung by the same
+                            group, the label appears once above the whole run, not on every line.
+                        </li>
+                        <li>
+                            <strong>Echoes.</strong> Where one group sings a short phrase and another
+                            answers it back, the answering part is shown as an echo. When the echo is a
+                            whole line, it is set slightly in from the margin, in italics, with a dashed
+                            line down its side. When only a few words inside a line are echoed, just
+                            those words are marked, with a small return arrow and a dotted underline.
+                        </li>
+                        <li>
+                            <strong>Rounds.</strong> A round (sometimes called a canon) is where several
+                            groups sing the <em>same</em> words, each starting a little later than the
+                            one before. When a song has one, Presentation mode adds an extra slide
+                            straight after the section it belongs to, showing which group comes in when,
+                            so you can step through the order in front of a congregation.
+                        </li>
+                        <li>
+                            <strong>Screen readers.</strong> Each run of lines is announced with who sings
+                            it &mdash; &ldquo;Women&rdquo;, &ldquo;Women and Men&rdquo;, or
+                            &ldquo;Women, echoed by Backing&rdquo; &mdash; so the grouping is spoken as
+                            information about the song, not read out as if it were part of the words.
+                        </li>
+                    </ul>
+                    <p class="small text-muted mb-0">
+                        Not every song has this. Many older entries still carry these markings as plain
+                        text inside the words themselves, left over from however the song was first typed
+                        in. Curators are working through those; if you&rsquo;re an editor, you set who
+                        sings what from the <strong>Who sings</strong> panel in the Song Editor, and
+                        there is a review queue of suggestions under <strong>Voice-part suggestions</strong>
+                        in the admin menu.
+                    </p>
                 </div>
             </div>
         </div>
@@ -976,7 +1089,16 @@ declare(strict_types=1);
                             <tr><td><kbd>?</kbd></td><td>Show full keyboard shortcuts overlay</td></tr>
                             <tr><td><kbd>/</kbd> or <kbd>Ctrl+K</kbd></td><td>Open search</td></tr>
                             <tr><td><kbd>#</kbd></td><td>Open number pad</td></tr>
-                            <tr><td><kbd>Esc</kbd></td><td>Close search / modal</td></tr>
+                            <?php /* Corrected 2026-09-08. This row used to read
+                                     &ldquo;Close search / modal&rdquo;. Escape has not closed
+                                     anything to do with search since #812 removed the header
+                                     search bar &mdash; search is a page of its own now, and
+                                     you leave it by navigating away. What Escape actually
+                                     does today is close the keyboard-shortcuts overlay
+                                     (js/app.js), close a Bootstrap pop-up such as the number
+                                     pad, and leave Presentation mode
+                                     (js/modules/present-mode.js). */ ?>
+                            <tr><td><kbd>Esc</kbd></td><td>Close the shortcuts overlay, a pop-up window, or Presentation mode</td></tr>
                             <tr><td><kbd>F</kbd></td><td>Toggle favourite (on song page)</td></tr>
                             <tr><td><kbd>P</kbd></td><td>Presentation mode (one section at a time, with arrow-key navigation)</td></tr>
                             <tr><td><kbd>B</kbd></td><td>Blank the screen while presenting</td></tr>

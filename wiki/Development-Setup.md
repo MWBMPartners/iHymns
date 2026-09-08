@@ -10,11 +10,20 @@
 |---|---|---|
 | Node.js | v22+ (LTS) | Song parser, build tools, tests |
 | npm | v10+ | Package management |
-| PHP | 8.5+ | Web server (local or shared hosting) |
+| PHP | 8.4 or 8.5 | Web server (local or shared hosting) |
 | Git | Latest | Version control |
 | VS Code | Latest | Recommended editor |
-| Xcode | 16+ | Apple app development (macOS only) |
+| Xcode | 26+ | Apple app development (macOS only) |
 | Android Studio | Latest | Android app development |
+
+> **Corrected 2026-09-08.** Two rows were wrong. **Xcode 16+** would not open the project at all —
+> CI selects Xcode 26 (`.github/workflows/apple.yml` picks the newest `Xcode_26*.app`), and the
+> deployment targets in `appApple/Config/Shared.xcconfig` are all 26.0, which Xcode 16 cannot build.
+> **PHP 8.5+** overstated the floor: CI runs the whole PHP suite on a matrix of 8.4 and 8.5
+> (`.github/workflows/test.yml`), so 8.4 is proven green and telling a shared-hosting operator they
+> need 8.5 would block a working setup. Worth flagging that `README.md` states a third figure, PHP
+> 8.1+, which nothing in CI exercises — one of those numbers is a guess and it would be worth
+> settling which, rather than leaving three floors in three documents.
 
 ---
 
@@ -46,7 +55,7 @@ npm test
 
 ### Running the Web PWA Locally
 
-The PWA requires PHP 8.5+. Options for local development:
+The PWA needs PHP 8.4 or 8.5. Options for local development:
 
 ```bash
 # Option 1: PHP built-in server
@@ -68,9 +77,16 @@ Ensure `appWeb/.auth/db_credentials.php` is configured (see [[Database & Migrati
 
 | Platform | Application ID |
 |---|---|
-| Web/PWA | `Ltd.MWBMPartners.iHymns.PWA` |
-| Apple | `Ltd.MWBMPartners.iHymns.Apple` |
-| Android | `Ltd.MWBMPartners.iHymns.Android` |
+| Web/PWA | `Ltd.MWBMPartners.iHymns.PWA` (`appWeb/public_html/includes/infoAppVer.php`) |
+| Apple | `app.ihymns` — plus `app.ihymns.watchkitapp` and `app.ihymns.widgets` (`appApple/project.yml`) |
+| Android | `ltd.mwbmpartners.ihymns`, with `.debug` appended on debug builds (`appAndroid/app/build.gradle.kts`) |
+
+The three deliberately do **not** share a naming scheme, so please don't "tidy" them into one — each
+is baked into store listings, signing and installed apps.
+
+> **Corrected 2026-09-08.** The Apple and Android rows previously read
+> `Ltd.MWBMPartners.iHymns.Apple` and `Ltd.MWBMPartners.iHymns.Android`. Neither string exists
+> anywhere in the repo. Only the PWA row was right.
 
 ---
 
@@ -78,7 +94,7 @@ Ensure `appWeb/.auth/db_credentials.php` is configured (see [[Database & Migrati
 
 ### PHP
 
-- PHP 8.5+ with `declare(strict_types=1)` in every file
+- PHP 8.4 or newer, with `declare(strict_types=1)` in every file
 - Modern syntax: `str_contains()`, `match` expressions, named arguments
 - Modular architecture: page fragments in `includes/pages/`, small reusable chunks of markup in `includes/partials/`, and shared PHP logic (data access, validators, admin cores, …) as individual files directly under `includes/` — there is no separate `includes/components/` directory
 - Direct-access prevention at top of every include file
@@ -164,10 +180,18 @@ Versioning is **tag-free and Conventional-Commit-driven** (#1963 → #1965, supe
 
 | Part | Source |
 |---|---|
-| `MAJOR.MINOR` | The committed `Version.Number` in `appWeb/public_html/includes/infoAppVer.php` — the authoritative anchor. `MAJOR` is hand-edited, rare (a deliberate product-identity bump). `MINOR` is bumped **in place** by `deploy.yml` itself when the Conventional-Commit classifier (`.github/workflows/scripts/classify-bump.sh`) finds a clear `feat:` (or major on `feat!:`/`fix!:`/a line-anchored `BREAKING CHANGE:`) among the commits since the anchor last changed — everything else (`fix`/`chore`/`docs`/`refactor`/`perf`/`ci`/an unlabelled subject) is build-only and leaves `MAJOR.MINOR` untouched (a safe under-bump, never an over-bump) |
+| `MAJOR.MINOR.PATCH` | The committed `Version.Number` in `appWeb/public_html/includes/infoAppVer.php` — the authoritative anchor, a full three-part version. `MAJOR` is hand-edited and rare (a deliberate product-identity bump). The other two digits are bumped **in place** by `deploy.yml` when the Conventional-Commit classifier (`.github/workflows/scripts/classify-bump.sh`) finds a clear signal among the commits since the anchor last changed: `feat:` → **minor** (and the patch digit resets to 0); `feat!:` / `fix!:` / any `!` / a line-anchored `BREAKING CHANGE:` → **major**; a merge-message body line reading exactly `Release: patch` (case-insensitive, whole line) → **patch**, moving the third digit and nothing else. Everything else — `fix`, `chore`, `docs`, `refactor`, `perf`, `ci`, or an unlabelled subject with no `Release: patch` footer — is build-only and leaves the version untouched (a safe under-bump, never an over-bump) |
 | `BUILD` | `git rev-list --count HEAD` — a monotonic per-commit id injected at deploy time, shown as its own row in Settings → About |
 
-The MINOR bump is committed back to the branch as a normal push (`[skip ci]`), **never as a git tag** — the retired tag-based scheme (`version-bump.yml`, then the #1963 dynamic-tag minter) is gone; `release.yml` still exists but is **dormant / manual-only** (fires only on a hand-pushed `v*` tag or a manual `workflow_dispatch`, never from the automated pipeline). **The load-bearing convention:** PR / squash-merge titles must carry a Conventional-Commit prefix — a feature merged without `feat:` simply doesn't bump the minor (safe but silent), while a non-feature titled `feat:` would wrongly bump it. Every user-visible `feat:` push also needs a plain-language bullet in `WHATS-NEW.md` (the in-app `/whats-new` source, never `CHANGELOG.md`). There are **15** GitHub Actions workflows under `.github/workflows/` (see [[Deployment & CI/CD]]).
+> **Corrected 2026-09-08.** The row above used to describe the anchor as `MAJOR.MINOR` and list only
+> two bump levels plus "everything else". Since the marketing-version / build-number split the
+> committed value is a full three-part version, and there is a third level the description never
+> mentioned: the whole-line `Release: patch` footer (implemented as `re_patch` in
+> `classify-bump.sh`, and documented at length in `infoAppVer.php`'s own doc-block). Somebody
+> following the old wording would not have known a deliberate patch release was possible, or how to
+> ask for one. [[Deployment & CI-CD]] already described all three levels correctly.
+
+The version bump is committed back to the branch as a normal push (`[skip ci]`), **never as a git tag** — the retired tag-based scheme (`version-bump.yml`, then the #1963 dynamic-tag minter) is gone; `release.yml` still exists but is **dormant / manual-only** (fires only on a hand-pushed `v*` tag or a manual `workflow_dispatch`, never from the automated pipeline). **The load-bearing convention:** PR / squash-merge titles must carry a Conventional-Commit prefix — a feature merged without `feat:` simply doesn't bump the minor (safe but silent), while a non-feature titled `feat:` would wrongly bump it. Every user-visible `feat:` push also needs a plain-language bullet in `WHATS-NEW.md` (the in-app `/whats-new` source, never `CHANGELOG.md`). There are **15** GitHub Actions workflows under `.github/workflows/` (see [[Deployment & CI/CD]]).
 
 ---
 

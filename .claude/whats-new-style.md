@@ -40,5 +40,19 @@ appears in the source at all."**
 3. Keep it to a handful of bullets. The deploy shows roughly the newest 5
    releases; older ones scroll off naturally, so there is no need to prune history.
 
+**Adding a bullet to a release that already exists: put it at the TOP of that
+release's list, not the bottom.** The deploy does not ship the whole file. It
+copies at most the newest **5** release sections, at most **10** bullets from each
+one, at most 50 bullets in total, and at most 48 KB — whichever limit it hits
+first (the exact numbers are the four `WHATS_NEW_…` settings at the top of the
+"Extract What's New for the app" step in `.github/workflows/deploy.yml` —
+`WHATS_NEW_MAX_SECTIONS`, `WHATS_NEW_PER_SECTION`, `WHATS_NEW_MAX_ENTRIES` and
+`WHATS_NEW_MAX_BYTES`; `tests/test-whats-new-extraction.js` lifts that
+same trimming program straight out of the workflow file and runs it, so the test
+cannot drift from what the deploy actually does). So if a release section
+already has ten bullets and you append an eleventh at the end, it is quietly left
+out of the page users see — no error, nothing to notice. Put new bullets first and
+the oldest ones drop off instead, which is what you want anyway.
+
 If in doubt whether a line is too technical: if a person who has never seen the
 codebase couldn't picture what it means, cut it or rewrite it as a plain benefit.

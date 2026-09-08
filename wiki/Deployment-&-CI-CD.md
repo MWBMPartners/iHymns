@@ -21,7 +21,7 @@ All branches deploy from `appWeb/public_html/` — the branch determines the rem
 | Directory | Purpose | Deployment |
 |---|---|---|
 | `appWeb/public_html/` | Single source directory | Deployed to all environments |
-| `appWeb/data_share/` | Runtime shared data (shared setlists, etc.) — the song-corpus JSON/SQLite mirror was removed in WS-J #1020 | Deployed alongside public_html (without `--delete`) |
+| `appWeb/data_share/` | Kept for legacy files and any remaining runtime artefacts. Both of its former uses are gone: the song-corpus JSON/SQLite mirror and the shared-setlist file store were **both** removed in WS-J #1020, and shared set lists now live in `tblSharedSetlists`. Its `setlist_json/` subfolder holds nothing but a `.gitkeep` and a `.htaccess`. **Corrected 2026-09-08** — this row still named shared setlists as a current use | Deployed alongside public_html (without `--delete`) |
 | `appWeb/private_html/` | Private admin tools, song editor | Separate SFTP path (`SFTP_PRIVATE_PATH`) |
 
 ---
@@ -177,7 +177,16 @@ The CI pipeline injects a `.env-channel` file during deployment, allowing server
 |---|---|
 | Alpha/Dev | `alpha` |
 | Beta | `beta` |
-| Production | `main` |
+| Production | `live` |
+
+The PHP side (`includes/environment.php`) only ever tests for the two literal strings `alpha` and
+`beta`. Anything else — `live`, some other value, or no file at all — resolves to production. So the
+production value is not load-bearing; it just needs to not be one of the other two.
+
+> **Corrected 2026-09-08.** The Production row said `main`. Nothing anywhere writes `main`:
+> `deploy.yml` sets `channel=live` for the main branch, and only the alpha and beta branches write
+> their own names. It happened not to break anything, for the reason just given — but somebody
+> debugging channel detection would have gone looking for a value that is never written.
 
 The app footer shows both numbers together but never merged: `iHymns v<MAJOR.MINOR.PATCH> · build <commit-count>[ · Alpha|Beta]` (tapping the version text goes through to `/whats-new`). The admin footer under `/manage/*` renders the identical `· build <n>` suffix from the same `Version.Build.Number` field, and the per-commit build number is also shown as its own row in Settings → About.
 
