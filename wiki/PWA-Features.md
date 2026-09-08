@@ -14,11 +14,20 @@
 - **Writer/composer pages** — all songs by a given writer, grouped by songbook
 
 ### Search
-- **Full-text search** — fuzzy search across titles, lyrics, writers, composers (Fuse.js)
+- **Full-text search** — across titles, lyrics, writers and composers. It runs on the server as a
+  live MySQL full-text query on every keystroke, so results are never stale; typo tolerance and
+  partial-word matching come from a boolean-prefix strategy in `SongData::searchSongs`
 - **Number search** — jump to a song by number within a songbook
 - **Numeric keypad** — modal number pad for quick song lookup (`#` keyboard shortcut)
 - **Search history** — recent search terms with one-click re-search
-- **TF-IDF related songs** — content-based similarity for "Related Songs" on song pages
+- **Related songs** — found on the server from shared writers and composers, shared tags, and the
+  same songbook (`api.php`'s `related_songs`, #308)
+
+> **Corrected 2026-09-08.** Two entries here were wrong. The search line credited **Fuse.js**, a
+> browser-side search library that was removed along with the whole client-side song corpus in WS-J
+> #1020. And "Related Songs" was described as **TF-IDF content-based similarity** — it has never
+> compared lyric content at all; the endpoint's own doc-block lists the three metadata joins named
+> above.
 
 ### Favourites
 - **Save/unsave** songs with star button or `F` keyboard shortcut
@@ -149,7 +158,7 @@ See [[User Accounts & Roles]] for full details.
 - **Do Not Track (DNT)** — respects browser DNT header, anonymises IP addresses
 - **No cookies** (for analytics) — consent tracked in localStorage
 - **Privacy policy** — comprehensive 12-section policy at `/privacy`
-- **Terms of use** — 12-section terms at `/terms`
+- **Terms of use** — 15-section terms at `/terms` (the 12-section privacy figure above is correct; the terms count was corrected 2026-09-08 after counting the numbered sections in `includes/pages/terms.php`)
 
 ---
 
@@ -174,7 +183,18 @@ See [[User Accounts & Roles]] for full details.
 
 ## Accessibility
 
-- **WCAG 2.1 AA** compliant
+- **WCAG 2.1 AA is the target** the code is written and CI-checked against, not a measured result.
+  `tests/test-contrast-registry.js` recomputes the contrast ratio for a registry of colour pairs
+  from the live CSS token values on every run, so a claimed number can't go unchecked — but that
+  check reads the CSS cascade, not a real browser render, so it cannot account for
+  `backdrop-filter`, layered shadows or renderer differences. No axe, WAVE or devtools pass has been
+  run. See [[Design]] § Accessibility for the full caveat and the open issues (#1150 / #1151).
+
+  > **Corrected 2026-09-08.** This bullet used to state "**WCAG 2.1 AA** compliant" as a flat fact,
+  > while [[Design]] carried an explicit warning that the claim is design intent only and has never
+  > been measured. The two pages contradicted each other, and the unqualified one is the more likely
+  > to be quoted. [[Design]] also records that the same flat claim was made once before while High
+  > Contrast mode was in fact producing about 1.44:1.
 - **Skip-to-content** link for keyboard navigation
 - **Focus indicators** — visible focus outlines on all interactive elements
 - **Reduced motion** — respects `prefers-reduced-motion`, disables animations

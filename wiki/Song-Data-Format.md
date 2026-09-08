@@ -20,7 +20,18 @@ Songs are stored as plain text files in `.SourceSongData/`, organised by songboo
 └── The Church Hymnal [CH]/
 ```
 
-> **WARNING:** The `.SourceSongData/` directory must NEVER be deleted or modified manually. It is the source of truth for all song data.
+> **WARNING:** The `.SourceSongData/` directory must NEVER be deleted or modified manually. These
+> files are the **historical one-time import source**, kept for provenance — the record of where the
+> catalogue originally came from.
+>
+> **They are not the source of truth.** Since the DB-direct rewrite (epic #1010) MySQL is the only
+> source of truth for song data at runtime; nothing in the running app reads these files, and new
+> content goes in through the Song Editor's bulk importers. The directory is also **gitignored**, so
+> it is not in the repo and a fresh clone will not have it.
+>
+> **Corrected 2026-09-08.** This warning used to call the directory "the source of truth for all song
+> data" — contradicting this same page further down, where it correctly says the database is
+> canonical at runtime. The do-not-delete instruction stands; it is still archival material.
 
 ### File Naming
 
@@ -157,7 +168,20 @@ The router supports flexible input: `MP-1` is normalised to `MP-0001`.
 
 ## Editor Import & Export Formats
 
-Beyond the historical `.SourceSongData/` → MySQL parser pipeline above, the Song Editor's bulk-import/export tooling reads and writes several projection-software formats — and is now the supported way to bring new song content into a live install (see [[Database & Migrations]] § Data Migration). Import: ChordPro, OpenLyrics/OpenLP, ProPresenter 6, **ProPresenter 7+** (`.pro`/`.probundle`/`.proplaylist`), VideoPsalm, FreeShow, EasyWorship, Proclaim, PPTX. Export: the same set (8 formats), offered publicly on any song/songbook page — see [[PWA Features]] § Export & Present.
+Beyond the historical `.SourceSongData/` → MySQL parser pipeline above, the Song Editor's bulk-import/export tooling reads and writes several projection-software formats — and is now the supported way to bring new song content into a live install (see [[Database & Migrations]] § Data Migration). The two sets are **not** the same — a few formats can only be read in, not written out.
+
+**Export (8 formats)** — the list in `includes/partials/export-menu.php`, offered publicly on any
+song or songbook page (see [[PWA Features]] § Export & Present): OpenSong, OpenLyrics/OpenLP,
+ProPresenter 6, ProPresenter 7+, VideoPsalm, FreeShow, Proclaim, ChordPro.
+
+**Import** — those same eight, plus EasyWorship (`.db`), PowerPoint (`.pptx`), ProPresenter bundles
+and playlists (`.probundle` / `.proplaylist`), and iHymns' own interchange JSON.
+[[Import & Export Fidelity]]'s "Not closure-tested here" section is the authoritative list of the
+import-only ones and says, for each, why it has no exporter.
+
+> **Corrected 2026-09-08.** This paragraph said "Export: the same set (8 formats)", which is not
+> true: EasyWorship and PowerPoint are import-only, and OpenSong — a real importer *and* exporter —
+> was missing from the import list altogether.
 
 **ProPresenter 7+ (epic #1968)** gets the most detail here because its wire format has a real gotcha for anyone building against it: PP7 does **not** store chords as inline `[G]`-style brackets in the slide text — that's only ProPresenter's own editing metaphor. A chord is a positioned protobuf attribute (a UTF-16 code-unit range + a chord string) layered over otherwise-clean plain lyric text. iHymns' own per-line `chords` cells are already positioned the same way, so the import/export mapping is direct — no inline-bracket parsing on either side. Decoding is a hand-rolled, independently-cross-validated proto3 wire-walker (`includes/propresenter7_decode.php`), never a self-consistent round-trip against iHymns' own exporter alone. See [[Architecture]] § ProPresenter interop and [[Database & Migrations]] for the fuller picture (media ingest, the dormant presentation-timeline schema).
 

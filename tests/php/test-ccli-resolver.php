@@ -690,9 +690,61 @@ if ($smUnit !== null) {
 $schemaSql = (string)file_get_contents($APPWEB . '/.sql/schema.sql');
 ok('G1  schema.sql no longer SEEDS ccli_validation_enabled',
    !str_contains($schemaSql, "('ccli_validation_enabled'"));
-ok('G2  the full-data dump no longer seeds it either',
-   !str_contains((string)file_get_contents($APPWEB . '/.sql/.fulldata/ihymns-full.sql'),
-                 "('ccli_validation_enabled'"));
+/* G2 used to read one specific file, appWeb/.sql/.fulldata/ihymns-full.sql. That file has
+   been untracked (#2096), which would have quietly turned this check into one that always
+   passes — it would "prove" the key is absent from a file that is absent. Worse than no
+   check, because the tick would still be read as coverage (rule #34).
+   So ask the real question of the WHOLE folder instead: does ANY .sql file anywhere under
+   appWeb/.sql/ seed this key? That is derived from the tree rather than from a filename
+   somebody typed, so it also covers any seed file added in future. */
+/* Walk the folder properly rather than using glob(). glob() skips folders whose
+   name starts with a dot, which would have silently missed .sql/.fulldata/ —
+   exactly the file this check used to be about. A scanner that quietly looks in
+   fewer places than you think is worse than no scanner, because the tick still
+   reads as coverage (rule #34). */
+$sqlSeedFiles = [];
+$sqlDir = $APPWEB . '/.sql';
+if (is_dir($sqlDir)) {
+    /* CATCH_GET_CHILD: if one folder in there cannot be opened, skip it and
+       carry on rather than throwing and killing the whole test file. A single
+       awkward folder should not be able to take out 40-odd other assertions. */
+    $walker = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($sqlDir, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::LEAVES_ONLY,
+        RecursiveIteratorIterator::CATCH_GET_CHILD
+    );
+    foreach ($walker as $entry) {
+        if ($entry->isFile() && strtolower($entry->getExtension()) === 'sql') {
+            $sqlSeedFiles[] = $entry->getPathname();
+        }
+    }
+    sort($sqlSeedFiles);
+}
+$g2Offenders   = [];
+$g2Unreadable  = [];
+foreach ($sqlSeedFiles as $sqlFile) {
+    $sqlText = @file_get_contents($sqlFile);
+    if ($sqlText === false) {
+        /* A file we could not open is NOT a file we checked (found by a
+           cross-model review, 2026-09-08). The old code cast false to an
+           empty string, and an empty string does not contain the banned key,
+           so an unreadable file counted as PASS *and* went into the "files
+           checked" total. That is the worst possible outcome: the tick and
+           the count both say it was covered when nothing was read at all.
+           Rule #34 — a scanner that quietly looks at less than it claims is
+           worse than no scanner, because its green reads as coverage. */
+        $g2Unreadable[] = basename($sqlFile);
+        continue;
+    }
+    if (str_contains($sqlText, "('ccli_validation_enabled'")) {
+        $g2Offenders[] = basename($sqlFile);
+    }
+}
+$g2Checked = count($sqlSeedFiles) - count($g2Unreadable);
+ok('G2  no .sql file under appWeb/.sql/ seeds it either (' . $g2Checked . ' of ' . count($sqlSeedFiles) . ' file(s) read)',
+   $g2Offenders === [] && $g2Unreadable === [],
+   ($g2Offenders !== [] ? 'seeds it: ' . implode(', ', $g2Offenders) . '. ' : '')
+   . ($g2Unreadable !== [] ? 'could not be read, so cannot be vouched for: ' . implode(', ', $g2Unreadable) : ''));
 ok('G3  a cleanup migration exists for installs that already have the row',
    is_file($APPWEB . '/.sql/migrate-remove-ccli-validation-setting.php'));
 $registrySrc = (string)file_get_contents($PUBLIC . '/manage/includes/migration-registry.php');

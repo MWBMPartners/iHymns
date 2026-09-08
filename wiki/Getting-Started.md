@@ -38,16 +38,46 @@ An account is optional but enables cross-device setlist sync:
 
 ### Keyboard Shortcuts
 
+**Navigation**
+
 | Key | Action |
 |---|---|
-| `/` | Open search |
-| `#` | Open numeric keypad |
-| `?` | Show keyboard shortcuts help |
+| `/` or `Ctrl`+`K` | Open search |
+| `#` | Open the number pad |
+| `←` | Previous song |
+| `→` | Next song |
+
+**Actions**
+
+| Key | Action |
+|---|---|
 | `F` | Toggle favourite |
-| `P` | Toggle presentation mode |
-| `L` | Go to setlists |
-| `Left/Right` | Previous/next song |
-| `0-9` | Quick-jump to song number |
+| `P` | Presentation mode (one section at a time) |
+| `B` | Blank the screen while presenting |
+| `L` | Open set lists |
+| `S` | Start auto-scroll |
+| `Space` | Pause auto-scroll |
+| `PageDown` | Next section — for a foot pedal or MIDI controller |
+| `PageUp` | Previous section — for a foot pedal or MIDI controller |
+| `+` / `-` | Font size |
+| `Esc` | Close the shortcuts overlay, or leave Presentation mode |
+| `?` | Show this list on screen |
+
+**Quick-jump to a song number**
+
+| Key | Action |
+|---|---|
+| `0`–`9` | Type the song number |
+| `Enter` | Go to that song |
+| `Backspace` | Delete the last digit |
+| `Esc` | Cancel the number you are typing |
+
+> **Corrected 2026-09-08.** This table listed eight shortcuts and was missing more than half of the
+> real set — `Ctrl`+`K`, `B`, `S`, `Space`, `PageUp`/`PageDown`, `+`/`-` and `Esc` were all absent.
+> The list above is taken from the app's own on-screen overlay (`js/modules/shortcuts.js`), which is
+> the authoritative one. Worth knowing that this exact drift has happened before: #1714 made the `B`
+> key work and updated the `/help` table but left the on-screen overlay behind, so all three lists
+> are downstream of the same code and go stale the same way.
 
 ---
 
@@ -56,7 +86,7 @@ An account is optional but enables cross-device setlist sync:
 ### Prerequisites
 
 - Node.js v22+ and npm v10+
-- PHP 8.5+ (for local web server)
+- PHP 8.4 or 8.5 (for the local web server) — those are the two versions CI runs the PHP suite on; this line said "8.5+" until 2026-09-08
 - Git
 
 ### Quick Start

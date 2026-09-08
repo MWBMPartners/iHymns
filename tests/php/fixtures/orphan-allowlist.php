@@ -770,7 +770,16 @@ return [
            reader-with-no-writer. Same F5/F6/1g/1h/1i/1j self-cleaning pattern
            this file's history already proves out (see the retired entries
            elsewhere in this file for the worked examples). */
-        'tblContentLicences'       => '#1668 licence-store consolidation — catalogue rows ship only in .sql/.fulldata/ihymns-full.sql, so a schema-only install reads an empty catalogue',
+        /* Corrected 2026-09-07. This entry used to say catalogue rows "ship only in
+           .sql/.fulldata/ihymns-full.sql". That was simply not true — that dump contained
+           a CREATE TABLE for tblContentLicences and ZERO INSERTs into it, so it never
+           seeded anything. The wrong note is worth calling out because it is most likely
+           why that 6.9 MB file looked load-bearing for months when nothing depended on it.
+           The rows really come from migrate-add-gating-facts-and-licence-types.php and
+           migrate-consolidate-org-licences.php. The dump itself has now been untracked
+           (#2096). The table is still genuinely reader-with-no-writer, which is what this
+           allowlist entry is actually for. */
+        'tblContentLicences'       => '#1668 licence-store consolidation — rows are written by the gating-facts and org-licence migrations, so a schema-only install that has not run them reads an empty catalogue',
         /* #1741 P4c entries for tblTuneAliases/tblTuneCredits/
            tblTuneExternalLinks RETIRED by #1748 — manage/tunes.php +
            includes/tune_admin.php now write all three (aliases/credits/

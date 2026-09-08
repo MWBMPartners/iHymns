@@ -29,6 +29,26 @@
  *   node tools/run-node-tests.js
  *   npm test
  *
+ * READING THE RESULT
+ * ------------------
+ * The very last line this prints is always one of:
+ *
+ *     TEST RESULT: PASS (109 suites)
+ *     TEST RESULT: FAIL (2 of 109 suites failed)
+ *
+ * (The numbers there are only to show the shape — the real ones come
+ * from the run.)
+ *
+ * That line exists because the older tick/cross summary block was
+ * repeatedly misread — someone (a person, or an automated helper)
+ * would scroll a long log, see a lot of ticks, and report "tests
+ * pass" while suites were in fact failing. One unmistakable sentence
+ * at the very bottom, in a fixed shape you can search for with
+ * `grep 'TEST RESULT:'`, removes the judgement call. Every older
+ * summary line is still printed above it; this is purely an addition.
+ * The sibling `tools/run-php-tests.php` ends with the identical shape,
+ * so one habit covers both runners.
+ *
  * Exit status: 0 if every test file exits 0, 1 if any file exits
  * non-zero (or fails to spawn).
  */
@@ -51,6 +71,12 @@ const testFiles = fs.readdirSync(TESTS_DIR)
 
 if (testFiles.length === 0) {
     console.error(`No test files found in ${TESTS_DIR} — that's almost certainly a bug in this runner, not an empty suite.`);
+    /* Print the verdict here too (found by a cross-model review, 2026-09-08).
+       Anything reading this output looks for a single TEST RESULT line, and
+       leaving it out on the one path where NOTHING ran is exactly backwards:
+       that is the moment a reader most needs to be told, and a missing line
+       reads far too easily as "nothing to report". */
+    console.log('TEST RESULT: FAIL (no test files found)');
     process.exit(1);
 }
 
@@ -103,5 +129,14 @@ if (failures.length > 0) {
 }
 
 console.log('');
+
+/* THE VERDICT — always the last line, always this exact shape, always on
+   normal output so `... | tail -1` and `grep 'TEST RESULT:'` both find it.
+   See the "READING THE RESULT" note at the top of this file. */
+console.log(
+    failed > 0
+        ? `TEST RESULT: FAIL (${failed} of ${testFiles.length} suites failed)`
+        : `TEST RESULT: PASS (${testFiles.length} suites)`
+);
 
 process.exit(failed > 0 ? 1 : 0);

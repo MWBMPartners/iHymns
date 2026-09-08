@@ -1,72 +1,68 @@
-# .claude/sessions/
+# `.claude/sessions/` — what lives here and why
 
-Scrubbed Claude Code session transcripts for this project. Committed so that starting a session on another dev device gives Claude continuity via `/resume`.
+This folder holds two very different kinds of file. Only one of them is committed.
 
-## ⚠️ Read this before committing
+## 1. Handoff notes — `<date>-HANDOFF.md` — **committed, and the ones that matter**
 
-Session transcripts are the full log of a Claude Code session — every prompt, every tool call, every file Claude read, every command Claude ran, and every response. That means they legitimately contain whatever happened to be in context, including:
+A handoff note is written by hand at the end of a working session. It says what landed, what did
+not, what was not checked, what is still open, and where to pick up. It is plain text, so a person,
+an editor, or any assistant can read it on any computer.
 
-- The contents of any `.env`, `.htpasswd`, config file, or credential file Claude read.
-- DB dumps, SQL results, query outputs with real data.
-- API responses, including anything with a token in an `Authorization` header.
-- Anything you pasted into the prompt.
+**These are what actually carry work forward.** Ten of them together come to about 224 KB. Every
+other `.claude/` document that mentions session history points at these, never at a raw log.
 
-The sync script (`tools/sync-claude-session.sh`) runs a **best-effort** secret-scrubber over each line before copying it here. It redacts common known token shapes (Anthropic keys, GitHub PATs, AWS access keys, Google API keys, generic `Bearer …`, private-key blocks). **It will not catch:**
+If you are finishing a session, write one of these. Follow the shape of the most recent one: a
+"where things stand right now" table at the top, then what landed, then what is still open.
 
-- A database password typed as plain text in a prompt.
-- A customer email in a test fixture Claude read.
-- A production URL with a session ID in the query string.
-- Any other secret whose shape doesn't match a known pattern.
+## 2. Raw conversation logs — `*.jsonl` — **not committed since 2026-09-07 (#2096)**
 
-### Workflow
+These are the complete machine-readable record of a conversation: every file read, every command
+run, every reply. They are useful locally. They were committed for about five months, and it turns
+out they could never have done the job they were kept for.
 
-```
-tools/sync-claude-session.sh            # copy + scrub every transcript
-git diff .claude/sessions/              # REVIEW THE DIFF
-git add .claude/sessions/               # only after the review passes
-git commit -m "chore(sessions): sync latest Claude transcripts"
-```
-
-If you find something sensitive in the diff, either:
-- Edit the file by hand to redact it, OR
-- Delete the file and don't commit it.
-
-### Options
+**Why they could not work.** Claude Code looks for a conversation in a folder named after **the full
+path of the project on that particular machine**. For this repository on this computer that is:
 
 ```
-tools/sync-claude-session.sh --dry-run   # list what would be synced
-tools/sync-claude-session.sh --latest    # only the newest transcript
+~/.claude/projects/-Users-lance-manasse-Projects-Coding---Development-MWBM-Partners-Ltd-GitHub-iHymns
 ```
 
-## What lives here
+The name is the absolute path with every character that is not a letter or a number replaced by a
+dash. So on a different computer, a different user account, or the same computer with the project in
+a different folder, the name is different and Claude Code looks somewhere else entirely. A log
+sitting inside the repository is, by definition, in the wrong place.
 
-- `*.jsonl` — one transcript per session, scrubbed. The filename matches the Claude Code session ID so `/resume` can find it.
-- `<date>-HANDOFF.md` — the human-readable resume point for a session.
+On top of that, `tools/sync-claude-session.sh` only ever copied **one way** — into the repository,
+never back out. There was no script that could put one where it needed to go.
 
-### Handoff pruning
+The result: twelve logs, **162 MB**, carried in every clone, read by nothing, ever.
 
-Only the **two or three most recent** `*-HANDOFF.md` files are kept in the working
-tree; older ones are pruned once their content has been folded into the current
-handoff, `MEMORY.md` and `ProjectBrief.md`. Pruning is a working-set tidy, **not**
-a deletion of record — every pruned handoff stays in git history forever. To find
-and read one:
+### What to do instead
 
+**To carry the work across** — which is nearly always what you actually want — write a handoff note.
+
+**To carry an actual conversation across**, the script is now two-way:
+
+```bash
+tools/sync-claude-session.sh --where            # where does Claude Code look on this machine?
+tools/sync-claude-session.sh                    # take scrubbed copies of the live logs
+# copy the .jsonl to the other machine however you like — USB, file transfer, cloud drive
+tools/sync-claude-session.sh --restore FILE     # run this THERE; puts it where it will be found
 ```
-git log --diff-filter=D --name-only -- .claude/sessions/   # what was pruned, and when
-git show <sha>^:.claude/sessions/2026-06-21-HANDOFF.md      # read it back
-```
 
-Some older `.claude/*.md` docs still cite pruned handoffs by path (e.g.
-`ProjectBrief.md`, the lyrics-cutover checklists). Those are dated historical log
-entries, not live navigation — recover the file with the commands above rather
-than treating the reference as broken.
+`--restore` works out the right folder from the repository's own location, so it is correct on any
+machine without being told anything. It refuses to overwrite a conversation that is already there.
 
-## What doesn't live here
+Be aware that a very long conversation is summarised rather than replayed in full when it is
+reopened, so a handoff note is often the better tool even when you have the log.
 
-- Per-user global memory (`~/.claude/CLAUDE.md`) — that's user-level, not project policy.
-- Custom slash commands / agents — those go in `.claude/commands/` or `.claude/agents/` when we agree to share them across the team.
-- Secrets, credentials, real customer data, DB dumps — full stop.
+## A word about secrets
 
-## When in doubt
+The export step runs each log through a scrubber that redacts things **matching a known pattern**:
+Anthropic keys, GitHub tokens, AWS keys, `Bearer` headers, private-key blocks. A check run on
+2026-09-07 confirmed it is doing its job — searching the committed logs for those shapes returned
+only already-redacted placeholders.
 
-Don't commit. A rescinded token is ten minutes of admin; a leaked one in git history is a forever problem.
+But it is best-effort and always will be. It cannot catch a password you typed while debugging, a
+customer's email address in a test file, or a database dump pasted into a prompt, because none of
+those look like anything in particular. **Before you share a log with anyone, read it.**

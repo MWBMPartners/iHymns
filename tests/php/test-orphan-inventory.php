@@ -165,6 +165,32 @@ function orphanCorpusFiles(): array
  */
 function orphanBucketFor(string $rel): ?string
 {
+    /* Documentation NEVER counts as a caller, wherever it lives.
+       ELI5: a page that TALKS ABOUT a feature is not the same as code that USES
+       it, so mentioning a name in a document must not make that name look wired.
+
+       This check was missing until 2026-09-08, and the effect was exactly the
+       mistake this whole file exists to catch. The buckets below match on the
+       start of the path, so ANY file under appApple/ counted as an Apple caller
+       — including appApple/dev-docs/*.md. Somebody then corrected a document to
+       say, truthfully, that the Apple app does NOT use the `access_tiers`
+       action. The words appeared under appApple/, the scanner read them as
+       proof of a caller, and the action stopped looking like an orphan.
+
+       So a document saying "this is NOT wired" made the guard believe it WAS.
+
+       The comment below already promised that *.md does not count. It was only
+       true by accident: markdown normally lives outside the bucket folders. A
+       promise in a comment with nothing enforcing it is the failure, not the
+       fix (rule #35) — so it is enforced here now.
+
+       Extensions, not folder names, because dev-docs/, docs/ and notes/ all
+       exist in different places and a new one would silently slip through. */
+    $docExt = ['md', 'markdown', 'txt', 'rst', 'adoc'];
+    if (in_array(strtolower(pathinfo($rel, PATHINFO_EXTENSION)), $docExt, true)) {
+        return null;
+    }
+
     if ($rel === 'appWeb/public_html/service-worker.js.php')      { return 'SW'; }
     if (str_starts_with($rel, 'appWeb/public_html/js/'))          { return 'WEB-JS'; }
     if (str_starts_with($rel, 'appWeb/public_html/manage/'))      { return 'ADMIN'; }

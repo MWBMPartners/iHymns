@@ -185,6 +185,46 @@ function _ihymnsVoiceFormatMs(int $ms): string
     return $m . ':' . str_pad((string)$s, 2, '0', STR_PAD_LEFT);
 }
 
+/**
+ * Say a number of beats the way a musician would write it (#2089).
+ *
+ * ELI5: turns 4 into "4", and 2.5 into "2.5", so we never show "2.500 beats".
+ *
+ * The column is DECIMAL(8,3), so a whole number arrives as 4.000. Printing that
+ * raw looks like a machine talking. Trailing zeros are dropped, and a value that
+ * is whole loses its decimal point entirely. Half and third beats are real in
+ * music, so the decimals are kept when they carry meaning.
+ */
+function _ihymnsVoiceFormatBeats(float $beats): string
+{
+    /* A value that is not a real number cannot be described. Callers already
+       skip these, but returning something harmless here means a future caller
+       cannot accidentally print "inf beats". This MUST behave the same as the
+       JavaScript twin, which returns '0' in the same situation. */
+    if (!is_finite($beats)) {
+        return '0';
+    }
+    /* Work in whole thousandths, not in decimal formatting.
+       ELI5: instead of asking "print this number with three decimal places",
+       we turn it into a whole number of thousandths and build the text
+       ourselves.
+       Why it has to be done this way: PHP and JavaScript round decimals
+       differently in the last place, and the disagreement is NOT consistent.
+       With the old code 1.0005 came out as "1.001" in PHP and "1" in
+       JavaScript, while 2.0005 gave "2.001" in both. An inconsistent
+       disagreement is far harder to notice than a consistent one, and it
+       matters here because the server draws this note when the page first
+       loads and the browser redraws it after an edit — so the wording could
+       change under the reader for no visible reason.
+       Multiplying and rounding to a whole number is the SAME operation in
+       both languages, so both now give the same answer even where that answer
+       is a little surprising. Being identical matters more than being pure. */
+    $thousandths = (int)round(max(0.0, $beats) * 1000);
+    $whole       = intdiv($thousandths, 1000);
+    $frac        = rtrim(str_pad((string)($thousandths % 1000), 3, '0', STR_PAD_LEFT), '0');
+    return $frac === '' ? (string)$whole : $whole . '.' . $frac;
+}
+
 /* ---------------------------------------------------------------------
  * VOICE RUNS + SPANS — reading the shape lyricLinesFoldVoiceRuns() /
  * lyricLinesAssembleFromRows() already produced (includes/lyric_lines_read.php,
@@ -634,8 +674,9 @@ function ihymnsVoiceRoundNoteHtml(array $round): string
     foreach ($voices as $v) {
         $entryLines = (int)($v['entryLines'] ?? 0);
         $entryMs    = $v['entryMs'] ?? null;
+        $entryBeats = $v['entryBeats'] ?? null;
         $basis      = (string)($v['entryBasis'] ?? 'lines');
-        if ($entryLines <= 0 && $entryMs === null) {
+        if ($entryLines <= 0 && $entryMs === null && $entryBeats === null) {
             continue;   // voice 1 (or any voice with nothing worth saying)
         }
         $num = (int)($v['number'] ?? 0);
@@ -643,6 +684,21 @@ function ihymnsVoiceRoundNoteHtml(array $round): string
             $when             = 'at ' . _ihymnsVoiceFormatMs((int)$entryMs);
             $visibleClauses[] = "Voice {$num} enters {$when}";
             $ariaClauses[]    = "Voice {$num} enters {$when} after Voice 1";
+        } elseif ($basis === 'beats' && $entryBeats !== null && is_finite((float)$entryBeats)) {
+            /* #2089. A voice has THREE possible ways of saying when it comes in
+               — after so many lines, after so many beats, or at a stopwatch time
+               — and `entryBasis` says which one the curator actually chose. This
+               branch was missing, so a curator who typed "after 4 beats" was shown
+               "enters after 1 line": the number came from a different column
+               entirely, because `EntryLines` is always filled in as a rough
+               equivalent even when beats are what was meant.
+               Nothing looked broken. The note read like a normal note. It was
+               simply telling the curator something they had not said, which is
+               worse than saying nothing — they cannot tell it is wrong. */
+            $beatsText        = _ihymnsVoiceFormatBeats((float)$entryBeats);
+            $beatWord         = $beatsText === '1' ? 'beat' : 'beats';
+            $visibleClauses[] = "Voice {$num} enters after {$beatsText} {$beatWord}";
+            $ariaClauses[]    = "Voice {$num} enters {$beatsText} {$beatWord} after Voice 1";
         } else {
             $plural           = $entryLines === 1 ? 'line' : 'lines';
             $visibleClauses[] = "Voice {$num} enters after {$entryLines} {$plural}";

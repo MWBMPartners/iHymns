@@ -10,7 +10,7 @@
 iHymns/
 ├── .claude/                  # Claude AI context & project brief
 ├── .github/workflows/        # CI/CD: deploy, release, changelog, tests (15 workflows at last count — see the directory itself for the live number)
-├── .SourceSongData/           # Raw song text files (original import source — DO NOT MODIFY)
+├── .SourceSongData/           # Raw song text files — the ORIGINAL one-time import source. Gitignored, so it is NOT in a fresh clone. DO NOT MODIFY
 ├── tools/                    # Build tools & song data parser
 │   └── parse-songs.js        #   Parses .SourceSongData/ into tmp/songs.json — a gitignored LOCAL BUILD ARTEFACT only (#1617); nothing commits it and nothing in the app reads it
 ├── data/                     # Empty except for a .gitkeep — the tracked data/songs.json this folder used to hold was retired in #1617 (it was ~4x stale against the live catalogue and unused at runtime)
@@ -30,8 +30,8 @@ iHymns/
 │   │   ├── css/              #     Stylesheets
 │   │   └── manage/           #     Admin area (editor, users, auth, API Docs Swagger UI)
 │   └── .sql/                 #   schema.sql + migrate-*.php (web-run migrations)
-├── appApple/                 # Native Apple app — Swift 6.3 / SwiftUI, iHymnsKit SwiftPM package
-├── appAndroid/                # Native Android app (Kotlin 2.1 / Jetpack Compose) — scaffold
+├── appApple/                 # Native Apple app — Swift 6 language mode / SwiftUI, iHymnsKit SwiftPM package
+├── appAndroid/                # Native Android app (Kotlin 2.4 / Jetpack Compose) — scaffold
 ├── help/                     # User documentation guides
 └── wiki/                     # GitHub Wiki source pages
 ```
@@ -70,12 +70,12 @@ iHymnsApp
 ├── Router          — History API routing, AJAX fragment loading, afterPageLoad() module wiring
 ├── Transitions     — Page transition animations
 ├── Settings        — Theme, motion, font size, analytics consent
-├── Search          — Fuse.js search with TF-IDF related songs; accent/apostrophe-folded matching (#1039)
+├── Search          — Live server search (MySQL FULLTEXT); accent/apostrophe-folded matching (#1039)
 ├── Favorites       — Favourite songs (synced server-side when signed in, localStorage otherwise)
 ├── SetList         — Setlists with custom arrangements
 ├── UserAuth        — Bearer token auth, cross-device sync
 ├── PWA             — Install banner, service worker
-├── Audio           — MIDI playback
+├── Audio           — MIDI playback (the .mid file is parsed in the browser and played through a Tone.js synth over Web Audio — not the Web MIDI API)
 ├── SheetMusic      — PDF sheet music viewer
 ├── History         — Recently viewed songs
 ├── Display         — Presentation mode, font prefs
@@ -98,6 +98,14 @@ iHymnsApp
 └── Request         — Missing song request form
 ```
 
+> **Corrected 2026-09-08.** The Search entry above used to read "Fuse.js search with TF-IDF related
+> songs". Both halves were wrong. Fuse.js and the browser-side song corpus were removed in WS-J
+> #1020 — search has been a live MySQL full-text query on every keystroke ever since, with typo
+> tolerance and partial-word matching done server-side by a boolean-prefix strategy in
+> `SongData::searchSongs`. And "Related Songs" has never used TF-IDF or compared lyric content at
+> all: `api.php`'s `related_songs` handler says in its own doc-block that it finds related songs by
+> shared writer or composer, shared tags, and the same songbook — three joins on metadata (#308).
+
 Event names dispatched/listened for across modules are centralised once in `js/constants.js` — a raw `ihymns:*` string literal anywhere else is a CI-banned regression (`tests/test-event-names.js`).
 
 **Same-origin requests go through `js/utils/api-client.js`** (`apiFetch()` / `apiFetchJson()`), not bare `fetch()`. There is **no global `window.fetch` override anywhere in the app** — an earlier `songbook-language-filter.js` patch that replaced `window.fetch` to attach an `X-Preferred-Languages` header was deleted, because a global patch (a) turns a header bug into a failed request for every unrelated caller, and (b) only applies on pages that happened to install it, silently doing nothing everywhere else. The client instead reads the language preference on every call, an auth-header provider is injected at boot (`setAuthHeaderProvider()` in `app.js`, avoiding an import cycle with `user-auth.js`), and it treats a `503` (maintenance/DB-outage) as its own signal rather than a network failure. The service worker keeps native `fetch` deliberately — different global scope, no `localStorage`, not user-scoped.
@@ -113,12 +121,12 @@ api.php             — AJAX API (pages, search, auth, setlists, Live Follow, Se
 │   ├── db_mysql.php          — getDbMysqli() — the ONE database connection factory
 │   ├── SongData.php          — Song data handler class (scoped live-read methods)
 │   ├── markdown_lite.php     — Escape-first Markdown renderer (What's New page)
-│   ├── components/           — Reusable PHP components
-│   └── pages/                — Page templates (home, song, setlist, whats-new, etc.)
+│   ├── pages/                — Page templates (home, song, setlist, whats-new, etc.)
+│   └── partials/             — Small reusable chunks of markup shared between pages
 └── manage/
     ├── includes/
-    │   ├── auth.php     — Authentication middleware (roles, sessions, CSRF)
-    │   └── db.php       — Thin wrapper calling getDbMysqli()
+    │   └── auth.php     — Authentication middleware (roles, sessions, CSRF); requires
+    │                      includes/db_mysql.php directly (there is no manage/includes/db.php)
     ├── editor/          — Song editor (requires editor+ role); api2.php is the current write path
     ├── api-docs.php     — Swagger UI rendering of api-docs.yaml (view_api_docs entitlement)
     ├── users.php        — User management (requires admin+ role)
@@ -126,6 +134,16 @@ api.php             — AJAX API (pages, search, auth, setlists, Live Follow, Se
     ├── login.php        — Admin login page
     └── logout.php       — Admin logout
 ```
+
+> **Corrected 2026-09-08.** Two entries in this tree named things that do not exist.
+> `includes/components/` was listed as holding "reusable PHP components" — there is no such
+> directory; `includes/` has `pages/`, `partials/`, `tools/` and `email-templates/`, and
+> [[Development Setup]] already said so. `manage/includes/db.php` was listed as "a thin wrapper
+> calling `getDbMysqli()`" — that file does not exist either, and `manage/includes/auth.php`
+> requires `includes/db_mysql.php` directly. [[Database & Migrations]] states this twice, so the two
+> pages had been contradicting each other. (`.claude/CLAUDE.md`'s modularity checkpoint list also
+> names `db.php` as a shared partial and needs the same correction — flagged separately, as it sits
+> outside the wiki.)
 
 ### API coverage — everything through the API
 
@@ -141,7 +159,7 @@ A new manage-page action that lands without a mapping entry fails the guard outr
 
 **The Bearer-auth seam.** `api.php` has accepted `Authorization: Bearer <token>` (in addition to the `ihymns_auth` cookie) since well before this program — every `admin_*` action was already native-reachable. The gap was the **song-editor API**, which gated on the `/manage` PHP session cookie alone; a native curator app has no cookie jar. The fix is one shared verifier, `apiTokenResolveBearerUser()` in `includes/api_tokens.php`, wired into `manage/editor/api2.php`, the legacy `manage/editor/api.php`, `manage/places-api.php`, and `manage/print-pdf.php`: each tries Bearer first and falls through to the pre-existing cookie check, byte-identically, when no Bearer header verifies. A Bearer request is CSRF-immune by construction (an explicit header a cross-site page cannot attach), so the `X-Requested-With` same-origin gate now applies only to the cookie path. Per-action entitlement checks are untouched — a Bearer caller gets exactly its own user's privileges, never more.
 
-**Scale, as last measured:** `api.php` dispatches **312** public `?action=` cases (up from 223 before this program) and `api2.php` **66** — both counts verified live by `tests/php/lib/dispatch_parser.php`, the same tokeniser the coverage guard and `test-openapi-actions-exist.php` use, so treat any number here as orientation rather than a pinned contract.
+**Scale, as last measured (2026-09-08):** `api.php` dispatches **325** public `?action=` cases (up from 223 before this program) and `api2.php` **74** — both counts produced by running `tests/php/lib/dispatch_parser.php`, the same tokeniser the coverage guard and `test-openapi-actions-exist.php` use, so treat any number here as orientation rather than a pinned contract. (The previous figures, 312 and 66, had both drifted; the 66 also disagreed with [[API Reference]], which already said 74.)
 
 ### Guided-wizard framework (#1992 family)
 
@@ -244,7 +262,7 @@ Each family below lands as a small set of single-home modules; a new caller reus
 
 ## Native App Architecture
 
-### Apple (Swift 6.3 / SwiftUI)
+### Apple (Swift 6 language mode / SwiftUI)
 
 - **Package**: `iHymnsKit`, a SwiftPM package (`appApple/Packages/iHymnsKit/`) shared across every Apple target (iOS, iPadOS, macOS, tvOS, visionOS, watchOS) — per-target code under `appApple/Apps/` imports it rather than duplicating logic.
 - **Offline cache**: **GRDB.swift** (`IHPersistence` module) — an on-disk SQLite-backed store with full-text search and versioned migrations, used for saved songs, setlists, and favourites. This is a real local database, not bundled JSON in UserDefaults.
@@ -254,7 +272,7 @@ Each family below lands as a small set of single-home modules; a new caller reus
 
 See `LICENSING.md` for the exact pinned GRDB version and licence.
 
-### Android (Kotlin 2.1 / Jetpack Compose)
+### Android (Kotlin 2.4 / Jetpack Compose)
 
 - **Pattern**: MVVM with `SongViewModel` + StateFlow
 - **Status**: Scaffold / in progress — no shared networking or persistence layer yet
@@ -262,6 +280,15 @@ See `LICENSING.md` for the exact pinned GRDB version and licence.
 - **UI**: Single-activity, NavHost navigation
 
 See [[Native Apps (Apple & Android)]] for the fuller current-state breakdown.
+
+> **Corrected 2026-09-08.** The two language versions in this section's headings (and in the project
+> tree near the top of the page) were both wrong. They said "Swift 6.3" and "Kotlin 2.1". Nothing in
+> the repo mentions a Swift 6.3: `appApple/Config/Shared.xcconfig` sets `SWIFT_VERSION = 6.0` (the
+> language *mode* Xcode compiles against) and `appApple/Packages/iHymnsKit/Package.swift` declares
+> `swift-tools-version: 6.2`, with CI building on Xcode 26. And the Kotlin plugins in
+> `appAndroid/build.gradle.kts` are pinned at `2.4.10`, not 2.1 — though that file's own header
+> comment still says "Kotlin 2.1.x" three lines above the version it is describing, so the code
+> comment is stale in exactly the same way and is worth fixing separately.
 
 ---
 

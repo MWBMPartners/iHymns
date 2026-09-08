@@ -221,11 +221,46 @@ $mutatedNoNumericIpv4 = str_replace(
 );
 ok('MUTATION setup sanity (a-F1b): the numeric-IPv4 decode removal actually matched real source',
     $mutatedNoNumericIpv4 !== $guardSrc);
-osgWithMutatedSiblingFile($mutatedNoNumericIpv4, $guardFile, function (string $tmp) use ($phpBin) {
-    $result = osgRunIsolated($phpBin, $tmp, "var_export(ihymnsHostResolvesPrivate('0x7f000001'));");
-    ok('MUTATION PROOF (a-F1b): removing the numeric-IPv4 decode makes 0x7f000001 read as NOT private',
-        $result['code'] === 0 && trim($result['stdout']) === 'false');
-});
+/* This one proof cannot be run on every machine, and it is worth explaining
+   why rather than letting somebody write it off as a "known failure".
+
+   ELI5: the test works by deleting a safety check and confirming the danger
+   comes back. On a Mac, the operating system quietly does that same safety
+   check for us, so deleting ours changes nothing and the proof cannot show
+   anything.
+
+   In detail: `gethostbyname('0x7f000001')` returns '127.0.0.1' on macOS,
+   because macOS's own name resolver understands that hexadecimal way of
+   writing an address. On Linux it returns the text unchanged. Checked on
+   2026-09-08 across three combinations, so this is the operating system and
+   NOT the PHP version:
+
+       PHP 8.5.10 on macOS    -> '127.0.0.1'
+       PHP 8.5.10 on Debian   -> '0x7f000001'
+       PHP 8.3.33 on Debian   -> '0x7f000001'
+
+   So on a Mac the address is already recognised as private before our own
+   decoding runs, the mutated copy still answers "private", and the proof
+   reports a failure that says nothing about our code. The guard itself is
+   perfectly correct on a Mac — the (a15) functional check above proves that
+   independently, and it runs everywhere.
+
+   CI runs on Linux, so the proof runs for real there, which is where it
+   matters. Skipping it on a machine that cannot answer the question is not
+   weakening the guard; reporting a red mark nobody can act on is what gets a
+   guard deleted rather than fixed (rule #34). */
+$osgResolverDecodesHex = (@gethostbyname('0x7f000001') === '127.0.0.1');
+if ($osgResolverDecodesHex) {
+    echo "  SKIP  MUTATION PROOF (a-F1b): this computer's name resolver decodes hex addresses "
+       . "itself (gethostbyname('0x7f000001') = '127.0.0.1'), so deleting our own decoding "
+       . "cannot change the answer. Runs for real on Linux, which is what CI uses.\n";
+} else {
+    osgWithMutatedSiblingFile($mutatedNoNumericIpv4, $guardFile, function (string $tmp) use ($phpBin) {
+        $result = osgRunIsolated($phpBin, $tmp, "var_export(ihymnsHostResolvesPrivate('0x7f000001'));");
+        ok('MUTATION PROOF (a-F1b): removing the numeric-IPv4 decode makes 0x7f000001 read as NOT private',
+            $result['code'] === 0 && trim($result['stdout']) === 'false');
+    });
+}
 
 /* =========================================================================
  * (b) FUNCTIONAL — both resolvers actually refuse a private host, and both

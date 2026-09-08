@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+#
+# iHymns — a stand-in for the `php` command
+# =========================================
+#
+# WHAT THIS IS
+# ------------
+# Put this file's folder on your PATH and every `php ...` you type runs inside
+# the container built from the Dockerfile next to it, instead of needing PHP
+# installed on your own machine. Nothing else has to change: `php -v`,
+# `php -l some-file.php` and `php tools/run-php-tests.php` all behave the way
+# you would expect. See README.md next to this file.
+#
+# THE PATH REWRITING, AND WHY IT IS THE WHOLE POINT
+# -------------------------------------------------
+# Inside the container the repository is not where it is on your machine — it
+# is mounted at /app. So a path that is perfectly correct outside, such as
+#
+#     /Users/someone/Projects/iHymns/tests/php/test-foo.php
+#
+# does not exist inside, and PHP would report "No such file or directory".
+# Several of this project's test suites pass full paths like that to each
+# other, so the shim rewrites any argument containing the repository's own
+# location on this machine, swapping that leading part for /app. Everything
+# else in the argument is left exactly as it was.
+#
+# WORKS FROM ANY FOLDER ON ANY MACHINE
+# ------------------------------------
+# The repository's location is worked out from where THIS FILE sits (two
+# folders up from tools/test-env/), never written down as a fixed path. That
+# matters because the earlier hand-written version of this shim had one
+# developer's home folder baked into it, so it silently did the wrong thing
+# for anyone who had checked the project out somewhere else.
+
+set -euo pipefail
+
+# Where the repository lives on this machine. `dirname "$0"` is this file's
+# own folder (tools/test-env); two levels up is the top of the repository.
+# `cd ... && pwd` turns that into a full, tidied-up path with no ".." left in
+# it, which matters because the rewriting below is a plain text match.
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Which container image to use. Overridable so you can try a rebuilt or
+# differently-tagged image without editing this file:
+#     IHYMNS_PHP_IMAGE=ihymns-php:8.4 php tools/run-php-tests.php
+IMAGE="${IHYMNS_PHP_IMAGE:-ihymns-php:8.3}"
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo "tools/test-env/php: Docker is not installed, or is not on your PATH." >&2
+    echo "  This stand-in runs PHP inside a container, so it needs Docker." >&2
+    echo "  See tools/test-env/README.md." >&2
+    exit 127
+fi
+
+# Rewrite this machine's repository path to the container's /app in every
+# argument. `${a//"$ROOT"//app}` means "in $a, replace every occurrence of
+# $ROOT with /app" — see the bash manual, "Parameter Expansion", the
+# ${parameter//pattern/string} form:
+# https://www.gnu.org/software/bash/manual/bash.html#Shell-Parameter-Expansion
+# $ROOT is quoted inside the expansion so a path containing a character bash
+# would otherwise read as a wildcard is matched literally.
+args=()
+for a in "$@"; do
+    args+=("${a//"$ROOT"//app}")
+done
+
+# --rm   throw the container away when the command finishes
+# -i     keep input connected, so `php` can still be piped into
+# -m 2g  cap memory at 2 GB; a runaway test then fails instead of taking the
+#        whole machine down with it
+# -v     mount the repository at /app (the path the rewriting above assumes)
+# -w     start in /app, so relative paths like tools/run-php-tests.php work
+exec docker run --rm -i -m 2g -v "$ROOT":/app -w /app "$IMAGE" php "${args[@]}"

@@ -107,6 +107,32 @@ function formatMs(ms) {
     return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+/**
+ * Say a number of beats the way a musician would write it (#2089).
+ *
+ * ELI5: turns 4 into "4" and 2.5 into "2.5", never "2.500".
+ *
+ * Deliberately the same rule as _ihymnsVoiceFormatBeats() in
+ * includes/voice_parts_render.php, so the server's first render and this file's
+ * later re-render produce identical wording.
+ */
+function formatBeats(beats) {
+    // Deliberately the SAME arithmetic as _ihymnsVoiceFormatBeats() in
+    // includes/voice_parts_render.php — see the long comment there for why this
+    // works in whole thousandths instead of asking for three decimal places.
+    // Short version: the two languages round the last decimal place
+    // differently, and not consistently, so the note's wording could change
+    // between the server's first draw and the browser's redraw.
+    const n = Number(beats);
+    if (!Number.isFinite(n)) {
+        return '0';
+    }
+    const thousandths = Math.round(Math.max(0, n) * 1000);
+    const whole = Math.floor(thousandths / 1000);
+    const frac = String(thousandths % 1000).padStart(3, '0').replace(/0+$/, '');
+    return frac === '' ? String(whole) : `${whole}.${frac}`;
+}
+
 /* ---------------------------------------------------------------------
  * VOICE RUNS + SPANS
  * ------------------------------------------------------------------ */
@@ -438,8 +464,9 @@ export function voiceRoundNoteHtml(round) {
     voices.forEach((v) => {
         const entryLines = (v.entryLines ?? 0) | 0;
         const entryMs = (v.entryMs === undefined || v.entryMs === null) ? null : (v.entryMs | 0);
+        const entryBeats = (v.entryBeats === undefined || v.entryBeats === null) ? null : Number(v.entryBeats);
         const basis = String(v.entryBasis || 'lines');
-        if (entryLines <= 0 && entryMs === null) {
+        if (entryLines <= 0 && entryMs === null && entryBeats === null) {
             return; // voice 1 (or any voice with nothing worth saying)
         }
         const num = (v.number ?? 0) | 0;
@@ -447,6 +474,15 @@ export function voiceRoundNoteHtml(round) {
             const when = `at ${formatMs(entryMs)}`;
             visibleClauses.push(`Voice ${num} enters ${when}`);
             ariaClauses.push(`Voice ${num} enters ${when} after Voice 1`);
+        } else if (basis === 'beats' && entryBeats !== null && Number.isFinite(entryBeats)) {
+            // #2089 — see the matching comment in includes/voice_parts_render.php.
+            // These two must say the same thing, because the same round is drawn by
+            // the server on first load and by this file after a live update. If they
+            // disagree, the wording changes under the reader for no visible reason.
+            const beatsText = formatBeats(entryBeats);
+            const beatWord = beatsText === '1' ? 'beat' : 'beats';
+            visibleClauses.push(`Voice ${num} enters after ${beatsText} ${beatWord}`);
+            ariaClauses.push(`Voice ${num} enters ${beatsText} ${beatWord} after Voice 1`);
         } else {
             const plural = entryLines === 1 ? 'line' : 'lines';
             visibleClauses.push(`Voice ${num} enters after ${entryLines} ${plural}`);

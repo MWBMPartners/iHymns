@@ -136,12 +136,22 @@ Both fail **open** by design: the three docroots share one MySQL and migrations 
 The server resolves a user's effective tier by comparing their personal tier with their organisation tier and taking the highest:
 
 ```text
-effective_tier = MAX(user.AccessTier, org_tier_from_groups)
+effective_tier = MAX(user.AccessTier, org_tier_from_organisation_licences)
 ```
 
 - **Personal tier** is read from `tblUsers.AccessTier`
-- **Organisation tier** is resolved from the user's group memberships via `tblAccessTiers`
+- **Organisation tier** is resolved from the person's **organisation** memberships
+  (`tblOrganisationMembers` → `tblOrganisations`, walking up the `ParentOrgId` chain), by taking every
+  live licence those organisations hold — the legacy one on the organisation row plus any in
+  `tblOrganisationLicences` — and mapping each through `tblLicenceTypes.ConfersTier`
 - The higher of the two is used for all access checks
+
+> **Corrected 2026-09-08.** This block used to read `org_tier_from_groups` and say the organisation
+> tier came from "the user's group memberships via `tblAccessTiers`". It does not: `tblUserGroups`
+> and `GroupId` appear nowhere in `includes/ccli_validator.php`, where `resolveEffectiveTier()`
+> lives. **User groups govern release-channel access only** (Alpha / Beta / RC / RTW) and have
+> nothing to do with content tiers — running the two axes together is exactly what produced the
+> wrong pseudo-code above.
 - Tier checks are performed server-side before serving gated content (MIDI files, PDF downloads)
 - The `tier_check` API endpoint allows clients to pre-check access before attempting to load gated resources
 
@@ -167,7 +177,15 @@ CCLI licence numbers are validated before being stored:
 - Owner UUIDs: hex + hyphen only
 - Display names: trimmed, truncated to 100 chars
 - Setlist names: trimmed, truncated to 200 chars
-- Song counts: capped at 200 per setlist, 50 setlists per user
+- Song counts: capped at 200 songs per setlist. A set list pushed with more than that is **refused
+  outright** with HTTP 413 and a branchable `reason:"too_many_songs"` — nothing is stored, and the
+  extra songs are never silently dropped
+- Set-list sync request bodies: capped at 4 MiB, also answered with 413 (`reason:"body_too_large"`)
+
+> **Corrected 2026-09-08.** This list used to add "50 setlists per user". That ceiling was
+> deliberately removed in #1661 — `api.php:4025` says so in its own words ("The 50-cap is GONE") —
+> and both [[Setlists & Arrangements]] and the FAQ already described the removal correctly, leaving
+> this page as the only one still quoting it. The 200-song half was, and remains, true.
 - Arrangements: validated as arrays of non-negative integers
 
 ### HTML Output
@@ -191,12 +209,29 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 ```
 
-### Shared Setlist Files
+### Shared Setlists
 
-- Stored in `appWeb/data_share/setlist_json/`
-- Setlist IDs are 8-character hex strings (4 bytes of randomness)
-- Atomic file creation with `fopen('x')` to prevent TOCTOU races
-- Ownership verified before updates (owner UUID must match)
+- Stored in the **database**, one row per link in `tblSharedSetlists` — there is no file store
+- A link's power lives in its row, not in who happens to hold the URL: `Scope` is `view` or `edit`,
+  and `EditAudience`, `ShowSharerName` and `RevokedAt` sit alongside it
+- **Edit links are 256-bit capability tokens**, minted only by the signed-in owner of the set list
+- The **edit audience is re-resolved on the server for every write**, through an
+  app → organisation → owner precedence ladder — an organisation may clamp "anyone with the link"
+  down to "signed-in required", so the client must read back what was actually stored rather than
+  assume its request was honoured. A write that needs sign-in and does not have it gets
+  `401 {reason:"signin_required"}`
+- **Revocation is per link** and takes effect immediately (`setlist_share_revoke`)
+
+[[Setlists & Arrangements]] describes the sharing model in full.
+
+> **Corrected 2026-09-08.** This section used to describe shared set lists as files on disk under
+> `appWeb/data_share/setlist_json/`, created atomically with `fopen('x')` to avoid a
+> check-then-write race, with ownership verified by matching an owner UUID. **None of that runs any
+> more.** The file store was removed in WS-J #1020; `includes/SharedSetlist.php` says so in its own
+> header, every helper in it reads and writes `tblSharedSetlists`, and the directory on disk now
+> holds nothing but a `.gitkeep` and a `.htaccess`. Worth recording rather than quietly rewriting,
+> because a security page describing protections on a mechanism that no longer exists is worse than
+> one that says nothing.
 
 ---
 
@@ -232,11 +267,32 @@ Web-server-level rate limiting (Apache `mod_ratelimit`, nginx `limit_req`) can s
 
 ## Security Headers
 
-| Header | Value |
-| --- | --- |
-| `Content-Security-Policy` | Per-request with nonce (see above) |
-| `X-Content-Type-Options` | `nosniff` (on all JSON responses) |
-| `Cache-Control` | `no-cache, must-revalidate` (on API responses) |
+Most of these are set once for the whole site by `.htaccess` with `Header always set`, so they are
+attached to error responses (404s and the like) as well as normal ones — that `always` is the part
+that was missing before the #1906 hardening pass. The rest are emitted by the individual PHP
+endpoints.
+
+| Header | Value | Where it comes from |
+| --- | --- | --- |
+| `X-Content-Type-Options` | `nosniff` | `.htaccess`, site-wide; also set explicitly on JSON and on each of the standalone image endpoints |
+| `X-Frame-Options` | `SAMEORIGIN` | `.htaccess`, site-wide |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` | `.htaccess`, site-wide; the image endpoints set their own stricter value |
+| `Permissions-Policy` | camera, microphone, geolocation, payment, USB, magnetometer, gyroscope and accelerometer all disabled | `.htaccess`, site-wide |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains; preload` | `.htaccess`, site-wide |
+| `Cross-Origin-Opener-Policy` | `same-origin` | `.htaccess`, site-wide |
+| `Cross-Origin-Resource-Policy` | `same-origin` | `.htaccess`, site-wide |
+| `X-XSS-Protection` | `0` | `.htaccess`, site-wide — deliberately **off** (#1906). OWASP now advises `0`: the legacy browser XSS auditor this header used to switch on has been removed from every modern browser and caused cross-site-scripting and information-leak side channels of its own. The enforcing nonce CSP below is the real defence |
+| `Content-Security-Policy` | Per-request, with a nonce | `index.php` — the public SPA shell |
+| `Content-Security-Policy` | `object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'` | `manage/includes/auth.php` — the whole admin area (#1906) |
+| `Content-Security-Policy` | `default-src 'none'; sandbox` (plus `style-src 'unsafe-inline'` for logos) | `og-image.php` and `org-logo.php` — the standalone image endpoints, which never need to load anything |
+| `Cache-Control` | `no-cache, must-revalidate` on API responses; `immutable` on the content-addressed image endpoints | `api.php`, `.htaccess`, `qr.php`, `org-logo.php` |
+
+> **Corrected 2026-09-08.** This table listed only the first three of the rows above, which made the
+> header posture look considerably thinner than it is — several of these landed in the #1906
+> hardening pass that this very page describes elsewhere. If you are checking the live set rather
+> than trusting this table, the sources are the `Header always set` lines in
+> `appWeb/public_html/.htaccess` and the `header(` calls in `index.php`, `api.php`,
+> `manage/includes/auth.php`, `og-image.php`, `org-logo.php` and `qr.php`.
 
 ---
 
@@ -244,8 +300,14 @@ Web-server-level rate limiting (Apache `mod_ratelimit`, nginx `limit_req`) can s
 
 1. **Enable HTTPS** — the session cookie `secure` flag activates automatically
 2. **Consider additional web-server-level rate limiting** for `/api.php` auth endpoints as defence-in-depth (application-level login lockout and read-endpoint rate limiting already exist — see Rate Limiting above)
-3. **Remove `_dev_token`** from `auth_forgot_password` response in production
-4. **Implement email delivery** for password reset tokens
-5. **Monitor** `tblApiTokens` table size and clean up expired tokens periodically
-6. **Backup** the MySQL database regularly
-7. **Restrict MySQL user permissions** — grant only the minimum required (SELECT, INSERT, UPDATE, DELETE)
+3. **Monitor** `tblApiTokens` table size and clean up expired tokens periodically
+4. **Backup** the MySQL database regularly
+5. **Restrict MySQL user permissions** — grant only the minimum required (SELECT, INSERT, UPDATE, DELETE)
+
+> **Corrected 2026-09-08.** Two items were removed from this list because they had already been
+> done: "Remove `_dev_token` from the `auth_forgot_password` response in production" and "Implement
+> email delivery for password reset tokens". `_dev_token` appears nowhere in `api.php` or anywhere
+> under `manage/`, and `auth_forgot_password` sends a real email through
+> `EmailService::sendTemplate('password-reset', …)` (`api.php:4995`). Listing finished work as an
+> outstanding production risk is its own kind of misinformation — it invites someone to "fix" a
+> thing that is not broken, and it makes the genuinely outstanding items easier to ignore.

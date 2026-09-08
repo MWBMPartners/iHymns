@@ -35,13 +35,25 @@
 #   overall run still shows green (the `guard` job succeeding is enough to
 #   make the run conclusion "success" even while `deploy` is skipped).
 #
-# NOTE (expected, not a bug): this workflow stays DORMANT — it has nothing
-# to build — until the `feat/apple-universal` branch's work actually reaches
-# `alpha` / `beta` / `main` (this native-app branch carries NO PRs yet, per
-# strategy §0/§3.4). It lands now, in Phase 0, alongside the Fastlane lanes
-# it calls, so the pipeline exists and is reviewable before it ever fires.
-# It is ALSO gated OFF by `APPLE_DEPLOY_ENABLED` above regardless of branch
-# reach, until the owner deliberately turns uploads on.
+# ⚠️ CORRECTED 2026-09-07 — the note that used to sit here said this workflow
+# was dormant because "the `feat/apple-universal` branch's work has not
+# reached alpha/beta/main yet". That reason expired long ago: the branch was
+# merged and deleted, and `appApple/` has been on all three branches for
+# months (72 commits, most recently 2026-09-05). Anyone reading the old note
+# would conclude there was simply nothing to build yet, which is wrong and
+# hides the real state.
+#
+# The ONE reason this workflow is dormant today is the kill-switch above:
+# `APPLE_DEPLOY_ENABLED` is NOT SET, so the `deploy` job below is skipped on
+# every single run. The run still reports "success" — the always-on `guard`
+# job succeeding is enough to make the whole run green — so the Actions tab
+# shows a green tick next to a run that built and uploaded nothing. That is
+# exactly the confusion this comment now exists to prevent.
+#
+# Nothing has ever been uploaded to TestFlight or the App Store. Tracked as
+# #2101 (this switch + the nine signing secrets) and #2100 (there is no app
+# icon, so the first upload would be rejected regardless). Fix the icon
+# BEFORE turning the switch on.
 name: Apple Deploy
 
 on:

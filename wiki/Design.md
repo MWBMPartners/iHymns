@@ -20,9 +20,16 @@ iHymns uses a clean, neutral slate/grey palette — professional and easy on the
 | Text (dark mode) | Light slate | `#e2e8f0` |
 | Muted text | Slate grey | `#94a3b8` |
 | Admin amber | Warm amber | `#f59e0b` |
-| Admin amber hover | Dark amber | `#d97706` |
-| Admin background | Deep navy | `#1a1a2e` |
-| Admin surface | Dark navy | `#16213e` |
+
+**The admin area has no palette of its own.** It reads the same theme-aware custom properties as the
+public site — `--surface-bg`, `--surface-card` and the rest — resolved at runtime by
+`manage/includes/admin-theme-init.php` from whichever theme the person has chosen (#955). So there
+is no fixed admin background or surface colour to quote: it is whatever the active theme says.
+
+> **Corrected 2026-09-08.** Three rows were removed from this table: Admin amber hover `#d97706`,
+> Admin background `#1a1a2e` and Admin surface `#16213e`. **None of those three hex values appears
+> anywhere under `appWeb/`.** They describe a hardcoded navy admin palette that the admin area
+> stopped having when #955 made it theme-aware.
 
 ### Theme Modes
 
@@ -64,12 +71,23 @@ Used in the arrangement editor and song display:
 
 ## Role Badge Colours (Admin Panel)
 
-| Role | Colour | Hex |
-|---|---|---|
-| Global Admin | Red | `#dc2626` |
-| Admin | Amber | `#f59e0b` |
-| Editor | Blue | `#3b82f6` |
-| User | Grey | `#6b7280` |
+Role badges use Bootstrap's own utility classes, not literal hex values — so they follow the active
+theme automatically. From `manage/users.php`:
+
+| Role | Class |
+|---|---|
+| Global Admin | `bg-danger` |
+| Admin | `bg-warning text-dark` |
+| Editor | `bg-primary` |
+| User (the fallback) | `bg-secondary` |
+
+Use the class, not a colour. A hardcoded hex will not match the rendered badge, and will not follow a
+theme change.
+
+> **Corrected 2026-09-08.** This table used to give four hex values. One of them, `#3b82f6`, does
+> exist in the codebase — but as the **Verse** component colour in `js/utils/components.js`, nothing
+> to do with role badges. (The Component Tag Colours table above it was checked at the same time and
+> all eleven entries are correct.)
 
 ---
 

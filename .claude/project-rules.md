@@ -550,3 +550,41 @@ where a secret is involved (config null with no key; the key registered in `secr
 it's encrypted at rest). A 4th outbound integration copies this shape — never a bare `file_get_contents($url)`
 or an un-host-bound cURL. The two secret-bearing ones (`cuercode`, and any IntApps key) stay dormant
 until an admin pastes the key on `/manage/configuration`.
+
+## 22. Plain, everyday English is a project rule, not a style preference (owner-stated 2026-08-29; restated 2026-09-05 and 2026-09-07)
+
+The short version lives in `.claude/CLAUDE.md` and the standing-directive version in
+`.claude/standing-directives.md` §11. This section is the detailed expansion, and exists because the
+owner has now had to ask three separate times — which means the earlier two recordings of the rule
+were not enough on their own.
+
+**The rule.** Write the way you would explain something to a capable colleague who does not work on
+this particular system. It covers chat replies, progress reports, code comments, commit messages,
+pull-request descriptions, GitHub issue text, every `.md` file, the in-app help pages, and anything
+else a person will read.
+
+**Why it keeps slipping.** Jargon is shorter, and under a long task list the pull towards the shortest
+phrasing is strong. It also *sounds* more precise, which makes it feel like the safer choice. It is
+not: a sentence the reader has to decode is a sentence that can be misunderstood, and this project has
+a documented history of exactly that — a "Still TODO" line in `CLAUDE.md` rule #26 stayed wrong twice
+in a row partly because it was written in shorthand nobody re-read carefully.
+
+**How to tell if a sentence passes.** Read it and ask: would somebody who has never opened this
+codebase know what I just said? If the answer needs a second sentence of explanation, write that
+second sentence.
+
+**The one thing this rule does not do** is lower the technical bar. The analysis, the citations, the
+adversarial checking and the code all stay exactly as rigorous. Only the wording changes.
+
+**Worked examples from this repo**
+
+| Instead of | Write |
+| --- | --- |
+| "a monotonically increasing build number" | "a build number that only ever counts upward and never resets" |
+| "the middleware performs principal authentication" | "the app checks who you are before letting you in" |
+| "an idempotent upsert keyed on the natural key" | "running it twice does the same thing as running it once, because it matches on the values that already identify the row" |
+| "the fragment is nonce-gated and shared-cached" | "the page piece is stored once and handed to everybody, so it cannot carry a one-time security code that differs per visitor" |
+
+**Reporting discipline.** Say plainly what is finished, what is not, what you did not check, and what
+went wrong. "I could not test this because there is no database on this machine" is a good report.
+Silence that implies verification is not.

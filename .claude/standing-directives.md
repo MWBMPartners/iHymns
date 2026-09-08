@@ -149,3 +149,47 @@ you run autonomously to completion.
 *Change log: created 2026-08-18 from the owner's standing‑instructions message. Amended 2026-08-24
 (§10 ask‑clarifications‑up‑front). Update this file (don't fork it) if the owner amends any
 directive.*
+
+## 11. Plain, everyday English — in every reply and every written artefact (owner‑stated 2026‑08‑29, restated 2026‑09‑05, restated again 2026‑09‑07)
+
+**Write the way you would explain something to a capable colleague who does not work on this
+particular system.** This is a standing rule, not a style preference, and it applies to *every*
+assistant working here — Claude Code, Codex, Claude in the browser, ChatGPT — and to *every* kind of
+output: chat replies, progress reports, code comments, commit messages, pull‑request text, issue
+text, documentation, and anything a user will ever see.
+
+The owner has now asked for this three times. Asking a third time means it is still not being done
+well enough, so treat it as a hard requirement on a par with the modularity rule.
+
+**What it means in practice**
+
+- Use ordinary words. Say "a number that only ever counts upward and never resets" rather than "a
+  monotonically increasing counter". Say "the app checks who you are before letting you in" rather
+  than "the middleware performs principal authentication".
+- When a technical term is genuinely needed — a file name, a function name, a standard such as WCAG —
+  use it, then say in ordinary words what it means and why it matters.
+- **Using more words is fine, and better, if it makes the meaning clearer.** Never compress an
+  explanation into jargon to save space.
+- Prefer short sentences. Break a long one into two.
+- Explain the *why*, not just the *what*.
+- Avoid unexplained abbreviations, internal shorthand on first use, and filler that sounds impressive
+  and says nothing.
+
+**This does not lower the standard of the work.** The code, the analysis and the precision stay
+exactly as rigorous. Only the way it is explained changes.
+
+**When reporting on work done**, be direct about what is finished, what is not, what was not checked,
+and what went wrong. Say "I could not test this because there is no database on this machine" rather
+than implying it was verified.
+
+**Where this rule is recorded** (keep all of these in step — rule #35: agreement between files needs a
+mechanism, and until there is one, at least keep the list of places short and named):
+
+| File | Who reads it |
+| --- | --- |
+| `.claude/CLAUDE.md` (top section) | Claude Code, on every session start in this repo |
+| `AGENTS.md` (repo root) | Codex and other tools that read `AGENTS.md` |
+| `.claude/project-rules.md` §22 | the detailed expansion |
+| this file, §11 | the session‑start directive read |
+| `~/.claude/CLAUDE.md` (not in the repo) | Claude Code, on this computer, in every project |
+| `~/.codex/AGENTS.md` (not in the repo) | Codex, on this computer, in every project |

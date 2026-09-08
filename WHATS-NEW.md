@@ -12,6 +12,52 @@ with none of the behind-the-scenes technical detail.
 
 ## 1.3.0 — 30 August 2026
 
+- **Your set lists and favourites now open with no signal** — If you'd
+  already saved a set list or your favourites to your device, the pages that
+  show them still would not open when you were offline. The information was
+  there; the page was not. Standing at the front of a hall with no signal is
+  exactly when you need your set list, so both pages now open without a
+  connection, like the rest of the app.
+
+- **Blank the screen between songs, and count down to the start** — While
+  you're presenting a song full-screen, press **B** (or tap **Blank**) to
+  black the screen out between items, and press it again to bring the words
+  back. You can also pick a time from the countdown menu to show a "Service
+  begins in…" clock before you start. Both controls used to live on a second,
+  older full-screen view that didn't have arrow-key navigation — so pressing
+  **B** did nothing at all in the view the **Present** button opens, and that
+  older view's own button was the only thing anywhere that mentioned the key.
+  There is now just one presentation view, with everything in it.
+
+- **The screen stays awake while a song is on display** — A phone, tablet or
+  laptop showing the words to a room used to dim and lock itself after a
+  minute or two of nobody touching it. It now asks the device to stay awake
+  while you're presenting, while a set list is playing, and on the projector
+  screen — and lets go again as soon as you finish. If you glance at a message
+  and come back, it takes the screen-on request out again rather than quietly
+  giving up for the rest of the service. Some devices and low-battery settings
+  can refuse; when that happens everything else works exactly as before.
+
+- **No white flash when you open the app in a dark theme** — If you use dark
+  mode, high contrast, or the colour-blind-friendly palette, the app used to
+  show a white flash for a moment on every cold start and every time you
+  opened it from your home screen. Your choice is now applied before anything
+  is drawn, so the first thing you see is the theme you actually picked.
+
+- **Songs written in another alphabet now show their sing-along spelling** —
+  Where someone has added a Greek or Korean song's words written out in Latin
+  letters, so you can sing along without reading the original script, those
+  now actually appear on the song page. They were being stored and fetched and
+  then dropped just before being shown, so nobody ever saw them. They're also
+  clearly marked as what they are: the same words respelled, not a translation
+  into another language, because those two mean quite different things.
+
+- **Chords stay with the right words when a song is edited** — When a curator
+  reordered the lines of a song, its chords could end up over different words;
+  adding or removing a single line could wipe a section's chords altogether.
+  Chords now stay attached to the line they belong to, however the song is
+  rearranged.
+
 - **Songs where different groups sing different lines** — Hymns and worship songs
   often mark parts for different groups: the women sing two lines, then the men,
   then everyone together. Until now those markings were stored as if they were
