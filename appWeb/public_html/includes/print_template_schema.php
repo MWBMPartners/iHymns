@@ -74,7 +74,12 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'org_logo_helpers.php';
    crafted POST cannot persist arbitrary JSON). The value is the
    per-type option schema: key => coercion kind. Keeping this beside
    the JS registry is deliberate — the JS drives the editor UI, this
-   drives the server-side gate; both enumerate the same 10 types. */
+   drives the server-side gate; both enumerate the same block types.
+   (Corrected 2026-09-08: this said "the same 10 types". There are 15. Rather than
+   swap one hand-typed number for another that will go stale in turn, note where the
+   AUTHORITY actually lives: tests/php/test-print-block-registry.php counts both
+   sides, fails if they disagree, and prints the live figure. A number typed into a
+   comment was never the mechanism keeping these two files in step — the guard is.) */
 $BLOCK_SCHEMA = [
     'title'       => [],
     'subtitle'    => ['showBook' => 'bool', 'showNumber' => 'bool', 'bookAbbr' => 'bool'],   // #1767 B
