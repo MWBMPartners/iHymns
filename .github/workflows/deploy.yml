@@ -1017,6 +1017,9 @@ jobs:
           # BUILT from one is not covered — which is why the server folder layout
           # had been appearing in the public build log in plain sight.
           echo "::add-mask::$DATA_SHARE_PATH"
+          # Also the same path without its trailing slash, which is how a tool
+          # such as lftp may print it in an error message (#2111 review).
+          echo "::add-mask::${DATA_SHARE_PATH%/}"
           echo "Deploying data_share (shared files that survive a redeploy)"
           cat > /tmp/lftp_datashare.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
@@ -1043,6 +1046,9 @@ jobs:
           # BUILT from one is not covered — which is why the server folder layout
           # had been appearing in the public build log in plain sight.
           echo "::add-mask::$DATA_SHARE_PATH"
+          # Also the same path without its trailing slash, which is how a tool
+          # such as lftp may print it in an error message (#2111 review).
+          echo "::add-mask::${DATA_SHARE_PATH%/}"
           echo "Deploying data_share (shared files that survive a redeploy)"
           lftp -u "${SFTP_USER},${SFTP_PASS}" \
             -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
@@ -1076,6 +1082,9 @@ jobs:
           # BUILT from one is not covered — which is why the server folder layout
           # had been appearing in the public build log in plain sight.
           echo "::add-mask::$SQL_PATH"
+          # Also the same path without its trailing slash, which is how a tool
+          # such as lftp may print it in an error message (#2111 review).
+          echo "::add-mask::${SQL_PATH%/}"
           echo "Deploying .sql (database scripts, stored outside the web root)"
           cat > /tmp/lftp_sql.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
@@ -1102,6 +1111,9 @@ jobs:
           # BUILT from one is not covered — which is why the server folder layout
           # had been appearing in the public build log in plain sight.
           echo "::add-mask::$SQL_PATH"
+          # Also the same path without its trailing slash, which is how a tool
+          # such as lftp may print it in an error message (#2111 review).
+          echo "::add-mask::${SQL_PATH%/}"
           echo "Deploying .sql (database scripts, stored outside the web root)"
           lftp -u "${SFTP_USER},${SFTP_PASS}" \
             -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
@@ -1180,6 +1192,9 @@ jobs:
           # BUILT from one is not covered — which is why the server folder layout
           # had been appearing in the public build log in plain sight.
           echo "::add-mask::$AUTH_PATH"
+          # Also the same path without its trailing slash, which is how a tool
+          # such as lftp may print it in an error message (#2111 review).
+          echo "::add-mask::${AUTH_PATH%/}"
           echo "Deploying .auth (excluding db_credentials.php and secrets_master_key.php)"
           cat > /tmp/lftp_auth.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
@@ -1206,6 +1221,9 @@ jobs:
           # BUILT from one is not covered — which is why the server folder layout
           # had been appearing in the public build log in plain sight.
           echo "::add-mask::$AUTH_PATH"
+          # Also the same path without its trailing slash, which is how a tool
+          # such as lftp may print it in an error message (#2111 review).
+          echo "::add-mask::${AUTH_PATH%/}"
           echo "Deploying .auth (excluding db_credentials.php and secrets_master_key.php)"
           lftp -u "${SFTP_USER},${SFTP_PASS}" \
             -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
@@ -1254,6 +1272,9 @@ jobs:
           # BUILT from one is not covered — which is why the server folder layout
           # had been appearing in the public build log in plain sight.
           echo "::add-mask::$AUTH_PATH"
+          # Also the same path without its trailing slash, which is how a tool
+          # such as lftp may print it in an error message (#2111 review).
+          echo "::add-mask::${AUTH_PATH%/}"
           # Residual check-then-put TOCTOU window is benign: every branch seeds
           # the SAME value from the one SECRETS_MASTER_KEY secret, so even a
           # concurrent double-seed writes byte-identical content, and a manual
@@ -1318,6 +1339,9 @@ jobs:
           # BUILT from one is not covered — which is why the server folder layout
           # had been appearing in the public build log in plain sight.
           echo "::add-mask::$AUTH_PATH"
+          # Also the same path without its trailing slash, which is how a tool
+          # such as lftp may print it in an error message (#2111 review).
+          echo "::add-mask::${AUTH_PATH%/}"
           # Residual check-then-put TOCTOU window is benign: every branch seeds
           # the SAME value from the one SECRETS_MASTER_KEY secret, so even a
           # concurrent double-seed writes byte-identical content, and a manual
