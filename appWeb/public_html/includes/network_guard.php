@@ -199,57 +199,95 @@ function _ihymnsIpv4MappedToDotted(string $ip): ?string
 }
 
 /**
- * The two address ranges PHP's own filter does not refuse, but we must (#2111).
+ * The address ranges PHP's own filter does not refuse, but we must (#2111).
  *
  * ELI5: PHP has a built-in way of asking "is this a private address?", and we use
- * it. But it was written before two kinds of address became reserved, so it still
- * answers "that one is fine" for both. This function covers those two, and nothing
- * else — everything else is left to the built-in check.
+ * it. But it misses some addresses we must never connect to. This function covers
+ * exactly those, and nothing else — everything else is left to the built-in check.
  *
- * The two, and why each matters:
+ * IPv4 (the familiar four-number addresses):
  *
  *   100.64.0.0/10 — "carrier-grade NAT" (RFC 6598). Internet providers and several
- *     hosting companies use these addresses for their own internal plumbing. They
- *     look like ordinary public addresses to PHP's filter, which predates the
- *     standard, so a request aimed at one would sail straight through. That is the
- *     same class of mistake as letting a request reach 169.254.169.254, which is
- *     how servers get talked into handing over their own cloud credentials.
+ *     hosting companies use these for their own internal networks. PHP's filter
+ *     treats them as ordinary public addresses — the same class of mistake as
+ *     letting a request reach 169.254.169.254, which is how servers get talked into
+ *     handing over their own cloud credentials.
+ *   224.0.0.0/4 — multicast. Never somewhere a normal web request should go.
  *
- *   224.0.0.0/4 — multicast. Not somewhere a normal web request should ever go, and
- *     on some networks reaching it has side effects.
+ * IPv6 (the newer, longer addresses):
  *
- * HOW THIS WAS FOUND, because it is worth recording: includes/webhooks.php had
- * grown its OWN copy of this check, which rule #49 forbids. Before replacing that
- * copy with this shared one, both were run against the same list of addresses — and
- * the supposedly-authoritative shared version turned out to be the WEAKER of the
- * two. It called 100.64.0.1 and 224.0.0.1 public; the "wrong" private copy did not.
- * Consolidating without comparing first would have quietly made the app less safe.
+ *   ff00::/8 — IPv6 multicast.
+ *   64:ff9b::/96 — the NAT64 prefix. On a network that translates IPv6 to IPv4, the
+ *     last 32 bits ARE an IPv4 address, so 64:ff9b::a9fe:a9fe reaches
+ *     169.254.169.254. Refused only when that hidden IPv4 address is itself
+ *     private, so a genuinely public one still works.
+ *   2002::/16 — "6to4". The hidden IPv4 address sits in the next 32 bits. Same rule.
+ *   ::/96 — the old "IPv4-compatible" form. The hidden IPv4 address is the last 32
+ *     bits. Same rule.
  *
- * Only IPv4 is handled here. IPv6's private and reserved ranges ARE understood by
- * PHP's filter, so there is nothing to add for them.
+ * HOW THIS WAS FOUND — worth keeping, because the same mistake happened twice.
  *
- * @param string $ip A textual address. Anything that is not a plain IPv4 address
- *                   returns false, leaving the verdict to the checks around it.
- * @return bool true when the address is in one of the two ranges above.
+ * includes/webhooks.php had grown its OWN copy of this check, which rule #49
+ * forbids. Before replacing that copy, both were run against the same addresses,
+ * and the supposedly-authoritative shared version turned out to be the WEAKER of
+ * the two: it called 100.64.0.1 and 224.0.0.1 public. That was fixed on 2026-09-08,
+ * and this comment then said "IPv6's private and reserved ranges ARE understood by
+ * PHP's filter, so there is nothing to add for them".
+ *
+ * (Corrected 2026-09-14.) That was wrong. The comparison had only used IPv4
+ * addresses. An independent review ran IPv6 ones and found the gaps above still
+ * open — including the NAT64 route to the cloud-credentials address. The lesson is
+ * the same one twice over: before consolidating onto a shared component, compare
+ * the two across EVERY kind of input, not only the kind you thought of first.
+ *
+ * WHAT THIS CANNOT DO: it judges addresses, not names. A hostname that resolves into
+ * one of these ranges is caught only because the caller resolves it first.
+ *
+ * @param string $ip A textual IPv4 or IPv6 address. Anything else returns false,
+ *                   leaving the verdict to the checks around it.
+ * @return bool true when the address is in one of the ranges above.
  */
-function _ihymnsIpv4RangeFilterVarMisses(string $ip): bool
+function _ihymnsAddressFilterVarMisses(string $ip): bool
 {
-    if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+    $packed = @inet_pton($ip);
+    if ($packed === false) {
         return false;
     }
-    $b = array_map('intval', explode('.', $ip));
-    if (count($b) !== 4) {
+    $b = array_values(unpack('C*', $packed));
+
+    if (count($b) === 4) {
+        /* 100.64.0.0/10 — carrier-grade NAT (RFC 6598) */
+        if ($b[0] === 100 && $b[1] >= 64 && $b[1] <= 127) {
+            return true;
+        }
+        /* 224.0.0.0/4 — multicast */
+        return $b[0] >= 224 && $b[0] <= 239;
+    }
+    if (count($b) !== 16) {
         return false;
     }
-    /* 100.64.0.0/10 — carrier-grade NAT (RFC 6598) */
-    if ($b[0] === 100 && $b[1] >= 64 && $b[1] <= 127) {
+    /* ff00::/8 — IPv6 multicast */
+    if ($b[0] === 0xff) {
         return true;
     }
-    /* 224.0.0.0/4 — multicast */
-    if ($b[0] >= 224 && $b[0] <= 239) {
-        return true;
+    /* Transition forms that hide an IPv4 address inside an IPv6 one. Pull the IPv4
+       address out and judge it by exactly the same rules as a plain IPv4 address,
+       mirroring webhookIpIsPublic() in includes/webhooks.php. */
+    $embedded = null;
+    if ($b[0] === 0x00 && $b[1] === 0x64 && $b[2] === 0xff && $b[3] === 0x9b
+        && array_sum(array_slice($b, 4, 8)) === 0) {
+        $embedded = array_slice($b, 12, 4);                 /* 64:ff9b::/96 — NAT64 */
+    } elseif ($b[0] === 0x20 && $b[1] === 0x02) {
+        $embedded = array_slice($b, 2, 4);                  /* 2002::/16 — 6to4 */
+    } elseif (array_sum(array_slice($b, 0, 12)) === 0) {
+        $embedded = array_slice($b, 12, 4);                 /* ::/96 — IPv4-compatible */
     }
-    return false;
+    if ($embedded === null) {
+        return false;
+    }
+    $v4 = implode('.', $embedded);
+    return !filter_var($v4, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)
+        || _ihymnsAddressFilterVarMisses($v4);
 }
 
 /**
@@ -327,9 +365,10 @@ function ihymnsHostResolvesPrivate(string $host): bool
             if (!filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
                 return true;                          /* a private/reserved address among the resolutions */
             }
-            /* PHP's own filter does not know about two ranges that we must still
-               refuse, so they are checked here as well (#2111, 2026-09-08). */
-            if (_ihymnsIpv4RangeFilterVarMisses($candidate)) {
+            /* PHP's own filter misses several ranges we must still refuse:
+               carrier-grade NAT and multicast for IPv4, and multicast plus the
+               forms that hide an IPv4 address inside an IPv6 one (#2111). */
+            if (_ihymnsAddressFilterVarMisses($candidate)) {
                 return true;
             }
         }

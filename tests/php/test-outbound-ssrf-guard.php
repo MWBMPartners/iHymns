@@ -177,6 +177,41 @@ ok('(a17) a genuine public IPv6 literal, bracketed, is NOT private ([2001:4860:4
 ok('(a18) a genuine public IPv4 literal is NOT private (93.184.216.34)',
     !ihymnsHostResolvesPrivate('93.184.216.34'));
 
+/* #2111 — ranges PHP's own filter misses. Added 2026-09-14 after an independent
+ * review showed the earlier fix for these had NO test that could fail: deleting it
+ * left this whole file green. Boundaries are tested on both sides, and each IPv6
+ * form that hides an IPv4 address is tested with a private AND a public hidden
+ * address, so the check cannot pass by simply refusing everything in the prefix. */
+ok('(a-2111-1) carrier-grade NAT 100.64.0.1 is private', ihymnsHostResolvesPrivate('100.64.0.1'));
+ok('(a-2111-2) the top of carrier-grade NAT, 100.127.255.254, is private', ihymnsHostResolvesPrivate('100.127.255.254'));
+ok('(a-2111-3) just below carrier-grade NAT, 100.63.255.255, is NOT private', !ihymnsHostResolvesPrivate('100.63.255.255'));
+ok('(a-2111-4) just above carrier-grade NAT, 100.128.0.1, is NOT private', !ihymnsHostResolvesPrivate('100.128.0.1'));
+ok('(a-2111-5) IPv4 multicast 224.0.0.1 is private', ihymnsHostResolvesPrivate('224.0.0.1'));
+ok('(a-2111-6) the top of IPv4 multicast, 239.255.255.255, is private', ihymnsHostResolvesPrivate('239.255.255.255'));
+ok('(a-2111-7) IPv6 multicast ff02::1 is private', ihymnsHostResolvesPrivate('ff02::1'));
+ok('(a-2111-8) NAT64 hiding the cloud-metadata address (64:ff9b::a9fe:a9fe) is private', ihymnsHostResolvesPrivate('64:ff9b::a9fe:a9fe'));
+ok('(a-2111-9) NAT64 hiding a public address (64:ff9b::808:808) is NOT private', !ihymnsHostResolvesPrivate('64:ff9b::808:808'));
+ok('(a-2111-10) 6to4 hiding the cloud-metadata address (2002:a9fe:a9fe::1) is private', ihymnsHostResolvesPrivate('2002:a9fe:a9fe::1'));
+ok('(a-2111-11) 6to4 hiding a public address (2002:808:808::1) is NOT private', !ihymnsHostResolvesPrivate('2002:808:808::1'));
+ok('(a-2111-12) the old IPv4-compatible form hiding 10.0.0.1 (::a00:1) is private', ihymnsHostResolvesPrivate('::a00:1'));
+
+/* MUTATION (#2111): take the extra-ranges check out of a copy of the guard and
+ * confirm the cases above flip. Without this, deleting the fix would leave every
+ * line of this file green — which is exactly what the review found. */
+$mutatedNoExtraRanges = str_replace(
+    'if (_ihymnsAddressFilterVarMisses($candidate)) {',
+    'if (false) { /* MUTATED: extra-ranges check removed */',
+    $guardSrc
+);
+ok('MUTATION setup sanity (a-2111): the extra-ranges call was found in real source',
+    $mutatedNoExtraRanges !== $guardSrc);
+osgWithMutatedSiblingFile($mutatedNoExtraRanges, $guardFile, function (string $tmp) use ($phpBin) {
+    $result = osgRunIsolated($phpBin, $tmp,
+        "echo json_encode([ihymnsHostResolvesPrivate('100.64.0.1'), ihymnsHostResolvesPrivate('ff02::1'), ihymnsHostResolvesPrivate('64:ff9b::a9fe:a9fe')]);");
+    ok('MUTATION PROOF (a-2111): without the extra-ranges check, carrier-grade NAT, IPv6 multicast and NAT64 all read as NOT private',
+        $result['code'] === 0 && trim($result['stdout']) === '[false,false,false]');
+});
+
 /* (a19)-(a20) test the internal decode helper DIRECTLY, not end-to-end
  * through ihymnsHostResolvesPrivate() — because for these two specific
  * inputs the OS's own resolver (glibc's gethostbynamel(), reached by
