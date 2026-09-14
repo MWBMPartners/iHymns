@@ -271,8 +271,15 @@ function _ihymnsAddressFilterVarMisses(string $ip): bool
         return true;
     }
     /* Transition forms that hide an IPv4 address inside an IPv6 one. Pull the IPv4
-       address out and judge it by exactly the same rules as a plain IPv4 address,
-       mirroring webhookIpIsPublic() in includes/webhooks.php. */
+       address out and judge it by exactly the same rules as a plain IPv4 address.
+
+       This keeps the shared check AT LEAST as strict as webhookIpIsPublic() in
+       includes/webhooks.php — not identical to it. (Corrected 2026-09-14: this said
+       "mirroring" it.) A second review ran both over 180,000 addresses and found the
+       shared check slightly STRICTER in one place: dotted spellings such as ::8.8.8.8
+       and ::ffff:8.8.8.8, which PHP's own filter refuses before this function is
+       reached. That is the safe direction. It is written down so nobody "fixes" the
+       difference by weakening this check. */
     $embedded = null;
     if ($b[0] === 0x00 && $b[1] === 0x64 && $b[2] === 0xff && $b[3] === 0x9b
         && array_sum(array_slice($b, 4, 8)) === 0) {
@@ -326,6 +333,26 @@ function _ihymnsAddressFilterVarMisses(string $ip): bool
  */
 function ihymnsHostResolvesPrivate(string $host): bool
 {
+    /* An IPv6 "zone id" — the "%interface" suffix, as in [::1%25lo0] or fe80::1%en0 —
+       is refused outright (#2111, second review, 2026-09-14).
+
+       ELI5: a percent sign never belongs in a real internet address, so anything
+       carrying one is treated as private instead of being guessed at.
+
+       Why: the "%25" survives parse_url(), so the text stops being a valid IP address.
+       It used to fall through to a DNS lookup, find nothing, and come back "not
+       private". An independent review then proved curl really connects through it —
+       http://[::1%25lo]:PORT/ reached this server's own loopback — and the same trick
+       reaches link-local addresses and fd00:ec2::254. A zone id only means something
+       on the local network segment, so no legitimate outbound service needs one.
+       webhookIpIsPublic() in includes/webhooks.php already refuses every zone-id form,
+       so this also keeps the shared check at least as strict as that copy.
+
+       WHAT THIS CANNOT DO: it only looks at the text it is given. A hostname that
+       resolves to a private address is handled further down, by resolving it. */
+    if (strpos($host, '%') !== false) {
+        return true;
+    }
     $host = trim($host);
     if ($host === '') {
         return false;

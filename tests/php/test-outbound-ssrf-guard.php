@@ -195,6 +195,38 @@ ok('(a-2111-10) 6to4 hiding the cloud-metadata address (2002:a9fe:a9fe::1) is pr
 ok('(a-2111-11) 6to4 hiding a public address (2002:808:808::1) is NOT private', !ihymnsHostResolvesPrivate('2002:808:808::1'));
 ok('(a-2111-12) the old IPv4-compatible form hiding 10.0.0.1 (::a00:1) is private', ihymnsHostResolvesPrivate('::a00:1'));
 
+/* Added after the second review (2026-09-14), which broke the code in ways the cases
+ * above did NOT notice:
+ *   - reading 6to4's hidden address from the wrong bytes passed, because both 6to4
+ *     cases above use repeating bytes (a9fe:a9fe, 808:808) — a shifted read lands on
+ *     the same kind of address. These use bytes that differ, so a shifted read does not.
+ *   - removing the hidden-address check for carrier-grade NAT and multicast passed,
+ *     because nothing hid one of those. These do.
+ *   - an IPv6 zone id ("%interface") got past the whole check, and curl connected. */
+ok('(a-2111-13) 6to4 hiding 192.168.1.1 with non-repeating bytes (2002:c0a8:101::1) is private', ihymnsHostResolvesPrivate('2002:c0a8:101::1'));
+ok('(a-2111-14) 6to4 hiding 8.8.4.4 with non-repeating bytes (2002:808:404::1) is NOT private', !ihymnsHostResolvesPrivate('2002:808:404::1'));
+ok('(a-2111-15) NAT64 hiding carrier-grade NAT 100.64.0.1 (64:ff9b::6440:1) is private', ihymnsHostResolvesPrivate('64:ff9b::6440:1'));
+ok('(a-2111-16) 6to4 hiding IPv4 multicast 224.0.0.1 (2002:e000:1::1) is private', ihymnsHostResolvesPrivate('2002:e000:1::1'));
+ok('(a-2111-17) loopback with a URL-encoded zone id ([::1%25lo0]) is private', ihymnsHostResolvesPrivate('[::1%25lo0]'));
+ok('(a-2111-18) link-local with a raw zone id (fe80::1%en0) is private', ihymnsHostResolvesPrivate('fe80::1%en0'));
+ok('(a-2111-19) NAT64 cloud-metadata address with a zone id (64:ff9b::a9fe:a9fe%eth0) is private', ihymnsHostResolvesPrivate('64:ff9b::a9fe:a9fe%eth0'));
+
+/* MUTATION (#2111, zone ids): remove the zone-id refusal from a copy of the guard.
+ * Loopback-with-a-zone-id must then come back NOT private, proving (a-2111-17) is
+ * held up by that refusal and not by something else that happens to be true. */
+$mutatedNoZoneRefusal = str_replace(
+    "if (strpos(\$host, '%') !== false) {",
+    'if (false) { /* MUTATED: zone-id refusal removed */',
+    $guardSrc
+);
+ok('MUTATION setup sanity (a-2111-zone): the zone-id refusal was found in real source',
+    $mutatedNoZoneRefusal !== $guardSrc);
+osgWithMutatedSiblingFile($mutatedNoZoneRefusal, $guardFile, function (string $tmp) use ($phpBin) {
+    $result = osgRunIsolated($phpBin, $tmp, "var_export(ihymnsHostResolvesPrivate('[::1%25lo0]'));");
+    ok('MUTATION PROOF (a-2111-zone): without the zone-id refusal, [::1%25lo0] reads as NOT private',
+        $result['code'] === 0 && trim($result['stdout']) === 'false');
+});
+
 /* MUTATION (#2111): take the extra-ranges check out of a copy of the guard and
  * confirm the cases above flip. Without this, deleting the fix would leave every
  * line of this file green — which is exactly what the review found. */
