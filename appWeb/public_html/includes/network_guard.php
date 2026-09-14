@@ -354,14 +354,16 @@ function ihymnsHostResolvesPrivate(string $host): bool
        private" for both, and a third review (2026-09-14) proved curl reached this
        server's own loopback through each of them, on libcurl 8.14 and 8.22. Refusing
        any "%" closes both routes at once. Do not narrow it — for example to IPv6
-       literals only, to "%25" only, to a "%" after the first character, or to the
-       first dot-separated part of the name. Each of those reopens the second route
-       for some spelling: a fourth review (2026-09-14) showed curl reaching loopback
-       through "%3127.0.0.1" and "127.0.0.%31", which slipped past two of those
-       narrowings while the two original test rows stayed green. (Corrected: this
-       comment first claimed rows (a-2111-20) and (a-2111-21) caught every such
-       narrowing; they did not.) Rows (a-2111-20) to (a-2111-23) now put the "%" in
-       different places so that each narrowing listed here turns at least one red.
+       literals only, to "%25" only, to a "%" after the first character, to one
+       dot-separated part of the name, or to escapes written in one letter case.
+       Each of those reopens the second route for some spelling. Reviews on
+       2026-09-14 showed curl reaching loopback through "%3127.0.0.1", "127.0.0.%31",
+       "127.%30.0.1" and "127%2E0%2E0%2E1", each slipping past one of those narrowings
+       while the test rows of the time stayed green. (Corrected twice: this comment
+       first claimed two rows caught every narrowing, then that four did.) The test
+       now GENERATES its rows (a-2111-24): it percent-encodes each character of two
+       loopback spellings in turn, in lower- and upper-case hex, so a narrowing that
+       depends on where the "%" sits or on its letter case turns at least one red.
 
        WHAT THIS CANNOT DO: it only looks at the text it is given. A hostname that
        resolves to a private address is handled further down, by resolving it. */

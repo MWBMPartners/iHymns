@@ -263,23 +263,22 @@ const PROMISE_WORDS = /\b((?:kept|held) in sync|keeps? (?:them|these|it|the two)
    the third review found missed in this subject form, such as "…test-auth-response-shape.php
    pins both the key set" and "…enforces the migrations-are-a-subset direction".
 
-   (Widened 2026-09-14, after a fourth review.) Taking the bare word "asserts" out of the
-   word list quietly dropped about eleven real claims where a small word sits between the
-   file and the verb: "tests/<name>.php also asserts", "… already asserts", "… then
-   asserts", "… §8 asserts", "… check (k) asserts". Those filler words are allowed now.
-   The same review suggested also allowing a possessive plus a word or two ("'s sweep
-   asserts"). That is deliberately NOT done: it is exactly the shape of the false alarm
-   the third review found ("…'s structure … but asserts"). */
-const SUBJECT_CLAIM = /^tests\/[A-Za-z0-9_./-]*\.(?:php|js)\b[`'")\]]*(?:\s+(?:also|already|then|now|still|itself|§\S+|check\s+\([a-z0-9]+\)))*\s+(?:asserts|pins|enforces|proves|verifies|checks)\b/i;
+   (Widened 2026-09-14 after a fourth review, then narrowed again after a fifth.)
+   Taking the bare word "asserts" out of the word list quietly dropped real claims where a
+   small word sits between the file and the verb: "tests/<name>.php also asserts",
+   "… already proves", "… §8 asserts", "… check (k) asserts". Those are allowed.
 
-/* The same claim with the verb wrapped onto the next comment line:
-       "... this is exactly what tests/<name>.php
-        * asserts for every row"
-   It counts only when the file name (plus any closing quote or bracket) ENDS its own
-   line, and the next line holds no test-file reference of its own and STARTS with the
-   verb (after the comment marker and any of the same filler words). */
-const SUBJECT_ENDS_LINE = /^tests\/[A-Za-z0-9_./-]*\.(?:php|js)\b[`'")\]]*\s*$/;
-const VERB_STARTS_LINE  = /^[ \t]*(?:\*+|\/\/+|#+)?(?:[ \t]+(?:also|already|then|now|still|itself|§\S+|check\s+\([a-z0-9]+\)))*[ \t]*(?:asserts|pins|enforces|proves|verifies|checks)\b/i;
+   Tried and taken back out, because the fifth review showed each one fails the build on
+   an ordinary sentence whose verb belongs to a DIFFERENT subject:
+   - "then" and "now": "CI runs tests/<name>.js then checks the exit code";
+   - "§" followed by any text: "compare tests/<name>.js §see-also pins in the wiki" —
+     so "§" now allows only a section number or a single letter, such as §8 or §F;
+   - a verb wrapped onto the next comment line: "@see tests/<name>.js" above
+     "* checks run in the order listed below", or a function name followed by its file in
+     brackets, where the verb on the next line belongs to the function.
+   Never allowed: a possessive before the verb ("'s sweep asserts"). That is the shape of
+   the false alarm the third review found ("…'s structure … but asserts"). */
+const SUBJECT_CLAIM = /^tests\/[A-Za-z0-9_./-]*\.(?:php|js)\b[`'")\]]*(?:\s+(?:also|already|still|itself|§(?:\d+[a-z]?|[A-Z])\b|check\s+\([a-z0-9]+\)))*\s+(?:asserts|pins|enforces|proves|verifies|checks)\b/i;
 
 /* Which words count towards deciding whether a reference is a claim?
 
@@ -304,10 +303,12 @@ const VERB_STARTS_LINE  = /^[ \t]*(?:\*+|\/\/+|#+)?(?:[ \t]+(?:also|already|then
    - many other ways of claiming protection are missed. A third review (2026-09-14)
      read the 40 most strongly worded of 386 references sitting near protection wording
      and judged about 25 to be real claims. The subject form ("tests/<name>.php pins …") is
-     now caught, with a few filler words or the verb wrapped onto the next line. Still
-     missed: a possessive before the verb ("tests/<name>.php's sweep asserts", left out on
-     purpose — see SUBJECT_CLAIM); a comma after a closing bracket ("(tests/<name>.php),
-     asserts"); and a verb far from the file name ("proves (1) and (2)").
+     now caught, with a few filler words in between. Still missed ON PURPOSE, because the
+     same wording also appears in sentences that are not claims (see SUBJECT_CLAIM): a
+     possessive before the verb ("tests/<name>.php's sweep asserts"); "then" or "now"
+     before it; and a verb wrapped onto the next line. Also missed: a comma after a
+     closing bracket ("(tests/<name>.php), asserts") and a verb far from the file name
+     ("proves (1) and (2)").
      (Corrected 2026-09-14: this note first gave "(CI-guarded: tests/<name>.php)" as a
      missed example. A fourth review showed it is caught — "CI-guarded" is in the word
      list above.)
@@ -336,7 +337,6 @@ const isPromise = (src, at) => {
     if (next && !HAS_OWN_CITATION.test(next)) parts.push(next);
     const rest = src.slice(at, lineEnd);                                     // from the reference to the end of its line
     if (SUBJECT_CLAIM.test(rest)) return true;
-    if (next && SUBJECT_ENDS_LINE.test(rest) && !HAS_OWN_CITATION.test(next) && VERB_STARTS_LINE.test(next)) return true;
     return PROMISE_WORDS.test(parts.join('\n'));
 };
 

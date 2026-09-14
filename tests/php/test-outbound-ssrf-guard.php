@@ -33,23 +33,26 @@ declare(strict_types=1);
  * tests/php/test-gating-wizard.php's own precedent for its (f)/(g) truth
  * tables.
  *
- * NETWORK NOTE (corrected twice on 2026-09-14). It first said every case uses a
+ * NETWORK NOTE (corrected three times on 2026-09-14). It first said every case uses a
  * literal IP address, so nothing ever does a DNS lookup. After the third review it
- * said the ordinary run does no lookup. A fourth review logged every lookup and
- * showed both were wrong. What is true:
+ * said the ordinary run does no lookup. The fourth and fifth reviews logged every
+ * lookup, on macOS and on Linux, and showed what was still missing. What is true:
  * - Most truth-table rows use literal IP addresses, which skip DNS entirely, or
  *   text containing "%", which the guard refuses before any lookup.
  * - Some cases DO look a name up, on purpose. (a8) uses a name that cannot exist.
  *   (b4) and (b8) resolve real public service names through the two clients. The
- *   (a-F1a) proof and the "%" proofs take a protection away, so the guard then
- *   looks up text that cannot resolve.
+ *   (a-F1a), (a-F1b) and "%" proofs take a protection away, so the guard then looks
+ *   up text that should not resolve. Before the (a-F1b) proof, the file also asks the
+ *   machine's own resolver about "0x7f000001", to decide whether that proof can run
+ *   at all (macOS turns it into an address, so there the proof is skipped).
  * - None of the results depend on having a network. The fourth review ran the whole
  *   file on PHP 8.3 and 8.4 with networking switched off (93 passed) as well as on.
  *   Offline, (b4) and (b8) still pass because a name that cannot be resolved is
  *   treated as "not private" (see (a8)).
  * - WHAT COULD STILL BREAK IT: a resolver that answers EVERY name (a DNS search
- *   domain with a wildcard record) could give an invented name an address, and a
- *   "%" proof could then fail on a correct tree. Not seen, and not tested.
+ *   domain with a wildcard record) could give a name that should not exist an
+ *   address. That could change (a8) or any of the proofs above on a correct tree.
+ *   Not seen, and not tested. (This first named only the "%" proofs.)
  *
  * @see appWeb/public_html/includes/network_guard.php     ihymnsHostResolvesPrivate() — the shared core
  * @see appWeb/public_html/includes/cuercode_client.php    _cuercodeResolveUrl() — a caller
@@ -240,6 +243,39 @@ ok('(a-2111-20) a percent-encoded 127.0.0.1 (%31%32%37.0.0.1) is private', ihymn
 ok('(a-2111-21) a percent-encoded localhost (loc%61lhost) is private', ihymnsHostResolvesPrivate('loc%61lhost'));
 ok('(a-2111-22) 127.0.0.1 whose only "%" is the first character (%3127.0.0.1) is private', ihymnsHostResolvesPrivate('%3127.0.0.1'));
 ok('(a-2111-23) 127.0.0.1 with only its last part percent-encoded (127.0.0.%31) is private', ihymnsHostResolvesPrivate('127.0.0.%31'));
+
+/* (a-2111-24) GENERATED rows, added after a fifth review. That review found two more
+ * narrowings the four rows above did not catch — checking only the first or last
+ * dot-separated part (misses "127.%30.0.1"), and refusing only escapes written in
+ * lower-case hex (misses "%2E") — and curl reached loopback through both.
+ *
+ * ELI5: instead of guessing which spellings to test, write every one-character spelling.
+ *
+ * Hand-picking one more row after each review was not converging: three reviews in a
+ * row each found a spelling the rows missed. So these rows take two loopback spellings
+ * and percent-encode ONE character at a time, in lower- and upper-case hex. A narrowing
+ * that depends on where the "%" sits, or on the letter case of the escape, now misses
+ * at least one of them. What these rows still cannot see: other loopback forms written
+ * with escapes (for example "127.1" or "0x7f000001"), and spellings with several
+ * escapes placed in particular ways. The hand-written rows above cover some of those,
+ * not all. */
+$osgEncodedLoopbacks = [];
+foreach (['127.0.0.1', 'localhost'] as $osgPlain) {
+    for ($i = 0, $n = strlen($osgPlain); $i < $n; $i++) {
+        foreach (['%%%02x', '%%%02X'] as $osgHexFormat) {            // "%%" is a literal "%" in sprintf
+            $osgEncodedLoopbacks[] = substr($osgPlain, 0, $i)
+                . sprintf($osgHexFormat, ord($osgPlain[$i]))
+                . substr($osgPlain, $i + 1);
+        }
+    }
+}
+$osgEncodedLoopbacks = array_values(array_unique($osgEncodedLoopbacks));   // digits have no letter case, so some repeat
+ok('(a-2111-24) setup sanity: 25 distinct one-character spellings were generated (12 of 127.0.0.1, 13 of localhost)',
+    count($osgEncodedLoopbacks) === 25);
+foreach ($osgEncodedLoopbacks as $osgSpelling) {
+    ok("(a-2111-24) a loopback spelling with one character percent-encoded ({$osgSpelling}) is private",
+        ihymnsHostResolvesPrivate($osgSpelling));
+}
 
 /* MUTATION (#2111, zone ids): remove the zone-id refusal from a copy of the guard.
  * Loopback-with-a-zone-id must then come back NOT private, proving (a-2111-17) is
