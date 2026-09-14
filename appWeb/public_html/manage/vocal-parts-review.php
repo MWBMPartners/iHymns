@@ -102,8 +102,11 @@ declare(strict_types=1);
  *   - tests/php/test-admin-tables-sortable.php — the queue table must
  *     follow the responsive + click-to-sort conventions, or name the
  *     column it is excusing and why (#842 / #844).
- *   - tests/php/test-error-page-coverage.php  — the 409 responses the
- *     actions below return must be JSON, never a half-rendered page.
+ *   - tests/php/test-error-page-coverage.php  — lists this page among those
+ *     allowed to answer with a 409 status. It does NOT check that the reply is
+ *     JSON rather than a half-rendered page; that part is held by review, not
+ *     by a test. (Corrected 2026-09-14: this line said the test ensured the
+ *     replies "must be JSON", which overstated what it checks.)
  *   - tests/php/test-vocal-part-review.php    — the truth table over
  *     `includes/vocal_part_review.php`, the core every decision on this
  *     page is made by. That is where the behaviour actually lives, and

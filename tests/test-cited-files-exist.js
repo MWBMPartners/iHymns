@@ -8,7 +8,9 @@
  * tests/test-something.js". Three of those comments named test files that had
  * never existed — not in any commit, not on any branch. Nobody noticed for
  * months. This file walks the whole tree, collects every path under `tests/`
- * that any comment points at, and fails if one of them is not really there.
+ * that any comment points at, and reports any that are not really there. It
+ * FAILS only when the missing file is named in a sentence that claims
+ * something is being checked — see "Two kinds of broken reference" below.
  *
  * WHY THIS MATTERS MORE THAN AN ORDINARY WRONG COMMENT
  * ---------------------------------------------------
@@ -81,8 +83,11 @@
  *     it reads. Stated as a known limit, not hidden as an oversight.
  *
  * PROVEN ABLE TO FAIL (rule #34), both ways round:
- *   - add a citation of a test file that is not there, with no explanation
- *     nearby → RED, naming the file, the line and the missing path;
+ *   - add a sentence claiming protection ("kept in sync by …", "the standing
+ *     guard for …") that names a test file that is not there → RED, naming
+ *     the file, the line and the missing path;
+ *   - the same missing file named as an ordinary pointer → listed as a NOTE,
+ *     exit 0, because a plain cross-reference should never break a build;
  *   - take the word "retired" out of the one honest past-tense sentence in
  *     tests/test-qr-cuercode.js → RED, which proves the exemption in point 4
  *     is doing real work rather than the green being an accident.
@@ -90,7 +95,10 @@
  *
  *   node tests/test-cited-files-exist.js
  *
- * Exit status 0 = every cited test file exists, 1 = at least one does not.
+ * Exit status 0 = no claim of protection names a missing test file (missing
+ * plain pointers are listed but do not fail); 1 = at least one does.
+ * (Corrected 2026-09-14: this line said "0 = every cited test file exists",
+ * which stopped being true when the guard was narrowed to claims only.)
  *
  * @see .claude/CLAUDE.md rule #35  cross-file agreement needs a mechanism, not a comment
  * @see .claude/CLAUDE.md rule #34  tree-derived, mutation-proven guards
@@ -214,12 +222,32 @@ const files = SCAN_DIRS.flatMap((d) => {
 
    So: a reference is a PROMISE when the words around it claim protection. Anything
    else is a pointer — still reported, so it gets fixed, but it does not fail. */
-const PROMISE_WORDS = /\b(kept in sync|keeps? (?:them|these|it|the two)|@see|guard(?:ed|s)? (?:by|over)|asserted by|covered by|enforced by|CI guard|checked by|proven by|banned by|caught by|verified by|fails? (?:the )?build)\b/i;
+/* (Corrected 2026-09-14, after an independent review.) This list used to
+   include "@see", which could never match: the \b in front needs a letter or digit
+   right before the "@", and in a comment "@see" always follows a space or "*".
+   It is now left out on purpose, not by accident: "@see" is a documentation
+   pointer — "look over there" — and a pointer is exactly what the owner said should
+   not break a build. What makes a sentence a CLAIM is the wording after it, such as
+   "the standing guard for this file" or "the mutation-proven truth table", so those
+   phrasings are listed instead. The review found four real claims in the tree the
+   old list treated as plain pointers. */
+const PROMISE_WORDS = /\b(kept in sync|keeps? (?:them|these|it|the two)|guard(?:ed|s)? (?:by|over|for)|standing guard|asserted by|and asserts|covered by|enforced by|CI guard|checked by|tested by|proven by|banned by|caught by|verified by|truth table|mutation-proven|fails? (?:the )?build)\b/i;
 
-/* Look at the sentence the reference sits in — 200 characters either side, which
-   comfortably covers a doc-block line and its neighbours without wandering into an
-   unrelated paragraph. */
-const isPromise = (src, at) => PROMISE_WORDS.test(src.slice(Math.max(0, at - 200), at + 200));
+/* Look at the line the reference sits on, plus the line before and the line after.
+   (Corrected 2026-09-14.) This used to take 200 characters either side, which the
+   review showed could reach into the NEXT, unrelated comment block and treat a
+   plain pointer as a claim because a neighbouring comment said "kept in sync by".
+   One line either side still catches a claim that wraps across a line break,
+   which doc-blocks do constantly, without borrowing words from a different
+   comment. */
+const isPromise = (src, at) => {
+    const lineStart = src.lastIndexOf('\n', at - 1);                       // -1 when on the first line
+    const from = lineStart <= 0 ? 0 : src.lastIndexOf('\n', lineStart - 1) + 1;
+    const lineEnd = src.indexOf('\n', at);
+    const nextEnd = lineEnd === -1 ? -1 : src.indexOf('\n', lineEnd + 1);
+    const to = lineEnd === -1 ? src.length : (nextEnd === -1 ? src.length : nextEnd);
+    return PROMISE_WORDS.test(src.slice(Math.max(0, from), to));
+};
 
 const broken  = [];
 let citations = 0;

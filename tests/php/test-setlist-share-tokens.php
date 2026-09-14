@@ -308,6 +308,13 @@ $candidates = [
         => 'eyJuYW1lIjoiU3VuZGF5IiwiaXRlbXMiOlt7ImlkIjoiTVAtMTAwOCJ9XX0=+/abcdefghijklmnop',
     'contains a full stop'
         => 'abc.defg',
+    // (Added 2026-09-14 after an independent review.) Every other candidate is a
+    // single line, so a multi-line flag on the browser's pattern ("m", which makes
+    // ^ and $ match at each line break) was never exercised: the guard reported
+    // agreement that was not there. A valid-looking code followed by a line break
+    // and junk is refused by all three sides only while none of them is multi-line.
+    'a valid-looking code, then a line break and junk (only a multi-line pattern would accept this)'
+        => "abcdef\n+/=junk",
     'contains a space in the middle'
         => 'abc defg',
     'contains a percent sign (a half-decoded web address)'
