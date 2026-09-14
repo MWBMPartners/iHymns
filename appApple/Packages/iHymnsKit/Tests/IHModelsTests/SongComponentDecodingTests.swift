@@ -39,6 +39,12 @@ import Testing
 @Suite("SongComponent keeps what the server sends")
 struct SongComponentDecodingTests {
 
+    /// (Corrected 2026-09-14.) The echo's `part` used to carry `"enters": false`, but
+    /// the server never sends `enters` for a within-line span — only `id`, `kind`,
+    /// `label` and `bg` (`lyric_lines_read.php`, the voiceSpans block). A fixture
+    /// with a key the server never sends cannot catch that key being made required,
+    /// which would make every real song with an echo fail to load. Removed.
+    ///
     /// Exactly the shape `includes/lyric_lines_read.php` produces for a verse the
     /// women start and the men answer, with an echo inside the second line.
     private static let withVoices = """
@@ -59,7 +65,7 @@ struct SongComponentDecodingTests {
       ],
       "voiceSpans": [
         { "line": 1, "start": 4, "end": 11,
-          "part": { "id": 3, "kind": "echo", "label": "Echo", "bg": true, "enters": false } }
+          "part": { "id": 3, "kind": "echo", "label": "Echo", "bg": true } }
       ]
     }
     """.data(using: .utf8)!
