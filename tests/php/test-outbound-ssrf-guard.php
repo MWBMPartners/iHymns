@@ -33,17 +33,23 @@ declare(strict_types=1);
  * tests/php/test-gating-wizard.php's own precedent for its (f)/(g) truth
  * tables.
  *
- * NETWORK NOTE (corrected 2026-09-14, after a third review): this used to say
- * every case uses a literal IP address and so no case ever does a DNS lookup.
- * That stopped being true. What is true now:
- * - The truth-table rows use literal IP addresses, which skip DNS entirely, or
- *   text containing "%" (a zone id, or a percent-encoded name like
- *   "loc%61lhost"), which the guard refuses before it would look anything up.
- *   So the ordinary run does no DNS lookup.
- * - The mutation proofs for the "%" refusal are different on purpose. They take
- *   that refusal away, so the guard DOES try to look the text up as a name. The
- *   names cannot exist, so the lookup fails the same way with or without a
- *   network; on a machine with no network it may just take a moment longer.
+ * NETWORK NOTE (corrected twice on 2026-09-14). It first said every case uses a
+ * literal IP address, so nothing ever does a DNS lookup. After the third review it
+ * said the ordinary run does no lookup. A fourth review logged every lookup and
+ * showed both were wrong. What is true:
+ * - Most truth-table rows use literal IP addresses, which skip DNS entirely, or
+ *   text containing "%", which the guard refuses before any lookup.
+ * - Some cases DO look a name up, on purpose. (a8) uses a name that cannot exist.
+ *   (b4) and (b8) resolve real public service names through the two clients. The
+ *   (a-F1a) proof and the "%" proofs take a protection away, so the guard then
+ *   looks up text that cannot resolve.
+ * - None of the results depend on having a network. The fourth review ran the whole
+ *   file on PHP 8.3 and 8.4 with networking switched off (93 passed) as well as on.
+ *   Offline, (b4) and (b8) still pass because a name that cannot be resolved is
+ *   treated as "not private" (see (a8)).
+ * - WHAT COULD STILL BREAK IT: a resolver that answers EVERY name (a DNS search
+ *   domain with a wildcard record) could give an invented name an address, and a
+ *   "%" proof could then fail on a correct tree. Not seen, and not tested.
  *
  * @see appWeb/public_html/includes/network_guard.php     ihymnsHostResolvesPrivate() — the shared core
  * @see appWeb/public_html/includes/cuercode_client.php    _cuercodeResolveUrl() — a caller
@@ -217,13 +223,23 @@ ok('(a-2111-17) loopback with a URL-encoded zone id ([::1%25lo0]) is private', i
 ok('(a-2111-18) link-local with a raw zone id (fe80::1%en0) is private', ihymnsHostResolvesPrivate('fe80::1%en0'));
 ok('(a-2111-19) NAT64 cloud-metadata address with a zone id (64:ff9b::a9fe:a9fe%eth0) is private', ihymnsHostResolvesPrivate('64:ff9b::a9fe:a9fe%eth0'));
 
-/* Added after the third review (2026-09-14). Refusing any "%" also closes a route that
- * has nothing to do with zone ids: curl decodes a percent-encoded host NAME, so these
- * two spellings reach loopback — the review proved curl connected through both. Without
- * these rows, "tidying" the refusal down to real zone ids only (or to a "%" after the
- * first character) left every address row green and reopened the route. */
+/* Added after the third review (2026-09-14), extended after the fourth. Refusing any
+ * "%" also closes a route that has nothing to do with zone ids: curl decodes a
+ * percent-encoded host NAME, so each spelling below reaches loopback, and reviews proved
+ * curl connected through them. Without these rows, "tidying" the refusal down to real
+ * zone ids only left every address row green and reopened the route.
+ *
+ * WHY FOUR ROWS, with the "%" in different places. The first two rows alone did not
+ * stop two plausible narrowings (fourth review): a search that starts at the second
+ * character still finds one of the three "%" in (a-2111-20), and a check of only the
+ * first dot-separated part still finds the "%" in (a-2111-21). So:
+ *   (a-2111-22) has ONE "%", and it is the very first character;
+ *   (a-2111-23) has a "%" only in a LATER dot-separated part.
+ * Do not merge these into fewer rows. */
 ok('(a-2111-20) a percent-encoded 127.0.0.1 (%31%32%37.0.0.1) is private', ihymnsHostResolvesPrivate('%31%32%37.0.0.1'));
 ok('(a-2111-21) a percent-encoded localhost (loc%61lhost) is private', ihymnsHostResolvesPrivate('loc%61lhost'));
+ok('(a-2111-22) 127.0.0.1 whose only "%" is the first character (%3127.0.0.1) is private', ihymnsHostResolvesPrivate('%3127.0.0.1'));
+ok('(a-2111-23) 127.0.0.1 with only its last part percent-encoded (127.0.0.%31) is private', ihymnsHostResolvesPrivate('127.0.0.%31'));
 
 /* MUTATION (#2111, zone ids): remove the zone-id refusal from a copy of the guard.
  * Loopback-with-a-zone-id must then come back NOT private, proving (a-2111-17) is
@@ -244,8 +260,8 @@ osgWithMutatedSiblingFile($mutatedNoZoneRefusal, $guardFile, function (string $t
 /* MUTATION (third review, 2026-09-14): narrow the refusal to "a % after the first
  * character" — the classic strpos() slip of writing "> 0" instead of "!== false".
  * Every zone-id row stays green under that change, because a zone id never starts
- * with "%". Only (a-2111-20) notices, because its "%" is the very first character.
- * This proves that row is what stops the narrowing, not something else. */
+ * with "%". Only the rows whose "%" is the very first character notice — (a-2111-20)
+ * and (a-2111-22). This proves the truth table can see that narrowing at all. */
 $mutatedNarrowedRefusal = str_replace(
     "if (strpos(\$host, '%') !== false) {",
     "if (strpos(\$host, '%') > 0) { /* MUTATED: refusal narrowed */",
