@@ -231,11 +231,38 @@ const files = SCAN_DIRS.flatMap((d) => {
    "the standing guard for this file" or "the mutation-proven truth table", so those
    phrasings are listed instead. The review found four real claims in the tree the
    old list treated as plain pointers. */
-/* (Second correction, 2026-09-14, after a second review.) "and asserts" missed the
-   real claim "`tests/php/test-live-follow-cross-channel.php` asserts they do", so the
-   word is now "asserts" on its own. "truth table" missed "truth-table", so a hyphen is
-   allowed. */
-const PROMISE_WORDS = /\b(kept in sync|keeps? (?:them|these|it|the two)|guard(?:ed|s)? (?:by|over|for)|standing guard|asserted by|asserts|covered by|enforced by|CI guard|checked by|tested by|proven by|banned by|caught by|verified by|truth[- ]table|mutation-proven|fails? (?:the )?build)\b/i;
+/* Phrases that turn a reference into a claim wherever they sit in the sentence.
+
+   (Third correction, 2026-09-14.) A second review found "and asserts" missed the real
+   claim "`tests/php/test-live-follow-cross-channel.php` asserts they do", so the bare
+   word "asserts" was added. A third review then measured the whole tree and found that
+   made two plain pointers fail the build, because "asserts" there described the file
+   the comment sits in, not the file it names:
+
+     "Mirrors tests/php/test-apple-client-secret.php's structure … but asserts the
+      DIFFERENT claim shape"
+     "following … tests/test-event-names.js — this asserts against the SOURCE"
+
+   So a bare verb is no longer a claim on its own. It counts only when the named test
+   file is the SUBJECT of that verb — see SUBJECT_CLAIM just below. "held in sync" and
+   "CI-guarded" are added from real claims the same review found missed. */
+const PROMISE_WORDS = /\b((?:kept|held) in sync|keeps? (?:them|these|it|the two)|guard(?:ed|s)? (?:by|over|for)|standing guard|asserted by|and asserts|covered by|enforced by|CI[- ]guard(?:ed)?|checked by|tested by|proven by|banned by|caught by|verified by|truth[- ]table|mutation-proven|fails? (?:the )?build)\b/i;
+
+/* A reference is also a claim when the named test file is the subject of a checking
+   verb — "`tests/<name>.php` asserts …", "tests/<name>.php pins …", "(tests/<name>.js) enforces …".
+   (The examples use "<name>" on purpose: a real-looking path here would be read by this
+   very guard as a claim about a missing file, and fail the build.)
+
+   ELI5: if the sentence says the test FILE does the checking, it is promising that
+   something is checked.
+
+   This is matched from the very start of the reference to the end of its own line: the
+   file name, then at most a closing quote, backtick or bracket, then spaces, then the
+   verb. So "tests/<name>.php's structure … but asserts" (a possessive) and "tests/<name>.js — this
+   asserts" (a different subject) are correctly left as pointers. It catches the claims
+   the third review found missed in this subject form, such as "…test-auth-response-shape.php
+   pins both the key set" and "…enforces the migrations-are-a-subset direction". */
+const SUBJECT_CLAIM = /^tests\/[A-Za-z0-9_./-]*\.(?:php|js)\b[`'")\]]*\s+(?:asserts|pins|enforces|proves|verifies|checks)\b/i;
 
 /* Which words count towards deciding whether a reference is a claim?
 
@@ -254,9 +281,16 @@ const PROMISE_WORDS = /\b(kept in sync|keeps? (?:them|these|it|the two)|guard(?:
      counts — the wrapped part has no reference of its own — but a neighbour that is
      describing a different file is left alone.
 
-   WHAT THIS CANNOT DO: a claim phrase split mid-way across a line break
-   ("kept in / sync by") is not recognised. Missing a claim leaves a build green;
-   inventing one breaks it. The owner asked for the second to be rare. */
+   WHAT THIS CANNOT DO — stated plainly, because a guard that seems to see more than it
+   does is read as coverage it does not give:
+   - a claim phrase split mid-way across a line break ("kept in / sync by") is missed;
+   - many other ways of claiming protection are missed. A third review (2026-09-14)
+     read the 40 most strongly worded of 386 references sitting near protection wording
+     and judged about 25 to be real claims. The subject form ("tests/<name>.php pins …") is
+     now caught; wordings such as "(CI-guarded: tests/<name>.php)" in brackets, or "proves (1)
+     and (2)" far from the file name, still are not.
+   Missing a claim leaves a build green; inventing one breaks it. The owner asked for the
+   second to be rare, so this list deliberately errs towards missing. */
 const HAS_OWN_CITATION = new RegExp(CITATION_RE.source);   // no "g" flag, so no shared lastIndex
 const isPromise = (src, at) => {
     const lineStart = src.lastIndexOf('\n', at - 1) + 1;                     // 0 on the first line
@@ -278,6 +312,7 @@ const isPromise = (src, at) => {
     const parts = [own];
     if (prev && !HAS_OWN_CITATION.test(prev)) parts.push(prev);
     if (next && !HAS_OWN_CITATION.test(next)) parts.push(next);
+    if (SUBJECT_CLAIM.test(src.slice(at, lineEnd))) return true;
     return PROMISE_WORDS.test(parts.join('\n'));
 };
 

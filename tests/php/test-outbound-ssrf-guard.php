@@ -33,11 +33,17 @@ declare(strict_types=1);
  * tests/php/test-gating-wizard.php's own precedent for its (f)/(g) truth
  * tables.
  *
- * NETWORK NOTE: every case below uses a LITERAL IP address (never a
- * hostname), so `ihymnsHostResolvesPrivate()` never performs a real DNS
- * lookup here (its own doc-block: "a literal IP host is treated as
- * already-resolved, skips DNS entirely") — this file's assertions hold
- * identically whether or not the test runner has network access.
+ * NETWORK NOTE (corrected 2026-09-14, after a third review): this used to say
+ * every case uses a literal IP address and so no case ever does a DNS lookup.
+ * That stopped being true. What is true now:
+ * - The truth-table rows use literal IP addresses, which skip DNS entirely, or
+ *   text containing "%" (a zone id, or a percent-encoded name like
+ *   "loc%61lhost"), which the guard refuses before it would look anything up.
+ *   So the ordinary run does no DNS lookup.
+ * - The mutation proofs for the "%" refusal are different on purpose. They take
+ *   that refusal away, so the guard DOES try to look the text up as a name. The
+ *   names cannot exist, so the lookup fails the same way with or without a
+ *   network; on a machine with no network it may just take a moment longer.
  *
  * @see appWeb/public_html/includes/network_guard.php     ihymnsHostResolvesPrivate() — the shared core
  * @see appWeb/public_html/includes/cuercode_client.php    _cuercodeResolveUrl() — a caller
@@ -211,6 +217,14 @@ ok('(a-2111-17) loopback with a URL-encoded zone id ([::1%25lo0]) is private', i
 ok('(a-2111-18) link-local with a raw zone id (fe80::1%en0) is private', ihymnsHostResolvesPrivate('fe80::1%en0'));
 ok('(a-2111-19) NAT64 cloud-metadata address with a zone id (64:ff9b::a9fe:a9fe%eth0) is private', ihymnsHostResolvesPrivate('64:ff9b::a9fe:a9fe%eth0'));
 
+/* Added after the third review (2026-09-14). Refusing any "%" also closes a route that
+ * has nothing to do with zone ids: curl decodes a percent-encoded host NAME, so these
+ * two spellings reach loopback — the review proved curl connected through both. Without
+ * these rows, "tidying" the refusal down to real zone ids only (or to a "%" after the
+ * first character) left every address row green and reopened the route. */
+ok('(a-2111-20) a percent-encoded 127.0.0.1 (%31%32%37.0.0.1) is private', ihymnsHostResolvesPrivate('%31%32%37.0.0.1'));
+ok('(a-2111-21) a percent-encoded localhost (loc%61lhost) is private', ihymnsHostResolvesPrivate('loc%61lhost'));
+
 /* MUTATION (#2111, zone ids): remove the zone-id refusal from a copy of the guard.
  * Loopback-with-a-zone-id must then come back NOT private, proving (a-2111-17) is
  * held up by that refusal and not by something else that happens to be true. */
@@ -225,6 +239,26 @@ osgWithMutatedSiblingFile($mutatedNoZoneRefusal, $guardFile, function (string $t
     $result = osgRunIsolated($phpBin, $tmp, "var_export(ihymnsHostResolvesPrivate('[::1%25lo0]'));");
     ok('MUTATION PROOF (a-2111-zone): without the zone-id refusal, [::1%25lo0] reads as NOT private',
         $result['code'] === 0 && trim($result['stdout']) === 'false');
+});
+
+/* MUTATION (third review, 2026-09-14): narrow the refusal to "a % after the first
+ * character" — the classic strpos() slip of writing "> 0" instead of "!== false".
+ * Every zone-id row stays green under that change, because a zone id never starts
+ * with "%". Only (a-2111-20) notices, because its "%" is the very first character.
+ * This proves that row is what stops the narrowing, not something else. */
+$mutatedNarrowedRefusal = str_replace(
+    "if (strpos(\$host, '%') !== false) {",
+    "if (strpos(\$host, '%') > 0) { /* MUTATED: refusal narrowed */",
+    $guardSrc
+);
+ok('MUTATION setup sanity (a-2111-narrow): the refusal was found in real source',
+    $mutatedNarrowedRefusal !== $guardSrc);
+osgWithMutatedSiblingFile($mutatedNarrowedRefusal, $guardFile, function (string $tmp) use ($phpBin) {
+    $result = osgRunIsolated($phpBin, $tmp,
+        "var_export([ihymnsHostResolvesPrivate('%31%32%37.0.0.1'), ihymnsHostResolvesPrivate('[::1%25lo0]')]);");
+    $got = preg_replace('/\s+/', '', $result['stdout']);
+    ok('MUTATION PROOF (a-2111-narrow): with the refusal narrowed, %31%32%37.0.0.1 reads as NOT private while the zone id is still refused',
+        $result['code'] === 0 && $got === 'array(0=>false,1=>true,)');
 });
 
 /* MUTATION (#2111): take the extra-ranges check out of a copy of the guard and

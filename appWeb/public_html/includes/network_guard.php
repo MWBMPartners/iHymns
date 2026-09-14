@@ -348,6 +348,15 @@ function ihymnsHostResolvesPrivate(string $host): bool
        webhookIpIsPublic() in includes/webhooks.php already refuses every zone-id form,
        so this also keeps the shared check at least as strict as that copy.
 
+       IT ALSO CLOSES A SECOND ROUTE — do not narrow this to zone ids only. curl decodes
+       a percent-encoded host NAME, so "%31%32%37.0.0.1" means 127.0.0.1 and
+       "loc%61lhost" means localhost. Before this refusal the guard answered "not
+       private" for both, and a third review (2026-09-14) proved curl reached this
+       server's own loopback through each of them, on libcurl 8.14 and 8.22. Refusing
+       any "%" closes both routes at once. A narrower rule — only after an IPv6
+       literal, or only from the second character onwards — would quietly reopen the
+       second one. Tests (a-2111-20) and (a-2111-21) turn red if it does.
+
        WHAT THIS CANNOT DO: it only looks at the text it is given. A hostname that
        resolves to a private address is handled further down, by resolving it. */
     if (strpos($host, '%') !== false) {
