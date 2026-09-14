@@ -47,7 +47,7 @@ struct SongComponentDecodingTests {
     ///
     /// Exactly the shape `includes/lyric_lines_read.php` produces for a verse the
     /// women start and the men answer, with an echo inside the second line.
-    private static let withVoices = """
+    private static let withVoices = Data("""
     {
       "type": "verse",
       "number": 1,
@@ -68,11 +68,11 @@ struct SongComponentDecodingTests {
           "part": { "id": 3, "kind": "echo", "label": "Echo", "bg": true } }
       ]
     }
-    """.data(using: .utf8)!
+    """.utf8)
 
     /// An ordinary section, with none of the newer keys present at all. The server
     /// leaves them out unless there is something to say, so this is the common case.
-    private static let plain = """
+    private static let plain = Data("""
     {
       "type": "chorus",
       "number": 0,
@@ -82,13 +82,13 @@ struct SongComponentDecodingTests {
       "lineIds": [201],
       "lineLanguages": null
     }
-    """.data(using: .utf8)!
+    """.utf8)
 
     @Test("who sings each run survives being read")
     func voicesSurvive() throws {
-        let c = try JSONDecoder().decode(SongComponent.self, from: Self.withVoices)
+        let component = try JSONDecoder().decode(SongComponent.self, from: Self.withVoices)
         // Before the fix this was nil, and that is the whole point of the test.
-        let voices = try #require(c.voices, "the singing parts were dropped while reading the server's answer")
+        let voices = try #require(component.voices, "the singing parts were dropped while reading the server's answer")
         #expect(voices.count == 2)
         #expect(voices[0].parts.first?.kind == "women")
         #expect(voices[1].parts.first?.kind == "men")
@@ -97,8 +97,8 @@ struct SongComponentDecodingTests {
 
     @Test("an echo inside a line survives being read")
     func spansSurvive() throws {
-        let c = try JSONDecoder().decode(SongComponent.self, from: Self.withVoices)
-        let spans = try #require(c.voiceSpans, "the within-line echo was dropped while reading the server's answer")
+        let component = try JSONDecoder().decode(SongComponent.self, from: Self.withVoices)
+        let spans = try #require(component.voiceSpans, "the within-line echo was dropped while reading the server's answer")
         #expect(spans.count == 1)
         #expect(spans[0].line == 1)
         #expect(spans[0].start == 4 && spans[0].end == 11)
@@ -108,18 +108,18 @@ struct SongComponentDecodingTests {
 
     @Test("a curator's own name for the section survives being read")
     func labelSurvives() throws {
-        let c = try JSONDecoder().decode(SongComponent.self, from: Self.withVoices)
-        #expect(c.label == "Kyrie")
+        let component = try JSONDecoder().decode(SongComponent.self, from: Self.withVoices)
+        #expect(component.label == "Kyrie")
     }
 
     @Test("a section with none of the newer keys still reads perfectly")
     func plainStillWorks() throws {
-        let c = try JSONDecoder().decode(SongComponent.self, from: Self.plain)
-        #expect(c.type == "chorus")
-        #expect(c.lines == ["O praise him"])
-        #expect(c.voices == nil)
-        #expect(c.voiceSpans == nil)
-        #expect(c.label == nil)
+        let component = try JSONDecoder().decode(SongComponent.self, from: Self.plain)
+        #expect(component.type == "chorus")
+        #expect(component.lines == ["O praise him"])
+        #expect(component.voices == nil)
+        #expect(component.voiceSpans == nil)
+        #expect(component.label == nil)
     }
 
     /// The saved-for-offline copy is made by re-encoding this struct, so anything
