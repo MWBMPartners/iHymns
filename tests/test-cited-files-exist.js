@@ -231,22 +231,54 @@ const files = SCAN_DIRS.flatMap((d) => {
    "the standing guard for this file" or "the mutation-proven truth table", so those
    phrasings are listed instead. The review found four real claims in the tree the
    old list treated as plain pointers. */
-const PROMISE_WORDS = /\b(kept in sync|keeps? (?:them|these|it|the two)|guard(?:ed|s)? (?:by|over|for)|standing guard|asserted by|and asserts|covered by|enforced by|CI guard|checked by|tested by|proven by|banned by|caught by|verified by|truth table|mutation-proven|fails? (?:the )?build)\b/i;
+/* (Second correction, 2026-09-14, after a second review.) "and asserts" missed the
+   real claim "`tests/php/test-live-follow-cross-channel.php` asserts they do", so the
+   word is now "asserts" on its own. "truth table" missed "truth-table", so a hyphen is
+   allowed. */
+const PROMISE_WORDS = /\b(kept in sync|keeps? (?:them|these|it|the two)|guard(?:ed|s)? (?:by|over|for)|standing guard|asserted by|asserts|covered by|enforced by|CI guard|checked by|tested by|proven by|banned by|caught by|verified by|truth[- ]table|mutation-proven|fails? (?:the )?build)\b/i;
 
-/* Look at the line the reference sits on, plus the line before and the line after.
-   (Corrected 2026-09-14.) This used to take 200 characters either side, which the
-   review showed could reach into the NEXT, unrelated comment block and treat a
-   plain pointer as a claim because a neighbouring comment said "kept in sync by".
-   One line either side still catches a claim that wraps across a line break,
-   which doc-blocks do constantly, without borrowing words from a different
-   comment. */
+/* Which words count towards deciding whether a reference is a claim?
+
+   ELI5: read the reference's own line. Also read the line just above and just below —
+   but only if that line is not already about a DIFFERENT test file.
+
+   History, because this has been wrong twice:
+   - First it took 200 characters either side, which reached into the NEXT, unrelated
+     comment and borrowed its words.
+   - Then (first correction) it took the reference's line plus one line either side.
+     A second review showed that still borrows: in a list of "@see" lines, the words
+     "the sibling guard for" on one line turned the plain pointer on the next line into
+     a claim, and 94 references across the tree flipped from pointer to claim.
+   - Now (second correction, 2026-09-14) a neighbouring line only counts when it holds
+     no test-file reference of its own. A claim that wraps onto the next line still
+     counts — the wrapped part has no reference of its own — but a neighbour that is
+     describing a different file is left alone.
+
+   WHAT THIS CANNOT DO: a claim phrase split mid-way across a line break
+   ("kept in / sync by") is not recognised. Missing a claim leaves a build green;
+   inventing one breaks it. The owner asked for the second to be rare. */
+const HAS_OWN_CITATION = new RegExp(CITATION_RE.source);   // no "g" flag, so no shared lastIndex
 const isPromise = (src, at) => {
-    const lineStart = src.lastIndexOf('\n', at - 1);                       // -1 when on the first line
-    const from = lineStart <= 0 ? 0 : src.lastIndexOf('\n', lineStart - 1) + 1;
-    const lineEnd = src.indexOf('\n', at);
-    const nextEnd = lineEnd === -1 ? -1 : src.indexOf('\n', lineEnd + 1);
-    const to = lineEnd === -1 ? src.length : (nextEnd === -1 ? src.length : nextEnd);
-    return PROMISE_WORDS.test(src.slice(Math.max(0, from), to));
+    const lineStart = src.lastIndexOf('\n', at - 1) + 1;                     // 0 on the first line
+    let lineEnd = src.indexOf('\n', at);
+    if (lineEnd === -1) lineEnd = src.length;
+    const own = src.slice(lineStart, lineEnd);
+
+    let prev = '';
+    if (lineStart > 0) {
+        const prevEnd = lineStart - 1;                                      // the "\n" that ends the previous line
+        prev = src.slice(src.lastIndexOf('\n', prevEnd - 1) + 1, prevEnd);
+    }
+    let next = '';
+    if (lineEnd < src.length) {
+        let nextEnd = src.indexOf('\n', lineEnd + 1);
+        if (nextEnd === -1) nextEnd = src.length;
+        next = src.slice(lineEnd + 1, nextEnd);
+    }
+    const parts = [own];
+    if (prev && !HAS_OWN_CITATION.test(prev)) parts.push(prev);
+    if (next && !HAS_OWN_CITATION.test(next)) parts.push(next);
+    return PROMISE_WORDS.test(parts.join('\n'));
 };
 
 const broken  = [];
