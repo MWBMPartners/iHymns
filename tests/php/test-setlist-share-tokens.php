@@ -315,6 +315,23 @@ $candidates = [
     // and junk is refused by all three sides only while none of them is multi-line.
     'a valid-looking code, then a line break and junk (only a multi-line pattern would accept this)'
         => "abcdef\n+/=junk",
+    // (Added 2026-09-14, second review.) A second review showed a classic range typo on
+    // the browser side — writing A-z instead of A-Za-z, which also lets through [ \ ] ^ and
+    // the backtick — left every check green, because no candidate contained any of those
+    // characters. Nor did any contain a tilde, a character a widened class might add. One
+    // candidate each, so a widened character class on any side is caught rather than agreed with.
+    'contains an opening square bracket (let through by the A-z typo)'
+        => 'abc[defg',
+    'contains a backslash (let through by the A-z typo)'
+        => 'abc\\defg',
+    'contains a closing square bracket (let through by the A-z typo)'
+        => 'abc]defg',
+    'contains a caret (let through by the A-z typo)'
+        => 'abc^defg',
+    'contains a backtick (let through by the A-z typo)'
+        => 'abc`defg',
+    'contains a tilde (a character a widened class might add)'
+        => 'abc~defg',
     'contains a space in the middle'
         => 'abc defg',
     'contains a percent sign (a half-decoded web address)'
