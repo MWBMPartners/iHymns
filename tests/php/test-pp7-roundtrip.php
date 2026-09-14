@@ -11,7 +11,7 @@ declare(strict_types=1);
  * Every other PP7 test in this repo proves ONE half of the story: the decoder/parser reads REAL
  * third-party `.pro` files correctly (`test-pp7-decode.php`, `test-pp7-parse.php`), and the exporter
  * PRODUCES structurally valid `.pro` bytes (`tests/test-propresenter-export.js`,
- * `tests/test-pp7-export-shape.js`). Neither proves the two halves of THIS APP agree with each
+ * `tests/test-pp7-media-export.js`). Neither proves the two halves of THIS APP agree with each
  * other — that a song exported by our own JS and re-imported by our own PHP comes back unchanged.
  * This file is that missing link: it builds a small song, hands it to the REAL exporter
  * (`propresenter-export.js`'s `buildPresentation()`, via `tools/pp7-gen-roundtrip-sample.js`), feeds

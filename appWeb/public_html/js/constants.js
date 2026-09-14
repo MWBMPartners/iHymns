@@ -53,8 +53,16 @@ export const STORAGE_PLAYLIST_CONTEXT   = 'ihymns_playlist_context';
    share-id (legacy 8-hex OR a base64url capability token) and, crucially,
    does NOT match a legacy base64 blob (those carry `+`/`/`/`=` and run far
    longer than 64 chars) — so the shared page still routes an old inline-payload
-   link to parseLegacySharedSetlist(). Kept in sync with the PHP fold by the C6
-   guard (tests/php/test-setlist-share-tokens.php), not by this comment. */
+   link to parseLegacySharedSetlist().
+
+   Three separate places decide what a valid share code looks like: this one,
+   the server fold named above, and the `/setlist/shared/<code>` route in
+   index.php. What holds them together is not this comment — it is
+   tests/php/test-setlist-share-tokens.php, which reads all three out of the
+   tree on every run and makes them answer the same yes/no about the same list
+   of candidate codes. (Until #2110 that sentence named a guard that had never
+   been written, which is worse than saying nothing: a reviewer reads it and
+   reasonably stops checking.) */
 export const SHARE_ID_RE = /^[A-Za-z0-9_-]{6,64}$/;
 
 /* Status & consent */

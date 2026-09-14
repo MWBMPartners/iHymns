@@ -86,10 +86,15 @@ declare(strict_types=1);
  * (`includes/org_logo_admin.php`, a later commit) decides whether "survived
  * but altered" is worth telling the uploader about.
  *
- * NOT YET WIRED TO A CONSUMER in this commit — mirrors the
- * `html_sanitizer.php` precedent ("this module + its guard land first, the
- * consumer wires it in a later commit"). `tests/php/test-svg-sanitizer.php`
- * is the mutation-proven functional truth table.
+ * (Corrected 2026-09-08: this said "not yet wired to a consumer". That was
+ * true when written and is not now — `includes/org_logo_admin.php` requires
+ * this file and calls `ihymnsSanitizeSvg()` at line 207 on every uploaded
+ * organisation logo before it is stored. Left as a correction rather than a
+ * silent reword: a reviewer told a security bouncer has no consumer will
+ * treat changing its rules as low-risk, but this one is what stands
+ * between an uploaded SVG file and every logo shown across the app.)
+ * `tests/php/test-svg-sanitizer.php` is the mutation-proven functional
+ * truth table.
  *
  * @see .claude/org-logos-1830-plan.md §3           the full design this file implements EXACTLY
  * @see tests/php/test-svg-sanitizer.php             the mutation-proven functional truth table

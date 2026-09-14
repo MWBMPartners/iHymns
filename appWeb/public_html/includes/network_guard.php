@@ -199,6 +199,105 @@ function _ihymnsIpv4MappedToDotted(string $ip): ?string
 }
 
 /**
+ * The address ranges PHP's own filter does not refuse, but we must (#2111).
+ *
+ * ELI5: PHP has a built-in way of asking "is this a private address?", and we use
+ * it. But it misses some addresses we must never connect to. This function covers
+ * exactly those, and nothing else — everything else is left to the built-in check.
+ *
+ * IPv4 (the familiar four-number addresses):
+ *
+ *   100.64.0.0/10 — "carrier-grade NAT" (RFC 6598). Internet providers and several
+ *     hosting companies use these for their own internal networks. PHP's filter
+ *     treats them as ordinary public addresses — the same class of mistake as
+ *     letting a request reach 169.254.169.254, which is how servers get talked into
+ *     handing over their own cloud credentials.
+ *   224.0.0.0/4 — multicast. Never somewhere a normal web request should go.
+ *
+ * IPv6 (the newer, longer addresses):
+ *
+ *   ff00::/8 — IPv6 multicast.
+ *   64:ff9b::/96 — the NAT64 prefix. On a network that translates IPv6 to IPv4, the
+ *     last 32 bits ARE an IPv4 address, so 64:ff9b::a9fe:a9fe reaches
+ *     169.254.169.254. Refused only when that hidden IPv4 address is itself
+ *     private, so a genuinely public one still works.
+ *   2002::/16 — "6to4". The hidden IPv4 address sits in the next 32 bits. Same rule.
+ *   ::/96 — the old "IPv4-compatible" form. The hidden IPv4 address is the last 32
+ *     bits. Same rule.
+ *
+ * HOW THIS WAS FOUND — worth keeping, because the same mistake happened twice.
+ *
+ * includes/webhooks.php had grown its OWN copy of this check, which rule #49
+ * forbids. Before replacing that copy, both were run against the same addresses,
+ * and the supposedly-authoritative shared version turned out to be the WEAKER of
+ * the two: it called 100.64.0.1 and 224.0.0.1 public. That was fixed on 2026-09-08,
+ * and this comment then said "IPv6's private and reserved ranges ARE understood by
+ * PHP's filter, so there is nothing to add for them".
+ *
+ * (Corrected 2026-09-14.) That was wrong. The comparison had only used IPv4
+ * addresses. An independent review ran IPv6 ones and found the gaps above still
+ * open — including the NAT64 route to the cloud-credentials address. The lesson is
+ * the same one twice over: before consolidating onto a shared component, compare
+ * the two across EVERY kind of input, not only the kind you thought of first.
+ *
+ * WHAT THIS CANNOT DO: it judges addresses, not names. A hostname that resolves into
+ * one of these ranges is caught only because the caller resolves it first.
+ *
+ * @param string $ip A textual IPv4 or IPv6 address. Anything else returns false,
+ *                   leaving the verdict to the checks around it.
+ * @return bool true when the address is in one of the ranges above.
+ */
+function _ihymnsAddressFilterVarMisses(string $ip): bool
+{
+    $packed = @inet_pton($ip);
+    if ($packed === false) {
+        return false;
+    }
+    $b = array_values(unpack('C*', $packed));
+
+    if (count($b) === 4) {
+        /* 100.64.0.0/10 — carrier-grade NAT (RFC 6598) */
+        if ($b[0] === 100 && $b[1] >= 64 && $b[1] <= 127) {
+            return true;
+        }
+        /* 224.0.0.0/4 — multicast */
+        return $b[0] >= 224 && $b[0] <= 239;
+    }
+    if (count($b) !== 16) {
+        return false;
+    }
+    /* ff00::/8 — IPv6 multicast */
+    if ($b[0] === 0xff) {
+        return true;
+    }
+    /* Transition forms that hide an IPv4 address inside an IPv6 one. Pull the IPv4
+       address out and judge it by exactly the same rules as a plain IPv4 address.
+
+       This keeps the shared check AT LEAST as strict as webhookIpIsPublic() in
+       includes/webhooks.php — not identical to it. (Corrected 2026-09-14: this said
+       "mirroring" it.) A second review ran both over 180,000 addresses and found the
+       shared check slightly STRICTER in one place: dotted spellings such as ::8.8.8.8
+       and ::ffff:8.8.8.8, which PHP's own filter refuses before this function is
+       reached. That is the safe direction. It is written down so nobody "fixes" the
+       difference by weakening this check. */
+    $embedded = null;
+    if ($b[0] === 0x00 && $b[1] === 0x64 && $b[2] === 0xff && $b[3] === 0x9b
+        && array_sum(array_slice($b, 4, 8)) === 0) {
+        $embedded = array_slice($b, 12, 4);                 /* 64:ff9b::/96 — NAT64 */
+    } elseif ($b[0] === 0x20 && $b[1] === 0x02) {
+        $embedded = array_slice($b, 2, 4);                  /* 2002::/16 — 6to4 */
+    } elseif (array_sum(array_slice($b, 0, 12)) === 0) {
+        $embedded = array_slice($b, 12, 4);                 /* ::/96 — IPv4-compatible */
+    }
+    if ($embedded === null) {
+        return false;
+    }
+    $v4 = implode('.', $embedded);
+    return !filter_var($v4, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)
+        || _ihymnsAddressFilterVarMisses($v4);
+}
+
+/**
  * ELI5: does this hostname (or literal IP) lead to a private/internal
  * address? WHY: an admin-typed outbound base URL is trusted input from a
  * privileged operator, but "trusted" still isn't "immune to a typo or a
@@ -234,6 +333,43 @@ function _ihymnsIpv4MappedToDotted(string $ip): ?string
  */
 function ihymnsHostResolvesPrivate(string $host): bool
 {
+    /* An IPv6 "zone id" — the "%interface" suffix, as in [::1%25lo0] or fe80::1%en0 —
+       is refused outright (#2111, second review, 2026-09-14).
+
+       ELI5: a percent sign never belongs in a real internet address, so anything
+       carrying one is treated as private instead of being guessed at.
+
+       Why: the "%25" survives parse_url(), so the text stops being a valid IP address.
+       It used to fall through to a DNS lookup, find nothing, and come back "not
+       private". An independent review then proved curl really connects through it —
+       http://[::1%25lo]:PORT/ reached this server's own loopback — and the same trick
+       reaches link-local addresses and fd00:ec2::254. A zone id only means something
+       on the local network segment, so no legitimate outbound service needs one.
+       webhookIpIsPublic() in includes/webhooks.php already refuses every zone-id form,
+       so this also keeps the shared check at least as strict as that copy.
+
+       IT ALSO CLOSES A SECOND ROUTE — do not narrow this to zone ids only. curl decodes
+       a percent-encoded host NAME, so "%31%32%37.0.0.1" means 127.0.0.1 and
+       "loc%61lhost" means localhost. Before this refusal the guard answered "not
+       private" for both, and a third review (2026-09-14) proved curl reached this
+       server's own loopback through each of them, on libcurl 8.14 and 8.22. Refusing
+       any "%" closes both routes at once. Do not narrow it — for example to IPv6
+       literals only, to "%25" only, to a "%" after the first character, to one
+       dot-separated part of the name, or to escapes written in one letter case.
+       Each of those reopens the second route for some spelling. Reviews on
+       2026-09-14 showed curl reaching loopback through "%3127.0.0.1", "127.0.0.%31",
+       "127.%30.0.1" and "127%2E0%2E0%2E1", each slipping past one of those narrowings
+       while the test rows of the time stayed green. (Corrected twice: this comment
+       first claimed two rows caught every narrowing, then that four did.) The test
+       now GENERATES its rows (a-2111-24): it percent-encodes each character of two
+       loopback spellings in turn, in lower- and upper-case hex, so a narrowing that
+       depends on where the "%" sits or on its letter case turns at least one red.
+
+       WHAT THIS CANNOT DO: it only looks at the text it is given. A hostname that
+       resolves to a private address is handled further down, by resolving it. */
+    if (strpos($host, '%') !== false) {
+        return true;
+    }
     $host = trim($host);
     if ($host === '') {
         return false;
@@ -272,6 +408,12 @@ function ihymnsHostResolvesPrivate(string $host): bool
         foreach ($candidates as $candidate) {
             if (!filter_var($candidate, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
                 return true;                          /* a private/reserved address among the resolutions */
+            }
+            /* PHP's own filter misses several ranges we must still refuse:
+               carrier-grade NAT and multicast for IPv4, and multicast plus the
+               forms that hide an IPv4 address inside an IPv6 one (#2111). */
+            if (_ihymnsAddressFilterVarMisses($candidate)) {
+                return true;
             }
         }
     }

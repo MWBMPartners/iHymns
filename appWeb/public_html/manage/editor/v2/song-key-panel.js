@@ -35,9 +35,11 @@ import { songKeyGet, songKeySave } from './api-client.js';
  * Built rather than hand-listed so the two halves cannot drift: every natural
  * and its sharp/flat spelling, major and minor. `songKeyNormaliseKey()` in
  * includes/song_key.php accepts precisely this shape, and
- * `tests/test-v2-song-key-panel.js` re-derives the list and asserts every entry
+ * `tests/test-batch8-ui-helpers.js` re-derives the list and asserts every entry
  * satisfies the server's regex — so adding a spelling here that the server
- * would refuse fails the build rather than a curator's save.
+ * would refuse fails the build rather than a curator's save. (Until #2110 this
+ * named tests/test-v2-song-key-panel.js, a file that had never existed; the
+ * test was real, the name was not.)
  */
 export function buildKeyOptions() {
     const roots = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];

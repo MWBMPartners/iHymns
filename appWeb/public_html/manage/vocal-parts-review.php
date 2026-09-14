@@ -78,8 +78,48 @@ declare(strict_types=1);
  * @see appWeb/public_html/api.php                             admin_vocal_suggestion_list/_accept/_dismiss/_undo/_refresh_song — the native-app API twins of every action below (rule #48)
  * @see appWeb/.sql/migrate-backfill-vocal-part-suggestions.php the batch that fills the queue this page reviews
  * @see .claude/vocal-parts-2073-plan.md                        "Design pass 7" §11 (page spec) / "Design pass 6" §9 (page spec)
- * @see tests/php/test-vocal-parts-review-page.php              the structural + mutation-proven guard over this page
  * @see #2073, #2075, #1260
+ *
+ * WHAT AUTOMATICALLY CHECKS THIS PAGE (and what does not)
+ * ------------------------------------------------------
+ * Until #2110 this doc-block claimed a guard called
+ * `tests/php/test-vocal-parts-review-page.php` watched over this page.
+ * That file had never existed, in any commit, on any branch — and a
+ * comment that says a machine is already checking is worse than no
+ * comment at all, because a reviewer reads it and reasonably stops
+ * checking. Here is what genuinely does check this page. Every one of
+ * these finds this file by walking the tree, so none of them can be
+ * forgotten when the page changes:
+ *
+ *   - tests/php/test-admin-gate-parity.php     — the entitlement gate at
+ *     the top of this file must match the one this page's nav row
+ *     advertises in admin-links.php (`edit_songs`), so nobody can reach
+ *     the page past the menu, or follow the menu into a 403 (#1587).
+ *   - tests/php/test-manage-action-api-coverage.php — every action this
+ *     page dispatches (Accept / Dismiss / Undo / Rescan) must have a
+ *     matching /api twin for the native apps, or be given an explicit
+ *     written reason for being web-only (rule #48).
+ *   - tests/php/test-admin-tables-sortable.php — the queue table must
+ *     follow the responsive + click-to-sort conventions, or name the
+ *     column it is excusing and why (#842 / #844).
+ *   - tests/php/test-error-page-coverage.php  — lists this page among those
+ *     allowed to answer with a 409 status. It does NOT check that the reply is
+ *     JSON rather than a half-rendered page; that part is held by review, not
+ *     by a test. (Corrected 2026-09-14: this line said the test ensured the
+ *     replies "must be JSON", which overstated what it checks.)
+ *   - tests/php/test-vocal-part-review.php    — the truth table over
+ *     `includes/vocal_part_review.php`, the core every decision on this
+ *     page is made by. That is where the behaviour actually lives, and
+ *     that is where it is actually proven.
+ *
+ * NOT machine-checked, honestly stated: the rule that this page keeps
+ * doing no database work of its own beyond the one display read described
+ * above. That is held by review, not by a test. A guard for it could only
+ * search this one file's source for the absence of certain words, and a
+ * check like that keeps its vocabulary while losing its meaning — the
+ * lesson `tests/php/test-transaction-fatal.php` was written to record —
+ * as well as being a hardcoded list of exactly one file, which is the
+ * shape rule #34 tells us not to write.
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';

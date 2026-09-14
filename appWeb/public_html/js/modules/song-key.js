@@ -57,7 +57,9 @@
 import { apiFetch } from '../utils/api-client.js';
 
 /* =========================================================================
- * PURE HELPERS — asserted by tests/test-song-key-ui.js, which CALLS them.
+ * PURE HELPERS — asserted by tests/test-batch8-ui-helpers.js, which CALLS them.
+ * (Until #2110 this named tests/test-song-key-ui.js, a file that had never
+ * existed; the test was real, the name was not.)
  * ========================================================================= */
 
 /**

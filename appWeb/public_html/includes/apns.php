@@ -322,8 +322,16 @@ function apnsEndpointHost(string $apnsEnv): string
  * DORMANT by construction: returns `not_configured` immediately (no
  * network call, no DB write) unless `apnsCredentials()` resolves a usable
  * key — which, absent an admin-UI card to provision one (see file header),
- * is ALWAYS the case on every docroot today. Nothing in this codebase calls
- * this function yet; it exists as plumbing for a future feature to call.
+ * is ALWAYS the case on every docroot today.
+ *
+ * (Corrected 2026-09-08: this said "nothing in this codebase calls this
+ * function yet". That was true when written and is not now —
+ * `includes/live_activity_push.php:353` calls it for every Live Activity
+ * push. Left as a correction rather than a silent reword, because the
+ * "still not configured, still a no-op" claim above is only true until an
+ * admin provisions a real APNs key — after that, this line sends real
+ * pushes to real devices, and a reader relying on "nothing calls this" would
+ * not expect that.)
  *
  * ELI5: "try to buzz this one device/Live Activity, and tell me plainly
  * what happened" — configured-but-Apple-said-no, not-configured-at-all,
