@@ -39,7 +39,7 @@
     "npm": ">=10.0.0"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.1",
+    "@playwright/test": "1.63.0",
     "eslint": "^10.10.0",
     "jsdom": "^30.0.1",
     "protobufjs": "^8.8.0",
