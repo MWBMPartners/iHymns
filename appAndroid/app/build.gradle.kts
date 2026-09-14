@@ -178,7 +178,7 @@ dependencies {
     // When using the BOM, individual Compose dependencies do not specify
     // a version — the BOM provides it automatically.
     // =========================================================================
-    val composeBom = platform("androidx.compose:compose-bom:2026.08.00")
+    val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
     implementation(composeBom)
     androidTestImplementation(composeBom)
 
@@ -220,7 +220,7 @@ dependencies {
     // used to navigate between screens (home, songbook, song detail, search,
     // favourites, help).
     // =========================================================================
-    implementation("androidx.navigation:navigation-compose:2.10.0")
+    implementation("androidx.navigation:navigation-compose:2.10.1")
 
     // =========================================================================
     // ANDROIDX CORE LIBRARIES
