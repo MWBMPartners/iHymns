@@ -3772,9 +3772,17 @@ return [
     /* ----------------------------------------------------------------------
      * Epic #1741 D5 — comprehensive external/catalogue ID storage foundation
      * (media-identifiers-spec.md §4b taxonomy, §4c decisions A=c / B=yes).
-     * Two additive/idempotent/dormant cards; nothing reads or writes either
-     * new object yet — the P3 alias-URL resolver is what starts consuming
-     * them, and is explicitly out of scope for this storage-layer batch.
+     * Two additive/idempotent cards.
+     *
+     * (Corrected 2026-09-08: this said "nothing reads or writes either new
+     * object yet — the P3 alias-URL resolver is what starts consuming
+     * them". That was true when written and is not now — the P3 resolver
+     * has since landed: includes/song_external_ids.php reads via
+     * SELECT (lines 191, 220), writes via INSERT IGNORE (line 408) and
+     * DELETE (line 385), used by identifier_resolve.php, api.php's
+     * song_by_identifier and the lyrics-ingest song matcher. Left as a
+     * correction rather than a silent reword, because this table now
+     * holds real per-song identifiers, not an empty shell.)
      * -------------------------------------------------------------------- */
     'song-external-ids' => [
         'script' => 'migrate-song-external-ids.php',
@@ -3787,9 +3795,15 @@ return [
                       . ' provider IDs (ISRC, Spotify, Apple Music, MusicBrainz,'
                       . ' Discogs, ICPN, …) at zero further ALTER cost per new'
                       . ' provider. The 4 existing <code>tblSongIdentityMap</code>'
-                      . ' columns are untouched (grandfathered reads). Entirely'
-                      . ' dormant until the P3 alias-URL resolver lands.'
-                      . ' Idempotent — safe to re-run.',
+                      . ' columns are untouched (grandfathered reads).'
+                      . ' Idempotent — safe to re-run. (Corrected 2026-09-08: this'
+                      . ' card used to say &ldquo;entirely dormant until the P3'
+                      . ' alias-URL resolver lands&rdquo;. That was true when'
+                      . ' written and is not now &mdash; that resolver has since'
+                      . ' landed and this table holds real per-song identifiers,'
+                      . ' read and written by <code>includes/song_external_ids.php</code>.'
+                      . ' Left as a correction rather than a silent reword, because'
+                      . ' this is no longer an empty table.)',
             'button' => 'Create Song External IDs Table',
         ],
         /* Single-object probe (one CREATE TABLE + its keys, all created in
@@ -4096,12 +4110,19 @@ return [
                       . ' pair on <code>tblSongArrangements</code> (#1768 Q2),'
                       . ' and <code>tblGatingCapabilities.EnforceJson</code>;'
                       . ' seeds <code>feature_gating_rules_enabled=0</code>'
-                      . ' (deferred from P0). Everything is DORMANT — nothing'
-                      . ' reads any of it until #1769 P2 — and idempotent;'
+                      . ' (deferred from P0). Idempotent;'
                       . ' INSERT IGNORE seeds never clobber curator edits. Safe'
                       . ' to re-run. Prerequisites: the #1066 iLyricsDB-alignment'
                       . ' card (tblSongArrangements) and the #1481 gating-registry'
-                      . ' card (tblGatingCapabilities).',
+                      . ' card (tblGatingCapabilities). (Corrected 2026-09-08: this'
+                      . ' card used to say &ldquo;everything is DORMANT &mdash; nothing'
+                      . ' reads any of it until #1769 P2&rdquo;. That was true when'
+                      . ' written and is not now — #1769 P2 has since landed, and'
+                      . ' <code>includes/licence_registry.php</code> reads'
+                      . ' <code>tblLicenceTypes</code> for every licence-aware page'
+                      . ' load. Left as a correction rather than a silent reword,'
+                      . ' because a reviewer told this table is dormant would'
+                      . ' underestimate the impact of changing it.)',
             'button' => 'Run Gating Facts + Licence Types Migration',
         ],
         /* Multi-object OR-probe (rule #19/#20): pending until EVERY schema
@@ -4445,8 +4466,13 @@ return [
             'body'   => 'Adds leader-idle auto-close columns to <code>tblLiveFollowSessions</code>, '
                       . 'org idle-timeout override columns to <code>tblOrganisations</code>, and the '
                       . '<code>tblServiceDriverKeys</code> table for ProPresenter-class external drivers. '
-                      . 'Additive, idempotent, DORMANT — nothing reads or writes any of it until the '
-                      . '#1770 server/client lands. Safe to re-run.',
+                      . 'Additive, idempotent. Safe to re-run. (Corrected 2026-09-08: this card used '
+                      . 'to say &ldquo;DORMANT &mdash; nothing reads or writes any of it until the '
+                      . '#1770 server/client lands&rdquo;. That was true when written and is not now '
+                      . '&mdash; that server/client has since landed, and <code>includes/service_driver_keys.php</code> '
+                      . 'mints, looks up, touches, revokes and lists real driver keys. Left as a '
+                      . 'correction rather than a silent reword, because an administrator now sees '
+                      . 'live keys behind this card, not an empty table.)',
             'button' => 'Run Live Follow Capability Migration',
         ],
         /* Multi-object OR-probe: PENDING until the new table AND all four
@@ -4538,9 +4564,15 @@ return [
                       . ' <code>tblCatalogues</code>, <code>tblSongbooks</code> and'
                       . ' <code>tblSongMedia</code> (format <code>ILS0000012345</code> —'
                       . ' no separator, provably disjoint from the public'
-                      . ' <code>MP-1008</code> SongId grammar). Additive, idempotent,'
-                      . ' DORMANT — nothing reads or mints any of it until the Phase-2'
-                      . ' backfill/mint lands. Safe to re-run.',
+                      . ' <code>MP-1008</code> SongId grammar). Additive, idempotent.'
+                      . ' Safe to re-run. (Corrected 2026-09-08: this card used to say'
+                      . ' &ldquo;DORMANT &mdash; nothing reads or mints any of it until'
+                      . ' the Phase-2 backfill/mint lands&rdquo;. That was true when'
+                      . ' written and is not now &mdash; that backfill/mint has since'
+                      . ' landed, and every new songbook, publisher, musician and'
+                      . ' imported song is minted a real <code>IL*</code> id on create.'
+                      . ' Left as a correction rather than a silent reword, because these'
+                      . ' columns now carry live ids, not empty placeholders.)',
             'button' => 'Run iLyrics Internal IDs Migration',
         ],
         /* Multi-object OR-probe (rule #19) — never `=> true`. PENDING until the
@@ -4573,9 +4605,14 @@ return [
                       . ' (nullable FK — per-section medley source provenance,'
                       . ' <code>ON DELETE SET NULL</code>). Requires <code>tblWorks</code>'
                       . ' — run &ldquo;Works&rdquo; above first if this card warns about'
-                      . ' it. Additive, idempotent, DORMANT — nothing reads or writes any'
-                      . ' of it until the work-link write core and Phase-5 editors land.'
-                      . ' Safe to re-run.',
+                      . ' it. Additive, idempotent, safe to re-run. (Corrected 2026-09-08:'
+                      . ' this card used to say &ldquo;DORMANT &mdash; nothing reads or'
+                      . ' writes any of it&rdquo;. That was true when written and is not'
+                      . ' now — the medley editor on /manage/works reads and writes'
+                      . ' <code>tblWorkComponents</code> on every medley save. Left as a'
+                      . ' correction rather than a silent reword, because this table now'
+                      . ' holds real curator data and an administrator deciding whether to'
+                      . ' run a destructive change here needs to know that.)',
             'button' => 'Run Work Identity Model Migration',
         ],
         /* Multi-object OR-probe (rule #19) — never `=> true`. Every object this
@@ -4965,10 +5002,15 @@ return [
        and every FK target these four tables need (tblVocalParts,
        tblLyricLines, tblLyrics, tblSongs, tblMusicians) already precedes
        this entry regardless of exactly where after them it sits, so the
-       END is a safe, simple place for it. Nothing in the app calls any of
-       these tables yet (dormant — the read-only core in
-       includes/vocal_parts.php that commit 1 shipped has no caller
-       either); a later commit of the same feature wires them up. */
+       END is a safe, simple place for it.
+
+       (Corrected 2026-09-08: this said "nothing in the app calls any of
+       these tables yet". That was true when written and is not now —
+       includes/lyric_rounds.php:997 inserts into tblLyricRounds and
+       includes/vocal_parts.php:1154 selects from tblLyricLineVocalSpans;
+       both are called from the editor and the public read path. Left as a
+       correction rather than a silent reword, because these tables now
+       hold real data, not an empty dormant shell.) */
     'vocal-parts-rounds' => [
         'script' => 'migrate-vocal-parts-rounds.php',
         'card' => [
@@ -4981,8 +5023,13 @@ return [
                       . ' projection view) and <code>tblVocalPartSuggestions</code> (the'
                       . ' curator review queue a future voice-marker backfill batch will'
                       . ' write into). Requires the <code>Vocal / singing parts (#1137)</code>'
-                      . ' card to have run first. Additive + idempotent; tables ship'
-                      . ' empty — nothing reads or writes them yet.',
+                      . ' card to have run first. Additive + idempotent. (Corrected'
+                      . ' 2026-09-08: this used to say the tables &ldquo;ship empty &mdash;'
+                      . ' nothing reads or writes them yet&rdquo;. That was true when'
+                      . ' written and is not now &mdash; the editor writes rounds and the'
+                      . ' song page reads voice spans from these tables. Left as a'
+                      . ' correction rather than a silent reword, because these tables now'
+                      . ' hold real data.)',
             'button' => 'Run Voice Parts (Rounds) Migration',
         ],
         /* Multi-object OR-probe (rule #19): pending until ALL FOUR objects

@@ -33,11 +33,26 @@ declare(strict_types=1);
  * tests/php/test-gating-wizard.php's own precedent for its (f)/(g) truth
  * tables.
  *
- * NETWORK NOTE: every case below uses a LITERAL IP address (never a
- * hostname), so `ihymnsHostResolvesPrivate()` never performs a real DNS
- * lookup here (its own doc-block: "a literal IP host is treated as
- * already-resolved, skips DNS entirely") — this file's assertions hold
- * identically whether or not the test runner has network access.
+ * NETWORK NOTE (corrected three times on 2026-09-14). It first said every case uses a
+ * literal IP address, so nothing ever does a DNS lookup. After the third review it
+ * said the ordinary run does no lookup. The fourth and fifth reviews logged every
+ * lookup, on macOS and on Linux, and showed what was still missing. What is true:
+ * - Most truth-table rows use literal IP addresses, which skip DNS entirely, or
+ *   text containing "%", which the guard refuses before any lookup.
+ * - Some cases DO look a name up, on purpose. (a8) uses a name that cannot exist.
+ *   (b4) and (b8) resolve real public service names through the two clients. The
+ *   (a-F1a), (a-F1b) and "%" proofs take a protection away, so the guard then looks
+ *   up text that should not resolve. Before the (a-F1b) proof, the file also asks the
+ *   machine's own resolver about "0x7f000001", to decide whether that proof can run
+ *   at all (macOS turns it into an address, so there the proof is skipped).
+ * - None of the results depend on having a network. The fourth review ran the whole
+ *   file on PHP 8.3 and 8.4 with networking switched off (93 passed) as well as on.
+ *   Offline, (b4) and (b8) still pass because a name that cannot be resolved is
+ *   treated as "not private" (see (a8)).
+ * - WHAT COULD STILL BREAK IT: a resolver that answers EVERY name (a DNS search
+ *   domain with a wildcard record) could give a name that should not exist an
+ *   address. That could change (a8) or any of the proofs above on a correct tree.
+ *   Not seen, and not tested. (This first named only the "%" proofs.)
  *
  * @see appWeb/public_html/includes/network_guard.php     ihymnsHostResolvesPrivate() — the shared core
  * @see appWeb/public_html/includes/cuercode_client.php    _cuercodeResolveUrl() — a caller
@@ -176,6 +191,144 @@ ok('(a17) a genuine public IPv6 literal, bracketed, is NOT private ([2001:4860:4
     !ihymnsHostResolvesPrivate('[2001:4860:4860::8888]'));
 ok('(a18) a genuine public IPv4 literal is NOT private (93.184.216.34)',
     !ihymnsHostResolvesPrivate('93.184.216.34'));
+
+/* #2111 — ranges PHP's own filter misses. Added 2026-09-14 after an independent
+ * review showed the earlier fix for these had NO test that could fail: deleting it
+ * left this whole file green. Boundaries are tested on both sides, and each IPv6
+ * form that hides an IPv4 address is tested with a private AND a public hidden
+ * address, so the check cannot pass by simply refusing everything in the prefix. */
+ok('(a-2111-1) carrier-grade NAT 100.64.0.1 is private', ihymnsHostResolvesPrivate('100.64.0.1'));
+ok('(a-2111-2) the top of carrier-grade NAT, 100.127.255.254, is private', ihymnsHostResolvesPrivate('100.127.255.254'));
+ok('(a-2111-3) just below carrier-grade NAT, 100.63.255.255, is NOT private', !ihymnsHostResolvesPrivate('100.63.255.255'));
+ok('(a-2111-4) just above carrier-grade NAT, 100.128.0.1, is NOT private', !ihymnsHostResolvesPrivate('100.128.0.1'));
+ok('(a-2111-5) IPv4 multicast 224.0.0.1 is private', ihymnsHostResolvesPrivate('224.0.0.1'));
+ok('(a-2111-6) the top of IPv4 multicast, 239.255.255.255, is private', ihymnsHostResolvesPrivate('239.255.255.255'));
+ok('(a-2111-7) IPv6 multicast ff02::1 is private', ihymnsHostResolvesPrivate('ff02::1'));
+ok('(a-2111-8) NAT64 hiding the cloud-metadata address (64:ff9b::a9fe:a9fe) is private', ihymnsHostResolvesPrivate('64:ff9b::a9fe:a9fe'));
+ok('(a-2111-9) NAT64 hiding a public address (64:ff9b::808:808) is NOT private', !ihymnsHostResolvesPrivate('64:ff9b::808:808'));
+ok('(a-2111-10) 6to4 hiding the cloud-metadata address (2002:a9fe:a9fe::1) is private', ihymnsHostResolvesPrivate('2002:a9fe:a9fe::1'));
+ok('(a-2111-11) 6to4 hiding a public address (2002:808:808::1) is NOT private', !ihymnsHostResolvesPrivate('2002:808:808::1'));
+ok('(a-2111-12) the old IPv4-compatible form hiding 10.0.0.1 (::a00:1) is private', ihymnsHostResolvesPrivate('::a00:1'));
+
+/* Added after the second review (2026-09-14), which broke the code in ways the cases
+ * above did NOT notice:
+ *   - reading 6to4's hidden address from the wrong bytes passed, because both 6to4
+ *     cases above use repeating bytes (a9fe:a9fe, 808:808) — a shifted read lands on
+ *     the same kind of address. These use bytes that differ, so a shifted read does not.
+ *   - removing the hidden-address check for carrier-grade NAT and multicast passed,
+ *     because nothing hid one of those. These do.
+ *   - an IPv6 zone id ("%interface") got past the whole check, and curl connected. */
+ok('(a-2111-13) 6to4 hiding 192.168.1.1 with non-repeating bytes (2002:c0a8:101::1) is private', ihymnsHostResolvesPrivate('2002:c0a8:101::1'));
+ok('(a-2111-14) 6to4 hiding 8.8.4.4 with non-repeating bytes (2002:808:404::1) is NOT private', !ihymnsHostResolvesPrivate('2002:808:404::1'));
+ok('(a-2111-15) NAT64 hiding carrier-grade NAT 100.64.0.1 (64:ff9b::6440:1) is private', ihymnsHostResolvesPrivate('64:ff9b::6440:1'));
+ok('(a-2111-16) 6to4 hiding IPv4 multicast 224.0.0.1 (2002:e000:1::1) is private', ihymnsHostResolvesPrivate('2002:e000:1::1'));
+ok('(a-2111-17) loopback with a URL-encoded zone id ([::1%25lo0]) is private', ihymnsHostResolvesPrivate('[::1%25lo0]'));
+ok('(a-2111-18) link-local with a raw zone id (fe80::1%en0) is private', ihymnsHostResolvesPrivate('fe80::1%en0'));
+ok('(a-2111-19) NAT64 cloud-metadata address with a zone id (64:ff9b::a9fe:a9fe%eth0) is private', ihymnsHostResolvesPrivate('64:ff9b::a9fe:a9fe%eth0'));
+
+/* Added after the third review (2026-09-14), extended after the fourth. Refusing any
+ * "%" also closes a route that has nothing to do with zone ids: curl decodes a
+ * percent-encoded host NAME, so each spelling below reaches loopback, and reviews proved
+ * curl connected through them. Without these rows, "tidying" the refusal down to real
+ * zone ids only left every address row green and reopened the route.
+ *
+ * WHY FOUR ROWS, with the "%" in different places. The first two rows alone did not
+ * stop two plausible narrowings (fourth review): a search that starts at the second
+ * character still finds one of the three "%" in (a-2111-20), and a check of only the
+ * first dot-separated part still finds the "%" in (a-2111-21). So:
+ *   (a-2111-22) has ONE "%", and it is the very first character;
+ *   (a-2111-23) has a "%" only in a LATER dot-separated part.
+ * Do not merge these into fewer rows. */
+ok('(a-2111-20) a percent-encoded 127.0.0.1 (%31%32%37.0.0.1) is private', ihymnsHostResolvesPrivate('%31%32%37.0.0.1'));
+ok('(a-2111-21) a percent-encoded localhost (loc%61lhost) is private', ihymnsHostResolvesPrivate('loc%61lhost'));
+ok('(a-2111-22) 127.0.0.1 whose only "%" is the first character (%3127.0.0.1) is private', ihymnsHostResolvesPrivate('%3127.0.0.1'));
+ok('(a-2111-23) 127.0.0.1 with only its last part percent-encoded (127.0.0.%31) is private', ihymnsHostResolvesPrivate('127.0.0.%31'));
+
+/* (a-2111-24) GENERATED rows, added after a fifth review. That review found two more
+ * narrowings the four rows above did not catch — checking only the first or last
+ * dot-separated part (misses "127.%30.0.1"), and refusing only escapes written in
+ * lower-case hex (misses "%2E") — and curl reached loopback through both.
+ *
+ * ELI5: instead of guessing which spellings to test, write every one-character spelling.
+ *
+ * Hand-picking one more row after each review was not converging: three reviews in a
+ * row each found a spelling the rows missed. So these rows take two loopback spellings
+ * and percent-encode ONE character at a time, in lower- and upper-case hex. A narrowing
+ * that depends on where the "%" sits, or on the letter case of the escape, now misses
+ * at least one of them. What these rows still cannot see: other loopback forms written
+ * with escapes (for example "127.1" or "0x7f000001"), and spellings with several
+ * escapes placed in particular ways. The hand-written rows above cover some of those,
+ * not all. */
+$osgEncodedLoopbacks = [];
+foreach (['127.0.0.1', 'localhost'] as $osgPlain) {
+    for ($i = 0, $n = strlen($osgPlain); $i < $n; $i++) {
+        foreach (['%%%02x', '%%%02X'] as $osgHexFormat) {            // "%%" is a literal "%" in sprintf
+            $osgEncodedLoopbacks[] = substr($osgPlain, 0, $i)
+                . sprintf($osgHexFormat, ord($osgPlain[$i]))
+                . substr($osgPlain, $i + 1);
+        }
+    }
+}
+$osgEncodedLoopbacks = array_values(array_unique($osgEncodedLoopbacks));   // digits have no letter case, so some repeat
+ok('(a-2111-24) setup sanity: 25 distinct one-character spellings were generated (12 of 127.0.0.1, 13 of localhost)',
+    count($osgEncodedLoopbacks) === 25);
+foreach ($osgEncodedLoopbacks as $osgSpelling) {
+    ok("(a-2111-24) a loopback spelling with one character percent-encoded ({$osgSpelling}) is private",
+        ihymnsHostResolvesPrivate($osgSpelling));
+}
+
+/* MUTATION (#2111, zone ids): remove the zone-id refusal from a copy of the guard.
+ * Loopback-with-a-zone-id must then come back NOT private, proving (a-2111-17) is
+ * held up by that refusal and not by something else that happens to be true. */
+$mutatedNoZoneRefusal = str_replace(
+    "if (strpos(\$host, '%') !== false) {",
+    'if (false) { /* MUTATED: zone-id refusal removed */',
+    $guardSrc
+);
+ok('MUTATION setup sanity (a-2111-zone): the zone-id refusal was found in real source',
+    $mutatedNoZoneRefusal !== $guardSrc);
+osgWithMutatedSiblingFile($mutatedNoZoneRefusal, $guardFile, function (string $tmp) use ($phpBin) {
+    $result = osgRunIsolated($phpBin, $tmp, "var_export(ihymnsHostResolvesPrivate('[::1%25lo0]'));");
+    ok('MUTATION PROOF (a-2111-zone): without the zone-id refusal, [::1%25lo0] reads as NOT private',
+        $result['code'] === 0 && trim($result['stdout']) === 'false');
+});
+
+/* MUTATION (third review, 2026-09-14): narrow the refusal to "a % after the first
+ * character" — the classic strpos() slip of writing "> 0" instead of "!== false".
+ * Every zone-id row stays green under that change, because a zone id never starts
+ * with "%". Only the rows whose "%" is the very first character notice — (a-2111-20)
+ * and (a-2111-22). This proves the truth table can see that narrowing at all. */
+$mutatedNarrowedRefusal = str_replace(
+    "if (strpos(\$host, '%') !== false) {",
+    "if (strpos(\$host, '%') > 0) { /* MUTATED: refusal narrowed */",
+    $guardSrc
+);
+ok('MUTATION setup sanity (a-2111-narrow): the refusal was found in real source',
+    $mutatedNarrowedRefusal !== $guardSrc);
+osgWithMutatedSiblingFile($mutatedNarrowedRefusal, $guardFile, function (string $tmp) use ($phpBin) {
+    $result = osgRunIsolated($phpBin, $tmp,
+        "var_export([ihymnsHostResolvesPrivate('%31%32%37.0.0.1'), ihymnsHostResolvesPrivate('[::1%25lo0]')]);");
+    $got = preg_replace('/\s+/', '', $result['stdout']);
+    ok('MUTATION PROOF (a-2111-narrow): with the refusal narrowed, %31%32%37.0.0.1 reads as NOT private while the zone id is still refused',
+        $result['code'] === 0 && $got === 'array(0=>false,1=>true,)');
+});
+
+/* MUTATION (#2111): take the extra-ranges check out of a copy of the guard and
+ * confirm the cases above flip. Without this, deleting the fix would leave every
+ * line of this file green — which is exactly what the review found. */
+$mutatedNoExtraRanges = str_replace(
+    'if (_ihymnsAddressFilterVarMisses($candidate)) {',
+    'if (false) { /* MUTATED: extra-ranges check removed */',
+    $guardSrc
+);
+ok('MUTATION setup sanity (a-2111): the extra-ranges call was found in real source',
+    $mutatedNoExtraRanges !== $guardSrc);
+osgWithMutatedSiblingFile($mutatedNoExtraRanges, $guardFile, function (string $tmp) use ($phpBin) {
+    $result = osgRunIsolated($phpBin, $tmp,
+        "echo json_encode([ihymnsHostResolvesPrivate('100.64.0.1'), ihymnsHostResolvesPrivate('ff02::1'), ihymnsHostResolvesPrivate('64:ff9b::a9fe:a9fe')]);");
+    ok('MUTATION PROOF (a-2111): without the extra-ranges check, carrier-grade NAT, IPv6 multicast and NAT64 all read as NOT private',
+        $result['code'] === 0 && trim($result['stdout']) === '[false,false,false]');
+});
 
 /* (a19)-(a20) test the internal decode helper DIRECTLY, not end-to-end
  * through ihymnsHostResolvesPrivate() — because for these two specific

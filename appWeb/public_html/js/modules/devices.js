@@ -73,11 +73,14 @@ const DEVICE_NAME_MAX = 120;
  * PURE HELPERS
  *
  * Everything that makes a DECISION lives here, takes its inputs as arguments
- * and returns a value. `tests/test-devices-ui.js` CALLS these and asserts what
- * comes back — it does not read this file's source looking for the right words.
- * That distinction is the whole lesson of `test-transaction-fatal.php`: a
- * predicate guarded by source inspection kept its vocabulary, lost its
- * behaviour, and the suite stayed green.
+ * and returns a value. `tests/test-batch8-ui-helpers.js` CALLS these and
+ * asserts what comes back — it does not read this file's source looking for the
+ * right words. That distinction is the whole lesson of
+ * `test-transaction-fatal.php`: a predicate guarded by source inspection kept
+ * its vocabulary, lost its behaviour, and the suite stayed green.
+ *
+ * (Until #2110 this named tests/test-devices-ui.js, a file that had never
+ * existed; the test was real, the name written here was not.)
  * ========================================================================= */
 
 /**

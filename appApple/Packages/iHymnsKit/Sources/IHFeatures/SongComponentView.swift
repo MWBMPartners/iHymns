@@ -261,7 +261,23 @@ struct SongComponentView: View {
     /// for a chorus that never repeats with a different number — omits the
     /// number entirely rather than showing a meaningless "Chorus 0").
     private var label: String {
-        component.number > 0
+        /* A curator can give a section its own name — "Kyrie", or the language a
+           verse is sung in, such as "isiZulu" (#1907). When they have, show that
+           instead of the made-up "Verse 1".
+
+           ELI5: use the name a person chose, and fall back to the automatic one
+           only when nobody chose anything.
+
+           The server leaves the name out entirely unless one was set, and stores
+           nothing when the chosen name matches what we would have produced
+           anyway — so an empty or missing value here is the normal case, not a
+           fault. Trimmed before use so a name of only spaces does not produce a
+           blank heading. */
+        if let custom = component.label?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !custom.isEmpty {
+            return custom
+        }
+        return component.number > 0
             ? "\(component.type.capitalized) \(component.number)"
             : component.type.capitalized
     }

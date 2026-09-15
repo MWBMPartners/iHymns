@@ -134,13 +134,26 @@ public struct ProjectionCanvasView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    /// `"Verse 1"`/`"Chorus"` — mirrors `SongComponentView.label`'s exact
-    /// "type.capitalized [number if > 0]" rule (that view is a reading
-    /// view this canvas deliberately doesn't reuse, Decision D-8; this
-    /// three-line rule is small enough to mirror directly rather than
-    /// extracting a shared helper for one caller on each side).
+    /// The section heading on the projector — mirrors `SongComponentView.label`'s
+    /// exact rule (that view is a reading view this canvas deliberately doesn't
+    /// reuse, Decision D-8; the rule is small enough to mirror directly rather
+    /// than extracting a shared helper for one caller on each side).
+    ///
+    /// ELI5: show the name a curator gave the section, such as "Kyrie", and only
+    /// fall back to the automatic "Verse 1" when nobody named it.
+    ///
+    /// (Corrected 2026-09-14.) When the song page started honouring a curator's
+    /// own section name (#1907), this function kept producing "Verse 1" — while
+    /// its comment still said it mirrored the song page exactly. An independent
+    /// review caught it. Rule #45: a label must be honoured at EVERY place it is
+    /// shown, or the feature only half ships — here a congregation would see one
+    /// name on their phones and a different one on the screen at the front.
     private func componentLabel(_ component: SongComponent) -> String {
-        component.number > 0 ? "\(component.type.capitalized) \(component.number)" : component.type.capitalized
+        if let custom = component.label?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !custom.isEmpty {
+            return custom
+        }
+        return component.number > 0 ? "\(component.type.capitalized) \(component.number)" : component.type.capitalized
     }
 
     /// One lyric line — full opacity/no tint in component mode
