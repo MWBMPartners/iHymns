@@ -33,11 +33,12 @@ install_into() {
   mkdir -p "$(dirname "$target")"
   touch "$target"
   local tmp blockfile
-  tmp="$(mktemp)"
-  # The block goes in a temporary file for awk to read. That is plainer and more portable
-  # than feeding it in some other way (macOS ships an older bash and a different awk).
-  blockfile="$(mktemp)"
-  printf '%s\n' "$block" > "$blockfile"
+  # A file saved with Windows line endings would hide the markers from the exact-line checks
+  # below, and the script would then add a second copy of the block. Refuse instead.
+  if grep -q $'\r' "$target"; then
+    echo "error: $target has Windows line endings. Nothing was changed. Convert it, then run this again." >&2
+    return 1
+  fi
   # Safety check before changing anything. The block is replaced by deleting everything from
   # the BEGIN line to the END line. If the END line were missing (or damaged, e.g. a stray
   # space), that would delete the rest of the file. So we insist on exactly one BEGIN line and
@@ -58,6 +59,12 @@ install_into() {
       return 1
     fi
   fi
+  # Temporary files are made only now, after every check has passed, so a refusal leaves
+  # nothing behind. The block goes in a file for awk to read: plainer and more portable than
+  # feeding it in another way (macOS ships an older bash and a different awk).
+  tmp="$(mktemp)"
+  blockfile="$(mktemp)"
+  printf '%s\n' "$block" > "$blockfile"
   if [[ "$nb" -eq 1 ]]; then
     # Replace the old block in place: copy everything outside the markers, and drop the
     # new block in where the old one began.
@@ -80,5 +87,8 @@ install_into() {
   echo "installed: $target"
 }
 
-install_into "${HOME}/.claude/CLAUDE.md"
-install_into "${HOME}/.codex/AGENTS.md"
+# Try both files even if the first one is refused, then report overall failure at the end.
+status=0
+install_into "${HOME}/.claude/CLAUDE.md" || { status=1; echo "skipped: ${HOME}/.claude/CLAUDE.md" >&2; }
+install_into "${HOME}/.codex/AGENTS.md"  || { status=1; echo "skipped: ${HOME}/.codex/AGENTS.md" >&2; }
+exit "$status"
