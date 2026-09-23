@@ -1,26 +1,35 @@
 # iHymns — Standing Operating Directives
 
 Owner-stated (2026-08-18). **Project-wide and platform-agnostic** — these apply to every
-Claude session on this repo, for all users, whatever platform (Web/PWA, Apple, Android/FireOS)
+AI tool working on this repo (Claude Code, Codex or any other; widened 2026-09-23), for all users, whatever platform (Web/PWA, Apple, Android/FireOS)
 is being worked on. They sit alongside `CLAUDE.md` (the rules), `.claude/standing-tasks.md`
 (the consistency checklist) and `.claude/project-rules.md` (the detailed expansion, incl. §17
 model-tier selection which this section refines).
 
 ---
 
-## 1. Model routing (GIRFT — Get It Right First Time)
+## 1. Model routing and how to think (GIRFT — Get It Right First Time)
 
-Match the model to the work; spend tokens/credits efficiently but never at the cost of
-correctness or quality.
+*Revised 2026‑09‑23 (owner): deep analysis and planning now use **Opus**, not Fable. The reason
+the owner gave: the newest Opus (Opus 5.5) costs less than the newest Fable and does the job at
+least as well.*
 
-- **Deep analysis & deep planning → sequential Fable‑5 agents** (one at a time, *not* a
-  parallel fan‑out). If Fable‑5 is unavailable, fall back to **Opus** for that run, then
-  **retry Fable‑5** on the next deep‑analysis/planning run (don't stay on the fallback).
-- **Implementation → Sonnet or Haiku**, whichever fits the task (Haiku for mechanical/low‑
-  reasoning work, Sonnet for standard implementation).
+Pick the model to suit the work. Use tokens and usage credits carefully, but never at the cost of
+getting it right.
+
+- **Think hard before acting.** For anything beyond a trivial edit, think the work through in
+  depth first. ("Ultrathink" is the owner's word for this. In Claude Code it asks the model to
+  spend more effort reasoning.) Use **workflows** (the Workflow tool, several agents driven by one
+  script) to help plan and do the work where that helps. The owner has given standing permission
+  for this in this repo.
+- **Deep analysis and deep planning → Opus agents, one after another** (in sequence, *not* several
+  running at the same time). Each agent builds on the last one's result. If Opus is unavailable, use the
+  next best available model for that run (Fable, for example), then go back to Opus next time.
+- **Implementation → Sonnet or Haiku**, whichever fits: Haiku for mechanical, low‑thought work,
+  Sonnet for ordinary implementation.
 - **Complex implementation → Opus.**
-- The philosophy is **GIRFT**: top‑quality, correct code the first time — verified, mutation‑
-  tested (rule #34), no unverified "done".
+- **The aim is GIRFT**: top‑quality, correct code the first time. Check it, prove the tests can
+  actually fail (rule #34), and never call something "done" without checking it.
 
 ## 2. One branch — no PR stacking
 
@@ -70,13 +79,20 @@ mechanism, not a note). Derive the answer from the remote with the command above
 
 The moment a piece of work is complete:
 
-1. **Commit + push** it to the active working branch (atomic, well‑described, footer‑signed).
-   If none exists, create one first — see §2.
-2. **Update its GitHub issue(s) individually** — SHAs + evidence; close/annotate/reopen as the
-   real state requires; file follow‑ups at the moment of discovery.
-3. **Update Claude `.claude/`** — Memory (`MEMORY.md`/auto‑memory) + Context (`ProjectBrief.md`,
-   `CLAUDE.md`) so they reflect reality.
-4. **Update the Handoff document** (see §4).
+1. **Commit + push** it to the active working branch — the one branch that will later be merged
+   into `alpha` (see §2). Keep each commit small, clearly described, and signed with the footer.
+   If no working branch exists, create one first.
+2. **Update its GitHub issue(s), one at a time, for each task.** Give the commit numbers (SHAs) and
+   the evidence. Close, annotate or reopen as the real state requires. File follow‑ups the moment
+   you find them.
+3. **Update Claude's notes in `.claude/`** — memory (`MEMORY.md` and the per‑user auto‑memory) and context (`ProjectBrief.md`,
+   `CLAUDE.md`) so they match reality.
+4. **Update Codex's notes in `.OpenAI/`** — memory (`.OpenAI/MEMORY.md`) and context
+   (`.OpenAI/CONTEXT.md`), plus `AGENTS.md` if a rule changed. *(Added 2026‑09‑23.)* Codex
+   (OpenAI's coding tool) reads these, so it must not work from an older picture than Claude does.
+   Do not copy the handoff into `.OpenAI/`. There is **one** handoff, in `.claude/sessions/`,
+   and both tools read it. Two copies would drift apart (rule #35).
+5. **Update the handoff document** (see §4).
 
 ## 4. Keep the Handoff live
 
@@ -84,6 +100,11 @@ Maintain `.claude/sessions/<date>-HANDOFF.md` **continuously as work progresses*
 session end — so any session can pick up exactly where the last left off if interrupted. It
 records: what's done (with SHAs), what's in flight, what's blocked/deferred and why, open owner
 decisions, and the next steps in order.
+
+Update it **up to the minute**, not in batches. From 2026‑09‑23 it also records **which AI tool is
+doing the work** and any switch between tools (§14). A handoff that is an hour stale is what turns a
+tool switch or a restarted session into lost work. The newest `…-HANDOFF.md` should open with a
+"Current state" section, so a fresh session with no chat history can resume from that one file.
 
 ## 5. Autonomy
 
@@ -100,6 +121,10 @@ decisions, and the next steps in order.
 
 Keep documentation thorough and current as part of the work (not a someday backlog):
 
+- **Swagger UI already exists**, so do not add a second one: `/manage/api-docs` (`manage/api-docs.php`)
+  renders `api-docs.yaml` in Swagger UI (a web page for browsing the API). It loads from a pinned web
+  address with a security checksum, and falls back to a copy stored in the repo under
+  `/vendor/swagger-ui/`, so it runs on ordinary shared hosting with no Docker. Checked 2026‑09‑23.
 - **All `.md` docs** — `README.md`, `CHANGELOG.md`, `DEV_NOTES.md`, `PROJECT_STATUS.md`,
   `SECURITY.md`, `LICENSING.md`, and any others.
 - **In‑app help / guides** — the user‑facing help content (`help/`, `help.php`, wiki mirrors).
@@ -115,10 +140,14 @@ The issue tracker is the point of truth and must match the **actual codebase**. 
 reconciling issues (open *and* closed), verify against real code — **no assumptions** from
 docs, commit messages, or prior issue text. Verify before filing/closing.
 
-## 8. Use the dev‑team plugins
+## 8. Use the dev‑team plugins, and have a second AI check the work
 
-Use the functionality provided by the installed **dev‑team plugins** where it helps — for the
-work itself, and for managing suggestions/enhancements/new‑feature proposals.
+- Use the installed **dev‑team plugins** wherever they help: for the work itself, and for
+  suggesting fixes, tweaks, improvements and new features.
+- **Use a different AI system to check the work.** If Claude Code planned and built it, Codex
+  reviews it. If Codex built it, Claude reviews it. Two different systems miss different things.
+  The dev‑team plugins are one way to hand work to the other system. The review loop itself is in
+  §13.
 
 ## 9. Efficient / smart processing
 
@@ -147,10 +176,12 @@ you run autonomously to completion.
 ---
 
 *Change log: created 2026-08-18 from the owner's standing‑instructions message. Amended 2026-08-24
-(§10 ask‑clarifications‑up‑front). Update this file (don't fork it) if the owner amends any
-directive.*
+(§10 ask‑clarifications‑up‑front). Amended 2026-09-23: §1 Opus replaces Fable for deep work, plus
+"think hard" and workflows; §3 adds Codex's `.OpenAI/` notes; §6 records the existing Swagger UI;
+§8 adds cross‑AI checking; §11 records the fifth ask; new §12 progress tables, §13 the Codex review
+loop, §14 AI fallback. Update this file (don't fork it) if the owner amends any directive.*
 
-## 11. Plain, everyday English — in every reply and every written artefact (owner‑stated 2026‑08‑29, restated 2026‑09‑05, restated again 2026‑09‑07)
+## 11. Plain, everyday English — in every reply and every written artefact (owner‑stated 2026‑08‑29, restated 2026‑09‑05, restated again 2026‑09‑07, 2026‑09‑08 and 2026‑09‑23)
 
 **Write the way you would explain something to a capable colleague who does not work on this
 particular system.** This is a standing rule, not a style preference, and it applies to *every*
@@ -158,7 +189,11 @@ assistant working here — Claude Code, Codex, Claude in the browser, ChatGPT �
 output: chat replies, progress reports, code comments, commit messages, pull‑request text, issue
 text, documentation, and anything a user will ever see.
 
-**Asked for a FOURTH time on 2026-09-08.** Previously 2026-08-29, 2026-09-05 and 2026-09-07.
+**Asked for a FIFTH time on 2026-09-23** ("do not use technical jargon — it can confuse even some
+technically skilled users and developers"). Before that: 2026-09-08, 2026-09-07, 2026-09-05 and
+2026-08-29. The 2026-09-23 wording adds one thing worth keeping: **this covers people who ARE
+technical too.** Jargon is not a courtesy to experts, so do not keep it "because the reader is a
+developer".
 
 Four asks means writing it down again is not the answer. It is already recorded in six places, and
 it was recorded in all six BEFORE this fourth ask. **Another copy would be exactly the mistake
@@ -211,3 +246,61 @@ mechanism, and until there is one, at least keep the list of places short and na
 | this file, §11 | the session‑start directive read |
 | `~/.claude/CLAUDE.md` (not in the repo) | Claude Code, on this computer, in every project |
 | `~/.codex/AGENTS.md` (not in the repo) | Codex, on this computer, in every project |
+
+The last two are now installed from `.claude/device-level-rules.md` by
+`tools/install-device-rules.sh` (added 2026‑09‑23). Edit the text there and re‑run the script,
+rather than editing the home‑folder files by hand.
+
+## 12. Progress updates as a table (owner‑stated 2026‑09‑23)
+
+Give the owner **frequent** progress updates. Each one lists the queued tasks **in a table**, with
+the state of each one: done, in progress, queued, or waiting on the owner (say for what). Send one
+when the work starts, whenever a task changes state, and at the end. Keep the task names in plain
+words. The table replaces long paragraphs of narration; it does not replace saying plainly what went
+wrong.
+
+## 13. Every change is reviewed by a different AI tool (normally Codex), repeated until it comes back clean (owner‑stated 2026‑09‑23)
+
+All code goes through this loop before it counts as finished. The reviewer is a different AI tool
+from the one that wrote the code. Normally Claude Code writes and Codex reviews. If Codex wrote it,
+Claude reviews it (§8).
+
+1. **Codex reviews the change** (for example `codex review`, or through the dev‑team plugins).
+2. **Fix what it finds.** Where a fix is clear, make it automatically. Where a finding is wrong,
+   write down why instead of making the change.
+3. **Run Codex again on the updated code.** Repeat steps 2 and 3 until a review finds **no issues**.
+
+Things to watch:
+
+- **An empty review is not a clean review.** A Codex that has hit its usage limit can print nothing
+  at all. Check its error output, and check the review actually says something, before treating it
+  as a pass (trap #8 in the 2026‑09‑14 handoff).
+- **If Codex is not available** (not installed on this machine, or out of credit), use §14. A fresh
+  reviewer with no memory of how the code was built reviews it instead. Say so in the commit, and
+  file a "catch‑up Codex review" issue so the real review still happens once Codex is back (#2123
+  is the worked example).
+- The loop is in addition to this repo's own automated checks (lint, tests, the CI guards), not
+  instead of them.
+
+## 14. When an AI service is unavailable, hand over, then switch back (owner‑stated 2026‑09‑23)
+
+This applies to **any** AI tool or its agents — Claude Code, Codex, or anything else. It is written
+this way on purpose, so it does not need updating when the tools change.
+
+- **If the main AI service for this project stops working** (it is down, out of tokens or usage
+  credit, or at a usage limit), you may hand the work to another suitable AI tool **if** that can be
+  done without losing context or progress. The handoff document (§4) is what makes that possible.
+  That is why it must be kept up to the minute.
+- **Switch back to the main service often**, as soon as it is available again. Do not stay on the
+  fallback just because it is working.
+- **When the main service is back, run a FULL review** of everything done on the fallback. The
+  cross‑AI reviews in §13 catch most differences in approach between tools, but a full review by the
+  main service is still owed.
+- **Record every switch in the handoff:** which tool took over, when, what it did, and whether the
+  full review on return has happened yet.
+- For this project the main service is **Claude Code**, and **Codex** is the usual reviewer and first
+  fallback.
+
+This rule also belongs in the **computer‑wide** settings, so it applies in every project, not just
+this one. `.claude/device-level-rules.md` holds that text, and `tools/install-device-rules.sh` adds it
+to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` on the computer where you run it.

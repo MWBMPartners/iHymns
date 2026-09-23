@@ -340,6 +340,8 @@ This repo already ships matching agent types as the natural vehicles — use the
 
 Standard mid-tier implementation work needs no special agent — run it on the default model. Reserve the two named agents for the ends of the spectrum.
 
+**Owner refinement (2026-09-23), which takes precedence here:** deep analysis and deep planning run on **Opus agents in sequence** (one after another, not several running at the same time). This replaces the earlier "Fable 5 first" routing, because the newest Opus costs less and does the job at least as well. Codex reviews the result until a review comes back clean. Full text: `.claude/standing-directives.md` §1, §13 and §14.
+
 ## 18. Extensible gating registry + native-API gating (**#1590**, branch `feat/api-native-gating`)
 
 > ⚠️ **Citation warning.** This section, `CLAUDE.md` rules #28/#29, `MEMORY.md` and many in-code

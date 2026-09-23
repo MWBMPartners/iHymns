@@ -8,7 +8,9 @@
 > considered "done", and always before a session ends — so nothing drifts.
 >
 > Loaded as project policy via `.claude/CLAUDE.md` (§ "Standing consistency
-> tasks"). Last updated: 2026-06-05.
+> tasks"). Last updated: 2026-09-23 (added §7, Codex's `.OpenAI/` notes).
+> How the work is *run* — model choice, the Codex review loop, progress tables, AI fallback — lives in
+> `.claude/standing-directives.md`; this file is the paper-trail checklist.
 
 ## The after-work checklist
 
@@ -169,6 +171,12 @@ and one agent asked to "find bugs" defaults to whichever lens it thought of firs
 - **History** — `.claude/sessions/<date>-HANDOFF.md`: what landed (commit SHAs),
   issues touched, next steps, standing constraints.
 - `.claude/project-rules.md` for permanent expansions of conventions.
+
+### 7. Codex / OpenAI `.OpenAI/` notes (added 2026-09-23)
+- **Memory** — `.OpenAI/MEMORY.md`: the same kind of facts as `.claude/MEMORY.md`, written for Codex.
+- **Context** — `.OpenAI/CONTEXT.md` (and `AGENTS.md` at the repo root if a rule changed).
+- **History** — do NOT copy the handoff here. Both tools read the one handoff in
+  `.claude/sessions/`, so there is nothing to drift.
 
 ## Annotation standard
 

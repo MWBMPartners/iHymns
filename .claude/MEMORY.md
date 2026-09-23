@@ -9,6 +9,9 @@
 _Last updated: 2026-08-28 (branch `claude/dormant-features-settings-1sdw4t` — ProPresenter interop epic #1968 complete through P6 chords + dormant timeline; multi-licence orgs #1969; device management #1975; docs + security + a11y sweep in flight)._
 
 ## Where things stand
+- **⚠️ THIS SECTION IS OLD (2026-08-28).** The current picture is always the "Current state" section
+  of the newest `.claude/sessions/*-HANDOFF.md` — as of 2026-09-23 that is
+  `sessions/2026-09-23-HANDOFF.md`. Read that first; it wins wherever the two disagree.
 - **Active branch — `claude/dormant-features-settings-1sdw4t`** (2026-08-28): the ProPresenter 7+
   interoperability program (epic #1968) — import `.pro`/`.probundle`/`.proplaylist`, export, media
   ingest into `tblSongMedia`, the **chord round-trip** (positioned `custom_attributes` over CLEAN
@@ -89,8 +92,10 @@ _Last updated: 2026-08-28 (branch `claude/dormant-features-settings-1sdw4t` — 
   matrices and APNs provisioning remain outstanding; all hardware/owner-gated.
 
 ## Workflow (locked)
-- **Fable 5 = deep planning/review** (SEQUENTIAL, one at a time; fall back to Opus only if Fable is
-  down, retry Fable next run). **Sonnet/Haiku = implementation** (Opus only for genuinely complex or
+- **Opus = deep analysis/planning** (SEQUENTIAL, one at a time) — changed from Fable on 2026-09-23
+  (Opus 5.5 is cheaper and at least as good). **Codex reviews, repeated until clean**; if Codex is
+  unavailable, a fresh reviewer stands in and a catch-up review is filed (standing-directives §13–§14).
+  **Sonnet/Haiku = implementation** (Opus only for genuinely complex or
   security-critical). Token-efficient but GIRFT — right first time.
 - **One PR per piece of work → `alpha`**, multiple atomic commits. Branch `claude/<topic>-<suffix>`,
   **always off the latest `origin/alpha`** — PRs **squash-merge**, so branching off a stale feature

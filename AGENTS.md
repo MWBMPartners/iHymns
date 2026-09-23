@@ -37,6 +37,29 @@ precision stay exactly as rigorous. Only the way it is explained changes.
 what was not checked, and what went wrong. Say "I could not test this because
 there is no database on this machine" rather than implying it was verified.
 
+## How the work is run (applies to Codex too)
+
+The owner's standing ways of working are in `.claude/standing-directives.md`. They apply to
+every AI tool working here, not only Claude. The parts you need most:
+
+- **Pick up from the handoff.** The newest `.claude/sessions/*-HANDOFF.md` opens with a "Current
+  state" section. Read it first. There is only one handoff, and both Claude and Codex use it.
+- **Your own notes are in `.OpenAI/`.** Read `.OpenAI/CONTEXT.md` and `.OpenAI/MEMORY.md` at the
+  start. After each task, update them and the handoff.
+- **One working branch, no stacked pull requests.** Commit to the one existing working branch.
+  Only create one if none exists (`.claude/standing-directives.md` §2 has the command that checks).
+- **After each task:** commit and push, update that task's GitHub issue, update the notes in
+  `.claude/` and `.OpenAI/`, then update the handoff.
+- **Reviews go across tools.** Work Claude builds, Codex reviews. Work Codex builds, Claude
+  reviews. Fix what the review finds and review again, until a review finds nothing (§13).
+- **If an AI tool stops working** (down, out of credit, at a usage limit), another suitable tool may
+  take over, provided the handoff is up to date. Switch back to the main tool (Claude Code) as soon
+  as it returns, and have it do a full review of the fallback work. Record every switch in the
+  handoff (§14).
+- **Progress updates are a table** of the queued tasks and the state of each one (§12).
+- **Only stop to ask** when the owner has to make the decision. Ask everything you can foresee at
+  the start, in one go, and carry on with the rest of the work meanwhile (§5, §10).
+
 ## Before you change anything here
 
 Read `.claude/CLAUDE.md`. It contains fifty-plus numbered rules describing how this
