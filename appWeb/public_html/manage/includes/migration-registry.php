@@ -579,55 +579,55 @@ return [
     ],
     'backfill-song-language-from-songbook' => [
         'script' => 'migrate-backfill-song-language-from-songbook.php',
+        /* #2137 review — MANUAL: EXCLUDED from "Apply all" (the JS bulk runner, the
+           no-JS apply-all loop, the pending counter) and from the setup wizard.
+           It used to run from "Apply all", and it overwrote `und` ("not known"),
+           `zxx` and `mul` songs with the songbook's language — irreversibly, on a
+           routine upgrade. Filling a song that has NO language from its book is
+           a guess (policy LANG-003), so it is now a curator's decision.
+           `dryRunnable`: a web run without &confirm=1 only reports what it would
+           change, so the card also offers a "Dry-run (report only)" link. */
+        'manual'      => true,
+        'dryRunnable' => true,
         'card' => [
-            'title'  => 'Backfill song language from songbook (audit follow-up)',
-            'body'   => 'Several bulk-import passes landed every song in a non-English songbook'
-                      . ' tagged <code>language=\'en\'</code> — HAC is the documented example: the'
-                      . ' songbook itself was correctly marked Croatian, but every member song'
-                      . ' carries the English tag. This walks every songbook that DECLARES a'
-                      . ' single primary language (<code>tblSongbooks.Language</code> non-empty)'
-                      . ' and rewrites any member song whose primary language subtag disagrees.'
-                      . ' Conservative: songbooks with no Language declared are left alone'
-                      . ' (multi-language books like Misc), and a song already carrying a more'
-                      . ' specific tag whose primary matches (<code>en-GB</code> inside an'
-                      . ' <code>en</code> songbook) is preserved. Re-runnable.'
-                      . ' Nothing to regenerate afterwards — song reads are DB-direct'
-                      . ' (WS-J #1020), so the public PWA picks up the new tags on its'
-                      . ' next fetch.',
-            'button' => 'Run Song Language Backfill',
+            'title'  => 'Give songs their songbook\'s language (curator\'s decision)',
+            'body'   => 'For every songbook that declares ONE language, this gives that'
+                      . ' language to member songs that have <strong>no language at all</strong>'
+                      . ' — a curator\'s decision, not a fact the site knows — and to songs'
+                      . ' tagged with a <strong>different</strong> language (the documented'
+                      . ' case: bulk imports that tagged every song in the Croatian HAC book as'
+                      . ' English). It never touches a song marked <code>und</code> (not known),'
+                      . ' <code>mul</code> (several languages), <code>zxx</code> (no language),'
+                      . ' <code>mis</code>, a local-use code (<code>qaa</code>–<code>qtz</code>),'
+                      . ' a private-use tag, or a malformed value, and it skips songbooks with no'
+                      . ' language or with one of those codes. A song already in the book\'s'
+                      . ' language group (<code>en-GB</code> in an <code>en</code> book) is left'
+                      . ' alone. The change cannot be undone automatically, so run the'
+                      . ' <strong>dry run</strong> first: it lists what would change and changes'
+                      . ' nothing. Not part of &ldquo;Apply all&rdquo;. Re-runnable.',
+            'button' => 'Give Songs Their Songbook\'s Language (dry-run unless confirmed)',
         ],
+        /* Pending while at least one song WOULD change — judged by the same test
+           the script uses (mediaLanguageIsOrdinaryLanguage()), so a catalogue
+           whose only mismatches are `und` / `mul` / `zxx` songs shows as done. The
+           SQL narrows the rows; PHP makes the decision; the scan stops at the first
+           song that would change. */
         'probe' => static function (\mysqli $db): bool {
             try {
-                $colS = $db->query(
-                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-                      WHERE TABLE_SCHEMA = DATABASE()
-                        AND TABLE_NAME = 'tblSongs'
-                        AND COLUMN_NAME = 'Language' LIMIT 1"
-                );
-                if (!$colS || $colS->fetch_row() === null) {
-                    if ($colS) $colS->close();
+                if (!_migProbe_columnExists($db, 'tblSongs', 'Language')
+                    || !_migProbe_columnExists($db, 'tblSongbooks', 'Language')) {
                     return false;
                 }
-                $colS->close();
-                $colB = $db->query(
-                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-                      WHERE TABLE_SCHEMA = DATABASE()
-                        AND TABLE_NAME = 'tblSongbooks'
-                        AND COLUMN_NAME = 'Language' LIMIT 1"
-                );
-                if (!$colB || $colB->fetch_row() === null) {
-                    if ($colB) $colB->close();
-                    return false;
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_language.php';
+                if (!mediaLanguageReady()) {
+                    return false;   // cannot tell `und` from a language → never claim work is pending
                 }
-                $colB->close();
-                /* Detect any single-language songbook with at least one
-                   member whose primary language subtag differs. */
                 /* @deleted-visible: migration probe (#1694) — language
                    backfill is PHYSICAL; a hidden row still needs the tag.
                    @disabled-visible: same reasoning, one predicate over
                    (#1765) — a row in a disabled songbook still needs the tag. */
                 $res = $db->query(
-                    "SELECT 1
+                    "SELECT s.Language AS songLang, b.Language AS bookLang
                        FROM tblSongs s
                        JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
                       WHERE b.Language IS NOT NULL AND b.Language <> ''
@@ -636,10 +636,26 @@ return [
                            OR LOWER(SUBSTRING_INDEX(s.Language, '-', 1))
                               <> LOWER(SUBSTRING_INDEX(b.Language, '-', 1))
                         )
-                      LIMIT 1"
+                        AND LOWER(SUBSTRING_INDEX(COALESCE(s.Language, ''), '-', 1))
+                            NOT IN ('und', 'mul', 'zxx', 'mis')",
+                    MYSQLI_USE_RESULT
                 );
-                $needs = $res && $res->fetch_row() !== null;
-                if ($res) $res->close();
+                $needs = false;
+                while ($res && ($row = $res->fetch_assoc())) {
+                    $bookTag = mediaLanguageTagForStorage((string)$row['bookLang']);
+                    if (!is_string($bookTag) || !mediaLanguageIsOrdinaryLanguage($bookTag)) {
+                        continue;
+                    }
+                    $songRaw = trim((string)($row['songLang'] ?? ''));
+                    if ($songRaw === '') { $needs = true; break; }
+                    $songTag = mediaLanguageTagForStorage($songRaw);
+                    if (is_string($songTag) && mediaLanguageIsOrdinaryLanguage($songTag)
+                        && mediaLanguageGroup($songTag) !== mediaLanguageGroup($bookTag)) {
+                        $needs = true;
+                        break;
+                    }
+                }
+                if ($res) $res->free();
                 return $needs;
             } catch (\Throwable $_e) {
                 return false;

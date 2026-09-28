@@ -404,6 +404,46 @@ function mediaLanguageGroup(string $tag): string
 }
 
 /**
+ * Is this tag an ordinary, real language (#2137 review)?
+ *
+ * ELI5: "does this say which language the words are in?" Yes for `en`,
+ * `pt-BR`, `zh-Hant`. No for the special codes — `und` (not known), `mul`
+ * (several languages), `zxx` (no language), `mis` (a language with no code) —
+ * for the local-use codes `qaa` to `qtz`, for private-use and old
+ * "grandfathered" tags (`x-hymnal`, `i-default`), and for anything malformed.
+ *
+ * Why it exists: those values are all deliberate statements, not mistakes.
+ * Code that repairs or guesses a language (the songbook-language backfill
+ * card) must leave every one of them alone — `und` in particular records that
+ * nobody knows, and replacing it with a guess is exactly what policy LANG-003
+ * forbids.
+ *
+ * Returns false when the shared rules are not installed, so a caller that
+ * would CHANGE data on a true answer does nothing rather than guess.
+ */
+function mediaLanguageIsOrdinaryLanguage(string $tag): bool
+{
+    $tag = trim($tag, " \t\r\n");
+    if ($tag === '' || !mediaLanguageReady()) {
+        return false;
+    }
+    $parsed = Policy::canonicalise($tag);
+    if ($parsed->kind !== TagKind::Ordinary || $parsed->language === null) {
+        return false;
+    }
+    $language = $parsed->language;
+    if (in_array($language, ['und', 'mul', 'zxx', 'mis'], true)) {
+        return false;
+    }
+    /* qaa–qtz: ISO 639-2's block reserved for local use (BCP 47 section
+       2.2.1) — a private agreement, not a language anyone else can name. */
+    if (strlen($language) === 3 && strcmp($language, 'qaa') >= 0 && strcmp($language, 'qtz') <= 0) {
+        return false;
+    }
+    return true;
+}
+
+/**
  * Put rows into STORED order (policy Part A, LANG-010 to LANG-027): the
  * original language's whole group first, then every other language by its
  * code (`de`, `en`, `es` …), general before specific (`zh`, `zh-Hans`,

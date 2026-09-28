@@ -3,8 +3,8 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Backfill tblSongs.Language from tblSongbooks.Language for
- * single-language songbooks (audit follow-up).
+ * iHymns — Give songs their songbook's language (audit follow-up; manual
+ * since the #2137 review).
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
@@ -18,190 +18,192 @@ declare(strict_types=1);
  *
  * PR #975 patched the SoTD filter to PREFER the songbook's
  * `languages` set when unambiguous; this migration is the data-
- * side counterpart that fixes the underlying tags so every
- * consumer benefits without each having to add the same
- * defensive logic.
+ * side counterpart that fixes the underlying tags.
  *
- * Algorithm:
- *   1. SELECT every songbook whose `Language` column is non-empty.
- *   2. For each, find every member song whose `Language` differs
- *      from the songbook's Language (case-insensitive, primary-
- *      subtag comparison so "en-US" inside an "en" songbook
- *      stays — only blatant mismatches are touched).
- *   3. UPDATE tblSongs.Language = songbook.Language for those rows.
+ * WHAT IT CHANGES — for every songbook that declares ONE ordinary language:
+ *   - a member song with NO language at all is given the songbook's
+ *     language ("filled");
+ *   - a member song in a DIFFERENT ordinary language (the HAC case: `en`
+ *     inside a Croatian book) is given the songbook's language
+ *     ("rewritten");
+ *   - a member song whose language is already in the songbook's language
+ *     group (`en-GB` inside an `en` book) is left alone.
  *
- * Conservative on purpose:
- *   - Songs in MULTI-language songbooks (e.g. Misc / a hymnal that
- *     deliberately mixes languages — songbook.Language IS NULL or
- *     empty) are LEFT ALONE. The per-song tag is authoritative
- *     when the songbook itself doesn't declare a single language.
- *   - A song whose Language is empty / NULL is treated as
- *     "untagged" and gets the songbook's language (this is the
- *     "fix me" case the curator left to the catalogue).
- *   - A song whose Language already matches the songbook's
- *     primary subtag is untouched.
+ * WHAT IT NEVER TOUCHES (#2137 review — it used to overwrite all of these):
+ *   - `und` (nobody knows), `mul` (several languages), `zxx` (no language),
+ *     `mis` (a language with no code), the local-use codes `qaa`–`qtz`,
+ *     private-use and old "grandfathered" tags (`x-hymnal`, `i-default`),
+ *     and anything malformed. Each of those is a deliberate statement, and
+ *     replacing it with the songbook's language is a guess policy LANG-003
+ *     forbids. `mediaLanguageIsOrdinaryLanguage()` decides, the same test the
+ *     card's probe uses (migration-registry.php).
+ *   - songbooks with no language, or whose language is itself one of the
+ *     values above (a `mul` book is not a claim about any one song).
  *
- * Idempotent — re-running is safe; only rows whose Language still
- * disagrees with their songbook's get rewritten.
+ * WHY IT IS A MANUAL CARD NOW (#2137 review):
+ *   It used to run from "Apply all pending migrations", which meant a
+ *   routine upgrade silently overwrote song languages and nothing could undo
+ *   it. Filling a song that has no language from its songbook is a GUESS
+ *   (policy LANG-003: unknown stays unknown unless someone decides), so the
+ *   decision now belongs to a curator: the card is `'manual' => true` in the
+ *   registry (never run by "Apply all" or the setup wizard), and the script
+ *   is a DRY RUN unless confirmed — a web run without `&confirm=1`, or a CLI
+ *   run without `--confirm`, only reports what it would change.
+ *
+ * Idempotent — re-running is safe; only rows that still qualify change.
  *
  * @migration-updates tblSongs.Language
  *
  * USAGE:
- *   Web:  /manage/setup-database → Apply all pending migrations
- *   CLI:  php appWeb/.sql/migrate-backfill-song-language-from-songbook.php
+ *   Web (report):  /manage/setup-database → this card's "Dry-run" link
+ *   Web (apply):   the card's confirm button (adds &confirm=1)
+ *   CLI (report):  php appWeb/.sql/migrate-backfill-song-language-from-songbook.php
+ *   CLI (apply):   php appWeb/.sql/migrate-backfill-song-language-from-songbook.php --confirm
  */
 
-if (PHP_SAPI === 'cli') {
-    if (!function_exists('getDbMysqli')) {
-        require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
-    }
-    $isCli = true;
-} else {
-    if (!defined('IHYMNS_SETUP_DASHBOARD')) {
-        if (!function_exists('getDbMysqli')) {
-            require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
+/* Shared includes: resolved through the runner's real docroot, because the
+   deployed docroot is renamed per channel (rule #41). The literal is the repo
+   fallback for a CLI or test run only. */
+$_incDir = defined('IHYMNS_INCLUDES_DIR')
+    ? IHYMNS_INCLUDES_DIR
+    : dirname(__DIR__) . '/public_html/includes';
+if (!function_exists('getDbMysqli')) {
+    require_once $_incDir . '/db_mysql.php';
+}
+require_once $_incDir . '/media_language.php';
+
+/**
+ * Do the work against one database connection.
+ *
+ * Kept as a function (called at the bottom unless
+ * IHYMNS_MIGRATION_NO_AUTORUN is defined) so the test suite can run it against
+ * a throwaway database: tests/php/test-song-language-backfill.php.
+ *
+ * @param \mysqli             $db
+ * @param bool                $apply  false = report only (the default for a web or CLI run)
+ * @param callable(string):void $out  one line of output
+ * @return array{filled:int, rewritten:int, matched:int, skippedSpecial:int, skippedMalformed:int, booksSkipped:int}
+ */
+function migrateBackfillSongLanguageFromSongbook(\mysqli $db, bool $apply, callable $out): array
+{
+    $counts = ['filled' => 0, 'rewritten' => 0, 'matched' => 0,
+               'skippedSpecial' => 0, 'skippedMalformed' => 0, 'booksSkipped' => 0];
+
+    /* Without the shared rules nothing can tell `und` from a real language,
+       so stop rather than guess. */
+    mediaLanguageRequire();
+
+    foreach ([['tblSongs', 'Language'], ['tblSongbooks', 'Language']] as [$table, $column]) {
+        $stmt = $db->prepare(
+            'SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1'
+        );
+        $stmt->bind_param('ss', $table, $column);
+        $stmt->execute();
+        $exists = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+        if (!$exists) {
+            $out("[skip] {$table}.{$column} is missing — run the earlier language migrations first.");
+            return $counts;
         }
     }
-    $isCli = false;
-}
 
-function _migSongLangBF_out(string $line): void
-{
-    if (PHP_SAPI === 'cli') {
-        echo $line . "\n";
-    } else {
-        echo htmlspecialchars($line, ENT_QUOTES) . "<br>\n";
+    $books = [];
+    $res = $db->query("SELECT Abbreviation, Language FROM tblSongbooks WHERE Language IS NOT NULL AND Language <> ''");
+    while ($r = $res->fetch_assoc()) {
+        $books[(string)$r['Abbreviation']] = (string)$r['Language'];
     }
-}
+    $res->close();
 
-function _migSongLangBF_columnExists(\mysqli $db, string $table, string $column): bool
-{
-    $stmt = $db->prepare(
-        'SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-          WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME   = ?
-            AND COLUMN_NAME  = ? LIMIT 1'
-    );
-    $stmt->bind_param('ss', $table, $column);
-    $stmt->execute();
-    $ok = $stmt->get_result()->fetch_row() !== null;
-    $stmt->close();
-    return $ok;
-}
+    $pick   = $db->prepare('SELECT SongId, Language FROM tblSongs WHERE SongbookAbbr = ?');
+    $update = $db->prepare('UPDATE tblSongs SET Language = ? WHERE SongId = ?');
 
-/* Primary-subtag comparison helper. "en-GB" and "en" compare equal;
-   "en" and "hr" compare not-equal. Matches the comparison rule used
-   on the client side in songbook-language-filter.js. */
-function _migSongLangBF_primary(string $lang): string
-{
-    $lang = strtolower(trim($lang));
-    if ($lang === '') return '';
-    return preg_split('/[-_]/', $lang, 2)[0];
-}
-
-_migSongLangBF_out('Song language backfill from songbook starting…');
-
-$db = getDbMysqli();
-if (!$db) {
-    _migSongLangBF_out('ERROR: could not connect to database.');
-    if ($isCli) exit(1); else return;
-}
-
-/* Schema-tolerant — both columns must exist. */
-if (!_migSongLangBF_columnExists($db, 'tblSongs', 'Language')) {
-    _migSongLangBF_out('[skip] tblSongs.Language column missing — run migrate-ietf-bcp47-language.php first.');
-    if ($isCli) exit(0); else return;
-}
-if (!_migSongLangBF_columnExists($db, 'tblSongbooks', 'Language')) {
-    _migSongLangBF_out('[skip] tblSongbooks.Language column missing — run migrate-songbook-language.php first.');
-    if ($isCli) exit(0); else return;
-}
-
-/* Step 1: gather the songbooks with a non-empty Language. */
-$res = $db->query(
-    "SELECT Abbreviation, Language
-       FROM tblSongbooks
-      WHERE Language IS NOT NULL
-        AND Language <> ''"
-);
-$books = [];
-while ($r = $res->fetch_assoc()) {
-    $books[(string)$r['Abbreviation']] = (string)$r['Language'];
-}
-$res->close();
-
-if (empty($books)) {
-    _migSongLangBF_out('[ok  ] no songbook has a Language set — nothing to backfill.');
-    return;
-}
-
-_migSongLangBF_out('[scan] ' . count($books) . ' songbook' . (count($books) === 1 ? '' : 's')
-    . ' have a Language to propagate.');
-
-/* Step 2: for each songbook, find songs whose Language differs and
-   update them. Done one songbook at a time so the audit log line
-   per book is readable and a single bad row doesn't roll back the
-   whole pass. */
-$totalUpdated   = 0;
-$totalUntouched = 0;
-$skipBookCount  = 0;
-
-$stmtPickSongs = $db->prepare(
-    "SELECT SongId, Language
-       FROM tblSongs
-      WHERE SongbookAbbr = ?"
-);
-$stmtUpdate    = $db->prepare(
-    "UPDATE tblSongs SET Language = ? WHERE SongId = ?"
-);
-
-foreach ($books as $abbr => $bookLang) {
-    $bookPrimary = _migSongLangBF_primary($bookLang);
-    if ($bookPrimary === '') { $skipBookCount++; continue; }
-
-    $stmtPickSongs->bind_param('s', $abbr);
-    $stmtPickSongs->execute();
-    $songsRes = $stmtPickSongs->get_result();
-
-    $bookUpdated   = 0;
-    $bookUntouched = 0;
-    while ($row = $songsRes->fetch_assoc()) {
-        $songLang    = (string)($row['Language'] ?? '');
-        $songPrimary = _migSongLangBF_primary($songLang);
-        if ($songPrimary === $bookPrimary) {
-            $bookUntouched++;
+    foreach ($books as $abbr => $bookRaw) {
+        $bookTag = mediaLanguageTagForStorage($bookRaw);
+        if (!is_string($bookTag) || !mediaLanguageIsOrdinaryLanguage($bookTag)) {
+            $counts['booksSkipped']++;
+            $out("[skip] {$abbr}: the songbook's language (\"{$bookRaw}\") is not one ordinary language — its songs are left alone.");
             continue;
         }
-        /* If the song already carries a more-specific BCP 47 region
-           subtag whose primary matches (e.g. "en-GB" inside an "en"
-           songbook) we'd have hit the equal-primary branch above —
-           safe to overwrite the remaining cases. */
-        $stmtUpdate->bind_param('ss', $bookLang, $row['SongId']);
-        $stmtUpdate->execute();
-        $bookUpdated++;
-    }
-    $songsRes->close();
+        $bookGroup = mediaLanguageGroup($bookTag);
 
-    $totalUpdated   += $bookUpdated;
-    $totalUntouched += $bookUntouched;
-    if ($bookUpdated > 0) {
-        _migSongLangBF_out(sprintf(
-            '[fix ] %s (Language=%s): rewrote %d song%s; %d already matched.',
-            $abbr, $bookLang, $bookUpdated, $bookUpdated === 1 ? '' : 's', $bookUntouched
-        ));
+        $pick->bind_param('s', $abbr);
+        $pick->execute();
+        $songs = $pick->get_result();
+        $bookFilled = 0;
+        $bookRewritten = 0;
+        while ($row = $songs->fetch_assoc()) {
+            $songRaw = trim((string)($row['Language'] ?? ''));
+            if ($songRaw === '') {
+                $action = 'fill';
+            } else {
+                $songTag = mediaLanguageTagForStorage($songRaw);
+                if (!is_string($songTag)) {
+                    $counts['skippedMalformed']++;
+                    continue;
+                }
+                if (!mediaLanguageIsOrdinaryLanguage($songTag)) {
+                    $counts['skippedSpecial']++;          // und / mul / zxx / mis / qaa–qtz / x-… — never touched
+                    continue;
+                }
+                if (mediaLanguageGroup($songTag) === $bookGroup) {
+                    $counts['matched']++;
+                    continue;
+                }
+                $action = 'rewrite';
+            }
+            if ($apply) {
+                $songId = (string)$row['SongId'];
+                $update->bind_param('ss', $bookTag, $songId);
+                $update->execute();
+            }
+            if ($action === 'fill') { $counts['filled']++; $bookFilled++; }
+            else                    { $counts['rewritten']++; $bookRewritten++; }
+        }
+        $songs->close();
+        if ($bookFilled + $bookRewritten > 0) {
+            $out(sprintf('[%s] %s → %s: %d song%s with no language, %d in another language.',
+                $apply ? 'fix ' : 'plan', $abbr, $bookTag,
+                $bookFilled, $bookFilled === 1 ? '' : 's', $bookRewritten));
+        }
     }
+    $pick->close();
+    $update->close();
+
+    $out(sprintf(
+        '%s: %d song%s given the songbook\'s language because they had none, %d changed from another language, '
+        . '%d already matched; left alone: %d with a special code (und, mul, zxx, mis, qaa–qtz, private-use), '
+        . '%d malformed, %d songbook%s without one ordinary language.',
+        $apply ? 'Done' : 'Dry run — nothing was changed',
+        $counts['filled'], $counts['filled'] === 1 ? '' : 's', $counts['rewritten'], $counts['matched'],
+        $counts['skippedSpecial'], $counts['skippedMalformed'],
+        $counts['booksSkipped'], $counts['booksSkipped'] === 1 ? '' : 's'
+    ));
+    return $counts;
 }
-$stmtPickSongs->close();
-$stmtUpdate->close();
 
-_migSongLangBF_out(sprintf(
-    'Backfill complete: %d song%s rewritten, %d already matched, %d songbook%s skipped (empty Language).',
-    $totalUpdated, $totalUpdated === 1 ? '' : 's',
-    $totalUntouched,
-    $skipBookCount, $skipBookCount === 1 ? '' : 's'
-));
-
-if ($totalUpdated > 0) {
-    _migSongLangBF_out('[note] Nothing to regenerate — song reads are DB-direct (WS-J #1020),');
-    _migSongLangBF_out('       so the public PWA picks up the new tags on its next fetch.');
+if (!defined('IHYMNS_MIGRATION_NO_AUTORUN')) {
+    $isCli = PHP_SAPI === 'cli';
+    $out = static function (string $line) use ($isCli): void {
+        echo $isCli ? $line . "\n" : htmlspecialchars($line, ENT_QUOTES) . "<br>\n";
+    };
+    /* A curator's decision: report only unless explicitly confirmed. */
+    $apply = $isCli
+        ? in_array('--confirm', $argv ?? [], true)
+        : (($_GET['confirm'] ?? '') === '1');
+    $out($apply
+        ? 'Giving songs their songbook\'s language (confirmed).'
+        : 'DRY RUN — reporting only. Add ' . ($isCli ? '--confirm' : '&confirm=1') . ' to apply.');
+    $db = getDbMysqli();
+    if (!$db) {
+        $out('ERROR: could not connect to database.');
+        if ($isCli) { exit(1); }
+        return;
+    }
+    try {
+        migrateBackfillSongLanguageFromSongbook($db, $apply, $out);
+    } catch (\RuntimeException $e) {
+        $out('ERROR: ' . $e->getMessage());
+        if ($isCli) { exit(1); }
+    }
 }
