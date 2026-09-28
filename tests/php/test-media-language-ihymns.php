@@ -18,7 +18,7 @@ declare(strict_types=1);
  * CHECKS
  * ------
  * (A) The loader finds the shared code and data in
- *     appWeb/private_html/lib/media-language/ and loads them.
+ *     appWeb/public_html/includes/vendor/media-language/ and loads them.
  * (B) mediaLanguageTagForStorage() — the ONE storage rule — on a truth table,
  *     and _ietfBcp47Validate() gives the same answers (it now delegates).
  * (C) normaliseSongbookLanguage() / validateSongbookBcp47() — the songbook
@@ -88,8 +88,8 @@ function mliShow(mixed $v): string
 
 /* ---------------------------------------------------------------- (A) --- */
 echo "(A) loader\n";
-mliCheck('the shared code folder is outside the public web folder',
-    str_ends_with(str_replace('\\', '/', mediaLanguageLibraryDir()), 'appWeb/private_html/lib/media-language'),
+mliCheck('the shared code folder is includes/vendor/media-language/, under the loader (the deploy uploads it; see test-media-language-deploy-layout.php)',
+    str_ends_with(str_replace('\\', '/', mediaLanguageLibraryDir()), 'appWeb/public_html/includes/vendor/media-language'),
     mediaLanguageLibraryDir());
 mliCheck('mediaLanguageReady() loads the shared code and its data', mediaLanguageReady() === true);
 

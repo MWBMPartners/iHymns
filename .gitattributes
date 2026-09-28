@@ -15,7 +15,7 @@ docs/standards/data/bcp47-language-data-v1.schema.json -text
 tests/fixtures/bcp47-language-policy-v1.json -text
 tests/fixtures/bcp47-language-policy-v1.schema.json -text
 tools/media-lang/check_copies.py -text
-appWeb/private_html/lib/media-language/MediaLanguagePolicy.php -text
-appWeb/private_html/lib/media-language/bcp47-language-data-v1.json -text
-appWeb/private_html/lib/media-language/README.md -text
-appWeb/private_html/lib/media-language/tests/run-conformance.php -text
+appWeb/public_html/includes/vendor/media-language/MediaLanguagePolicy.php -text
+appWeb/public_html/includes/vendor/media-language/bcp47-language-data-v1.json -text
+appWeb/public_html/includes/vendor/media-language/README.md -text
+appWeb/public_html/includes/vendor/media-language/tests/run-conformance.php -text

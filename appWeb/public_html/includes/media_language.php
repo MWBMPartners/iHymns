@@ -20,15 +20,27 @@ declare(strict_types=1);
  *
  * WHERE THE SHARED CODE LIVES, AND WHY THERE
  * ------------------------------------------
- * `appWeb/private_html/lib/media-language/` holds exact copies of
+ * `includes/vendor/media-language/` holds exact copies of
  * `MediaLanguagePolicy.php` and its reference data file (drawn from the IANA
- * language registry and the ISO 639-2 list). The folder is OUTSIDE the public
- * web folder, the same place the PDF engine lives (see
- * `includes/pdf_renderer.php`'s `_pdfVendorAutoloadPath()`), and it is reached
- * the same way: `dirname(__DIR__, 2)` walks `includes/` → the docroot →
- * `appWeb/`, then down into `private_html/`. That keeps working when the
- * docroot folder is renamed per channel (`public_html_dev`, `public_html_beta`
- * — rule #41), because nothing here spells the docroot's name.
+ * language registry and the ISO 639-2 list). It is found from this file's own
+ * folder (`__DIR__`), so it keeps working when the docroot folder is renamed
+ * per channel (`public_html_dev`, `public_html_beta` — rule #41). The folder
+ * is called `vendor` because that is how this repository marks code it did
+ * not write: the source checks that walk the tree (the orphan inventory, the
+ * PHP source-units check and others) skip folders of that name, so the
+ * shared code's words are never mistaken for iHymns' own callers or rules.
+ *
+ * Why here and not in `appWeb/private_html/lib/`, beside the PDF engine,
+ * where it was first put: the deploy never uploads `private_html` (the step
+ * needs the `SFTP_PRIVATE_PATH` secret, which is not set — the deploy logs
+ * say "skipping private_html deployment", #2138). On the server these files
+ * would have been missing, and every language save would have been refused.
+ * `includes/` is uploaded with every deploy, as part of each channel's own
+ * docroot (so alpha, beta and main each carry the version their code was
+ * tested with), and the site's `.htaccess` forbids web access to all of it
+ * (`RewriteRule ^includes/ - [F,L]`), so the files still cannot be fetched by
+ * a browser. `tests/php/test-media-language-deploy-layout.php` copies the
+ * folder the way the deploy does and loads the rules from the copy.
  *
  * The copies are checked byte for byte against the master in
  * MWBMPartners/MeedyaSuite-core by `tools/media-lang/check_copies.py` in CI.
@@ -57,7 +69,7 @@ declare(strict_types=1);
  *   `zh-TW` stays `zh-TW`; it is not "improved" to `zh-Hant-TW`.
  *
  * @see docs/standards/media-language-bcp47-policy.md  the rules (normative)
- * @see appWeb/private_html/lib/media-language/README.md  the shared code's own notes
+ * @see appWeb/public_html/includes/vendor/media-language/README.md  the shared code's own notes
  * @see tests/php/test-media-language-conformance.php     the policy's 268 cases, run here
  * @see tests/php/test-media-language-ihymns.php          iHymns' own uses of this file
  */
@@ -95,8 +107,7 @@ const IHYMNS_LANGUAGE_UNKNOWN = 'und';
  */
 function mediaLanguageLibraryDir(): string
 {
-    return dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'private_html'
-        . DIRECTORY_SEPARATOR . 'lib' . DIRECTORY_SEPARATOR . 'media-language';
+    return __DIR__ . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'media-language';
 }
 
 /**
@@ -150,7 +161,7 @@ function mediaLanguageRequire(): void
     if (!mediaLanguageReady()) {
         throw new \RuntimeException(
             'The shared language rules are not installed on this server, so a language code '
-            . 'cannot be checked and nothing was saved. Deploy appWeb/private_html/lib/media-language/ '
+            . 'cannot be checked and nothing was saved. Upload the includes/vendor/media-language/ folder '
             . '(see includes/media_language.php).'
         );
     }

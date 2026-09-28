@@ -20,9 +20,9 @@ declare(strict_types=1);
  * kept identical by tools/media-lang/check_copies.py in CI:
  *
  *   tests/fixtures/bcp47-language-policy-v1.json            (the cases)
- *   appWeb/private_html/lib/media-language/bcp47-language-data-v1.json
- *   appWeb/private_html/lib/media-language/MediaLanguagePolicy.php
- *   appWeb/private_html/lib/media-language/tests/run-conformance.php
+ *   appWeb/public_html/includes/vendor/media-language/bcp47-language-data-v1.json
+ *   appWeb/public_html/includes/vendor/media-language/MediaLanguagePolicy.php
+ *   appWeb/public_html/includes/vendor/media-language/tests/run-conformance.php
  *
  * So this file does not re-implement the checks. It runs the shared runner
  * as a separate PHP process (it ends with exit(), which would end this
@@ -50,11 +50,11 @@ declare(strict_types=1);
  * Exit status 0 = every case passed, 1 = anything else.
  *
  * @see docs/standards/media-language-bcp47-policy.md  §8.1 (what a harness must do)
- * @see appWeb/private_html/lib/media-language/README.md
+ * @see appWeb/public_html/includes/vendor/media-language/README.md
  */
 
 $repoRoot  = dirname(__DIR__, 2);
-$libDir    = $repoRoot . '/appWeb/private_html/lib/media-language';
+$libDir    = $repoRoot . '/appWeb/public_html/includes/vendor/media-language';
 $runner    = $libDir . '/tests/run-conformance.php';
 $dataFile  = $libDir . '/bcp47-language-data-v1.json';
 $fixtures  = $repoRoot . '/tests/fixtures/bcp47-language-policy-v1.json';

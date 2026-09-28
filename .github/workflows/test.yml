@@ -38,7 +38,7 @@ on:
       # is a .json file the appWeb/**/*.php pattern above does not match.
       - 'docs/standards/**'
       - 'tools/media-lang/**'
-      - 'appWeb/private_html/lib/media-language/**'
+      - 'appWeb/public_html/includes/vendor/media-language/**'
       - '.gitattributes'
 
   # PRs intentionally have NO paths filter — see #851. Branch protection
