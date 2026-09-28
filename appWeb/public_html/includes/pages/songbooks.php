@@ -81,6 +81,7 @@ $stats = $songData->getStats();
                     $bookLang       = $tile['tag'];
                     $langCode       = $tile['badge'];
                     $bookLangsCsv   = $tile['groupsCsv'];
+                    $bookLangTagsCsv = $tile['tagsCsv'];   /* #2137 review — whole tags, for the filter's script check */
                     $bookLangsTitle = $tile['title'];
                     $bookLangName   = $tile['name'];
                     /* #1223 — unofficial-songbook flag. SongData casts
@@ -109,7 +110,8 @@ $stats = $songData->getStats();
                          data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
                          data-songbook-songs="<?= (int)$book['songCount'] ?>"
                          <?php if ($langCode !== ''): ?>data-songbook-language="<?= htmlspecialchars($bookLang) ?>"<?php endif; ?>
-                         <?php if ($bookLangsCsv !== ''): ?>data-songbook-languages="<?= htmlspecialchars($bookLangsCsv) ?>"<?php endif; ?>>
+                         <?php if ($bookLangsCsv !== ''): ?>data-songbook-languages="<?= htmlspecialchars($bookLangsCsv) ?>"<?php endif; ?>
+                         <?php if ($bookLangTagsCsv !== ''): ?>data-songbook-language-tags="<?= htmlspecialchars($bookLangTagsCsv) ?>"<?php endif; ?>>
                         <!-- Stretched link covers the whole card; the
                              absolute-positioned download button below
                              stays clickable because its z-index sits

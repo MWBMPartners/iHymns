@@ -29,6 +29,8 @@ import {
     languageGroupOf,
     mergePreferenceOrder,
     orderByPreference,
+    preferenceMatchesTag,
+    scriptOf,
 } from '../appWeb/public_html/js/utils/language-tags.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -102,6 +104,39 @@ check('the settings chips are labelled with language names, not upper-cased code
 check('the song page picker is put in the reader\'s order once, from the router',
     read('js/modules/router.js').includes('m.orderTranslationPicker()')
     && read('js/modules/song-translations.js').includes('export function orderTranslationPicker()'));
+
+/* The filter respects scripts (#2137 review, MATCH-040) — the same truth
+   table as tests/php/test-language-filter-scripts.php, where the server's SQL
+   and in-memory filters are checked row for row against a real database. */
+check('scriptOf finds the script after the language (and any extlangs)',
+    scriptOf('zh-Hant-TW') === 'hant' && scriptOf('sr-Latn') === 'latn' && scriptOf('zh-TW') === ''
+    && scriptOf('de-1996') === '' && scriptOf('x-hymnal') === '' && scriptOf('') === '');
+{
+    const ROWS = ['zh', 'zh-Hans', 'zh-Hant', 'zh-Hans-CN', 'zh-Hant-TW', 'zh-TW',
+        'sr', 'sr-Latn', 'sr-Cyrl', 'sr-Cyrl-RS', 'en', 'en-GB', 'pt', 'pt-BR', 'pt-PT', 'x-hymnal', 'yue-Hant'];
+    const CASES = {
+        'zh-Hans': ['zh', 'zh-Hans', 'zh-Hans-CN', 'zh-TW'],
+        'sr-Latn': ['sr', 'sr-Latn'],
+        'zh-Hans,zh-Hant': ['zh', 'zh-Hans', 'zh-Hant', 'zh-Hans-CN', 'zh-Hant-TW', 'zh-TW'],
+        'zh-Hans,zh': ['zh', 'zh-Hans', 'zh-Hant', 'zh-Hans-CN', 'zh-Hant-TW', 'zh-TW'],
+        'zh-TW': ['zh', 'zh-Hans', 'zh-Hant', 'zh-Hans-CN', 'zh-Hant-TW', 'zh-TW'],
+        'pt-BR': ['pt', 'pt-BR', 'pt-PT'],
+        'x-hymnal': ['x-hymnal'],
+    };
+    for (const [csv, expected] of Object.entries(CASES)) {
+        const prefs = csv.split(',');
+        const kept = ROWS.filter((t) => prefs.some((p) => preferenceMatchesTag(p, t)));
+        check(`preferences "${csv}" keep exactly ${expected.join(', ')}`, same(kept, expected), kept.join(', '));
+    }
+}
+{
+    const filterSrc = read('js/modules/songbook-language-filter.js');
+    check('the songbook/song filter decides with preferenceMatchesTag() and reads the tiles\' whole tags',
+        filterSrc.includes('preferenceMatchesTag(p, tag)') && filterSrc.includes('dataset.songbookLanguageTags'));
+    for (const page of ['includes/pages/home.php', 'includes/pages/songbooks.php']) {
+        check(`${page} gives each songbook tile its whole language tags`, read(page).includes('data-songbook-language-tags='));
+    }
+}
 
 /* Song of the Day sends the same list as every other request (#2137 review).
    It builds its own `?lang=` (which wins over the header on the server), and

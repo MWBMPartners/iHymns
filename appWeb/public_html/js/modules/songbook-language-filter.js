@@ -72,7 +72,7 @@
    prefix convention and must not be renamed. */
 import { EVT_LANGUAGE_FILTER_CHANGED, STORAGE_LANGUAGE_FILTER } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
-import { isPreferenceTag, languageGroupOf, mergePreferenceOrder } from '../utils/language-tags.js';
+import { isPreferenceTag, languageGroupOf, mergePreferenceOrder, preferenceMatchesTag } from '../utils/language-tags.js';
 
 const STORAGE_KEY = STORAGE_LANGUAGE_FILTER;
 
@@ -167,13 +167,17 @@ function findTileColumn(tile) {
  *     (untagged → always shown)
  */
 function applyFilter(rootEl, subtags) {
-    /* #2137 — matching is by language GROUP: a `pt-BR` preference shows `pt`
-       and `pt-PT` content too (the saved list keeps the whole tag; see
-       mergePreferenceOrder()). #2132 — und / mul / zxx are always shown. */
+    /* #2137 — matching is by language: a `pt-BR` preference shows `pt` and
+       `pt-PT` content too (the saved list keeps the whole tag; see
+       mergePreferenceOrder()). #2137 review — except that a preference naming
+       a SCRIPT hides content in a different script (`zh-Hans` hides `zh-Hant`;
+       MATCH-040), via preferenceMatchesTag(), the same rule the server's
+       filter applies. #2132 — und / mul / zxx are always shown. */
     const set = new Set(subtags.map(languageGroupOf));
+    const prefs = subtags.slice();
     const passes = (tag) => {
-        const g = languageGroupOf(tag);
-        return set.has(g) || ALWAYS_SHOWN_GROUPS.has(g);
+        if (ALWAYS_SHOWN_GROUPS.has(languageGroupOf(tag))) return true;
+        return prefs.some((p) => preferenceMatchesTag(p, tag));
     };
 
     /* Songbook tiles.
@@ -185,19 +189,25 @@ function applyFilter(rootEl, subtags) {
        release-cycle of back-compat with cached JS bundles, and as
        a fallback when the union attribute is absent. */
     rootEl.querySelectorAll('[data-songbook-id]').forEach(tile => {
+        /* #2137 review — the WHOLE tags (data-songbook-language-tags: the
+           book's own language and its songs') are what a script check needs;
+           the language groups stay the fallback for markup without them. */
+        const tagsCsv   = (tile.dataset.songbookLanguageTags || '');
         const langsCsv  = (tile.dataset.songbookLanguages || '').toLowerCase();
         const fallback  = (tile.dataset.songbookLanguage  || '').toLowerCase();
         const col = findTileColumn(tile);
         if (!col) return;
 
-        const tilePrimaries = (langsCsv
-            ? langsCsv.split(',').map(s => s.trim()).filter(Boolean)
-            : (fallback ? [fallback] : []));
+        const tileTags = tagsCsv
+            ? tagsCsv.split(',').map(s => s.trim()).filter(Boolean)
+            : (langsCsv
+                ? langsCsv.split(',').map(s => s.trim()).filter(Boolean)
+                : (fallback ? [fallback] : []));
 
         const shouldShow = (() => {
             if (set.size === 0) return true;        /* "All" → everything */
-            if (tilePrimaries.length === 0) return true; /* untagged → always pass */
-            return tilePrimaries.some(passes);
+            if (tileTags.length === 0) return true; /* untagged → always pass */
+            return tileTags.some(passes);
         })();
 
         if (shouldShow) {
@@ -228,9 +238,12 @@ function applyFilter(rootEl, subtags) {
 
     /* #855 — broadcast the change so independent modules (Song of
        the Day in particular) can re-render without a page reload.
-       Detail.subtags carries the saved preference list (whole language
-       tags, highest priority first — #2137); an empty array means "All" /
-       no filter. */
+       Detail.subtags carries the LANGUAGE GROUPS of the saved preferences
+       (`pt` for `pt-BR`; distinct, in the saved order); an empty array means
+       "All" / no filter. Nothing reads detail.subtags today — Song of the
+       Day re-reads the saved list itself (api-client.js's
+       preferredLanguagesCsv()) — so a listener that needs whole tags should
+       do the same. */
     try {
         document.dispatchEvent(new CustomEvent(EVT_LANGUAGE_FILTER_CHANGED, {
             detail: { subtags: Array.from(set) },

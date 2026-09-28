@@ -298,14 +298,18 @@ function resolveLanguageMeta(string $code): array
  * - `title`     the tooltip: the full names of every language the book's songs
  *               are in (`languageTags`), falling back to the book's own name;
  * - `groupsCsv` the language GROUPS for the client-side filter
- *               (data-songbook-languages), unchanged in meaning: the filter
- *               matches by group.
+ *               (data-songbook-languages), unchanged in meaning;
+ * - `tagsCsv`   the WHOLE tags — the book's own language and its songs' —
+ *               for the client-side filter's script check
+ *               (data-songbook-language-tags, #2137 review: a `zh-Hans`
+ *               reader must not be shown a book whose songs are all
+ *               `zh-Hant`).
  *
  * A songbook whose language is `und`/`mul`/`zxx` shows no badge, like one with
  * no language (the language filter always shows it).
  *
  * @param array<string,mixed> $book A row from SongData::getSongbooks().
- * @return array{tag:string,badge:string,name:string,title:string,groupsCsv:string}
+ * @return array{tag:string,badge:string,name:string,title:string,groupsCsv:string,tagsCsv:string}
  */
 function songbookTileLanguage(array $book): array
 {
@@ -323,12 +327,17 @@ function songbookTileLanguage(array $book): array
             $names[] = $n;
         }
     }
+    $tags = array_map('strval', (array)($book['languageTags'] ?? []));
+    if ($tag !== '' && !in_array($tag, $tags, true)) {
+        array_unshift($tags, $tag);
+    }
     return [
         'tag'       => $tag,
         'badge'     => $tag !== '' ? mb_strtoupper($tag) : '',
         'name'      => $name,
         'title'     => $names !== [] ? implode(', ', $names) : $name,
         'groupsCsv' => implode(',', (array)($book['languages'] ?? [])),
+        'tagsCsv'   => implode(',', $tags),
     ];
 }
 

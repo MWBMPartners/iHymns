@@ -1,0 +1,120 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * iHymns — the language filter respects scripts (#2137 review, MATCH-040)
+ *
+ * ELI5: a reader who chose "Chinese (Simplified)" should see Chinese songs,
+ * but not the ones written in Traditional characters — a reader of one
+ * script may not be able to read the other. The filter used to compare only
+ * the first part of the tag (`zh`), so it kept both. This test proves the
+ * in-memory filter and the SQL filter now both drop a different script, keep
+ * every form with no script or the same script, and agree with each other,
+ * row for row, against a real database.
+ *
+ * CHECKS
+ *  Part A (no database): makeLanguageFilterPredicate() — which uses the
+ *    shared Policy::matchTags() — on a truth table of 21 stored tags and seven
+ *    preference lists, including `zh-Hans`, `sr-Latn`, a pair of scripts, a
+ *    preference with no script, and a private-use tag.
+ *  Part B (a real database; skipped, loudly, without one):
+ *    applyLanguageFilterSql() over the same 21 rows keeps exactly the rows
+ *    the predicate keeps, for every preference list.
+ *
+ * Mutation-proven: dropping the per-script clause from the SQL turned every
+ * script case in Part B red; comparing base languages only in the predicate
+ * (the old rule) turned the script cases in Part A red.
+ *
+ * Database: IHYMNS_TEST_DSN="host=127.0.0.1;port=3306;user=root;pass=".
+ *
+ *   php tests/php/test-language-filter-scripts.php
+ */
+
+$repoRoot = dirname(__DIR__, 2);
+require_once $repoRoot . '/appWeb/public_html/includes/media_language.php';
+require_once $repoRoot . '/appWeb/public_html/includes/language_filter.php';
+
+$passed = 0;
+$failed = 0;
+$check = static function (string $label, bool $ok, string $detail = '') use (&$passed, &$failed): void {
+    if ($ok) { $passed++; echo "  PASS  {$label}\n"; }
+    else     { $failed++; echo "  FAIL  {$label}" . ($detail !== '' ? " — {$detail}" : '') . "\n"; }
+};
+echo "tests/php/test-language-filter-scripts.php — a script preference drops songs in another script\n";
+$check('the shared language rules loaded', mediaLanguageReady());
+
+$rows = ['', 'und', 'mul', 'zxx', 'zh', 'zh-Hans', 'zh-Hant', 'zh-Hans-CN', 'zh-Hant-TW', 'zh-TW',
+         'sr', 'sr-Latn', 'sr-Cyrl', 'sr-Cyrl-RS', 'en', 'en-GB', 'pt', 'pt-BR', 'pt-PT', 'x-hymnal', 'yue-Hant'];
+$special = ['', 'und', 'mul', 'zxx'];
+$cases = [
+    'zh-Hans'          => array_merge($special, ['zh', 'zh-Hans', 'zh-Hans-CN', 'zh-TW']),
+    'sr-Latn'          => array_merge($special, ['sr', 'sr-Latn']),
+    'zh-Hans, zh-Hant' => array_merge($special, ['zh', 'zh-Hans', 'zh-Hant', 'zh-Hans-CN', 'zh-Hant-TW', 'zh-TW']),
+    'zh-Hans, zh'      => array_merge($special, ['zh', 'zh-Hans', 'zh-Hant', 'zh-Hans-CN', 'zh-Hant-TW', 'zh-TW']),
+    'zh-TW'            => array_merge($special, ['zh', 'zh-Hans', 'zh-Hant', 'zh-Hans-CN', 'zh-Hant-TW', 'zh-TW']),
+    'pt-BR'            => array_merge($special, ['pt', 'pt-BR', 'pt-PT']),
+    'x-hymnal'         => array_merge($special, ['x-hymnal']),
+];
+
+echo "\nPart A — the in-memory filter\n";
+$predicateKeeps = [];
+foreach ($cases as $csv => $expected) {
+    $prefs = parsePreferredLanguageSubtags($csv);
+    $pred = makeLanguageFilterPredicate($prefs);
+    $kept = array_values(array_filter($rows, static fn(string $t): bool => $pred(['language' => $t])));
+    $predicateKeeps[$csv] = $kept;
+    $check("preferences \"{$csv}\" keep exactly: " . implode(', ', array_map(static fn($t) => $t === '' ? '(none)' : $t, $expected)),
+        $kept === $expected, 'kept ' . implode(', ', $kept));
+}
+
+echo "\nPart B — the SQL filter, against a real database\n";
+$dsn = getenv('IHYMNS_TEST_DSN') ?: '';
+$host = '127.0.0.1'; $port = 3306; $user = 'root'; $pass = '';
+foreach (explode(';', $dsn) as $kv) {
+    [$k, $v] = array_pad(explode('=', $kv, 2), 2, '');
+    if ($k === 'host') { $host = $v; }
+    if ($k === 'port') { $port = (int)$v; }
+    if ($k === 'user') { $user = $v; }
+    if ($k === 'pass') { $pass = $v; }
+}
+$db = null;
+if ($dsn !== '') {
+    try {
+        mysqli_report(MYSQLI_REPORT_OFF);
+        $db = @new mysqli($host, $user, $pass, '', $port);
+        if ($db->connect_errno) { $db = null; }
+    } catch (\Throwable $e) {
+        $db = null;
+    }
+}
+if ($db === null) {
+    echo "  SKIP  no database — Part B did NOT run. Set IHYMNS_TEST_DSN; this is a gap, not a pass.\n";
+} else {
+    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+    $name = 'ihymns_t2137_filter';
+    $db->query("DROP DATABASE IF EXISTS `{$name}`");
+    $db->query("CREATE DATABASE `{$name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $db->select_db($name);
+    try {
+        $db->query('CREATE TABLE t (Id INT NOT NULL PRIMARY KEY, Language VARCHAR(35) NULL)');
+        $ins = $db->prepare('INSERT INTO t (Id, Language) VALUES (?, ?)');
+        foreach ($rows as $i => $tag) { $ins->bind_param('is', $i, $tag); $ins->execute(); }
+        $ins->close();
+        foreach ($cases as $csv => $_expected) {
+            [$where, $types, $values] = applyLanguageFilterSql('Language', parsePreferredLanguageSubtags($csv));
+            $stmt = $db->prepare('SELECT Language FROM t WHERE 1=1' . $where . ' ORDER BY Id');
+            $stmt->bind_param($types, ...$values);
+            $stmt->execute();
+            $got = array_map(static fn(array $r): string => (string)$r[0], $stmt->get_result()->fetch_all());
+            $stmt->close();
+            $check("SQL with \"{$csv}\" keeps the same rows as the in-memory filter",
+                $got === $predicateKeeps[$csv], 'SQL kept ' . implode(', ', $got));
+        }
+    } finally {
+        $db->query("DROP DATABASE IF EXISTS `{$name}`");
+    }
+}
+
+echo "\n  {$passed} passed, {$failed} failed\n";
+exit($failed > 0 ? 1 : 0);

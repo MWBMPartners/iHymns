@@ -66,6 +66,43 @@ export function languageGroupOf(tag) {
 }
 
 /**
+ * The script a tag names, lower-case (`zh-Hant-TW` → `hant`), or '' when it
+ * names none. The script comes after the language and up to three extlangs,
+ * and is the only four-letter subtag there (BCP 47 section 2.1).
+ *
+ * @param {string} tag
+ * @returns {string}
+ */
+export function scriptOf(tag) {
+    const m = /^[a-z]{2,8}(?:-[a-z]{3}){0,3}-([a-z]{4})(?:-|$)/i.exec(String(tag || '').trim());
+    return m ? m[1].toLowerCase() : '';
+}
+
+/**
+ * Does content in language `tag` suit a reader who chose `pref`?
+ * (#2137 review — the shared policy's MATCH-040.)
+ *
+ * ELI5: the same language is enough (`pt-BR` suits `pt` and `pt-PT` content),
+ * unless both name a script and the scripts differ: a reader who chose
+ * Chinese in Simplified characters (`zh-Hans`) is not shown content written
+ * in Traditional characters (`zh-Hant`). A preference with no script
+ * (`zh`, `zh-TW`) suits every form. Mirrors includes/language_filter.php
+ * (the server's SQL and in-memory filters), which the server tests row for
+ * row; `und`, `mul` and `zxx` are the caller's business (always shown).
+ *
+ * @param {string} pref A saved preference tag.
+ * @param {string} tag  The content's language tag.
+ * @returns {boolean}
+ */
+export function preferenceMatchesTag(pref, tag) {
+    const group = languageGroupOf(pref);
+    if (group === '' || group !== languageGroupOf(tag)) return false;
+    const want = scriptOf(pref);
+    const have = scriptOf(tag);
+    return !(want && have && want !== have);
+}
+
+/**
  * Keep the person's saved priority order when boxes are ticked or unticked.
  *
  * ELI5: the saved list is ["pt-BR", "en"]. The person unticks nothing and

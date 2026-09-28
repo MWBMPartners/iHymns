@@ -225,23 +225,101 @@ function resolvePreferredLanguagesForRequest(?array $authUser): array
 }
 
 /**
+ * What the filter needs to know about a person's preferences, worked out once
+ * (#2137 review — the shared policy's MATCH-040).
+ *
+ * ELI5: a preference such as `zh-Hans` (Chinese in Simplified characters)
+ * should show Chinese songs — but not the ones written in Traditional
+ * characters, because a reader of one script may not be able to read the
+ * other. A preference with no script (`zh`, `zh-TW`) shows every form.
+ *
+ * Returns:
+ *   - `any`     base languages where at least one preference names no script:
+ *               every form of the language matches;
+ *   - `scripts` base language → the scripts its preferences name (lower-case),
+ *               for languages where EVERY preference names a script: a form
+ *               with no script, or with one of these, matches; a form with
+ *               another script does not;
+ *   - `whole`   private-use and old "grandfathered" preferences (`x-hymnal`),
+ *               which are matched as a whole tag.
+ *
+ * @param list<string> $preferences Canonical tags (parsePreferredLanguageSubtags()).
+ * @return array{any: list<string>, scripts: array<string, list<string>>, whole: list<string>}
+ */
+function languageFilterPlan(array $preferences): array
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    $any = [];
+    $scripts = [];
+    $whole = [];
+    foreach ($preferences as $pref) {
+        $pref = trim((string)$pref);
+        if ($pref === '') continue;
+        if (mediaLanguageReady()) {
+            $parsed = \Mwbm\MediaLanguage\Policy::canonicalise($pref);
+            if ($parsed->kind === \Mwbm\MediaLanguage\TagKind::Malformed) continue;
+            if ($parsed->kind !== \Mwbm\MediaLanguage\TagKind::Ordinary || $parsed->language === null) {
+                $whole[strtolower($parsed->tag)] = true;
+                continue;
+            }
+            $lang = strtolower($parsed->language);
+            $script = $parsed->script !== null ? strtolower($parsed->script) : '';
+        } else {
+            /* Degraded path (shared rules missing): read the parts directly. */
+            $parts = explode('-', strtolower($pref));
+            $lang = $parts[0];
+            if (!preg_match('/^[a-z]{2,3}$/', $lang)) continue;
+            $script = (isset($parts[1]) && preg_match('/^[a-z]{4}$/', $parts[1])) ? $parts[1] : '';
+        }
+        if ($script === '') {
+            $any[$lang] = true;
+        } else {
+            $scripts[$lang][$script] = true;
+        }
+    }
+    $scriptsOut = [];
+    foreach ($scripts as $lang => $set) {
+        if (!isset($any[$lang])) {
+            $scriptsOut[$lang] = array_keys($set);
+        }
+    }
+    return ['any' => array_keys($any), 'scripts' => $scriptsOut, 'whole' => array_keys($whole)];
+}
+
+/**
+ * The script subtag of a stored tag, lower-case, or '' when it names none.
+ * Language, up to three extlangs, then a four-letter script (BCP 47 §2.1).
+ */
+function languageFilterScriptOf(string $tag): string
+{
+    return preg_match('/^[a-z]{2,8}(?:-[a-z]{3}){0,3}-([a-z]{4})(?:-|$)/i', trim($tag), $m) === 1 ? strtolower($m[1]) : '';
+}
+
+/**
  * Build a SQL WHERE-clause fragment + bind-param pair to apply
  * the language filter at SELECT time.
  *
  * The fragment looks like:
  *   AND (
  *       <colExpr> IS NULL OR <colExpr> = ''
- *    OR LOWER(SUBSTRING_INDEX(<colExpr>, '-', 1)) IN (?, ?, …)
+ *    OR LOWER(SUBSTRING_INDEX(<colExpr>, '-', 1)) IN (?, ?, …)          -- any form of these
+ *    OR LOWER(<colExpr>) IN (?, …)                                     -- whole-tag preferences
+ *    OR (LOWER(SUBSTRING_INDEX(<colExpr>, '-', 1)) = ?                 -- one per script-limited language:
+ *        AND (LOWER(<colExpr>) NOT REGEXP ? OR LOWER(<colExpr>) REGEXP ?))  -- no script, or an allowed one
  *   )
  *
- * The IN list is the language GROUPS the preferences cover (#2137 — a
- * `pt-BR` preference matches `pt`, `pt-BR` and `pt-PT` rows) plus the
- * always-shown groups `und`, `mul`, `zxx` (#2132), all bound. A private-use or
- * old "grandfathered" preference (`x-hymnal`, `i-default`) is matched as a
- * whole tag in a second bound list, because its first part is not a language.
- * Untagged rows (NULL / empty) always pass — matches the spec.
- * Empty subtag list returns `[" AND 1=1", '', []]` so callers can
- * blindly concatenate without checking emptiness.
+ * Matching is by language (#2137 — a `pt-BR` preference matches `pt`,
+ * `pt-BR` and `pt-PT` rows), except that a preference naming a SCRIPT drops
+ * rows written in a different script (#2137 review, MATCH-040: `zh-Hans`
+ * keeps `zh` and `zh-Hans-CN` but not `zh-Hant`; `sr-Latn` does not keep
+ * `sr-Cyrl`). `und`, `mul` and `zxx` always pass (#2132), and so do
+ * untagged rows. Every value is bound; the two REGEXP patterns are built only
+ * from four-letter scripts the shared rule has already validated.
+ *
+ * What SQL cannot do: it compares the stored text, so a row stored under a
+ * retired code (`iw`) does not match a `he` preference here, although the
+ * in-memory filter below does. Empty preferences return `[" AND 1=1", '', []]`
+ * so callers can concatenate without checking.
  *
  * @param string       $colExpr SQL column expression (e.g. `s.Language`,
  *                              `Language`, or a coalesce expression).
@@ -253,24 +331,24 @@ function applyLanguageFilterSql(string $colExpr, array $subtags): array
     if (empty($subtags)) {
         return [' AND 1=1', '', []];
     }
-    $firstParts = [];
-    $wholeTags  = [];
-    foreach (languageFilterGroups($subtags) as $g) {
-        if (str_contains($g, '-')) {
-            $wholeTags[] = $g;
-        } else {
-            $firstParts[] = $g;
-        }
+    $plan   = languageFilterPlan($subtags);
+    $any    = array_values(array_unique(array_merge($plan['any'], IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN)));
+    $values = $any;
+    $where  = " AND ("
+            .   "$colExpr IS NULL OR $colExpr = '' "
+            .   "OR LOWER(SUBSTRING_INDEX($colExpr, '-', 1)) IN (" . implode(',', array_fill(0, count($any), '?')) . ")";
+    if ($plan['whole'] !== []) {
+        $where .= " OR LOWER($colExpr) IN (" . implode(',', array_fill(0, count($plan['whole']), '?')) . ")";
+        $values = array_merge($values, $plan['whole']);
     }
-    $firstParts = array_values(array_unique(array_merge($firstParts, IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN)));
-    $where = " AND ("
-           .   "$colExpr IS NULL OR $colExpr = '' "
-           .   "OR LOWER(SUBSTRING_INDEX($colExpr, '-', 1)) IN (" . implode(',', array_fill(0, count($firstParts), '?')) . ")";
-    if ($wholeTags !== []) {
-        $where .= " OR LOWER($colExpr) IN (" . implode(',', array_fill(0, count($wholeTags), '?')) . ")";
+    foreach ($plan['scripts'] as $lang => $scripts) {
+        $where .= " OR (LOWER(SUBSTRING_INDEX($colExpr, '-', 1)) = ?"
+               .  " AND (LOWER($colExpr) NOT REGEXP ? OR LOWER($colExpr) REGEXP ?))";
+        $values[] = (string)$lang;
+        $values[] = '^[a-z]{2,8}(-[a-z]{3}){0,3}-[a-z]{4}(-|$)';
+        $values[] = '^[a-z]{2,8}(-[a-z]{3}){0,3}-(' . implode('|', $scripts) . ')(-|$)';
     }
     $where .= ")";
-    $values = array_merge($firstParts, $wholeTags);
     return [$where, str_repeat('s', count($values)), $values];
 }
 
@@ -278,6 +356,12 @@ function applyLanguageFilterSql(string $colExpr, array $subtags): array
  * Convenience: return the filter for in-memory (PHP-array) row
  * filtering, used by code paths that don't want to push the
  * filter into SQL (e.g. the songbooks list which is small + cached).
+ *
+ * #2137 review — the same rule as applyLanguageFilterSql(), decided by the
+ * shared Policy::matchTags() when the shared rules are installed: a row is
+ * kept when it matches some preference at "related" or better (same
+ * language, no conflicting script — MATCH-010 to MATCH-040). `und`, `mul`,
+ * `zxx` and untagged rows always pass (#2132).
  *
  * @param list<string> $subtags From resolvePreferredLanguagesForRequest().
  * @return callable(array): bool Predicate; true → keep the row.
@@ -287,13 +371,31 @@ function makeLanguageFilterPredicate(array $subtags): callable
     if (empty($subtags)) {
         return static fn(array $_row): bool => true;
     }
-    /* Same rule as applyLanguageFilterSql(): match by language group
-       (#2137), and let und / mul / zxx through (#2132). */
-    $set = array_flip(array_merge(languageFilterGroups($subtags), IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN));
-    return static function (array $row) use ($set): bool {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    $always = array_flip(IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN);
+    $prefs  = array_values($subtags);
+    $plan   = languageFilterPlan($prefs);
+    return static function (array $row) use ($always, $prefs, $plan): bool {
         $tag = trim((string)($row['language'] ?? $row['Language'] ?? ''));
         if ($tag === '') return true;                   // untagged → always show
-        $primary = strtolower(explode('-', $tag, 2)[0]);
-        return isset($set[$primary]) || isset($set[strtolower($tag)]);
+        if (isset($always[strtolower(explode('-', $tag, 2)[0])])) return true;
+        if (mediaLanguageReady()) {
+            $related = \Mwbm\MediaLanguage\MatchLevel::Related->rank();
+            foreach ($prefs as $pref) {
+                if (\Mwbm\MediaLanguage\Policy::matchTags((string)$pref, $tag)->level->rank() <= $related) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        /* Degraded path: the plan, read directly (same rule as the SQL). */
+        $lower   = strtolower($tag);
+        $primary = explode('-', $lower, 2)[0];
+        if (in_array($primary, $plan['any'], true) || in_array($lower, $plan['whole'], true)) return true;
+        if (isset($plan['scripts'][$primary])) {
+            $script = languageFilterScriptOf($lower);
+            return $script === '' || in_array($script, $plan['scripts'][$primary], true);
+        }
+        return false;
     };
 }
