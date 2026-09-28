@@ -236,7 +236,7 @@ function resolvePreferredLanguagesForRequest(?array $authUser): array
  * Returns:
  *   - `any`     base languages where at least one preference names no script:
  *               every form of the language matches;
- *   - `scripts` base language → the scripts its preferences name (lower-case),
+ *   - `byScript` base language → the scripts its preferences name (lower-case),
  *               for languages where EVERY preference names a script: a form
  *               with no script, or with one of these, matches; a form with
  *               another script does not;
@@ -244,7 +244,7 @@ function resolvePreferredLanguagesForRequest(?array $authUser): array
  *               which are matched as a whole tag.
  *
  * @param list<string> $preferences Canonical tags (parsePreferredLanguageSubtags()).
- * @return array{any: list<string>, scripts: array<string, list<string>>, whole: list<string>}
+ * @return array{any: list<string>, byScript: array<string, list<string>>, whole: list<string>}
  */
 function languageFilterPlan(array $preferences): array
 {
@@ -283,7 +283,7 @@ function languageFilterPlan(array $preferences): array
             $scriptsOut[$lang] = array_keys($set);
         }
     }
-    return ['any' => array_keys($any), 'scripts' => $scriptsOut, 'whole' => array_keys($whole)];
+    return ['any' => array_keys($any), 'byScript' => $scriptsOut, 'whole' => array_keys($whole)];
 }
 
 /**
@@ -341,7 +341,7 @@ function applyLanguageFilterSql(string $colExpr, array $subtags): array
         $where .= " OR LOWER($colExpr) IN (" . implode(',', array_fill(0, count($plan['whole']), '?')) . ")";
         $values = array_merge($values, $plan['whole']);
     }
-    foreach ($plan['scripts'] as $lang => $scripts) {
+    foreach ($plan['byScript'] as $lang => $scripts) {
         $where .= " OR (LOWER(SUBSTRING_INDEX($colExpr, '-', 1)) = ?"
                .  " AND (LOWER($colExpr) NOT REGEXP ? OR LOWER($colExpr) REGEXP ?))";
         $values[] = (string)$lang;
@@ -392,9 +392,9 @@ function makeLanguageFilterPredicate(array $subtags): callable
         $lower   = strtolower($tag);
         $primary = explode('-', $lower, 2)[0];
         if (in_array($primary, $plan['any'], true) || in_array($lower, $plan['whole'], true)) return true;
-        if (isset($plan['scripts'][$primary])) {
+        if (isset($plan['byScript'][$primary])) {
             $script = languageFilterScriptOf($lower);
-            return $script === '' || in_array($script, $plan['scripts'][$primary], true);
+            return $script === '' || in_array($script, $plan['byScript'][$primary], true);
         }
         return false;
     };

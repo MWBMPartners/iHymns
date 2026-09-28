@@ -2334,9 +2334,7 @@ try {
                every new song English on a server that has not run the und
                card. Both live in songInsertNewRow(). */
             require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_create.php';
-            songInsertNewRow($db, $songId, $title, $norm, $abbr);
-            /* #1860 go-live — mint this song's permanent IL-id (ILS…). */
-            ilidStampNewRow($db, 'song', $songId, 'SongId');
+            songInsertNewRow($db, $songId, $title, $norm, $abbr);   /* also mints the IL-id (#1860) */
             ed2_touchRevision($db, $songId, $ed2UserId, 'create');
             $db->commit();
         } catch (\Throwable $e) {
@@ -2414,10 +2412,10 @@ try {
             /* The same insert as create_song (#2137 review): `und` until the
                snapshot below copies the source song's real language over it. */
             require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_create.php';
+            /* songInsertNewRow() also mints the duplicate's OWN permanent IL-id
+               (#1860 go-live, ILS…), never copied from the source (a duplicate
+               is a distinct row). */
             songInsertNewRow($db, $newId, $title, $norm, $pendingAbbr);
-            /* #1860 go-live — mint the duplicate's OWN permanent IL-id (ILS…),
-               never copied from the source (a duplicate is a distinct row). */
-            ilidStampNewRow($db, 'song', $newId, 'SongId');
 
             /* The bulk content copy: scalars (Ccli/Iswc kept, Isrc/Verified/media
                flags reset above), components + lyric lines + per-line chords,

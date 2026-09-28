@@ -26,7 +26,11 @@ declare(strict_types=1);
  * song's real language over this, through ed2_applySongSnapshot().)
  *
  * The PublicId permalink is minted when that column exists (#1343-B) and left
- * out when it does not, exactly as the two inserts this replaces did.
+ * out when it does not, exactly as the two inserts this replaces did; and the
+ * row's permanent IL-id is minted straight after the insert (#1860 go-live,
+ * ilidStampNewRow() — a no-op on an install without that column), which the
+ * two callers used to do themselves. One place creates the row, so one place
+ * stamps it (tests/php/test-ilid-golive.php checks every such insert).
  *
  * @see appWeb/public_html/manage/editor/api2.php  create_song, duplicate_song
  * @see tests/php/test-song-create-language.php     (run against the old column default)
@@ -39,6 +43,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_public_id.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';
 
 /**
  * Insert a new song row whose language is not known yet.
@@ -68,4 +73,8 @@ function songInsertNewRow(\mysqli $db, string $songId, string $title, string $no
     }
     $ins->execute();
     $ins->close();
+    /* #1860 go-live — the song's permanent IL-id (ILS…), minted AFTER the row
+       exists (see ilidStampNewRow()'s own doc comment for why never inside
+       the INSERT). */
+    ilidStampNewRow($db, 'song', $songId, 'SongId');
 }

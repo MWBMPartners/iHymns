@@ -42,11 +42,11 @@ declare(strict_types=1);
  *      raw in its source (they must only ever be reached through the
  *      INJECTED `ctx.api.*` methods or the imported `missingSongNumbers()`
  *      helper); `finish()` calls `ctx.api.createSong(` and
- *      `ctx.api.replaceComponents(`; api2.php's `create_song` case still has
- *      the SAME number of `INSERT INTO tblSongs` literals it had before this
- *      feature touched anything (a pre-existing two-branch
- *      songPublicId-column-ready/fallback pair — NOT a count this feature
- *      changes; a THIRD copy anywhere would be the regression).
+ *      `ctx.api.replaceComponents(`; api2.php's `create_song` case creates
+ *      the row only through `songInsertNewRow(` (includes/song_create.php,
+ *      #2137 review — which holds the pre-existing two-branch
+ *      songPublicId-column-ready/fallback pair and nothing else); a third
+ *      copy, or an INSERT back in the case itself, would be the regression.
  *  (e) RULE #25 — the `components_replace` case body calls
  *      `ed2_persistComponents(` (the ONE gate onto
  *      `lyricLinesWriteComponents()`), backstopped by the pre-existing
@@ -387,16 +387,22 @@ $mutatedWithFetch = preg_replace('/export function mountNewSongWizard\(ctx\) \{/
 ok('(d) MUTATION PROOF: injecting a raw fetch( literal makes the ban check go false',
     (bool)preg_match('/\bfetch\s*\(/', stripComments((string)$mutatedWithFetch)));
 
-/* The api2 create_song case's OWN write-site count is UNCHANGED by this
-   feature (a pre-existing songPublicId-column-ready/fallback TWO-branch
-   pattern) — pinned by exact count so a future THIRD copy (a forked write
-   path anywhere) is caught, without wrongly asserting a count this
-   feature never touched. */
+/* The api2 create_song case's write site: since the #2137 review the row is
+   created only through songInsertNewRow() (includes/song_create.php, shared
+   with duplicate_song), which holds the pre-existing songPublicId-column-
+   ready/fallback TWO-branch pair and writes Language = 'und' explicitly.
+   Pinned by exact counts so a forked write path — an INSERT back in the case,
+   or a third copy in the helper — is caught. */
 $createSongBody = caseBodyFor($apiFile, '$action', 'create_song');
 ok('(d) isolated api2.php\'s create_song case body (non-empty)', $createSongBody !== '');
 $insertCount = preg_match_all('/INSERT\s+INTO\s+tblSongs\b/i', stripComments($createSongBody));
-ok('(d) api2.php\'s create_song case still has exactly 2 "INSERT INTO tblSongs" literals (the pre-existing PublicId-column-ready/fallback pair — found ' . $insertCount . ')',
-    $insertCount === 2);
+ok('(d) api2.php\'s create_song case has no INSERT INTO tblSongs of its own (found ' . $insertCount . ')', $insertCount === 0);
+ok('(d) …and creates the row through songInsertNewRow() exactly once',
+    preg_match_all('/\bsongInsertNewRow\s*\(/', stripComments($createSongBody)) === 1);
+$helperInsertCount = preg_match_all('/INSERT\s+INTO\s+tblSongs\b/i',
+    stripComments((string)file_get_contents(dirname(__DIR__, 2) . '/appWeb/public_html/includes/song_create.php')));
+ok('(d) includes/song_create.php holds exactly the 2 "INSERT INTO tblSongs" literals (the PublicId-column-ready/fallback pair — found ' . $helperInsertCount . ')',
+    $helperInsertCount === 2);
 
 /* ---- (e) rule #25 — components_replace delegates to ed2_persistComponents( ---- */
 $componentsReplaceBody = caseBodyFor($apiFile, '$action', 'components_replace');
