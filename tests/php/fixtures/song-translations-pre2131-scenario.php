@@ -34,6 +34,20 @@ declare(strict_types=1);
  * to `pt-BR`, because this database cannot store `pt-BR` yet. The warning
  * names the language and points at the card that would let it through.
  *
+ * #2137 review round 4 added two more, each of which DELETED the stored row
+ * before that round (reproduced on MariaDB 11 and MySQL 8.4):
+ *   - `tblLanguages` holds `iw` but not `he` (as an old registry can): a
+ *     link stored as `iw → T1` re-pointed to T2 cannot be written (`iw`
+ *     tidies to `he`, which this server cannot link), and no stored row
+ *     points at T2 — the stored row survives by its LANGUAGE;
+ *   - `mo → T3` (Ion) and `ro → T4` (Maria) are stored, and the curator
+ *     sends `ro-MD → T3` and `ro → T4`: `ro-MD` cannot be linked yet, so
+ *     Ion's row survives by its SONG — inside the branch for two stored
+ *     links of one language, which never looked at the protection before.
+ * All three share this one process, which is safe: every database here has
+ * `fk_Trans_Lang`, so the remembered answer is the true one for each, and
+ * `tblLanguages` is read afresh on every save.
+ *
  * Prints PASS/FAIL lines in the same shape every other suite here uses, and
  * exits 0 only when everything passed, so the parent script can just watch
  * the exit code and echo this script's own output as its own.
@@ -93,21 +107,32 @@ try {
         CONSTRAINT fk_t_tgt FOREIGN KEY (TranslatedSongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE,
         CONSTRAINT fk_Trans_Lang FOREIGN KEY (TargetLanguage) REFERENCES tblLanguages(Code)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
-    foreach (['pt', 'en'] as $code) { $db->query("INSERT INTO tblLanguages VALUES ('{$code}')"); }
-    foreach (['S1', 'T1'] as $id) { $db->query("INSERT INTO tblSongs VALUES ('{$id}')"); }
-
-    $db->query("INSERT INTO tblSongTranslations
-                    (SourceSongId, TranslatedSongId, TargetLanguage, Translator, Verified, CreatedAt)
-                VALUES ('S1', 'T1', 'pt', 'Ana', 1, '2020-01-01 00:00:00')");
+    foreach (['S1', 'T1', 'T2', 'T3', 'T4'] as $id) { $db->query("INSERT INTO tblSongs VALUES ('{$id}')"); }
     $cols = 'Id, TranslatedSongId, TargetLanguage, Translator, Verified, CreatedAt';
-    $before = $db->query("SELECT {$cols} FROM tblSongTranslations ORDER BY Id")->fetch_all(MYSQLI_ASSOC);
 
-    $db->begin_transaction();
-    $warnings = songTranslationsSaveLinks($db, 'S1', [['songId' => 'T1', 'language' => 'pt-BR']]);
-    $db->commit();
+    /** Reset tblLanguages and the stored links, run the real save with $sent. */
+    $scenario = static function (array $codes, array $storedRows, array $sent) use ($db, $cols): array {
+        $db->query('DELETE FROM tblSongTranslations');
+        $db->query('DELETE FROM tblLanguages');
+        $li = $db->prepare('INSERT INTO tblLanguages VALUES (?)');
+        foreach ($codes as $code) { $li->bind_param('s', $code); $li->execute(); }
+        $li->close();
+        $ins = $db->prepare("INSERT INTO tblSongTranslations
+                                 (SourceSongId, TranslatedSongId, TargetLanguage, Translator, Verified, CreatedAt)
+                             VALUES ('S1', ?, ?, ?, 1, '2020-01-01 00:00:00')");
+        foreach ($storedRows as [$tid, $lang, $translator]) { $ins->bind_param('sss', $tid, $lang, $translator); $ins->execute(); }
+        $ins->close();
+        $before = $db->query("SELECT {$cols} FROM tblSongTranslations ORDER BY Id")->fetch_all(MYSQLI_ASSOC);
+        $db->begin_transaction();
+        $warnings = songTranslationsSaveLinks($db, 'S1', array_map(
+            static fn(array $l): array => ['songId' => $l[0], 'language' => $l[1]], $sent
+        ));
+        $db->commit();
+        $after = $db->query("SELECT {$cols} FROM tblSongTranslations ORDER BY Id")->fetch_all(MYSQLI_ASSOC);
+        return [$before, $after, $warnings];
+    };
 
-    $after = $db->query("SELECT {$cols} FROM tblSongTranslations ORDER BY Id")->fetch_all(MYSQLI_ASSOC);
-
+    [$before, $after, $warnings] = $scenario(['pt', 'en'], [['T1', 'pt', 'Ana']], [['T1', 'pt-BR']]);
     $check(
         'pre-#2131: pt kept byte-for-byte (same row, translator, verified flag, date) when pt-BR cannot be stored',
         $after === $before,
@@ -120,6 +145,20 @@ try {
             && str_contains($warnings[0], 'Translations: allow regional and script languages')
             && str_contains($warnings[0], '/manage/setup-database'),
         json_encode($warnings)
+    );
+
+    [$before, $after, $warnings] = $scenario(['iw', 'pt', 'en'], [['T1', 'iw', 'Ana']], [['T2', 'iw']]);
+    $check(
+        '(b) pre-#2131, tblLanguages has iw not he: stored iw → T1 re-pointed to T2 cannot be linked — the stored row survives unchanged',
+        $after === $before && count($warnings) === 1 && str_contains($warnings[0], '"he" cannot be linked'),
+        json_encode(['before' => $before, 'after' => $after, 'warnings' => $warnings])
+    );
+
+    [$before, $after, $warnings] = $scenario(['mo', 'ro', 'en'], [['T3', 'mo', 'Ion'], ['T4', 'ro', 'Maria']], [['T3', 'ro-MD'], ['T4', 'ro']]);
+    $check(
+        '(c) pre-#2131: stored mo → T3 (Ion) and ro → T4 (Maria), sent ro-MD → T3 and ro → T4 — Ion\'s row survives (the two-links-one-language branch)',
+        $after === $before && str_contains(implode(' ', $warnings), '"ro-MD" cannot be linked'),
+        json_encode(['before' => $before, 'after' => $after, 'warnings' => $warnings])
     );
 } finally {
     $db->query("DROP DATABASE IF EXISTS `{$name}`");

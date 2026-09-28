@@ -25,7 +25,15 @@ declare(strict_types=1);
  *     changing a link's language from `pt` to `pt-BR` there does not lose the
  *     `pt` link — it is left exactly as it was, with a warning naming the
  *     card that would let the change through (round 3, below in Part C). The
- *     same change on a server that HAS run the card simply succeeds.
+ *     same change on a server that HAS run the card simply succeeds;
+ *   - round 4: a link that cannot be written, for ANY reason, protects BY ROW
+ *     ID both the stored rows pointing at its song and the stored row filed
+ *     under its language — so `English → T1` re-pointed to T2, `iw → T1`
+ *     re-pointed to T2 before the card, and Ion's `mo → T3` when `ro-MD → T3`
+ *     cannot be linked (inside the branch for two stored links of one
+ *     language) all survive unchanged. A protected row is never changed
+ *     either; a change that would touch one is itself not made (Part A2, and
+ *     the (a)–(d) cases in Parts B and C).
  *
  * Part A runs the pure comparison, songTranslationsPlanSync(). Part B runs
  * the real save steps, songTranslationsSaveLinks(), against a real database
@@ -40,7 +48,11 @@ declare(strict_types=1);
  * dropping the "no longer exists" keep, and dropping the round-3 fix (keying
  * the "keep this stored row" list by the language a failed change was TRYING
  * to become, instead of the target song it was trying to change) each turn
- * checks red.
+ * checks red. Round 4: dropping either half of the union (song or language),
+ * the clash branch's check, the single-row branch's check, the "never change
+ * a protected row" rule (either branch), the repeat that lets a blocked
+ * change protect in turn, or the protection recorded by any one of the seven
+ * reasons a link can fail, each turns checks red on MariaDB 11 and MySQL 8.4.
  *
  * Database: IHYMNS_TEST_DSN="host=127.0.0.1;port=3306;user=root;pass=".
  * Run against BOTH MariaDB and MySQL — the two servers this project supports
@@ -76,7 +88,8 @@ $stored = [
     ['id' => 4, 'songId' => 'SDAH-RO', 'language' => 'ro'],
 ];
 
-$plan = songTranslationsPlanSync(['pt' => $want('SDAH-PT', 'pt'), 'he' => $want('SDAH-HE', 'iw')], $stored, ['ro' => true], $tidy);
+/* Row ids 3 and 4 (`mo`, `ro`) protected — as a sent clash protects them. */
+$plan = songTranslationsPlanSync(['pt' => $want('SDAH-PT', 'pt'), 'he' => $want('SDAH-HE', 'iw')], $stored, [3 => true, 4 => true], $tidy);
 $check('`iw` is updated IN PLACE to `he` (row 2 — its translator, verified flag and date survive)',
     $plan['update'] === [['id' => 2, 'songId' => 'SDAH-HE', 'language' => 'he']], json_encode($plan['update']));
 $check('`pt` needs no write; nothing is inserted', $plan['insert'] === [] && !in_array(1, $plan['delete'], true));
@@ -100,11 +113,43 @@ $check('neither sent back: both kept, with the warning', $plan['delete'] === [] 
 
 $plan = songTranslationsPlanSync(['pt' => $want('SDAH-PT', 'pt')], [$stored[0], $stored[1]], [], $tidy);
 $check('a link the curator removed (`iw`/`he`) is deleted', $plan['delete'] === [2], json_encode($plan['delete']));
-$plan = songTranslationsPlanSync([], [$stored[1]], ['he' => true], $tidy);
-$check('a link in the keep list (skipped for a reason that is not the curator\'s) is NOT deleted', $plan['delete'] === []);
+$plan = songTranslationsPlanSync([], [$stored[1]], [2 => true], $tidy);
+$check('a protected row (a link skipped for a reason that is not the curator\'s may belong with it) is NOT deleted', $plan['delete'] === []);
 $plan = songTranslationsPlanSync(['de' => $want('SDAH-DE', 'de'), 'pt' => $want('SDAH-PT2', 'pt')], [$stored[0]], [], $tidy);
 $check('a new language is inserted and a re-pointed link is updated in place',
     array_column($plan['insert'], 'songId') === ['SDAH-DE'] && $plan['update'] === [['id' => 1, 'songId' => 'SDAH-PT2', 'language' => 'pt']]);
+
+/* #2137 review round 4 — protection is by ROW ID, the union of "same song"
+   and "same language key", honoured in every branch. */
+echo "\nPart A2 — protected rows (#2137 review round 4)\n";
+$failedAt = static fn(string $lang, string $target): array => [
+    'key' => songTranslationsGroupKey($lang, 'mediaLanguageTagForStorage'), 'target' => mb_strtolower($target),
+];
+$english = [['id' => 7, 'songId' => 'T1', 'language' => 'English']];
+$check('union, language half: a failed `English → T2` protects the row stored as `English → T1` (no stored row points at T2)',
+    songTranslationsProtectedIds([$failedAt('English', 'T2')], $english, $tidy) === [7 => true]);
+$check('union, song half: a failed `pt-BR → T1` protects the row stored as `pt → T1` (a different language key)',
+    songTranslationsProtectedIds([$failedAt('pt-BR', 'T1')], [['id' => 8, 'songId' => 'T1', 'language' => 'pt']], $tidy) === [8 => true]);
+$check('union: a failed `iw → T2` (tidies to `he`) protects `iw → T1` by its language, `de → T2` by its song, and nothing else',
+    songTranslationsProtectedIds([$failedAt('iw', 'T2')], [
+        ['id' => 1, 'songId' => 'T1', 'language' => 'iw'], ['id' => 2, 'songId' => 'T2', 'language' => 'de'],
+        ['id' => 3, 'songId' => 'T3', 'language' => 'es'],
+    ], $tidy) === [1 => true, 2 => true]);
+$check('a failed link with no song protects by its language only (an empty target matches nothing)',
+    songTranslationsProtectedIds([$failedAt('de', '')], [['id' => 4, 'songId' => 'T4', 'language' => 'de'], ['id' => 5, 'songId' => '', 'language' => 'es']], $tidy) === [4 => true]);
+
+$moro = [['id' => 3, 'songId' => 'T3', 'language' => 'mo'], ['id' => 4, 'songId' => 'T4', 'language' => 'ro']];
+$plan = songTranslationsPlanSync(['ro' => $want('T4', 'ro')], $moro, [3 => true], $tidy);
+$check('clash branch: the curator keeps `ro`, but `mo → T3` is protected (a failed `ro-MD → T3`): NOT deleted',
+    $plan['delete'] === [] && $plan['update'] === [] && $plan['blocked'] === [], json_encode($plan));
+$plan = songTranslationsPlanSync(['ro' => $want('T5', 'ro')], $moro, [4 => true], $tidy);
+$check('clash branch: re-pointing the chosen row when it is protected is not done — it comes back blocked, and nothing is deleted',
+    $plan['delete'] === [] && $plan['update'] === [] && $plan['blocked'] === ['ro'], json_encode($plan));
+$plan = songTranslationsPlanSync(['pt' => $want('T2', 'pt')], [['id' => 1, 'songId' => 'T1', 'language' => 'pt']], [1 => true], $tidy);
+$check('a protected row is never changed either: its re-point comes back blocked, with no write',
+    $plan['update'] === [] && $plan['delete'] === [] && $plan['blocked'] === ['pt'], json_encode($plan));
+$plan = songTranslationsPlanSync([], $english, [7 => true], $tidy);
+$check('a protected row that the editor did not send back is kept', $plan['delete'] === [], json_encode($plan));
 
 /* ---------------------------------------------------------------- Part B */
 echo "\nPart B — the real save steps (songTranslationsSaveLinks) against a real database\n";
@@ -231,6 +276,29 @@ if ($db === null) {
             count($a) === 1 && $a[0]['TargetLanguage'] === 'pt-BR' && $a[0]['TranslatedSongId'] === 'T1' && $w === [],
             json_encode([$a, $w]));
 
+        /* #2137 review round 4 — a link that cannot be written protects,
+           by row id, every stored row pointing at its song AND the row
+           filed under its language. Each case below lost the stored row
+           before this round (reproduced on MariaDB 11 and MySQL 8.4). */
+        [$b, $a, $w] = $scenario([['T1', 'English', 'Ana', 1]], [['T2', 'English']]);
+        $check('(a) stored English → T1 (Ana, verified), sent English → T2: the stored row survives unchanged (language half)',
+            $a === $b && str_contains(implode(' ', $w), '"English" is not a language code'), json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', 'English', 'Ana', 1]], [['T1', 'English']]);
+        $check('(d) an unchanged save of a link stored with an unreadable language: it survives unchanged',
+            $a === $b && count($w) === 1, json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario($moro, [['T3', 'Moldavian'], ['T4', 'ro']]);
+        $check('clash branch: stored mo → T3 (Ion) and ro → T4 (Maria); `Moldavian → T3` cannot be written, ro kept: Ion\'s row is NOT deleted',
+            $a === $b, json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T2', 'de', 'Eva', 1]], [['S1', 'de']]);
+        $check('a link to the song itself is skipped, and the stored de link is left as it is (it used to be deleted)',
+            $a === $b && str_contains(implode(' ', $w), 'translation of itself'), json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', '', 'Ana', 1]], [['T1', '']]);
+        $check('a link with no language (a stored link with an empty language sent back) is skipped with a warning, and survives',
+            $a === $b && str_contains(implode(' ', $w), 'has no language'), json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'es', 'Luis', 1]], [['T2', 'pt'], ['T1', 'English']]);
+        $check('a change that would touch a protected row is not made, and protects in turn: pt → T1 and es → T2 both survive',
+            $a === $b && str_contains(implode(' ', $w), 'was not saved'), json_encode([$a, $w]));
+
         /* the ordinary cases still work */
         [$b, $a, $w] = $scenario([['T1', 'pt', '', 0], ['T2', 'es', '', 0]], [['T2', 'es'], ['T3', 'de']]);
         $check('a removed link is deleted, a new one inserted, an unchanged one left',
@@ -241,7 +309,7 @@ if ($db === null) {
 }
 
 /* ---------------------------------------------------------------- Part C */
-echo "\nPart C — the PRE-#2131 schema (fk_Trans_Lang still present): pt survives a failed change to pt-BR\n";
+echo "\nPart C — the PRE-#2131 schema (fk_Trans_Lang still present): stored links survive changes the server cannot store yet\n";
 if ($db === null) {
     echo "  SKIP  no database — Part C did NOT run. Set IHYMNS_TEST_DSN; this is a gap, not a pass.\n";
 } else {

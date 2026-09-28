@@ -775,16 +775,27 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   shaped like a tag. Old lists of bare codes stay valid.
 - **Whole-song translations accept regional and script tags** once the "Translations: allow regional and
   script languages" migration card has been run (#2131). Until then the song editor skips such a link with a
-  warning pointing at the card (`includes/song_translations_schema.php` asks the live database). **Changing
-  a stored link's language to one the server cannot store yet never loses the link (#2137 review round 3):**
-  a curator changing a link from `pt` to `pt-BR` on such a server used to delete the `pt` row outright — the
-  save could not write `pt-BR` either, so the link was simply gone. The row this save cannot touch is found
-  by the SONG it points to, not by the language it was asked to become (those are only the same thing when
-  the language is not changing), so it now survives exactly as it was — same target song, translator,
-  verified flag and date — with the warning naming the language and the card that would let it through.
-  Proven against a database built the way the table looked BEFORE the migration card (`tests/php/test-song-translations-sync.php`
-  Part C, in its own PHP process — `songTranslationsLanguageFkPresent()`'s answer is cached for the life of a
-  process, so it cannot be asked twice with two different answers in one run).
+  warning pointing at the card (`includes/song_translations_schema.php` asks the live database). **A link the
+  save cannot write never costs the stored link it may belong with (#2137 review rounds 3 and 4):** when a sent
+  link cannot be written — its language is not a code (`English`), the server cannot store or link it yet (no
+  #2131 card run), its target song has gone, it points at the song itself, two links were sent for one language,
+  or it has no language or no song — the save protects, BY ROW ID, the union of every stored row pointing at the
+  same song AND the stored row filed under the same language. Both halves are needed: the song half keeps `pt → T1`
+  when a curator's change to `pt-BR → T1` cannot be stored; the language half keeps `English → T1` re-pointed to
+  `English → T2`, and `iw → T1` re-pointed to T2 on a server whose registry has `iw` but not `he` (round 3 had
+  swapped one half for the other and lost these). A protected row is never deleted — including when two stored
+  links clash (`mo → T3`, `ro → T4`: a failed `ro-MD → T3` keeps Ion's `mo` row even though the curator kept `ro`)
+  — and never changed: a change that would touch one is itself not made, with a warning, and protects the rows
+  sharing ITS song or language in turn (`songTranslationsProtectedIds()`, `songTranslationsPlanSync()`'s
+  `blocked`, the repeat in `songTranslationsSaveLinks()`). **What this cannot do:** a failed link is tied back only
+  by its song or its language, so if a curator changes BOTH (`pt → T1` becomes `pt-BR → T2`) and that cannot be
+  written, the save treats `pt → T1` as removed — it cannot tell that apart from deleting one link and adding
+  another. In particular, "a vanished target does not delete the stored link" holds only when the link's
+  language is unchanged: a song that no longer exists cannot be pointed at by any stored row, so only the
+  language half can match. Proven against a real database on MariaDB 11 and MySQL 8.4
+  (`tests/php/test-song-translations-sync.php` Parts B and C — C runs in its own PHP process against a database
+  built the way the table looked BEFORE the card, because `songTranslationsLanguageFkPresent()`'s answer is cached
+  for the life of a process).
 - **Reporting, not rewriting.** The curator audit on `/manage/languages` lists stored tags that are
   malformed, unregistered, retired, or not in standard form (e.g. `en-gb`), and offers a remap. Importers
   report a language they cannot read as an `import.language_unrecognised` row on `/manage/activity-log`.
@@ -792,10 +803,10 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   save tidies the tags it writes (a translation link stored as `iw` is updated in place to `he`, keeping its
   translator and verified flag; of two stored links that tidy to one language, the one the curator keeps in
   the editor survives and the other is deleted, and if the editor sends both or neither, both stay with a
-  warning; two links sent for one language change nothing for it; a link whose target song no longer exists
-  does not delete the stored one; a link whose new language cannot be stored yet (no #2131 card run) is left
-  exactly as it was, found by the song it points to rather than the language it failed to become —
-  `songTranslationsSaveLinks()`, tested against a real database); the
+  warning; two links sent for one language change nothing for it; a link that cannot be written — for any
+  reason, including a target song that no longer exists or a new language the server cannot store yet — leaves
+  the stored links sharing its song or its language exactly as they were (see the translations bullet above for
+  exactly when that holds) — `songTranslationsSaveLinks()`, tested against a real database); the
   language picker keeps a tag its boxes cannot show (`en-u-ca-gregory`, `x-hymnal`) instead of rewriting it;
   the songbook-language card fills only empty languages and only when confirmed; the remap is a curator
   action. No migration run by
