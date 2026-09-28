@@ -33,7 +33,18 @@ declare(strict_types=1);
  *     cannot be linked (inside the branch for two stored links of one
  *     language) all survive unchanged. A protected row is never changed
  *     either; a change that would touch one is itself not made (Part A2, and
- *     the (a)–(d) cases in Parts B and C).
+ *     the (a)–(d) cases in Parts B and C);
+ *   - round 5 (the fourth review): a stored language with spaces, a tab, a
+ *     line break, a vertical tab or a NUL around it is protected like the
+ *     same value without them (Part A3, and six Part B cases); the link
+ *     writes are all or nothing — a write failing part-way leaves every link
+ *     exactly as it was, says so, and keeps the rest of the song save
+ *     (Part B, L2); a payload entry that is not a link changes nothing
+ *     (Parts A5 and B, I6); a language change of the same song keeps the
+ *     row's translator, verified flag and date (Parts A4 and B, L3); and a
+ *     failed link spelled with a retired code (`iw`) protects the row stored
+ *     under the code it tidies to (`he`), for every link of a sent clash
+ *     (Part B, T16 / T17).
  *
  * Part A runs the pure comparison, songTranslationsPlanSync(). Part B runs
  * the real save steps against a real database built the way schema.sql looks
@@ -51,11 +62,27 @@ declare(strict_types=1);
  * dropping the "no longer exists" keep, and dropping the round-3 fix (keying
  * the "keep this stored row" list by the language a failed change was TRYING
  * to become, instead of the target song it was trying to change) each turn
- * checks red. Round 4: dropping either half of the union (song or language),
- * the clash branch's check, the single-row branch's check, the "never change
- * a protected row" rule (either branch), the repeat that lets a blocked
- * change protect in turn, or the protection recorded by any one of the seven
- * reasons a link can fail, each turns checks red on MariaDB 11 and MySQL 8.4.
+ * checks red.
+ * What the round-4 note here claimed, corrected (#2137 review round 5): it
+ * said the protection recorded by "any one of the seven reasons a link can
+ * fail" was proven. The fourth review's planted faults showed two gaps it
+ * did not cover — keying a failed link by its raw spelling instead of
+ * songTranslationsGroupKey() (T16), and a sent clash recording only its
+ * first link (T17) both left every check green. Re-run against round 5's
+ * code on MariaDB 11.8 and MySQL 8.4, EVERY one of that review's seventeen
+ * translation faults now turns this file red on both servers: either half
+ * of the union (T01, T02), the clash branch deleting or re-pointing a
+ * protected row (T03, T04), the single-row branch deleting or changing one
+ * (T05 — re-targeted after round 5 moved that delete — and T06), a blocked
+ * change not protecting in turn (T07), a single planning pass (T08), each of
+ * the six failure reasons recording nothing (T09–T14), the key not tidying
+ * (T15), and T16 and T17. Round 5's own faults — the key or the save not
+ * trimming (or trimming only four characters), the clash branch comparing
+ * untrimmed, no ROLLBACK TO SAVEPOINT, rolling back the whole transaction,
+ * the savepoint set after the writes, the three payload-shape rules, no
+ * pairing, pairing a protected row, pairing when two stored rows or two new
+ * links share the song, and comparing song ids case-sensitively — each turn
+ * it red on both servers too.
  *
  * Database: IHYMNS_TEST_DSN="host=127.0.0.1;port=3306;user=root;pass=".
  * Run against BOTH MariaDB and MySQL — the two servers this project supports
@@ -388,6 +415,23 @@ if ($db === null) {
         [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'es', 'Luis', 1]], [['T2', 'pt'], ['T1', 'English']]);
         $check('a change that would touch a protected row is not made, and protects in turn: pt → T1 and es → T2 both survive',
             $a === $b && str_contains(implode(' ', $w), 'was not saved'), json_encode([$a, $w]));
+
+        /* #2137 review round 5 (L4) — the failed link is keyed by the SAME
+           function as the stored rows (songTranslationsGroupKey()), so a
+           failed link spelled with a retired code protects the row stored
+           under the code it tidies to. The fourth review's planted fault
+           (keying the failed link by its raw spelling) went unnoticed by
+           every earlier test; these two catch it. */
+        [$b, $a, $w] = $scenario([['T2', 'he', 'Eva', 1]], [['S1', 'iw']]);
+        $check('(T16) a link to the song itself, spelled `iw`, beside a stored he → T2 (Eva): the he row is left as it is',
+            $a === $b && str_contains(implode(' ', $w), 'translation of itself'), json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T2', 'he', 'Eva', 1]], [['', 'iw']]);
+        $check('(T16) half a link — `iw` with no song — beside a stored he → T2 (Eva): the he row is left as it is',
+            $a === $b && str_contains(implode(' ', $w), 'names no song'), json_encode([$a, $w]));
+        /* …and EVERY link of a sent clash protects, not only the first. */
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'es', 'Luis', 1]], [['T1', 'pt'], ['T2', 'pt']]);
+        $check('(T17) stored pt → T1 and es → T2; sent pt → T1 AND pt → T2 (two links for one language): es → T2 survives, and so does pt → T1',
+            $a === $b && str_contains(implode(' ', $w), 'Two links for the same language'), json_encode([$a, $w]));
 
         /* #2137 review round 5 (L1) — a stored unreadable language with
            characters the save trims around it: the re-point to T2 cannot be
