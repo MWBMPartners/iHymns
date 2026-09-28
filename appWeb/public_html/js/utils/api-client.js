@@ -51,7 +51,7 @@
  */
 
 import { EVT_FETCH_FAILED, EVT_FETCH_SUCCEEDED, STORAGE_LANGUAGE_FILTER } from '../constants.js';
-import { isPreferenceTag } from './language-tags.js';
+import { usablePreferenceList } from './language-tags.js';
 
 /**
  * Resolve the request URL from any shape `fetch()` accepts, ALWAYS returning
@@ -122,6 +122,10 @@ function isSameOrigin(url) {
  * Song of the Day's `?lang=` — reads it through this same function rather
  * than a second filter that could disagree with the header.
  *
+ * #2137 review round 5 — only the first 32 (usablePreferenceList()), the same
+ * list the pickers show and the grids filter by, so the server (which also
+ * uses only the first 32) filters by exactly what the page shows.
+ *
  * @returns {string} Comma-separated language tags, highest priority first, or ''.
  */
 export function preferredLanguagesCsv() {
@@ -130,9 +134,7 @@ export function preferredLanguagesCsv() {
         if (!raw) return '';
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return '';
-        return parsed
-            .filter(isPreferenceTag)
-            .join(',');
+        return usablePreferenceList(parsed).join(',');
     } catch (_e) {
         /* Private-mode localStorage throw, or corrupt JSON — no filter. */
         return '';

@@ -50,6 +50,44 @@ export function isPreferenceTag(value) {
 }
 
 /**
+ * The most preferences the site uses: the first 32, in the person's order.
+ *
+ * #2137 review round 5 — the server has used only the first 32 since round 4
+ * (IHYMNS_LANGUAGE_FILTER_MAX_PREFERENCES in includes/language_filter.php: every
+ * preference adds to the filter's database query, and a 2,000-entry list took
+ * seconds). This is the browser's copy of that number, so that what a person
+ * sees ticked, what the home and songbooks grids filter by, and what the
+ * server filters by all agree. tests/test-language-preference-cap.js checks the
+ * two numbers are the same.
+ */
+export const MAX_PREFERENCES = 32;
+
+/** What the language pickers say when a 33rd language is ticked (the lead's wording, #2137 review round 5). */
+export const TOO_MANY_LANGUAGES_MESSAGE = 'You can choose up to 32 languages. Untick one to add another.';
+
+/**
+ * A saved preference list as the site USES it: only entries shaped like a tag,
+ * and only the first MAX_PREFERENCES of those, in order.
+ *
+ * ELI5: a list saved before the limit existed (or edited by hand) may hold more
+ * than 32 languages. The server has always used only the first 32; the browser
+ * now reads the list the same way everywhere (the settings picker, the home and
+ * songbooks grids, and the request header), so the page never shows a language
+ * as "on" that the server ignores. The stored list itself is left alone until the
+ * person next changes it — then the picker saves what it shows.
+ *
+ * WHAT IT DOES NOT DO: tidy tags or drop tags the server would refuse (`english`
+ * is shaped like a tag). The server does that; a junk entry can only take one of
+ * the 32 places, and it matches nothing on either side.
+ *
+ * @param {unknown} list
+ * @returns {string[]}
+ */
+export function usablePreferenceList(list) {
+    return (Array.isArray(list) ? list : []).filter(isPreferenceTag).slice(0, MAX_PREFERENCES);
+}
+
+/**
  * The language GROUP a tag belongs to, lower-cased: its first part for an
  * ordinary tag (`pt-BR` → `pt`), or the whole tag for a private-use or old
  * "grandfathered" one (`x-hymnal`, `i-default`), matching the server's

@@ -831,8 +831,18 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   first 32, in order (`IHYMNS_LANGUAGE_FILTER_MAX_PREFERENCES`, applied in `parsePreferredLanguageSubtags()` and
   `languageFilterUsablePreferences()`): a 2,000-entry header used to build a 270 KB query taking 3–8 seconds, and
   now costs what 32 do (about 0.1 s). The limit also applies to the saved account setting — saving a longer list
-  saves its first 32, and the save's answer shows what was kept. The settings page's picker has no such limit, so a
-  person who ticks more than 32 languages would find the rest ignored (not changed here; raised with the owner).
+  saves its first 32, and the save's answer shows what was kept. **Since round 5 the browser keeps to the same 32**
+  (the lead's decision): the settings page's picker (`js/modules/settings-language-filter.js`) and the home/songbooks
+  grid's dropdown (`js/modules/songbook-language-filter.js`) refuse a 33rd tick — the box does not tick and they say
+  "You can choose up to 32 languages. Untick one to add another."; after an account save the settings page stores
+  and ticks exactly what the server's answer says was kept (tidied, never longer than 32), and says so when it kept
+  fewer, using only the answer to the newest save; and every browser reader of the saved list — both pickers, the
+  grids' filtering and the `X-Preferred-Languages` header — uses its first 32 (`usablePreferenceList()` in
+  `js/utils/language-tags.js`, whose `MAX_PREFERENCES` a test checks against the server's constant). So what is
+  ticked, what the grids show and what the server-filtered lists show agree. A list saved before the limit keeps its
+  extra entries in the browser's storage until the person next changes it; they are never used. The grid's dropdown
+  was not named in the decision; it got the same rule because otherwise a 33rd tick there would look on and do
+  nothing. `tests/test-language-preference-cap.js` runs the real pickers in jsdom.
   A malformed preference matches nothing — not even the identical malformed value — and a list holding only
   malformed preferences counts as none, so nothing is filtered (policy MATCH-010 / AUTO-010, core
   `aaaa585`); the server judges that with the shared rules, the browser can only rule out values not

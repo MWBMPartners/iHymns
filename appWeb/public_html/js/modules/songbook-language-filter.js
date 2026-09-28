@@ -72,7 +72,10 @@
    prefix convention and must not be renamed. */
 import { EVT_LANGUAGE_FILTER_CHANGED, STORAGE_LANGUAGE_FILTER } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
-import { isPreferenceTag, languageGroupOf, mergePreferenceOrder, preferenceMatchesTag } from '../utils/language-tags.js';
+import {
+    languageGroupOf, mergePreferenceOrder, preferenceMatchesTag,
+    MAX_PREFERENCES, TOO_MANY_LANGUAGES_MESSAGE, usablePreferenceList,
+} from '../utils/language-tags.js';
 
 const STORAGE_KEY = STORAGE_LANGUAGE_FILTER;
 
@@ -88,6 +91,10 @@ const ALWAYS_SHOWN_GROUPS = new Set(['und', 'mul', 'zxx']);
  * this used to accept base codes only (`/^[a-z]{2,3}$/`), so a regional or
  * script preference silently vanished. Older saved lists of base codes are
  * still valid. Returns [] on any error (including "private browsing mode").
+ *
+ * #2137 review round 5 — only the first 32 (usablePreferenceList()), exactly
+ * as the server reads the list: so the grid never filters by, or shows ticked,
+ * a language the server-filtered lists ignore.
  */
 function loadSavedSubtags() {
     try {
@@ -95,7 +102,7 @@ function loadSavedSubtags() {
         if (!raw) return [];
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return [];
-        return parsed.filter(isPreferenceTag);
+        return usablePreferenceList(parsed);
     } catch (_e) {
         return [];
     }
@@ -281,6 +288,15 @@ export function bootSongbookLanguageFilter(root) {
     const searchInput  = wrapper.querySelector('.js-lang-filter-search');
     const emptyState   = wrapper.querySelector('.js-lang-filter-empty');
     const statusRegion = wrapper.querySelector('[data-lang-filter-status]');
+    /* #2137 review round 5 — optional (older cached markup lacks it). */
+    const limitNote    = wrapper.querySelector('.js-lang-filter-limit');
+    function sayLimit(text) {
+        if (limitNote) {
+            limitNote.textContent = text;
+            limitNote.classList.toggle('d-none', text === '');
+        }
+        if (statusRegion && text !== '') statusRegion.textContent = text;
+    }
     const optionRows   = Array.from(wrapper.querySelectorAll('.lang-filter-row[data-search]'));
 
     /* Update the dropdown trigger's label + count badge to reflect the
@@ -427,11 +443,22 @@ export function bootSongbookLanguageFilter(root) {
                a "show nothing" state. */
             allCheckbox.checked = true;
         }
+        sayLimit('');
         commit();
     });
     optionCheckboxes.forEach(cb => {
         cb.addEventListener('change', () => {
             if (cb.checked) {
+                /* #2137 review round 5 — at most 32 languages, as on the
+                   settings page: a tick that would make the list longer is
+                   refused, nothing is saved, and the panel says why. */
+                const wouldBe = mergePreferenceOrder(allCheckbox.checked ? [] : loadSavedSubtags(),
+                    optionCheckboxes.filter(o => o.checked).map(o => o.value));
+                if (wouldBe.length > MAX_PREFERENCES) {
+                    cb.checked = false;
+                    sayLimit(TOO_MANY_LANGUAGES_MESSAGE);
+                    return;
+                }
                 /* Selecting a specific language clears "All". */
                 allCheckbox.checked = false;
             } else if (optionCheckboxes.every(o => !o.checked)) {
@@ -440,6 +467,7 @@ export function bootSongbookLanguageFilter(root) {
                    leaving them with no selection. */
                 allCheckbox.checked = true;
             }
+            sayLimit('');
             commit();
         });
     });
@@ -461,7 +489,8 @@ export function bootSongbookLanguageFilter(root) {
                 const list = (j && Array.isArray(j.languages)) ? j.languages
                     : ((j && Array.isArray(j.subtags)) ? j.subtags : null);
                 if (!list) return;
-                const remote = list.filter(isPreferenceTag);
+                /* Round 5 — the first 32, as everywhere else. */
+                const remote = usablePreferenceList(list);
                 /* Adopt the remote list — it's the canonical
                    "across all my devices" view. */
                 saveSubtags(remote);

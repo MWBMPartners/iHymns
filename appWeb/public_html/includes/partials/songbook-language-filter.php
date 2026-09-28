@@ -217,6 +217,12 @@ $languageCount = count($languageList);
                     No languages match your search.
                 </p>
             </div>
+            <?php /* #2137 review round 5 — shown when a 33rd language is ticked: the
+                     site uses at most 32 (the first 32, in order), so the tick is
+                     refused and this says why. The words are set by
+                     js/modules/songbook-language-filter.js (one wording, shared with
+                     the settings page); the hidden status line below announces them. */ ?>
+            <p class="lang-filter-limit small text-danger px-3 py-2 mb-0 border-top d-none js-lang-filter-limit"></p>
             <div class="lang-filter-foot small text-muted px-3 py-2 border-top">
                 Songbooks and songs without a language set, or whose language is not known, always remain visible.
                 <?php if (!empty($currentUser)): ?>

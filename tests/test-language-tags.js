@@ -96,7 +96,12 @@ const read = (rel) => fs.readFileSync(path.join(WEB, rel), 'utf8');
 for (const rel of ['js/utils/api-client.js', 'js/modules/songbook-language-filter.js', 'js/modules/settings-language-filter.js']) {
     const src = read(rel);
     check(`${rel} no longer filters preferences with /^[a-z]{2,3}$/`, !src.includes('/^[a-z]{2,3}$/.test('));
-    check(`${rel} uses the shared isPreferenceTag()`, src.includes('isPreferenceTag'));
+    /* #2137 review round 5 — reading the saved list now goes through
+       usablePreferenceList(), which is isPreferenceTag() plus the first-32
+       limit (tests/test-language-preference-cap.js); either counts as the
+       shared check, a hand-written one does not. */
+    check(`${rel} uses the shared isPreferenceTag() (directly, or through usablePreferenceList())`,
+        src.includes('isPreferenceTag') || src.includes('usablePreferenceList('));
 }
 const settingsSrc = read('js/modules/settings-language-filter.js');
 check('the settings chips are labelled with language names, not upper-cased codes',
