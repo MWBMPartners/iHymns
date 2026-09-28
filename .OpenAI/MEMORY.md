@@ -3,10 +3,16 @@
 Short, lasting facts. Newest first within each section. Where this file and the newest handoff in
 `.claude/sessions/` disagree, the handoff wins. Fix this file when that happens.
 
-_Last updated: 2026-09-23._
+_Last updated: 2026-09-28._
 
 ## Working pitfalls
 
+- **Language tags go through `includes/media_language.php` only.** Never write a regular expression for
+  a language tag, and never edit `appWeb/public_html/includes/vendor/media-language/` or the other policy
+  copies: CI checks them against MeedyaSuite-core. The rules are
+  `docs/standards/media-language-bcp47-policy.md` (#2137).
+- **Nothing in `appWeb/private_html/` reaches the server.** The deploy skips it because the
+  `SFTP_PRIVATE_PATH` secret is not set (#2138). Code the site needs at run time must live in the docroot.
 - **An empty review is not a clean review.** When Codex has hit its usage limit it can print nothing
   on its normal output at all. Check the error output, and check the review file actually has
   something in it, before treating the result as "no issues".

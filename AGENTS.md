@@ -60,6 +60,10 @@ every AI tool working here, not only Claude. The parts you need most:
 - **Only stop to ask** when the owner has to make the decision. Ask everything you can foresee at
   the start, in one go, and carry on with the rest of the work meanwhile (§5, §10).
 
+## Languages, translations and lyrics
+
+**Languages, translations and lyrics — mandatory:** any work touching BCP 47 language tags, languages, translations, transliterations, lyrics, language order or naming, language preferences, or audio/subtitle tracks MUST read and follow `docs/standards/media-language-bcp47-policy.md` (policy `MWBM-MEDIA-LANG`). It is normative and is not repeated here. Its conformance cases must pass (`tests/php/test-media-language-conformance.php`). The copies are checked against the master in MWBMPartners/MeedyaSuite-core by the checker in CI (`tools/media-lang/check_copies.py`); never edit the copies — change the master. In iHymns every language tag goes through `includes/media_language.php`, the one door to the shared rules; `DEV_NOTES.md` → "Languages, translations and language order (#2137)" says how iHymns applies them.
+
 ## Before you change anything here
 
 Read `.claude/CLAUDE.md`. It contains fifty-plus numbered rules describing how this

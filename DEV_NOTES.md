@@ -659,6 +659,87 @@ existing Node tests statically scan that file's own source text for specific lit
 request and reused for the index's own per-child `<lastmod>`. Host resolution calls the shared
 `appCanonicalHost()` (`includes/config.php`) rather than a second hardcoded host list.
 
+### Languages, translations and language order (#2137) — the shared policy you MUST follow, not re-fork
+
+iHymns follows the shared MWBM language policy, **MWBM-MEDIA-LANG 1.0.0**. The rules themselves are in
+[`docs/standards/media-language-bcp47-policy.md`](docs/standards/media-language-bcp47-policy.md) and are
+not repeated here; this note says how iHymns applies them and where the code is. That file, the policy's
+268 test cases (`tests/fixtures/bcp47-language-policy-v1.json`), its reference data and the shared PHP
+implementation (`appWeb/public_html/includes/vendor/media-language/`) are **exact copies** of the master in
+MWBMPartners/MeedyaSuite-core. CI (`tools/media-lang/check_copies.py` in the `lint` job) fails if a copy is
+edited here. Never edit them: change the master, then run
+`python3 tools/media-lang/check_copies.py --update <core commit>`.
+
+- **Where the shared code lives, and why not in `private_html`.** It sits in the web folder's
+  `includes/vendor/`, not beside the PDF engine in `appWeb/private_html/lib/`, because the deploy never
+  uploads `private_html` (the step needs the `SFTP_PRIVATE_PATH` secret, which is not set — #2138). Without
+  these files on the server every language save is refused. `includes/` goes up with every deploy, in each
+  channel's own docroot, and `.htaccess` blocks it from the web. `vendor` marks it as code iHymns did not
+  write, so the tree-walking source checks skip it. `tests/php/test-media-language-deploy-layout.php`
+  copies the folder the way the deploy does and loads the rules from the copy.
+
+- **A language is identified by its BCP 47 tag, never by its name.** `pt-BR` (Brazilian Portuguese) and
+  `pt-PT` are two different languages; so are `zh-Hans` and `zh-Hant` (Chinese in Simplified and in
+  Traditional characters). Nothing stores or matches a language by name, and nothing cuts a tag down to its
+  base language to decide what it *is*. The registry tables (`tblLanguages` and friends) supply **names**
+  only.
+- **One door into the rules: `includes/media_language.php`.** It loads the shared code once and offers:
+  `mediaLanguageTagForStorage()` for a value that is meant to be a tag (typed in an editor, stored by
+  iHymns) — tidies letter case (`en-gb` → `en-GB`), replaces retired codes (`iw` → `he`), refuses a name or
+  a malformed value, and refuses (never cuts) a tag longer than the 35-character columns;
+  `mediaLanguageReadExternal()` for a value read from a file or another system (TTML `xml:lang`, OpenLyrics,
+  importers, the lyrics-ingest API, MARC) — also reads old three-letter codes (`eng`), and reports an
+  unreadable value instead of guessing; `mediaLanguageSortStored()` / `mediaLanguageSortForReader()` for the
+  two orders below. Do not write a regular expression for a language tag anywhere else:
+  `tests/php/test-media-language-ihymns.php` fails the build if one appears in the site's PHP.
+- **Unknown is `und`, never English.** A song whose language nobody gave is stored as `und` ("not known").
+  Nothing fills in `en`, the page's language, or any other default (#2132). Songs already stored as `en` by
+  the old default were deliberately left alone: they cannot be told apart from real English songs. The
+  language filter always shows `und`, `mul` (several languages) and `zxx` (no language) songs, like untagged
+  ones.
+- **Two orders, on purpose, never mixed.**
+  - *Stored order* (the policy's Part A) is the same for everyone and is what the site returns and keeps:
+    the original's language first, then every other language by its code (`de`, `en`, `es` …), general
+    before specific (`zh`, `zh-Hans`, `zh-TW`, `zh-Hant-TW`), countries before multi-country areas (`es-MX`
+    before `es-419`). Whole-song translations (`SongData::getSongTranslations()`, `_getTranslations()`) and
+    the translations under each lyric line use it. SQL cannot produce it (`ORDER BY` sorts letters), so it
+    is done in PHP.
+  - *Reader order* (Part B) is what a person sees in a menu or list and differs per person: their own
+    languages first, in the order they chose; then the original; then everything else alphabetically by
+    name; special codes last. It must never be written back into stored data, and nothing moves because it
+    was just selected. The song page's translation picker is a shared cached fragment, so the server sends
+    it in no-preference order and `js/modules/song-translations.js` puts the reader's languages first in the
+    browser, once, on load. The `song_translations` API action and the language filter lists order on the
+    server or in the browser for the person asking.
+- **The original comes first.** In a whole-song translation cluster the source song is the original
+  (`is_original` / `isOriginal`); the song page marks it "(original)".
+- **Names.** `resolveLanguageName()` composes a full English name from the tag's parts — "Portuguese
+  (Brazil)", "Chinese (Traditional)", "Spanish (Latin America)" — using CLDR English names loaded into the
+  registry tables. It used to fall back to the base language ("Portuguese"), which gave different
+  translations the same name. The language's own name ("português") is a second label, never the only one.
+  English is the only interface language today (#744 covers others).
+- **Text direction comes from the script when the tag names one** (`IHYMNS_RTL_SCRIPTS` in
+  `includes/language_names.php`): `pa-Arab` runs right to left, `ar-Latn` (romanised Arabic) left to right.
+  Otherwise the base language's registry direction applies.
+- **Transliterations should carry their script** (`ja-Latn` for romanised Japanese, `sr-Latn`): without it a
+  transliteration cannot be told apart from the original text. This is a SHOULD in the policy, so it is not
+  enforced.
+- **Preferences** (`tblUsers.PreferredLanguagesJson`, the `X-Preferred-Languages` header, the browser's
+  saved list) keep full tags in the person's order. Filtering still matches by language group, so a `pt-BR`
+  preference shows `pt` and `pt-PT` songs. Old lists of bare codes stay valid.
+- **Whole-song translations accept regional and script tags** once the "Translations: allow regional and
+  script languages" migration card has been run (#2131). Until then the song editor skips such a link with a
+  warning pointing at the card (`includes/song_translations_schema.php` asks the live database).
+- **Reporting, not rewriting.** The curator audit on `/manage/languages` lists stored tags that are
+  malformed, unregistered, retired, or not in standard form (e.g. `en-gb`), and offers a remap. Nothing
+  rewrites stored tags behind anyone's back (policy COMPAT-040). Importers report a language they cannot
+  read as an `import.language_unrecognised` row on `/manage/activity-log`.
+- **Apple app** (#2136): `LanguageDisplay` (`appApple/Packages/iHymnsKit/Sources/IHFeatures/LanguageDisplay.swift`)
+  names a tag with the system's own `Locale.localizedString(forIdentifier:)` — in the device's language — and
+  sorts lists A to Z by that name, special codes last. Filters still match the exact tag. The app has no
+  language-preference setting yet, so "your languages first" does not apply there.
+
+
 ---
 
 ## 🚀 Deployment Architecture

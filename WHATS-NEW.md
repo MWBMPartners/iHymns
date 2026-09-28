@@ -10,6 +10,36 @@ with none of the behind-the-scenes technical detail.
 > `## <version> — <date>` heading style and `- ` bullets so the app can display
 > it. See `.claude/whats-new-style.md` for the full house style.
 
+## 1.4.0 — 28 September 2026
+
+- **Translations in regional forms and scripts** — A song can now be linked
+  to a translation in a particular form of a language, such as Brazilian
+  Portuguese or Chinese written in Traditional characters. Before, those
+  links could not be saved, and a song in one of those forms could quietly
+  drop out of another song's "Also in" list.
+
+- **Languages called by their full names** — Wherever a song's language is
+  shown, it now says "Portuguese (Brazil)" or "Chinese (Traditional)" rather
+  than a short code such as "PT" or "ZH", which could not tell the two kinds
+  of Chinese apart. The language's own name still appears beside it, and the
+  original version of a song is marked as the original.
+
+- **Your languages first** — If you've told iHymns which languages you read,
+  the "Also in" list on a song page now puts those first, in the order you
+  chose, then the original, then everything else from A to Z. Your language
+  choices also keep the order you set, and can now be as specific as
+  "Brazilian Portuguese".
+
+- **A song with no known language is no longer labelled English** — New
+  songs whose language nobody has given are marked "not known" instead of
+  being filed as English, and they still appear whichever languages you
+  filter by.
+
+- **Right-to-left text the right way round** — A song written in a
+  right-to-left script now runs right to left even when its language
+  usually uses another script, and romanised text in a normally
+  right-to-left language runs left to right.
+
 ## 1.3.0 — 30 August 2026
 
 - **Your set lists and favourites now open with no signal** — If you'd
