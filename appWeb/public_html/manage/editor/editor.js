@@ -930,7 +930,12 @@ function bindMetadataListeners() {
             if (!song) return;
             var hidden = document.getElementById('edit-language');
             if (!hidden) return;
-            song.language = hidden.value || '';   /* #2132 — empty means "not known" (the server stores und), never a guessed 'en' */
+            var next = hidden.value || '';   /* #2132 — empty means "not known" (the server stores und), never a guessed 'en' */
+            /* #2137 review — a focus change alone (no edit) must not mark the
+               song changed: the picker keeps a tag it cannot show unchanged,
+               and nothing should be saved unless the curator edits it. */
+            if (next === (song.language || '') || (next === '' && song.language === 'und')) return;   /* und is shown as empty boxes */
+            song.language = next;
             markModified(song.id);
         };
         ['input', 'change', 'blur'].forEach(function (eventType) {

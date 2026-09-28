@@ -265,6 +265,42 @@ export function composeTag(lang, script, region, variants) {
     ].filter(Boolean).join('-');
 }
 
+/**
+ * The tag the picker's boxes would save for `tag`: split it with
+ * decomposeTag(), then rebuild it with composeTag() from what the boxes can
+ * hold — a language, a script, a region and at most `maxVariants` variants
+ * (the one variant box, or none when the markup has no variant box).
+ *
+ *   pickerRebuildTag("en-GB")            → "en-GB"
+ *   pickerRebuildTag("en-u-ca-gregory")  → "en-CA-gregory"   (not the same tag!)
+ *   pickerRebuildTag("x-hymnal")         → ""
+ */
+export function pickerRebuildTag(tag, maxVariants = 1) {
+    const { lang, script, region, variants } = decomposeTag(tag);
+    return composeTag(lang, script, region, variants.slice(0, Math.max(0, maxVariants)));
+}
+
+/**
+ * Can the picker's boxes hold `tag` without changing it (#2137 review)?
+ *
+ * ELI5: split the tag into the boxes and put it back together; if the result
+ * is not the tag we started with (ignoring letter case, which the server
+ * tidies anyway), the boxes would quietly save a DIFFERENT tag.
+ *
+ * Why it matters: the boxes know about a language, a script, a region and
+ * one variant — nothing else. Before this check, opening a song whose tag
+ * had more than that rewrote it the moment a box lost focus, and the editors
+ * save on blur: `en-u-ca-gregory` became `en-CA-gregory` (a Canadian
+ * variant), `en-x-hymnal` became `en-hymnal`, and `x-hymnal` or `i-default`
+ * became empty — which the song save stores as `und`, "not known". A tag
+ * that fails this check is kept exactly as it is (see setTag()).
+ */
+export function pickerCanHold(tag, maxVariants = 1) {
+    const original = String(tag || '').trim();
+    if (original === '') return true;
+    return pickerRebuildTag(original, maxVariants).toLowerCase() === original.toLowerCase();
+}
+
 /* ---------------------------------------------------------------------------
  * Internal helpers
  * --------------------------------------------------------------------------- */
@@ -436,9 +472,33 @@ export function bootIetfLanguagePicker(rootEl) {
         warningEl.classList.remove('d-none');
     }
 
+    /* #2137 review — a saved tag the boxes cannot hold (pickerCanHold()) is
+       kept here, exactly as saved. While it is set, the hidden output keeps
+       it, the preview shows it read-only, and a plain note explains why; a
+       box losing focus changes nothing, so an editor that saves on blur
+       saves the tag unchanged (the v2 editor compares with the stored value
+       and saves nothing at all). Only a real edit — typing in, or picking
+       from, a box (the 'input' listener below) — clears it. */
+    let preservedTag = null;
+
+    function showPreservedTag() {
+        tagOutput.value = preservedTag;
+        if (tagPreview) tagPreview.textContent = preservedTag;
+        if (tagDisplay) tagDisplay.textContent = '';
+        if (warningEl) {
+            warningEl.textContent = `This language tag (${preservedTag}) has parts these boxes cannot show, `
+                + 'so it is kept exactly as it was saved. It only changes if you type in the boxes to replace it.';
+            warningEl.classList.remove('d-none');
+        }
+    }
+
     /* Update the live preview + hidden form field whenever any of
        the four inputs change. */
     const refreshTag = () => {
+        if (preservedTag !== null) {
+            showPreservedTag();
+            return;
+        }
         const l = resolveCode(langInput, langCodeIn, 'language');
         const s = resolveCode(scriptInput, scriptCodeIn, 'script');
         const r = resolveCode(regionInput, regionCodeIn, 'region');
@@ -471,7 +531,10 @@ export function bootIetfLanguagePicker(rootEl) {
     [langInput, scriptInput, regionInput, variantInput]
         .filter(Boolean)
         .forEach((input) => {
-            input.addEventListener('input', refreshTag);
+            input.addEventListener('input', () => {
+                preservedTag = null;   /* a real edit: the curator is replacing a kept tag */
+                refreshTag();
+            });
             input.addEventListener('blur',  refreshTag);
         });
 
@@ -562,6 +625,18 @@ export function bootIetfLanguagePicker(rootEl) {
      * row — the partial/markup is shared between instances.
      */
     const setTag = async (tag) => {
+        const original = String(tag || '').trim();
+        if (!pickerCanHold(original, variantInput ? 1 : 0)) {
+            /* Kept exactly as saved (see pickerCanHold()): the boxes start
+               empty rather than showing a half-truth such as "English,
+               Canada" for `en-u-ca-gregory`. */
+            preservedTag = original;
+            [langInput, scriptInput, regionInput, variantInput].filter(Boolean).forEach((el) => { el.value = ''; });
+            [langCodeIn, scriptCodeIn, regionCodeIn, variantCodeIn].filter(Boolean).forEach((el) => { el.value = ''; });
+            refreshTag();
+            return;
+        }
+        preservedTag = null;
         const { lang, script, region, variants } = decomposeTag(tag);
 
         if (lang) {
