@@ -48,9 +48,11 @@ declare(strict_types=1);
  *
  * WHAT HAPPENS IF THE SHARED CODE IS MISSING ON A SERVER
  * ------------------------------------------------------
- * The folder is deployed by its own step in `.github/workflows/deploy.yml`.
- * If that step ever did not run on a server, two different things happen,
- * on purpose:
+ * There is no separate deploy step for the folder: it goes up with every
+ * deploy, inside this docroot's `includes/` (see above, and
+ * `tests/php/test-media-language-deploy-layout.php`). If it were ever
+ * missing on a server all the same (a partial upload, a hand-edited server),
+ * two different things happen, on purpose:
  *
  *   - READING (showing names, ordering a list) quietly falls back to the
  *     order and text the database gave, and logs the problem once. A song

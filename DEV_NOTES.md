@@ -690,13 +690,29 @@ edited here. Never edit them: change the master, then run
   `mediaLanguageReadExternal()` for a value read from a file or another system (TTML `xml:lang`, OpenLyrics,
   importers, the lyrics-ingest API, MARC) — also reads old three-letter codes (`eng`), and reports an
   unreadable value instead of guessing; `mediaLanguageSortStored()` / `mediaLanguageSortForReader()` for the
-  two orders below. Do not write a regular expression for a language tag anywhere else:
-  `tests/php/test-media-language-ihymns.php` fails the build if one appears in the site's PHP.
+  two orders below; `mediaLanguageOrUnknown()` for "no language given → `und`" (every song save calls it);
+  `mediaLanguageIsOrdinaryLanguage()` for "is this a real language, not `und`/`mul`/`zxx`/`mis`/`qaa`–`qtz`/
+  private-use/malformed?". Do not write a regular expression for a language tag anywhere else. What the build
+  actually checks is narrower than that rule: `tests/php/test-media-language-ihymns.php` scans every PHP file
+  under `appWeb/public_html` for the one pattern shape the five retired checkers used (`[a-z]{2,3}(-…`); a
+  differently written pattern would not be caught, so reviewers still have to look. Three deliberate
+  exceptions exist, each because the shared PHP cannot run there: the SQL `REGEXP` patterns in
+  `includes/language_filter.php` (script matching inside the database), its degraded-path script reader
+  (used only when the shared code is missing), and `scriptOf()` in `js/utils/language-tags.js` (the
+  browser).
 - **Unknown is `und`, never English.** A song whose language nobody gave is stored as `und` ("not known").
-  Nothing fills in `en`, the page's language, or any other default (#2132). Songs already stored as `en` by
-  the old default were deliberately left alone: they cannot be told apart from real English songs. The
-  language filter always shows `und`, `mul` (several languages) and `zxx` (no language) songs, like untagged
-  ones.
+  Nothing fills in `en`, the page's language, or any other default (#2132) — including a brand-new song from
+  the v2 editor, whose INSERT writes `und` explicitly (`includes/song_create.php`) so the column default does
+  not matter. Songs already stored as `en` by the old default were deliberately left alone: they cannot be
+  told apart from real English songs. The language filter always shows `und`, `mul` (several languages) and
+  `zxx` (no language) songs, like untagged ones. The "no English" guard in
+  `tests/php/test-media-language-ihymns.php` scans the site's PHP and JS for a language value falling back to
+  `'en'` in the shapes `?? 'en'`, `|| 'en'`, `?: 'en'`, a ternary's `: 'en'`, `'language' => 'en'`,
+  `$language = 'en'` and `x.language = 'en'`; it cannot see a fallback built any other way.
+- **The songbook-language card is a curator's decision** ("Give songs their songbook's language", manual,
+  never part of "Apply all"): it gives a songbook's language to songs that have none, and to songs in a
+  different language (the HAC import case), and never touches `und`, `mul`, `zxx`, `mis`, `qaa`–`qtz`,
+  private-use or malformed values. Run its dry run first; the change cannot be undone automatically.
 - **Two orders, on purpose, never mixed.**
   - *Stored order* (the policy's Part A) is the same for everyone and is what the site returns and keeps:
     the original's language first, then every other language by its code (`de`, `en`, `es` …), general
@@ -725,15 +741,25 @@ edited here. Never edit them: change the master, then run
   transliteration cannot be told apart from the original text. This is a SHOULD in the policy, so it is not
   enforced.
 - **Preferences** (`tblUsers.PreferredLanguagesJson`, the `X-Preferred-Languages` header, the browser's
-  saved list) keep full tags in the person's order. Filtering still matches by language group, so a `pt-BR`
-  preference shows `pt` and `pt-PT` songs. Old lists of bare codes stay valid.
+  saved list, Song of the Day's `?lang=`) keep full tags in the person's order. Filtering matches by
+  language, so a `pt-BR` preference shows `pt` and `pt-PT` songs — except that a preference naming a script
+  hides content in another script (`zh-Hans` hides `zh-Hant`, `sr-Latn` hides `sr-Cyrl`; policy MATCH-040).
+  The same rule runs in SQL (`applyLanguageFilterSql()`), in PHP (`makeLanguageFilterPredicate()`, via the
+  shared `Policy::matchTags()`) and in the browser (`preferenceMatchesTag()`);
+  `tests/php/test-language-filter-scripts.php` checks the SQL and PHP agree row for row on a real database.
+  Old lists of bare codes stay valid.
 - **Whole-song translations accept regional and script tags** once the "Translations: allow regional and
   script languages" migration card has been run (#2131). Until then the song editor skips such a link with a
   warning pointing at the card (`includes/song_translations_schema.php` asks the live database).
 - **Reporting, not rewriting.** The curator audit on `/manage/languages` lists stored tags that are
-  malformed, unregistered, retired, or not in standard form (e.g. `en-gb`), and offers a remap. Nothing
-  rewrites stored tags behind anyone's back (policy COMPAT-040). Importers report a language they cannot
-  read as an `import.language_unrecognised` row on `/manage/activity-log`.
+  malformed, unregistered, retired, or not in standard form (e.g. `en-gb`), and offers a remap. Importers
+  report a language they cannot read as an `import.language_unrecognised` row on `/manage/activity-log`.
+  Since the #2137 review fixes, a stored tag changes only when a person saves or confirms something: a song
+  save tidies the tags it writes (a translation link stored as `iw` is updated in place to `he`, keeping its
+  translator and verified flag; two links that tidy to one language are left alone with a warning); the
+  language picker keeps a tag its boxes cannot show (`en-u-ca-gregory`, `x-hymnal`) instead of rewriting it;
+  the songbook-language card runs only when confirmed; the remap is a curator action. No migration run by
+  "Apply all" changes a stored tag (policy COMPAT-040).
 - **Apple app** (#2136): `LanguageDisplay` (`appApple/Packages/iHymnsKit/Sources/IHFeatures/LanguageDisplay.swift`)
   names a tag with the system's own `Locale.localizedString(forIdentifier:)` — in the device's language — and
   sorts lists A to Z by that name, special codes last. Filters still match the exact tag. The app has no

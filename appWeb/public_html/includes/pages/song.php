@@ -365,6 +365,10 @@ foreach ($translations as &$_t) {
         : (!empty($_t['is_original']) ? 'Original' : (string)$_t['target_language']);
     $_t['secondary_label'] = ($_native !== '' && strcasecmp($_native, $_t['display_label']) !== 0) ? $_native : '';
     $_t['language_group']  = mediaLanguageGroup((string)$_t['target_language']);
+    /* #2137 review — hreflang only for a real language: never `und` ("not
+       known"), `mul`, `zxx` or a private-use tag, which tell a search engine
+       nothing (index.php's <head> alternates already skip und). */
+    $_t['hreflang']        = mediaLanguageIsOrdinaryLanguage((string)$_t['target_language']) ? (string)$_t['target_language'] : '';
 }
 unset($_t, $_name, $_native);
 
@@ -903,8 +907,8 @@ try {
                                     data-language-group="<?= htmlspecialchars($t['language_group']) ?>">
                                     <a class="dropdown-item"
                                        href="/song/<?= htmlspecialchars($t['song_id']) ?>"
-                                       data-navigate="song"
-                                       hreflang="<?= htmlspecialchars($t['target_language']) ?>">
+                                       data-navigate="song"<?php if ($t['hreflang'] !== ''): ?>
+                                       hreflang="<?= htmlspecialchars($t['hreflang']) ?>"<?php endif; ?>>
                                         <span class="fw-semibold"><?= htmlspecialchars($t['display_label']) ?></span>
                                         <?php if ($t['secondary_label'] !== ''): ?>
                                             <small class="text-muted ms-1"

@@ -12,6 +12,13 @@ with none of the behind-the-scenes technical detail.
 
 ## 1.4.0 — 28 September 2026
 
+- **Language choices that respect writing systems** — If you choose a
+  language in one particular script, such as Chinese in Simplified
+  characters or Serbian in Latin letters, the song lists no longer show you
+  songs written in the other script, which you may not be able to read.
+  Song of the Day now follows your full language choices too, just like the
+  rest of the app.
+
 - **Translations in regional forms and scripts** — A song can now be linked
   to a translation in a particular form of a language, such as Brazilian
   Portuguese or Chinese written in Traditional characters. Before, those

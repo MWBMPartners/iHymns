@@ -388,8 +388,11 @@ try {
                head). Shares SongData::getSongTranslations() with the picker. */
             $hreflangSongLang = trim((string)($ogSong['language'] ?? ''));
             /* #2132 — `und` ("language not known") is not a language a search
-               engine can act on, so it never becomes an hreflang value. */
-            if (strtolower($hreflangSongLang) === 'und') { $hreflangSongLang = ''; }
+               engine can act on, so it never becomes an hreflang value; nor,
+               since the #2137 review, do `mul`, `zxx`, private-use tags or a
+               malformed value — the same test as the song page's picker. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_language.php';
+            if (!mediaLanguageIsOrdinaryLanguage($hreflangSongLang)) { $hreflangSongLang = ''; }
             $_cluster = $songData->getSongTranslations($matches[1]);
             if (!empty($_cluster)) {
                 $_seen = [];
@@ -400,7 +403,7 @@ try {
                 foreach ($_cluster as $_c) {
                     $_lang = trim((string)($_c['target_language'] ?? ''));
                     $_sid  = (string)($_c['song_id'] ?? '');
-                    if ($_lang === '' || strtolower($_lang) === 'und' || $_sid === '' || isset($_seen[strtolower($_lang)])) { continue; }
+                    if (!mediaLanguageIsOrdinaryLanguage($_lang) || $_sid === '' || isset($_seen[strtolower($_lang)])) { continue; }
                     $hreflangLinks[$_lang] = getCanonicalUrl('/song/' . rawurlencode($_sid));
                     $_seen[strtolower($_lang)] = true;
                 }

@@ -177,8 +177,8 @@ jobs:
       #
       # iHymns keeps exact copies of the MWBM-MEDIA-LANG language policy, its
       # test cases, its reference data and the shared PHP code
-      # (docs/standards/, tests/fixtures/bcp47-*, appWeb/private_html/lib/
-      # media-language/). The master copies live in
+      # (docs/standards/, tests/fixtures/bcp47-*, appWeb/public_html/includes/
+      # vendor/media-language/). The master copies live in
       # MWBMPartners/MeedyaSuite-core. This step runs the policy's own copy
       # checker, which fails the build when:
       #   - a copy has been edited here (its checksum no longer matches the

@@ -395,15 +395,25 @@ function getLanguageSubtagNamesMap(string $kind): array
  * request. A back-compat projection of getLanguageMetaMap() — every
  * existing caller that only wants the English name keeps working.
  *
+ * #2137 review — this comment already said "statically cached", but only the
+ * underlying meta map was: the name map was rebuilt, all several hundred
+ * entries, on EVERY call — and resolveLanguageName() calls it once per name
+ * shown (every tile tooltip, every translation, every filter chip). It is
+ * now built once per request.
+ *
  * @return array<string, string> Lowercase code → English Name.
  */
 function getLanguageNamesMap(): array
 {
-    $out = [];
-    foreach (getLanguageMetaMap() as $code => $meta) {
-        $out[$code] = $meta['name'];
+    static $names = null;
+    if ($names !== null) {
+        return $names;
     }
-    return $out;
+    $names = [];
+    foreach (getLanguageMetaMap() as $code => $meta) {
+        $names[$code] = $meta['name'];
+    }
+    return $names;
 }
 
 /**

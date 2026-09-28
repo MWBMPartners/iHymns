@@ -478,6 +478,24 @@ mliCheck('the song_translations API never JOINs tblLanguages for identity, and o
 mliCheck('user_preferred_languages keeps `subtags` (base codes) and adds `languages` (whole tags, in order)',
     str_contains($apiSrc, "'subtags'   => preferredLanguageBaseSubtags(\$languages),") && str_contains($apiSrc, "'languages' => \$languages,"));
 
+/* ---------------------------------------------------------------- (N) --- */
+echo "(N) the #2137 review's smaller fixes\n";
+foreach (['en' => true, 'pt-BR' => true, 'zh-Hant' => true, 'iw' => true, 'qua' => true,
+          'und' => false, 'mul' => false, 'zxx' => false, 'mis' => false, 'qaa' => false, 'qtz' => false,
+          'x-hymnal' => false, 'i-default' => false, 'English' => false, '' => false] as $tag => $want) {
+    mliCheck("mediaLanguageIsOrdinaryLanguage(" . mliShow($tag) . ') = ' . mliShow($want), mediaLanguageIsOrdinaryLanguage($tag) === $want);
+}
+$songPage = (string)file_get_contents($repoRoot . '/appWeb/public_html/includes/pages/song.php');
+mliCheck('the song page writes hreflang only for a real language (never hreflang="und")',
+    str_contains($songPage, "\$_t['hreflang']        = mediaLanguageIsOrdinaryLanguage(")
+    && str_contains($songPage, 'hreflang="<?= htmlspecialchars($t[\'hreflang\']) ?>"')
+    && !str_contains($songPage, 'hreflang="<?= htmlspecialchars($t[\'target_language\']) ?>"'));
+$indexSrc2 = (string)file_get_contents($repoRoot . '/appWeb/public_html/index.php');
+mliCheck("the page head's hreflang alternates use the same test", substr_count($indexSrc2, 'mediaLanguageIsOrdinaryLanguage(') === 2);
+$namesSrc = (string)file_get_contents($repoRoot . '/appWeb/public_html/includes/language_names.php');
+mliCheck('getLanguageNamesMap() builds its map once per request (a static cache), not once per name shown',
+    preg_match('/function getLanguageNamesMap\(\): array\s*\{\s*static \$names = null;\s*if \(\$names !== null\) \{\s*return \$names;/', $namesSrc) === 1);
+
 echo "\n  {$passed} passed, " . count($failures) . " failed\n";
 if ($failures !== []) {
     fwrite(STDERR, "FAIL: iHymns' use of the shared language policy (#2137):\n  - " . implode("\n  - ", $failures) . "\n");
