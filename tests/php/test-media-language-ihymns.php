@@ -281,12 +281,17 @@ mliCheck("JSON-LD inLanguage no longer falls back to the page's own interface la
    match these patterns. */
 $fallbackPatterns = [
     '/(?:language|lang)\b[^\n]{0,60}(?:\?\?|\|\||\?:)\s*[\'"]en[\'"]/i',   // x.language ?? 'en', lang || 'en'
-    '/[\'"]language[\'"]\s*=>\s*[\'"]en[\'"]/',                                // 'language' => 'en'
+    '/[\'"]language[\'"]\s*=>\s*[\'"]en[\'"]/i',                               // 'language' => 'en', 'Language' => 'en'
     /* #2137 review — the two shapes the first version missed: */
     '/(?:language|lang)\b[^\n]{0,80}\?[^\n]{0,80}:\s*[\'"]en[\'"]/i',       // $x !== '' ? $x : 'en'  (a ternary's "else")
     '/\$\w*(?:language|lang)\w*\s*(?:\?\?)?=\s*[\'"]en[\'"]/i',             // $language = 'en', $lang ??= 'en'
     '/(?:language|lang)\w*\s+(?:\?\?|\|\||&&)?=\s*[\'"]en[\'"]/i',         // song.language = 'en' (JS; a space before "=",
                                                                                    // so the HTML attribute lang="en" is not matched)
+    /* #2137 second review — shapes that still got through: */
+    '/(?:language|lang)\b[^\n]{0,80}\?\s*[\'"]en[\'"]\s*:/i',               // $lang === '' ? 'en' : $lang  (the ternary's THEN)
+    '/\[[\'"](?:language|lang|Language)[\'"]\]\s*(?:\?\?)?=\s*[\'"]en[\'"]/', // $song['language'] = 'en', $row['Language'] = 'en'
+    '/->\s*(?:language|lang)\w*\s*=\s*[\'"]en[\'"]/i',                        // $song->language = 'en'
+    '/\.(?:language|lang)\w*\s*=\s*[\'"]en[\'"]/i',                           // song.language='en' (JS, no space; a dot, so not lang="en")
 ];
 $enScanned = 0;
 $enOffenders = [];
@@ -330,8 +335,19 @@ $enMustCatch = [
     "song.language = 'en';",
     "\$x = \$row['language'] ?? 'en';",
     "'language' => 'en',",
+    /* the second review's shapes */
+    "\$language = \$valid === null ? 'en' : \$valid;",
+    "\$language = (\$raw === '') ? 'en' : \$raw;",
+    ": (\$songPrimaryLang === '' ? 'en' : \$songPrimaryLang);",
+    "\$song['language'] = 'en';",
+    "\$row['Language'] = 'en';",
+    "\$body['lang'] = 'en';",
+    "\$song->language='en';",
+    "song.language='en';",
+    "'Language' => 'en',",
 ];
-$enMustPass = ['<html lang="en">', "if (\$lang === 'en') {", "\$language = mediaLanguageOrUnknown(\$valid);", "\$locale = 'en';"];
+$enMustPass = ['<html lang="en">', "if (\$lang === 'en') {", "\$language = mediaLanguageOrUnknown(\$valid);", "\$locale = 'en';",
+    "'lang'  => 'en',   /* a geocoder's result language, not a song's */", "\$isEnglish = \$lang === 'en' ? 1 : 0;"];
 $enMatches = static function (string $code) use ($fallbackPatterns): bool {
     foreach ($fallbackPatterns as $re) { if (preg_match($re, $code) === 1) { return true; } }
     return false;

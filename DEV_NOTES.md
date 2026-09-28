@@ -710,8 +710,13 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   told apart from real English songs. The language filter always shows `und`, `mul` (several languages) and
   `zxx` (no language) songs, like untagged ones. The "no English" guard in
   `tests/php/test-media-language-ihymns.php` scans the site's PHP and JS for a language value falling back to
-  `'en'` in the shapes `?? 'en'`, `|| 'en'`, `?: 'en'`, a ternary's `: 'en'`, `'language' => 'en'`,
-  `$language = 'en'` and `x.language = 'en'`; it cannot see a fallback built any other way.
+  `'en'` in these shapes, each near a `language`/`lang` word: `?? 'en'`, `|| 'en'`, `?: 'en'`, a ternary's
+  `: 'en'` (else) and `? 'en' :` (then), `'language' => 'en'` (any letter case), `$language = 'en'` (also
+  `??=`), `$x['language']`/`['lang']`/`['Language'] = 'en'`, `$x->language = 'en'`, and `x.language = 'en'`
+  (with or without spaces). It cannot see a fallback built any other way — across two lines, through a
+  variable, or with double-quoted `"en"` inside a longer expression it does not know — so reviewers still
+  look. (`'lang' => 'en'` is deliberately not flagged: the geocoder in `manage/places-api.php` asks for
+  place names in English that way, which is not a song's language.)
 - **The songbook-language card is a curator's decision** ("Give songs their songbook's language", manual,
   never part of "Apply all"): it gives a songbook's language to songs that have none, and to songs in a
   different language (the HAC import case), and never touches `und`, `mul`, `zxx`, `mis`, `qaa`–`qtz`,
