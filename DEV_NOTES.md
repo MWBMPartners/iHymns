@@ -713,10 +713,16 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   `'en'` in these shapes, each near a `language`/`lang` word: `?? 'en'`, `|| 'en'`, `?: 'en'`, a ternary's
   `: 'en'` (else) and `? 'en' :` (then), `'language' => 'en'` (any letter case), `$language = 'en'` (also
   `??=`), `$x['language']`/`['lang']`/`['Language'] = 'en'`, `$x->language = 'en'`, and `x.language = 'en'`
-  (with or without spaces). It cannot see a fallback built any other way — across two lines, through a
-  variable, or with double-quoted `"en"` inside a longer expression it does not know — so reviewers still
-  look. (`'lang' => 'en'` is deliberately not flagged: the geocoder in `manage/places-api.php` asks for
-  place names in English that way, which is not a song's language.)
+  (with or without spaces); since round 4 of the review also a JavaScript object key (`language: 'en'`,
+  `{'language': 'en'}`, `"language": "en"`), a declaration (`var`/`let`/`const language = 'en'`, any name containing
+  `language` or `lang`), and a PHP `match` giving `'en'` to a language variable or key — on one line, or spread over
+  several (each PHP file is also read whole for that one shape). It still cannot see a fallback built any other way —
+  across two lines in any other shape, through a variable or constant (`$raw : DEFAULT_LANG`), or a `match` whose
+  result is returned rather than assigned to a language name — so reviewers still look. Deliberate exceptions are
+  listed in the test by file AND line content, and each must still be found: today only `js/modules/print.js`'s
+  sample song for the print editor's preview ("Amazing Grace", really English). (`'lang' => 'en'` is deliberately
+  not flagged: the geocoder in `manage/places-api.php` asks for place names in English that way, which is not a
+  song's language.)
 - **The songbook-language card is a curator's decision** ("Fill in a missing song language from its
   songbook", manual, never part of "Apply all"): it gives a songbook's language ONLY to songs that have no
   language at all, and never changes a song that has any value — a real tag, `und`/`mul`/`zxx`, or a

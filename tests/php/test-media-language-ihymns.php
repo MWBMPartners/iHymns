@@ -34,7 +34,15 @@ declare(strict_types=1);
  *     through; the song page's search-engine data no longer falls back to the
  *     page's own language; and a GUARD derived from the tree fails if any
  *     language value falls back to 'en' again (a line marked #2134, the song
- *     request feature filed separately, is reported, not failed).
+ *     request feature filed separately, is reported, not failed). Round 4
+ *     of the #2137 review added JavaScript object keys, var/let/const
+ *     declarations and a PHP `match` (one line or several) giving 'en', and
+ *     a list of deliberate exceptions by file AND line content (only
+ *     print.js's sample English hymn), each of which must still be found.
+ *     Mutation-proven: `language: 'en'` in editor.js's staged link (the
+ *     reviewer's mutation), `var language='en'`, `{'language': 'en'}`, a
+ *     several-line `match`, a second `language: 'en'` in print.js, and the
+ *     excepted print.js line changing each turn it red.
  * (K) #2131 — whole-song translations may use regional and script tags:
  *     schema.sql has no fk_Trans_Lang (uq_Translation stays), the migration
  *     drops the link and its leftover index only if present, it is
@@ -296,7 +304,27 @@ $fallbackPatterns = [
     '/\[[\'"](?:language|lang|Language)[\'"]\]\s*(?:\?\?)?=\s*[\'"]en[\'"]/', // $song['language'] = 'en', $row['Language'] = 'en'
     '/->\s*(?:language|lang)\w*\s*=\s*[\'"]en[\'"]/i',                        // $song->language = 'en'
     '/\.(?:language|lang)\w*\s*=\s*[\'"]en[\'"]/i',                           // song.language='en' (JS, no space; a dot, so not lang="en")
+    /* #2137 review round 4 — shapes the third review showed still got through: */
+    '/(?<![\w$.])[\'"]?(?:language|lang)[\'"]?\s*:\s*[\'"]en[\'"]/i',     // { language: 'en' }, {'language': 'en'}, "language": "en"
+                                                                                   // (a JS object key; not inLanguage: — a letter before it)
+    '/\b(?:var|let|const)\s+\w*(?:language|lang)\w*\s*=\s*[\'"]en[\'"]/i', // var language='en', let lang = "en", const songLang = 'en'
+    '/(?:language|lang)\w*[\'"]?\]?\s*(?:=>|=)\s*match\s*\([^;]*?=>\s*[\'"]en[\'"]/i', // $lang = match ($x) { '' => 'en', … } on ONE line
 ];
+/* A `match` spread over several lines — `$lang = match ($x) {` then `'' => 'en',`
+   on a later line — cannot be seen one line at a time, so each file is also
+   read whole for it: a language variable or key assigned a `match` with an arm
+   giving 'en', anywhere before the statement's closing `;`. */
+$fallbackMatchWhole = '/(?:language|lang)\w*[\'"]?\]?\s*(?:=>|=)\s*match\s*\([^;]*?=>\s*[\'"]en[\'"]/is';
+/* Deliberate exceptions, each by PATH and LINE CONTENT (so it neither follows
+   the line to a new meaning nor breaks when lines above it move), and each
+   must still be found — a stale exception fails the check below.
+     - js/modules/print.js: the print editor's sample song for its live
+       preview is "Amazing Grace", an English hymn; `language: 'en'` there is
+       the sample's real language, not a fallback for an unknown one. */
+$enExempt = [
+    'appWeb/public_html/js/modules/print.js' => "language: 'en', copyright: 'Public Domain', ccli: '22025'",
+];
+$enExemptSeen = [];
 $enScanned = 0;
 $enOffenders = [];
 $enKnown = [];
@@ -318,8 +346,11 @@ foreach ($it as $file) {
         $code = (string)preg_replace('~\\s(?://|/\\*).*$~', '', $line);
         foreach ($fallbackPatterns as $re) {
             if (preg_match($re, $code) === 1) {
-                $where = substr($path, strlen(str_replace('\\', '/', $repoRoot)) + 1) . ':' . ($i + 1);
-                if (str_contains($line, '#2134')) {
+                $rel = substr($path, strlen(str_replace('\\', '/', $repoRoot)) + 1);
+                $where = $rel . ':' . ($i + 1);
+                if (isset($enExempt[$rel]) && str_contains($line, $enExempt[$rel])) {
+                    $enExemptSeen[$rel] = ($enExemptSeen[$rel] ?? 0) + 1;
+                } elseif (str_contains($line, '#2134')) {
                     $enKnown[] = $where;
                 } else {
                     $enOffenders[] = $where . ': ' . trim($line);
@@ -330,6 +361,30 @@ foreach ($it as $file) {
     }
 }
 mliCheck("the 'en' guard actually scanned the site's PHP and JS (found {$enScanned} files)", $enScanned > 300);
+/* The multi-line `match` shape, file by file (whole-line comments removed
+   first, as above). */
+$it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($repoRoot . '/appWeb/public_html', FilesystemIterator::SKIP_DOTS));
+foreach ($it as $file) {
+    $path = str_replace('\\', '/', $file->getPathname());
+    if ($file->getExtension() !== 'php' || str_contains($path, '/vendor/')) {
+        continue;
+    }
+    $lines = file($file->getPathname()) ?: [];
+    foreach ($lines as $k => $l) {
+        if (preg_match('~^\\s*(?:\\*|//|/\\*|#)~', $l) === 1) { $lines[$k] = "\n"; }
+    }
+    $src = implode('', $lines);
+    if (preg_match_all($fallbackMatchWhole, $src, $mm, PREG_OFFSET_CAPTURE) > 0) {
+        foreach ($mm[0] as [$_txt, $off]) {
+            $enOffenders[] = substr($path, strlen(str_replace('\\', '/', $repoRoot)) + 1) . ':'
+                . (substr_count(substr($src, 0, $off), "\n") + 1) . ': a language taken from a `match` with an arm giving \'en\'';
+        }
+    }
+}
+foreach ($enExempt as $rel => $content) {
+    mliCheck("the deliberate exception in {$rel} is still there, exactly once (else remove it from the list)",
+        ($enExemptSeen[$rel] ?? 0) === 1, (string)($enExemptSeen[$rel] ?? 0));
+}
 /* The guard's own patterns, on the shapes they must catch and the ones they
    must not (a guard that cannot fail proves nothing, rule #34). */
 $enMustCatch = [
@@ -349,9 +404,26 @@ $enMustCatch = [
     "\$song->language='en';",
     "song.language='en';",
     "'Language' => 'en',",
+    /* the third review's shapes (round 4) */
+    "var song = { id: id, language: 'en' };",
+    "return { songId: s.id, language: 'en', title: t };",
+    "const payload = {'language': 'en'};",
+    '{"language": "en", "title": t}',
+    "var language='en';",
+    "let lang = \"en\";",
+    "const songLang = 'en';",
+    "\$lang = match (\$x) { '' => 'en', default => \$x };",
+    "\$song['language'] = match (true) { \$raw === '' => 'en', default => \$raw };",
 ];
 $enMustPass = ['<html lang="en">', "if (\$lang === 'en') {", "\$language = mediaLanguageOrUnknown(\$valid);", "\$locale = 'en';",
-    "'lang'  => 'en',   /* a geocoder's result language, not a song's */", "\$isEnglish = \$lang === 'en' ? 1 : 0;"];
+    "'lang'  => 'en',   /* a geocoder's result language, not a song's */", "\$isEnglish = \$lang === 'en' ? 1 : 0;",
+    /* round 4 */
+    "'inLanguage': 'en',", "var song = { language: targetLang };", "const isEnglish = lang === 'en';",
+    "\$label = match (\$lang) { 'en' => 'English', default => \$lang };"];
+/* The multi-line `match` shape, on its own. */
+mliCheck("the 'en' guard catches a `match` over several lines giving 'en' for a language",
+    preg_match($fallbackMatchWhole, "\$lang = match (\$raw) {\n    '' => 'en',\n    default => \$raw,\n};") === 1
+    && preg_match($fallbackMatchWhole, "\$lang = match (\$raw) {\n    'en' => 'English',\n};\n\$x = ['a' => 'en'];") !== 1);
 $enMatches = static function (string $code) use ($fallbackPatterns): bool {
     foreach ($fallbackPatterns as $re) { if (preg_match($re, $code) === 1) { return true; } }
     return false;
