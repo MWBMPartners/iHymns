@@ -15,11 +15,14 @@ declare(strict_types=1);
  *
  * CHECKS
  *  Part A (no database): makeLanguageFilterPredicate() — which uses the
- *    shared Policy::matchTags() — on a truth table of 21 stored tags and seven
- *    preference lists, including `zh-Hans`, `sr-Latn`, a pair of scripts, a
- *    preference with no script, and a private-use tag.
+ *    shared Policy::matchTags() — on a truth table of 22 stored tags (one of
+ *    them malformed) and nine preference lists, including `zh-Hans`,
+ *    `sr-Latn`, a pair of scripts, a preference with no script, a
+ *    private-use tag, a list holding only a malformed value (no filter at
+ *    all, core revision 4) and one malformed value among good ones (it
+ *    matches nothing).
  *  Part B (a real database; skipped, loudly, without one):
- *    applyLanguageFilterSql() over the same 21 rows keeps exactly the rows
+ *    applyLanguageFilterSql() over the same 22 rows keeps exactly the rows
  *    the predicate keeps, for every preference list.
  *
  * Mutation-proven: dropping the per-script clause from the SQL turned every
@@ -45,7 +48,8 @@ echo "tests/php/test-language-filter-scripts.php — a script preference drops s
 $check('the shared language rules loaded', mediaLanguageReady());
 
 $rows = ['', 'und', 'mul', 'zxx', 'zh', 'zh-Hans', 'zh-Hant', 'zh-Hans-CN', 'zh-Hant-TW', 'zh-TW',
-         'sr', 'sr-Latn', 'sr-Cyrl', 'sr-Cyrl-RS', 'en', 'en-GB', 'pt', 'pt-BR', 'pt-PT', 'x-hymnal', 'yue-Hant'];
+         'sr', 'sr-Latn', 'sr-Cyrl', 'sr-Cyrl-RS', 'en', 'en-GB', 'pt', 'pt-BR', 'pt-PT', 'x-hymnal', 'yue-Hant',
+         'English'];   // a malformed stored value: matches nothing (MATCH-010)
 $special = ['', 'und', 'mul', 'zxx'];
 $cases = [
     'zh-Hans'          => array_merge($special, ['zh', 'zh-Hans', 'zh-Hans-CN', 'zh-TW']),
@@ -55,6 +59,16 @@ $cases = [
     'zh-TW'            => array_merge($special, ['zh', 'zh-Hans', 'zh-Hant', 'zh-Hans-CN', 'zh-Hant-TW', 'zh-TW']),
     'pt-BR'            => array_merge($special, ['pt', 'pt-BR', 'pt-PT']),
     'x-hymnal'         => array_merge($special, ['x-hymnal']),
+];
+/* Core revision 4 (aaaa585): a malformed preference matches nothing — not
+   even the identical malformed value — and a list holding ONLY malformed
+   preferences counts as none, so nothing is filtered. These go straight to
+   the builders (the request path drops malformed values earlier, in
+   parsePreferredLanguageSubtags()), because the builders must honour the
+   rule for any caller. */
+$rawCases = [
+    'English (only a malformed preference)' => [['English'], $rows],
+    'pt, English (one malformed)'           => [['pt', 'English'], array_merge($special, ['pt', 'pt-BR', 'pt-PT'])],
 ];
 
 echo "\nPart A — the in-memory filter\n";
@@ -67,6 +81,18 @@ foreach ($cases as $csv => $expected) {
     $check("preferences \"{$csv}\" keep exactly: " . implode(', ', array_map(static fn($t) => $t === '' ? '(none)' : $t, $expected)),
         $kept === $expected, 'kept ' . implode(', ', $kept));
 }
+
+foreach ($rawCases as $label => [$prefs, $expected]) {
+    $pred = makeLanguageFilterPredicate($prefs);
+    $kept = array_values(array_filter($rows, static fn(string $t): bool => $pred(['language' => $t])));
+    $predicateKeeps[$label] = $kept;
+    $check("preferences {$label}: " . ($expected === $rows ? 'nothing is filtered' : 'the malformed one matches nothing, not even "English"'),
+        $kept === $expected, 'kept ' . implode(', ', $kept));
+}
+[$noneWhere] = applyLanguageFilterSql('Language', ['English']);
+$check('the SQL builder, given only a malformed preference, applies no filter at all', $noneWhere === ' AND 1=1', $noneWhere);
+$check('the request path drops malformed preferences before either builder sees them',
+    parsePreferredLanguageSubtags('English, pt_BR, !!') === [] && parsePreferredLanguageSubtags('English, pt') === ['pt']);
 
 echo "\nPart B — the SQL filter, against a real database\n";
 $dsn = getenv('IHYMNS_TEST_DSN') ?: '';
@@ -101,10 +127,13 @@ if ($db === null) {
         $ins = $db->prepare('INSERT INTO t (Id, Language) VALUES (?, ?)');
         foreach ($rows as $i => $tag) { $ins->bind_param('is', $i, $tag); $ins->execute(); }
         $ins->close();
-        foreach ($cases as $csv => $_expected) {
-            [$where, $types, $values] = applyLanguageFilterSql('Language', parsePreferredLanguageSubtags($csv));
+        $sqlCases = [];
+        foreach ($cases as $csv => $_expected) { $sqlCases[$csv] = parsePreferredLanguageSubtags($csv); }
+        foreach ($rawCases as $label => [$prefs, $_expected]) { $sqlCases[$label] = $prefs; }
+        foreach ($sqlCases as $csv => $prefs) {
+            [$where, $types, $values] = applyLanguageFilterSql('Language', $prefs);
             $stmt = $db->prepare('SELECT Language FROM t WHERE 1=1' . $where . ' ORDER BY Id');
-            $stmt->bind_param($types, ...$values);
+            if ($values !== []) { $stmt->bind_param($types, ...$values); }
             $stmt->execute();
             $got = array_map(static fn(array $r): string => (string)$r[0], $stmt->get_result()->fetch_all());
             $stmt->close();

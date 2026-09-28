@@ -95,6 +95,12 @@ export function scriptOf(tag) {
  * @returns {boolean}
  */
 export function preferenceMatchesTag(pref, tag) {
+    /* Core revision 4 (MATCH-010): a malformed value matches nothing — not
+       even the identical malformed value. The browser has no registry, so it
+       can only rule out values not even SHAPED like a tag (`en_GB`, `pt BR`);
+       an unregistered but tag-shaped value (`english`) is left to the server,
+       which checks every preference with the shared rules before filtering. */
+    if (!isPreferenceTag(pref) || !isPreferenceTag(tag)) return false;
     const group = languageGroupOf(pref);
     if (group === '' || group !== languageGroupOf(tag)) return false;
     const want = scriptOf(pref);

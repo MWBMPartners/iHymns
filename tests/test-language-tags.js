@@ -129,6 +129,8 @@ check('scriptOf finds the script after the language (and any extlangs)',
         check(`preferences "${csv}" keep exactly ${expected.join(', ')}`, same(kept, expected), kept.join(', '));
     }
 }
+check('a value not even shaped like a tag matches nothing, not even itself (core revision 4, MATCH-010)',
+    !preferenceMatchesTag('en_GB', 'en_GB') && !preferenceMatchesTag('en', 'en_GB') && !preferenceMatchesTag('pt BR', 'pt'));
 {
     const filterSrc = read('js/modules/songbook-language-filter.js');
     check('the songbook/song filter decides with preferenceMatchesTag() and reads the tiles\' whole tags',

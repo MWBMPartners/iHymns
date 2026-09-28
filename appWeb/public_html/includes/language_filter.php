@@ -287,6 +287,38 @@ function languageFilterPlan(array $preferences): array
 }
 
 /**
+ * The preferences the filter can use: every one that is not malformed.
+ *
+ * Policy MATCH-010 and AUTO-010 (settled in core revision 4, aaaa585): a
+ * malformed preference matches nothing — not even an identical malformed
+ * value — and a person whose preferences are ALL malformed counts as having
+ * none, so no filter applies to them. The request path already drops
+ * malformed values (parsePreferredLanguageSubtags() keeps only what the
+ * shared storage rule accepts); this keeps the two filter builders honest for
+ * any other caller, which before this change hid every song from a list
+ * holding only malformed values.
+ *
+ * @param list<string> $preferences
+ * @return list<string>
+ */
+function languageFilterUsablePreferences(array $preferences): array
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    $out = [];
+    foreach ($preferences as $pref) {
+        $pref = trim((string)$pref);
+        if ($pref === '') continue;
+        if (mediaLanguageReady()) {
+            if (\Mwbm\MediaLanguage\Policy::canonicalise($pref)->isMalformed()) continue;
+        } elseif (!preg_match('/^(?:[a-z]{2,3}|x|i)(?:-|$)/i', $pref)) {
+            continue;   /* degraded path (shared rules missing): the plain shapes only */
+        }
+        $out[] = $pref;
+    }
+    return $out;
+}
+
+/**
  * The script subtag of a stored tag, lower-case, or '' when it names none.
  * Language, up to three extlangs, then a four-letter script (BCP 47 §2.1).
  */
@@ -328,6 +360,7 @@ function languageFilterScriptOf(string $tag): string
  */
 function applyLanguageFilterSql(string $colExpr, array $subtags): array
 {
+    $subtags = languageFilterUsablePreferences($subtags);   /* all malformed = none (AUTO-010) */
     if (empty($subtags)) {
         return [' AND 1=1', '', []];
     }
@@ -368,6 +401,7 @@ function applyLanguageFilterSql(string $colExpr, array $subtags): array
  */
 function makeLanguageFilterPredicate(array $subtags): callable
 {
+    $subtags = languageFilterUsablePreferences($subtags);   /* all malformed = none (AUTO-010) */
     if (empty($subtags)) {
         return static fn(array $_row): bool => true;
     }
