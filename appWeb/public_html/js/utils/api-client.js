@@ -118,9 +118,13 @@ function isSameOrigin(url) {
  * by language group (includes/language_filter.php), and orders lists by this
  * priority (the shared language policy's UI-020).
  *
+ * Exported (#2137 review) so the one other place that sends the list itself —
+ * Song of the Day's `?lang=` — reads it through this same function rather
+ * than a second filter that could disagree with the header.
+ *
  * @returns {string} Comma-separated language tags, highest priority first, or ''.
  */
-function preferredLanguagesCsv() {
+export function preferredLanguagesCsv() {
     try {
         const raw = localStorage.getItem(STORAGE_LANGUAGE_FILTER);
         if (!raw) return '';

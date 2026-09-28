@@ -22,11 +22,11 @@
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
-import { EVT_LANGUAGE_FILTER_CHANGED, STORAGE_LANGUAGE_FILTER } from '../constants.js';
+import { EVT_LANGUAGE_FILTER_CHANGED } from '../constants.js';
 /* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
    on every same-origin request, replacing the old global fetch monkey-patch
    this module's `lang=` param used to depend on being installed elsewhere. */
-import { apiFetch } from '../utils/api-client.js';
+import { apiFetch, preferredLanguagesCsv } from '../utils/api-client.js';
 
 export class SongOfTheDay {
     /**
@@ -71,22 +71,19 @@ export class SongOfTheDay {
     }
 
     /**
-     * Read the active language-filter subtag set the same way the
-     * songbook-language-filter module does — single source of truth is
-     * localStorage[STORAGE_LANGUAGE_FILTER] (a JSON array of lowercase
-     * primary subtags). Returns [] when "All" is selected (no filter),
-     * and likewise on parse errors.
+     * The reader's saved language list — whole language tags (`pt-BR`, not
+     * just `pt`), highest priority first — read through api-client.js's
+     * preferredLanguagesCsv(), the same function that builds the
+     * X-Preferred-Languages header every other request sends. Returns []
+     * when "All" is selected (no filter), and likewise on parse errors.
+     *
+     * #2137 review — this used to keep only two- and three-letter codes
+     * (`/^[a-z]{2,3}$/`), so a saved `pt-BR, en` became `?lang=en`, and
+     * because `?lang=` wins over the header on the server, this card alone
+     * filtered as if Portuguese had never been chosen.
      */
     getActiveSubtags() {
-        try {
-            const raw = localStorage.getItem(STORAGE_LANGUAGE_FILTER);
-            if (!raw) return [];
-            const parsed = JSON.parse(raw);
-            if (!Array.isArray(parsed)) return [];
-            return parsed.filter(s => typeof s === 'string' && /^[a-z]{2,3}$/.test(s));
-        } catch (_e) {
-            return [];
-        }
+        return preferredLanguagesCsv().split(',').filter(Boolean);
     }
 
     /**

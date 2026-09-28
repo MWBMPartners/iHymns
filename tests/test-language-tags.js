@@ -103,5 +103,28 @@ check('the song page picker is put in the reader\'s order once, from the router'
     read('js/modules/router.js').includes('m.orderTranslationPicker()')
     && read('js/modules/song-translations.js').includes('export function orderTranslationPicker()'));
 
+/* Song of the Day sends the same list as every other request (#2137 review).
+   It builds its own `?lang=` (which wins over the header on the server), and
+   used to keep only two- and three-letter codes, so `pt-BR, en` became `en`. */
+{
+    const { STORAGE_LANGUAGE_FILTER } = await import('../appWeb/public_html/js/constants.js');
+    const store = { [STORAGE_LANGUAGE_FILTER]: JSON.stringify(['pt-BR', 'en', 'not a tag!', 'zh-Hant']) };
+    globalThis.localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem() {}, removeItem() {} };
+    globalThis.window = globalThis.window || { location: { origin: 'https://example.test' } };
+    globalThis.document = globalThis.document || { addEventListener() {}, getElementById() { return null; } };
+    const { preferredLanguagesCsv } = await import('../appWeb/public_html/js/utils/api-client.js');
+    const { SongOfTheDay } = await import('../appWeb/public_html/js/modules/song-of-the-day.js');
+    const sotd = Object.create(SongOfTheDay.prototype);
+    check('the header list keeps whole tags in the chosen order and drops junk',
+        preferredLanguagesCsv() === 'pt-BR,en,zh-Hant', preferredLanguagesCsv());
+    check('Song of the Day sends exactly the same list in ?lang= (pt-BR is no longer dropped)',
+        sotd.getActiveSubtags().join(',') === preferredLanguagesCsv(), sotd.getActiveSubtags().join(','));
+    store[STORAGE_LANGUAGE_FILTER] = '[]';
+    check('with "All" chosen, Song of the Day sends no ?lang= at all', sotd.getActiveSubtags().length === 0);
+    const sotdSrc = read('js/modules/song-of-the-day.js').replace(/\/\*[\s\S]*?\*\//g, '');
+    check('js/modules/song-of-the-day.js has no filter of its own (no /^[a-z]{2,3}$/) and reads preferredLanguagesCsv()',
+        !sotdSrc.includes('/^[a-z]{2,3}$/') && sotdSrc.includes('preferredLanguagesCsv()'));
+}
+
 console.log(`\n  ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
