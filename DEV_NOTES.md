@@ -716,13 +716,28 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   (with or without spaces); since round 4 of the review also a JavaScript object key (`language: 'en'`,
   `{'language': 'en'}`, `"language": "en"`), a declaration (`var`/`let`/`const language = 'en'`, any name containing
   `language` or `lang`), and a PHP `match` giving `'en'` to a language variable or key — on one line, or spread over
-  several (each PHP file is also read whole for that one shape). It still cannot see a fallback built any other way —
-  across two lines in any other shape, through a variable or constant (`$raw : DEFAULT_LANG`), or a `match` whose
-  result is returned rather than assigned to a language name — so reviewers still look. Deliberate exceptions are
-  listed in the test by file AND line content, and each must still be found: today only `js/modules/print.js`'s
-  sample song for the print editor's preview ("Amazing Grace", really English). (`'lang' => 'en'` is deliberately
-  not flagged: the geocoder in `manage/places-api.php` asks for place names in English that way, which is not a
-  song's language.)
+  several (each PHP file is also read whole for that one shape). Since round 5: "English" is any quoted `en` tag, so
+  a regional fallback (`|| 'en-GB'`, `?? 'en-US'`) is caught in every shape; "a language name" is any name
+  CONTAINING `language` or `lang` in every shape (`languageCode: 'en'`, `targetLang: 'en'`,
+  `'languageCode' => 'en'`, `$x['languageCode'] = 'en'` — and JSON-LD's `inLanguage: 'en'`, which round 4 had left
+  out and which IS a song's language); an assignment with no spaces where a statement or an argument starts
+  (`language='en'`, `if(!lang)lang='en'`, `{ id, language = 'en' }`, `function f(lang = 'en')`); a logical
+  assignment (`lang||='en'`, `language??='en'`); and a setter call (`setLanguage('en')`, `setSongLang('en-GB')`).
+  **What it still cannot see (its blind spots), so reviewers still look:** a template literal
+  (`` language: `en` ``); a value built by joining strings (`'e' + 'n'`); a fallback through a variable or constant
+  (`$raw : DEFAULT_LANG`, `const EN = 'en'; … || EN`); a fallback spread over two lines in any shape except the PHP
+  `match`; a `match` or ternary whose result is returned or passed on rather than assigned to a language name;
+  any call other than a `set…Language(…)` setter (`Object.assign(song, { lang: x })` with `x` holding `'en'`,
+  `$map->set('language', 'en')`, `new Map([['language', 'en']])`); a bare `lang: 'en'`-style assignment in the
+  middle of a longer expression (`x = (lang='en')` is caught only because of the bracket before it; `a && lang='en'`
+  is not); a name that does not contain `language` or `lang` (`$code = 'en'` then stored as the language); and
+  anything outside the site's own PHP and JS (vendor folders, JSON files, the Apple and Android apps, `tools/`).
+  Deliberate exceptions are listed in the test by file and the WHOLE line (trimmed) — since round 5 the whole line
+  must be equal, because "contains the listed text" also excused a real fallback appended to that line (the fourth
+  review's planted fault) — and each must still be found: today only `js/modules/print.js`'s sample song for the
+  print editor's preview ("Amazing Grace", really English). (A PHP array key that is exactly `'lang' => 'en'` is
+  deliberately not flagged: the geocoder in `manage/places-api.php` asks for place names in English that way,
+  which is not a song's language. `'langCode' => 'en'` and every longer name are flagged.)
 - **The songbook-language card is a curator's decision** ("Fill in a missing song language from its
   songbook", manual, never part of "Apply all"): it gives a songbook's language ONLY to songs that have no
   language at all, and never changes a song that has any value — a real tag, `und`/`mul`/`zxx`, or a
