@@ -220,14 +220,14 @@ dependencies {
     // used to navigate between screens (home, songbook, song detail, search,
     // favourites, help).
     // =========================================================================
-    implementation("androidx.navigation:navigation-compose:2.10.1")
+    implementation("androidx.navigation:navigation-compose:2.10.2")
 
     // =========================================================================
     // ANDROIDX CORE LIBRARIES
     // =========================================================================
 
     // Core KTX — Kotlin extensions for Android framework APIs
-    implementation("androidx.core:core-ktx:1.19.0")
+    implementation("androidx.core:core-ktx:1.19.1")
 
     // Activity Compose — ComponentActivity integration with Compose setContent
     implementation("androidx.activity:activity-compose:1.13.0")
