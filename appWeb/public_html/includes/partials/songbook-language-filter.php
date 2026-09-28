@@ -51,6 +51,7 @@ declare(strict_types=1);
 if (!isset($songbooks) || !is_array($songbooks)) {
     $songbooks = [];
 }
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language_filter.php';   /* #2132 — IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN */
 
 /* Build the de-duplicated language list. Each row's Language is a
    full BCP 47 tag (`pt-BR`, `zh-Hans-CN`, …); the filter operates on
@@ -66,6 +67,8 @@ foreach ($songbooks as $book) {
     if ($tag === '') continue;
     if (!preg_match('/^([a-z]{2,3})/i', $tag, $m)) continue;
     $sub = strtolower($m[1]);
+    /* #2132 — und / mul / zxx are always shown, so they are not a choice. */
+    if (in_array($sub, IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN, true)) continue;
     if (!isset($languageOptions[$sub])) {
         $languageOptions[$sub] = strtoupper($m[1]);
     }
@@ -107,6 +110,7 @@ try {
         while ($row = $res->fetch_row()) {
             $sub = (string)$row[0];
             if (!preg_match('/^[a-z]{2,3}$/', $sub)) continue;
+            if (in_array($sub, IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN, true)) continue;   /* #2132 */
             if (!isset($languageOptions[$sub])) {
                 $languageOptions[$sub] = strtoupper($sub);
             }
@@ -214,7 +218,7 @@ $languageCount = count($languageList);
                 </p>
             </div>
             <div class="lang-filter-foot small text-muted px-3 py-2 border-top">
-                Songbooks and songs without a language set always remain visible.
+                Songbooks and songs without a language set, or whose language is not known, always remain visible.
                 <?php if (!empty($currentUser)): ?>
                     Your selection is saved to your account and syncs across devices.
                 <?php else: ?>

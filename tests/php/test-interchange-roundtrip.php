@@ -332,7 +332,7 @@ $FORMATS = [
             'number'             => 7,          // from <hymn_number> (song.number), not the $numberHint arg
             'songbook'           => 'IX',
             'songbookName'       => 'Interchange Fixtures',
-            'language'           => 'en',        // hardcoded by this parser — OpenSong carries no language field
+            'language'           => '',          // #2132 — OpenSong carries no language field; the parser no longer invents 'en' (the saver stores und)
             'ccli'               => '1234567',
             'iswc'               => '',          // hardcoded — OpenSong has no <iswc>
             /* DEFECT (4) — buildOpenSong() emits <tune>FIXTURE TUNE</tune> (format-export.js:147)
@@ -506,7 +506,7 @@ $FORMATS = [
                 'number'             => 7,
                 'songbook'           => 'VIDEOPSALM',
                 'songbookName'       => 'Interchange Fixture Song',
-                'language'           => 'en',   // hardcoded by this parser
+                'language'           => '',     // #2132 — no language in this format; the parser no longer invents 'en' (the saver stores und)
                 /* DEFECT (1) — buildVideoPsalm() (format-export.js:224-225) writes copyright to
                    'Memo1' and ccli to 'Memo2' (prefixed 'CCLI 1234567') and NEVER emits an
                    'Author' key at all — but _bulkImport_parseVideoPsalmSongbook() reads
@@ -584,7 +584,7 @@ $FORMATS = [
             'number'             => 7,          // from the $number ARGUMENT — ChordPro carries no number in-body at all
             'songbook'           => 'IX',
             'songbookName'       => 'Interchange Fixtures',
-            'language'           => 'en',        // hardcoded by this parser
+            'language'           => '',          // #2132 — no language in this format; the parser no longer invents 'en' (the saver stores und)
             'ccli'               => '1234567',   // lossless — {ccli:} round-trips exactly
             'iswc'               => '',
             'tuneName'           => '',           // ChordPro's exporter never reads song.tuneName at all

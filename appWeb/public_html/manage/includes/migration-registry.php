@@ -125,6 +125,34 @@ function _migProbe_columnComment(\mysqli $db, string $table, string $column): st
     return $row ? (string)$row['COLUMN_COMMENT'] : '';
 }
 
+/**
+ * A column's current DEFAULT as plain text, or null when the column does not
+ * exist. Used by the 'song-language-default-und' probe (#2132).
+ *
+ * ELI5: "what does this column fill in when a row gives no value?"
+ *
+ * Detail: MariaDB (10.2.7 and later) reports a string default WITH its quotes
+ * (`'en'`) while MySQL reports it bare (`en`), so the quotes are stripped here
+ * and both answer `en`. A NULL default comes back as ''. Names are bound, never
+ * interpolated (rule #5).
+ * https://mariadb.com/kb/en/information-schema-columns-table/
+ */
+function _migProbe_columnDefaultValue(\mysqli $db, string $table, string $column): ?string
+{
+    $stmt = $db->prepare(
+        'SELECT COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('ss', $table, $column);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    if ($row === null) {
+        return null;
+    }
+    return trim((string)($row[0] ?? ''), "'");
+}
+
 return [
     'account-sync' => [
         'script' => 'migrate-account-sync.php',
@@ -5100,6 +5128,34 @@ return [
             } catch (\Throwable $_e) {
                 return false;   /* tblAppSettings absent on a fresh pre-install DB → not pending. */
             }
+        },
+    ],
+    /* #2132 (part of #2137, the shared language policy) — a song whose
+       language nobody gave is "not known" (und), never English. Changes ONLY
+       the column default; no existing song is rewritten (a stored 'en' cannot
+       be told apart from a real English song — policy COMPAT-040). Schema-only,
+       additive in effect, idempotent: safe in "Apply all". */
+    'song-language-default-und' => [
+        'script' => 'migrate-song-language-default-und.php',
+        'card' => [
+            'title'  => 'Song language: default to &ldquo;not known&rdquo; (und), not English (#2132)',
+            'body'   => 'Changes the default of <code>tblSongs.Language</code> from'
+                      . ' <code>en</code> to <code>und</code> (the standard code for'
+                      . ' &ldquo;language not known&rdquo;), as the shared language policy'
+                      . ' requires. A song saved without a language is no longer recorded'
+                      . ' as English. <strong>No existing song is changed:</strong> a song'
+                      . ' stored as <code>en</code> by the old default looks exactly like a'
+                      . ' real English song, so rewriting them would be a guess. Only the'
+                      . ' column&rsquo;s description changes, not its data. Idempotent &mdash;'
+                      . ' safe to re-run.',
+            'button' => 'Run Song Language Default Migration',
+        ],
+        /* Single-object probe (rule #19), read from the live schema — never
+           `=> true`. Pending while the column exists and still defaults to
+           anything other than 'und'. */
+        'probe' => static function (\mysqli $db): bool {
+            $default = _migProbe_columnDefaultValue($db, 'tblSongs', 'Language');
+            return $default !== null && $default !== 'und';
         },
     ],
 ];

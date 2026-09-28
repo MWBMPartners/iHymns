@@ -169,7 +169,11 @@ if (_migBcp47_tableExists($mysqli, 'tblRegions')) {
  * ---------------------------------------------------------------------- */
 $columnsToWiden = [
     ['table' => 'tblSongbooks',         'column' => 'Language',       'definition' => 'VARCHAR(35) NULL DEFAULT NULL'],
-    ['table' => 'tblSongs',             'column' => 'Language',       'definition' => "VARCHAR(35) NOT NULL DEFAULT 'en'"],
+    /* #2132 — was DEFAULT 'en'. This widen only runs on an install whose column
+       is still narrower than 35 (so, before #681), but if it ever ran after
+       migrate-song-language-default-und.php it must not bring the guessed
+       English default back. */
+    ['table' => 'tblSongs',             'column' => 'Language',       'definition' => "VARCHAR(35) NOT NULL DEFAULT 'und'"],
     ['table' => 'tblSongTranslations',  'column' => 'TargetLanguage', 'definition' => 'VARCHAR(35) NOT NULL'],
     ['table' => 'tblSongRequests',      'column' => 'Language',       'definition' => "VARCHAR(35) NOT NULL DEFAULT 'en'"],
 ];

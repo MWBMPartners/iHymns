@@ -233,9 +233,10 @@ function editorSaveSongCore(): array
            The same check runs on every section's and every line's language
            (mediaLanguageFirstRefusalInComponents()), so a curator is told
            which box is wrong instead of the value quietly vanishing.
-           Empty string normalises to 'en' for tblSongs.Language NOT NULL
-           DEFAULT 'en'. */
-        $rawLang = (string)($song['language'] ?? 'en');
+           #2132 — an empty or missing language is stored as `und` ("not
+           known"), never as English: a guessed `en` cannot later be told apart
+           from a real English song (policy LANG-003). */
+        $rawLang = (string)($song['language'] ?? '');
         $valid   = _ietfBcp47Validate($rawLang);
         if ($valid === false) {
             return ['status' => 400, 'body' => ['error' => mediaLanguageRefusalMessage($rawLang, 'the song')]];
@@ -244,7 +245,7 @@ function editorSaveSongCore(): array
         if ($componentLanguageRefusal !== null) {
             return ['status' => 400, 'body' => ['error' => $componentLanguageRefusal]];
         }
-        $language     = $valid ?? 'en';
+        $language     = $valid ?? IHYMNS_LANGUAGE_UNKNOWN;
         $copyright    = (string)($song['copyright']   ?? '');
         /* Places adoption — composition / first-performance origin.
            VARCHAR mirror persists either way; the FK is set only

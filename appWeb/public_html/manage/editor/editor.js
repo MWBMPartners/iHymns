@@ -753,7 +753,10 @@ function _populateSongForm(song) {
        endpoints, and writes the composed tag back to the hidden
        #edit-language field. */
     if (window.editSongIetfPicker && typeof window.editSongIetfPicker.setTag === 'function') {
-        window.editSongIetfPicker.setTag(song.language || 'en');
+        /* #2132 — an unknown language (empty, or `und`, "not known") shows an
+           EMPTY picker, never a guessed English; saving an empty picker stores
+           `und` on the server. */
+        window.editSongIetfPicker.setTag(song.language && song.language !== 'und' ? song.language : '');
     }
 
     /* Populate the boolean checkboxes (#222, #225). */
@@ -927,7 +930,7 @@ function bindMetadataListeners() {
             if (!song) return;
             var hidden = document.getElementById('edit-language');
             if (!hidden) return;
-            song.language = hidden.value || 'en';
+            song.language = hidden.value || '';   /* #2132 — empty means "not known" (the server stores und), never a guessed 'en' */
             markModified(song.id);
         };
         ['input', 'change', 'blur'].forEach(function (eventType) {
@@ -3041,7 +3044,7 @@ function renderTranslations(song) {
             if (s.id === song.id) return; /* skip self */
             var opt = document.createElement('option');
             opt.value = s.id;
-            opt.textContent = s.title + ' (' + (s.language || 'en') + ')';
+            opt.textContent = s.title + ' (' + (s.language || 'und') + ')';   /* #2132 — und = language not known */
             datalist.appendChild(opt);
         });
     }
@@ -3090,7 +3093,14 @@ function initTranslationControls() {
             return;
         }
 
-        var targetLang = targetSong.language || 'en';
+        /* #2132 — a translation link is keyed by its language, so a target song
+           whose language is not known cannot be linked honestly: say so,
+           instead of recording it as English. */
+        var targetLang = targetSong.language || '';
+        if (targetLang === '' || targetLang === 'und') {
+            showToast('Set the language of ' + targetId + ' first: a translation link needs to know which language it is in.', 'warning');
+            return;
+        }
 
         /* #1626 — mirror the table's `uq_Translation (SourceSongId, TargetLanguage)`
            UNIQUE key in the UI: the DB can hold at most ONE translation of this song
@@ -5647,7 +5657,7 @@ function addNewSong() {
         number: null,
         songbook: _miscBook ? _miscBook.id : '',
         songbookName: _miscBook ? (_miscBook.name || _miscBook.id) : '',
-        language: 'en',
+        language: '',       /* #2132 — not known until a curator picks it (stored as und), never a guessed 'en' */
         ccli: '',
         iswc: '',           /* #497 */
         tuneName: '',       /* #497 */

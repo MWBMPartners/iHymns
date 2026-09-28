@@ -2734,14 +2734,15 @@ try {
            into tblSongs.Language. Now `pt-br` is stored as `pt-BR`, and a value
            that is not a language code is refused with a plain sentence (422 —
            the status, not the wording, is what the client branches on, rule
-           #35). An empty value keeps today's behaviour (stored as ''). */
+           #35). #2132 — an emptied box is stored as `und` ("not known"), never
+           as a blank or a guessed English. */
         if ($field === 'language') {
             $rawLanguage = $raw === null ? '' : (string)$raw;
             $tidyLanguage = mediaLanguageTagForStorage($rawLanguage);
             if ($tidyLanguage === false) {
                 ed2_respond(['ok' => false, 'error' => mediaLanguageRefusalMessage($rawLanguage, 'the song')], 422);
             }
-            $raw = $tidyLanguage ?? '';
+            $raw = $tidyLanguage ?? IHYMNS_LANGUAGE_UNKNOWN;
         }
 
         /* ---- #1741 P1 existence gate ---------------------------------------

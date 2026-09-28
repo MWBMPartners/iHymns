@@ -4873,7 +4873,7 @@ export class SetList {
                 meta: {
                     songId: song.publicId || song.id || '',
                     title:  song.title || 'Untitled',
-                    lang:   song.language || 'en',
+                    lang:   song.language || 'und',   /* #2132 — not known, never a guessed 'en' */
                     dir:    'ltr',
                     book:   song.songbookName || song.songbook || '',
                 },

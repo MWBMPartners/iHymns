@@ -75,6 +75,12 @@ import { apiFetch } from '../utils/api-client.js';
 
 const STORAGE_KEY = STORAGE_LANGUAGE_FILTER;
 
+/* #2132 — mirrors includes/language_filter.php's
+   IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN: a song or songbook whose language is not
+   known (und), is in several languages (mul) or has none (zxx) is never hidden
+   by a language filter, exactly like an untagged one. */
+const ALWAYS_SHOWN_GROUPS = new Set(['und', 'mul', 'zxx']);
+
 /**
  * Read the saved preferred-language subtag list from localStorage.
  * Stored as a JSON array of lowercase primary subtags.
@@ -179,7 +185,7 @@ function applyFilter(rootEl, subtags) {
         const shouldShow = (() => {
             if (set.size === 0) return true;        /* "All" → everything */
             if (tilePrimaries.length === 0) return true; /* untagged → always pass */
-            return tilePrimaries.some(p => set.has(p));
+            return tilePrimaries.some(p => set.has(p) || ALWAYS_SHOWN_GROUPS.has(p));
         })();
 
         if (shouldShow) {
@@ -198,7 +204,7 @@ function applyFilter(rootEl, subtags) {
             if (set.size === 0) return true;
             if (!rowLang) return true;
             const primary = rowLang.split('-', 1)[0];
-            return set.has(primary);
+            return set.has(primary) || ALWAYS_SHOWN_GROUPS.has(primary);   /* #2132 */
         })();
         if (shouldShow) {
             row.style.removeProperty('display');

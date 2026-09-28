@@ -28,6 +28,13 @@ declare(strict_types=1);
  * (F) lyricsIngest_parseTtml() — TTML xml:lang on the document and on lines.
  * (G) mediaLanguageFirstRefusalInComponents() — the editors' refusal message.
  * (H) The MARC helpers read and write through the shared ISO 639-2 data.
+ * (J) #2132 — an unknown language is `und`, never English: the schema
+ *     default and the migration agree byte for byte; the migration is
+ *     registered with a real probe; the language filter lets und / mul / zxx
+ *     through; the song page's search-engine data no longer falls back to the
+ *     page's own language; and a GUARD derived from the tree fails if any
+ *     language value falls back to 'en' again (a line marked #2134, the song
+ *     request feature filed separately, is reported, not failed).
  * (I) GUARD, derived from the tree (rule #34): no PHP file under
  *     appWeb/public_html/ contains a hand-written language-tag pattern of the
  *     shapes the five retired checkers used. Mutation-proven: re-adding one
@@ -230,6 +237,77 @@ foreach ($it as $file) {
 mliCheck("the guard actually scanned the site's PHP (found {$scanned} files)", $scanned > 200);
 mliCheck('no hand-written language-tag pattern remains (use mediaLanguageTagForStorage() / mediaLanguageReadExternal())',
     $offenders === [], implode("\n        ", $offenders));
+
+/* ---------------------------------------------------------------- (J) --- */
+echo "(J) an unknown language is und, never English (#2132)\n";
+require_once $inc . '/language_filter.php';
+$schemaSql = (string)file_get_contents($repoRoot . '/appWeb/.sql/schema.sql');
+$migSrc    = (string)file_get_contents($repoRoot . '/appWeb/.sql/migrate-song-language-default-und.php');
+$schemaDef = preg_match("/\\n\\s+Language\\s+(VARCHAR\\(35\\)\\s+NOT NULL DEFAULT 'und' COMMENT '[^']*')/", $schemaSql, $sm) ? preg_replace('/\\s+/', ' ', $sm[1]) : null;
+$migDef    = preg_match("/MODIFY COLUMN Language (VARCHAR\\(35\\) NOT NULL DEFAULT 'und' COMMENT '[^']*')/", $migSrc, $mm) ? $mm[1] : null;
+mliCheck("schema.sql: tblSongs.Language defaults to 'und'", $schemaDef !== null);
+mliCheck('the migration restates the column byte-identically to schema.sql (rule #19)', $schemaDef !== null && $schemaDef === $migDef,
+    mliShow([$schemaDef, $migDef]));
+mliCheck("schema.sql no longer defaults tblSongs.Language to 'en'",
+    preg_match("/CREATE TABLE IF NOT EXISTS tblSongs \\([^;]*?Language\\s+VARCHAR\\(35\\)\\s+NOT NULL DEFAULT 'en'/s", $schemaSql) !== 1);
+$registrySrc = (string)file_get_contents($repoRoot . '/appWeb/public_html/manage/includes/migration-registry.php');
+mliCheck('the migration is registered, with a probe that reads the live column default',
+    str_contains($registrySrc, "'script' => 'migrate-song-language-default-und.php'")
+    && str_contains($registrySrc, "_migProbe_columnDefaultValue(\$db, 'tblSongs', 'Language')"));
+[$fWhere, $fTypes, $fVals] = applyLanguageFilterSql('s.Language', ['en']);
+mliCheck('the SQL language filter lets und / mul / zxx through, all bound',
+    $fVals === ['en', 'und', 'mul', 'zxx'] && $fTypes === 'ssss' && substr_count($fWhere, '?') === 4, mliShow([$fWhere, $fVals]));
+$pred = makeLanguageFilterPredicate(['en']);
+mliCheck('the in-memory filter keeps und, zxx and mul-Latn rows, and still drops fr',
+    $pred(['language' => 'und']) && $pred(['language' => 'zxx']) && $pred(['Language' => 'mul-Latn']) && !$pred(['language' => 'fr']));
+$indexSrc = (string)file_get_contents($repoRoot . '/appWeb/public_html/index.php');
+mliCheck("JSON-LD inLanguage no longer falls back to the page's own interface language",
+    !str_contains($indexSrc, '$jsonLdLanguages[] = $locale') && !str_contains($indexSrc, '?? $locale'));
+/* GUARD — derived from the tree: every .php and .js file under
+   appWeb/public_html (excluding third-party vendor folders). A language value
+   must never fall back to English. Interface-locale settings (`locale`,
+   `accept-language`) are about the SITE's language, not a song's, and do not
+   match these patterns. */
+$fallbackPatterns = [
+    '/(?:language|lang)\b[^\n]{0,60}(?:\?\?|\|\||\?:)\s*[\'"]en[\'"]/i',   // x.language ?? 'en', lang || 'en'
+    '/[\'"]language[\'"]\s*=>\s*[\'"]en[\'"]/',                                // 'language' => 'en'
+];
+$enScanned = 0;
+$enOffenders = [];
+$enKnown = [];
+$it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($repoRoot . '/appWeb/public_html', FilesystemIterator::SKIP_DOTS));
+foreach ($it as $file) {
+    $path = str_replace('\\', '/', $file->getPathname());
+    if (!in_array($file->getExtension(), ['php', 'js'], true) || str_contains($path, '/vendor/')) {
+        continue;
+    }
+    $enScanned++;
+    foreach (file($file->getPathname()) ?: [] as $i => $line) {
+        /* Comment-stripped (like this repo's other source guards): a doc
+           comment may SHOW an example shape such as 'language' => 'en'
+           without it being code. Whole-line comments are skipped; a trailing
+           block or line comment is cut off before matching. */
+        if (preg_match('~^\\s*(?:\\*|//|/\\*|#)~', $line) === 1) {
+            continue;
+        }
+        $code = (string)preg_replace('~\\s(?://|/\\*).*$~', '', $line);
+        foreach ($fallbackPatterns as $re) {
+            if (preg_match($re, $code) === 1) {
+                $where = substr($path, strlen(str_replace('\\', '/', $repoRoot)) + 1) . ':' . ($i + 1);
+                if (str_contains($line, '#2134')) {
+                    $enKnown[] = $where;
+                } else {
+                    $enOffenders[] = $where . ': ' . trim($line);
+                }
+                break;
+            }
+        }
+    }
+}
+mliCheck("the 'en' guard actually scanned the site's PHP and JS (found {$enScanned} files)", $enScanned > 300);
+mliCheck("no language value falls back to 'en' (store und, or leave the value out)", $enOffenders === [],
+    implode("\n        ", $enOffenders));
+echo '  NOTE  known and filed separately (#2134, song requests): ' . ($enKnown === [] ? 'none left' : implode(', ', $enKnown)) . "\n";
 
 echo "\n  {$passed} passed, " . count($failures) . " failed\n";
 if ($failures !== []) {

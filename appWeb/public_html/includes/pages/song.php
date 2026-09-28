@@ -1363,9 +1363,12 @@ try {
                 $compLang    = ($compLangRaw && trim((string)$compLangRaw) !== '')
                              ? trim((string)$compLangRaw)
                              : '';
+                /* #2132 — with no language anywhere, the section is marked
+                   `und` ("not known") rather than `en`: a wrong lang= makes a
+                   screen reader pronounce the words by English rules. */
                 $effectiveLang = $compLang !== ''
                                 ? $compLang
-                                : ($songPrimaryLang !== '' ? $songPrimaryLang : 'en');
+                                : ($songPrimaryLang !== '' ? $songPrimaryLang : 'und');
                 if ($compLang !== '' && !in_array(strtolower($compLang), $songLanguageUnion, true)) {
                     $songLanguageUnion[] = strtolower($compLang);
                 }

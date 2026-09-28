@@ -694,6 +694,9 @@ class SongData
                 if (!empty($_b['language']) && preg_match('/^([a-z]{2,3})/i', (string)$_b['language'], $m)) {
                     $own = strtolower($m[1]);
                 }
+                if (in_array($own, ['und', 'mul', 'zxx'], true)) {
+                    $own = '';   /* #2132 — "not known" etc. is not a language the book is in */
+                }
                 $merged = $own !== '' ? array_merge([$own], $contained) : $contained;
                 $merged = array_values(array_unique($merged));
                 sort($merged);
@@ -1192,9 +1195,12 @@ class SongData
             if ($res) {
                 while ($row = $res->fetch_assoc()) {
                     $abbr  = (string)$row['SongbookAbbr'];
+                    /* #2132 — und / mul / zxx always pass the language filter, so
+                       they are not listed as a language the book contains. */
                     $langs = array_values(array_filter(
                         explode(',', (string)($row['langs'] ?? '')),
                         static fn($s) => $s !== '' && preg_match('/^[a-z]{2,3}$/', $s)
+                            && !in_array($s, ['und', 'mul', 'zxx'], true)
                     ));
                     $out[$abbr] = $langs;
                 }

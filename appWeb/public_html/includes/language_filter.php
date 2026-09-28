@@ -21,7 +21,10 @@ declare(strict_types=1);
  * The filter operates on the PRIMARY subtag (the first 2-3
  * letters of the BCP 47 tag) so picking "en" matches `en`,
  * `en-GB`, `en-US`. Untagged rows (Language IS NULL OR '')
- * always pass the filter regardless of the requested set.
+ * always pass the filter regardless of the requested set, and so
+ * (#2132) do rows whose language is `und` (not known), `mul` (several
+ * languages) or `zxx` (no language) — see
+ * IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN.
  *
  * Resolution order for an incoming request:
  *
@@ -75,6 +78,16 @@ function parsePreferredLanguageSubtags(?string $rawCsv): array
     sort($list);
     return $list;
 }
+
+/**
+ * Language groups that are never filtered out (#2132): a song whose language
+ * is not known (`und`), is in several languages (`mul`) or has no language at
+ * all (`zxx`, an instrumental) could be exactly what a reader of ANY language
+ * wants, so hiding it behind a language filter would be a guess. They pass the
+ * filter the same way an untagged song always has. Mirrored in the browser by
+ * js/modules/songbook-language-filter.js (ALWAYS_SHOWN_GROUPS).
+ */
+const IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN = ['und', 'mul', 'zxx'];
 
 /**
  * Resolve the active set of preferred-language subtags for the
@@ -157,6 +170,8 @@ function resolvePreferredLanguagesForRequest(?array $authUser): array
  *    OR LOWER(SUBSTRING_INDEX(<colExpr>, '-', 1)) IN (?, ?, …)
  *   )
  *
+ * The IN list is the requested subtags plus the always-shown groups
+ * `und`, `mul`, `zxx` (#2132), all bound.
  * Untagged rows (NULL / empty) always pass — matches the spec.
  * Empty subtag list returns `[" AND 1=1", '', []]` so callers can
  * blindly concatenate without checking emptiness.
@@ -171,13 +186,14 @@ function applyLanguageFilterSql(string $colExpr, array $subtags): array
     if (empty($subtags)) {
         return [' AND 1=1', '', []];
     }
-    $placeholders = implode(',', array_fill(0, count($subtags), '?'));
+    $values = array_values(array_unique(array_merge(array_values($subtags), IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN)));
+    $placeholders = implode(',', array_fill(0, count($values), '?'));
     $where = " AND ("
            .   "$colExpr IS NULL OR $colExpr = '' "
            .   "OR LOWER(SUBSTRING_INDEX($colExpr, '-', 1)) IN ($placeholders)"
            . ")";
-    $types = str_repeat('s', count($subtags));
-    return [$where, $types, array_values($subtags)];
+    $types = str_repeat('s', count($values));
+    return [$where, $types, $values];
 }
 
 /**
@@ -193,7 +209,7 @@ function makeLanguageFilterPredicate(array $subtags): callable
     if (empty($subtags)) {
         return static fn(array $_row): bool => true;
     }
-    $set = array_flip($subtags);
+    $set = array_flip(array_merge($subtags, IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN));   /* #2132 */
     return static function (array $row) use ($set): bool {
         $tag = (string)($row['language'] ?? $row['Language'] ?? '');
         if ($tag === '') return true;                   // untagged → always show

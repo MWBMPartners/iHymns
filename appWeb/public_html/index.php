@@ -387,6 +387,9 @@ try {
                other-language versions. Self + each alternate (+ x-default in the
                head). Shares SongData::getSongTranslations() with the picker. */
             $hreflangSongLang = trim((string)($ogSong['language'] ?? ''));
+            /* #2132 — `und` ("language not known") is not a language a search
+               engine can act on, so it never becomes an hreflang value. */
+            if (strtolower($hreflangSongLang) === 'und') { $hreflangSongLang = ''; }
             $_cluster = $songData->getSongTranslations($matches[1]);
             if (!empty($_cluster)) {
                 $_seen = [];
@@ -397,7 +400,7 @@ try {
                 foreach ($_cluster as $_c) {
                     $_lang = trim((string)($_c['target_language'] ?? ''));
                     $_sid  = (string)($_c['song_id'] ?? '');
-                    if ($_lang === '' || $_sid === '' || isset($_seen[strtolower($_lang)])) { continue; }
+                    if ($_lang === '' || strtolower($_lang) === 'und' || $_sid === '' || isset($_seen[strtolower($_lang)])) { continue; }
                     $hreflangLinks[$_lang] = getCanonicalUrl('/song/' . rawurlencode($_sid));
                     $_seen[strtolower($_lang)] = true;
                 }
@@ -426,18 +429,22 @@ try {
             /* JSON-LD: MusicComposition. #858 — inLanguage is the
                union of the song's primary language and every per-
                component override, so a Spanish-chorus / English-verse
-               medley is correctly indexed as multilingual. Falls back
-               to a single-string $locale when no per-component data
-               is attached (pre-migration / no overrides). */
+               medley is correctly indexed as multilingual.
+               #2132 — when the song's language is not known (empty or
+               `und`), inLanguage is LEFT OUT. It used to fall back to the
+               page's interface language ($locale), which told search engines
+               a guess as if it were fact — an English label on a Zulu hymn
+               (policy LANG-003 / TEXT-070: export the tag that was stored,
+               never a stand-in). `und` sections are skipped for the same
+               reason. */
             $jsonLdLanguages = [];
-            if (!empty($ogSong['language'])) {
-                $jsonLdLanguages[] = (string)$ogSong['language'];
-            } elseif ($locale !== '') {
-                $jsonLdLanguages[] = $locale;
+            $_songLang = trim((string)($ogSong['language'] ?? ''));
+            if ($_songLang !== '' && strtolower($_songLang) !== 'und') {
+                $jsonLdLanguages[] = $_songLang;
             }
             foreach (($ogSong['components'] ?? []) as $cmp) {
                 $cl = trim((string)($cmp['language'] ?? ''));
-                if ($cl !== '' && !in_array($cl, $jsonLdLanguages, true)) {
+                if ($cl !== '' && strtolower($cl) !== 'und' && !in_array($cl, $jsonLdLanguages, true)) {
                     $jsonLdLanguages[] = $cl;
                 }
             }
@@ -445,14 +452,16 @@ try {
                 '@context' => 'https://schema.org',
                 '@type'    => 'MusicComposition',
                 'name'     => $ogSong['title'],
-                /* Single-value when only one language; array when the
-                   song carries per-component overrides. Both shapes
-                   are valid schema.org per the Web Schemas
-                   recommendation. */
-                'inLanguage' => count($jsonLdLanguages) > 1
-                    ? $jsonLdLanguages
-                    : ($jsonLdLanguages[0] ?? $locale),
             ];
+            /* inLanguage: single-value when only one language; array when the
+               song carries per-component overrides. Both shapes are valid
+               schema.org per the Web Schemas recommendation.
+               #2132 — only when a language is actually known (see above). */
+            if ($jsonLdLanguages !== []) {
+                $musicComposition['inLanguage'] = count($jsonLdLanguages) > 1
+                    ? $jsonLdLanguages
+                    : $jsonLdLanguages[0];
+            }
             /* #832 — alternateName for SEO. Search engines pick this up
                so a query for the original title / common misspelling /
                vernacular name still surfaces this song. Empty array on

@@ -1239,13 +1239,16 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
     $abbr     = 'Misc';
     /* #2137 — the sender's `language` is read with the shared FILE reader
        (policy LANG-002): tidied if readable; if not, stored as `und`
-       ("undetermined") and reported below once the song exists, never guessed. */
+       ("undetermined") and reported below once the song exists, never guessed.
+       #2132 — when no language was given at all (the caller fills this from
+       the TTML's own xml:lang when the sender gave none), the song is `und`
+       too: it used to be created as 'en', a guess that looked like a fact. */
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
     $langRead = mediaLanguageReadExternal(isset($payload['language']) ? (string)$payload['language'] : '');
     if ($langRead['unrecognised'] !== null) {
         $language = IHYMNS_LANGUAGE_UNKNOWN;
     } else {
-        $language = $langRead['tag'] ?? 'en';
+        $language = $langRead['tag'] ?? IHYMNS_LANGUAGE_UNKNOWN;
     }
     /* #1751 — ELI5: clean up the ISRC the same way the editor already does,
        so whatever we save here reads identically to a curator-typed one.

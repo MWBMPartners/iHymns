@@ -489,7 +489,7 @@ function _bulkImport_parseTxt(string $body, string $abbrev, string $songbook, in
         'number'             => $number,
         'songbook'           => $abbrev,
         'songbookName'       => $songbook,
-        'language'           => 'en',
+        'language'           => '',   /* #2132 — no language in this format: empty, the saver stores `und`; never a guessed 'en' */
         'ccli'               => '',
         'iswc'               => '',
         'tuneName'           => '',
@@ -708,7 +708,9 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
            than store an unchecked tag. */
         return ['fail', $e->getMessage()];
     }
-    $language     = $song['language'] !== '' ? $song['language'] : 'en';
+    /* #2132 — a song whose file gives no language is `und` ("not known"),
+       never a guessed English. */
+    $language     = $song['language'] !== '' ? $song['language'] : IHYMNS_LANGUAGE_UNKNOWN;
     /* #1673 / #1896 — read the licensing / identifier / public-domain fields the
        parsers already collected, instead of the blanks this used to hardcode. */
     $rights       = _bulkImportRightsFromSong($song);
@@ -2261,6 +2263,16 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
             continue;
         }
 
+        /* #2132 — a TXT or OpenSong song carries no language of its own. When
+           the folder's name declares one (the `_<Language>-<code>` suffix,
+           #780), that is what the curator said these songs are in, so the song
+           takes it — read by the saver with the shared file reader, like any
+           value from a file. Otherwise the song is stored as `und` ("not
+           known"). It used to be stored as 'en' regardless of the folder. */
+        if (($song['language'] ?? '') === '' && $folderLang !== '') {
+            $song['language'] = $folderLang;
+        }
+
         [$action, $err] = _bulkImport_saveSong($db, $song);
         if ($action === 'create') {
             $songsCreated++;
@@ -2514,7 +2526,7 @@ function _bulkImport_parseOpenSong(string $body, string $abbrev, string $songboo
         'number'             => $number,
         'songbook'           => strtoupper($abbrev),
         'songbookName'       => $songbook,
-        'language'           => 'en',
+        'language'           => '',   /* #2132 — no language in this format: empty, the saver stores `und`; never a guessed 'en' */
         'ccli'               => trim((string)($xml->ccli ?? '')),
         'iswc'               => '',
         'tuneName'           => '',
@@ -2901,7 +2913,7 @@ function _bulkImport_parseVideoPsalmSongbook(string $body, ?string $abbrevHint =
             'number'             => $number,
             'songbook'           => $abbr,
             'songbookName'       => $bookName,
-            'language'           => 'en',
+            'language'           => '',   /* #2132 — no language in this format: empty, the saver stores `und`; never a guessed 'en' */
             'ccli'               => trim((string)($sRaw['CCLI'] ?? '')),
             'iswc'               => '',
             'tuneName'           => '',
@@ -3238,7 +3250,7 @@ function _bulkImport_parseChordPro(string $body, string $abbrev, string $songboo
         'number'             => $number,
         'songbook'           => $abbrev,
         'songbookName'       => $songbook,
-        'language'           => 'en',
+        'language'           => '',   /* #2132 — no language in this format: empty, the saver stores `und`; never a guessed 'en' */
         'ccli'               => $ccli,
         'iswc'               => '',
         'tuneName'           => '',
@@ -3294,7 +3306,7 @@ function _bulkImport_processChordPro(string $body, ?string $filenameHint = null)
         return $fail('ChordPro parse failed: ' . ($reason ?: 'unknown'));
     }
 
-    $state = _bulkImport_upsertSongbook($db, $abbr, $book, 'en');
+    $state = _bulkImport_upsertSongbook($db, $abbr, $book, null);   /* #2132 — a ChordPro file names no songbook language; do not guess 'en' */
     $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
     $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
 
@@ -3937,7 +3949,8 @@ function _bulkImport_assembleSong(array $parsed, string $abbr, string $songbookN
         'number'             => $number,
         'songbook'           => strtoupper($abbr),
         'songbookName'       => $songbookName,
-        'language'           => ($parsed['language'] ?? '') !== '' ? (string)$parsed['language'] : 'en',
+        /* #2132 — what the file says, or empty (the saver stores `und`); never a guessed 'en'. */
+        'language'           => (string)($parsed['language'] ?? ''),
         'ccli'               => (string)($parsed['ccli'] ?? ''),
         'iswc'               => '',
         'tuneName'           => '',

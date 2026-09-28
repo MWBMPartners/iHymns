@@ -2245,6 +2245,13 @@ if ($action !== null) {
                    from the raw-TTML query params. */
                 $matchPayload = is_array($payload) ? $payload : [];
                 if ($songId !== '') { $matchPayload['songId'] = $songId; }
+                /* #2132 — a song created from this TTML takes the document's own
+                   declared language (its root xml:lang, already read with the
+                   shared file reader) when the sender gave none, rather than the
+                   guessed 'en' it used to get. With neither, it is `und`. */
+                if (trim((string)($matchPayload['language'] ?? '')) === '' && ($parsed['language'] ?? null) !== null) {
+                    $matchPayload['language'] = $parsed['language'];
+                }
                 /* FULLTEXT seed text for a song created from this TTML. */
                 $lyricsText = implode("\n", array_map(static fn($l) => (string)($l['text'] ?? ''), $parsed['lines']));
 
@@ -7285,7 +7292,7 @@ if ($action !== null) {
             $reqTitle    = mb_substr(trim($body['title'] ?? ''), 0, 500);
             $reqSongbook = mb_substr(trim($body['songbook'] ?? ''), 0, 100);
             $reqNumber   = mb_substr(trim($body['song_number'] ?? ''), 0, 20);
-            $reqLanguage = mb_substr(trim($body['language'] ?? 'en'), 0, 10);
+            $reqLanguage = mb_substr(trim($body['language'] ?? 'en'), 0, 10);   /* #2134 — known: still defaults to 'en' and cuts to 10 characters; filed separately, not part of #2132 */
             $reqDetails  = mb_substr(trim($body['details'] ?? ''), 0, 2000);
             $reqEmail    = mb_substr(trim($body['contact_email'] ?? ''), 0, 255);
 
@@ -8077,7 +8084,8 @@ if ($action !== null) {
                 if ($res) {
                     while ($r = $res->fetch_row()) {
                         $sub = (string)$r[0];
-                        if (preg_match('/^[a-z]{2,3}$/', $sub)) {
+                        /* #2132 — und / mul / zxx always pass the filter, so they are not a choice. */
+                        if (preg_match('/^[a-z]{2,3}$/', $sub) && !in_array($sub, IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN, true)) {
                             $subtags[$sub] = true;
                         }
                     }
@@ -8110,7 +8118,7 @@ if ($action !== null) {
                     if ($res) {
                         while ($r = $res->fetch_row()) {
                             $sub = (string)$r[0];
-                            if (preg_match('/^[a-z]{2,3}$/', $sub)) {
+                            if (preg_match('/^[a-z]{2,3}$/', $sub) && !in_array($sub, IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN, true)) {   /* #2132 */
                                 $subtags[$sub] = true;
                             }
                         }

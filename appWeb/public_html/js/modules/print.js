@@ -596,7 +596,7 @@ export function buildPrintDoc(song, template, opts = {}) {
         ? applyCustomLayout(template.layoutHtml, song, contentHtml)
         : contentHtml;
     return `<!DOCTYPE html>
-<html lang="${esc(song.language || 'en')}">
+<html lang="${esc(song.language || 'und')}">
 <head>
 <meta charset="utf-8">
 <title>${esc(title)}${book ? ' — ' + esc(book) : ''}</title>
@@ -1083,7 +1083,7 @@ async function downloadSongPdf(app, song, tpl, copies) {
     const meta = {
         songId: song.publicId || song.id || '',
         title:  song.title || 'Untitled',
-        lang:   song.language || 'en',
+        lang:   song.language || 'und',   /* #2132 — not known, never a guessed 'en' */
         dir:    'ltr',
         book:   song.songbookName || song.songbook || '',
     };
