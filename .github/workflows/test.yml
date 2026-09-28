@@ -33,6 +33,13 @@ on:
       - 'eslint.config.*'
       - 'tests/**'
       - '.github/workflows/test.yml'
+      # The shared language policy's copies (#2137): the checker, the lock
+      # and the policy document live outside appWeb/, and the reference data
+      # is a .json file the appWeb/**/*.php pattern above does not match.
+      - 'docs/standards/**'
+      - 'tools/media-lang/**'
+      - 'appWeb/private_html/lib/media-language/**'
+      - '.gitattributes'
 
   # PRs intentionally have NO paths filter — see #851. Branch protection
   # on `alpha` requires this workflow as a status check; skipping the
@@ -164,6 +171,33 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Node unit tests
         run: npm test
+
+      # -----------------------------------------------------------------------
+      # Step 4c: The shared language policy's copies are still exact (#2137)
+      #
+      # iHymns keeps exact copies of the MWBM-MEDIA-LANG language policy, its
+      # test cases, its reference data and the shared PHP code
+      # (docs/standards/, tests/fixtures/bcp47-*, appWeb/private_html/lib/
+      # media-language/). The master copies live in
+      # MWBMPartners/MeedyaSuite-core. This step runs the policy's own copy
+      # checker, which fails the build when:
+      #   - a copy has been edited here (its checksum no longer matches the
+      #     lock file, docs/standards/MWBM-MEDIA-LANG.lock);
+      #   - the lock has lost a line, or a file named like a master file is not
+      #     in the lock (so deleting a line cannot switch a check off);
+      #   - the pinned commit is not on an approved branch of the master
+      #     repository, or the master files at that commit do not match the
+      #     lock. It downloads them from GitHub to check; a download that
+      #     fails FAILS the step, it never passes quietly.
+      # The token only raises GitHub's rate limit for the commit lookup (the
+      # master repository is public, so nothing secret is read). Never "fix"
+      # a failure by editing a copy: change the master, then take the new
+      # version with `python3 tools/media-lang/check_copies.py --update <commit>`.
+      # -----------------------------------------------------------------------
+      - name: Shared language-policy copies match the master (#2137)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 tools/media-lang/check_copies.py
 
       # -----------------------------------------------------------------------
       # Step 5a: Detect literal PHP open tags inside HTML comments / backticks

@@ -138,11 +138,17 @@ const EXPECTED_TOP_LEVEL_DIRS = new Map([
     ['.claude',     'Claude Code project context, rules, plans and session history'],
     ['.github',     'GitHub Actions workflows and repository configuration'],
     ['.importers',  'the song-scraper and importer scripts'],
+    /* #2135 — added 2026-09-23 on purpose (see that day's handoff) but never
+       listed here, so this test went red on alpha from that commit onward. */
+    ['.OpenAI',     "Codex's own notes for this repository (the one handoff stays in .claude/sessions/)"],
     ['.vscode',     'the shared VS Code settings that travel with the project'],
     ['appAndroid',  'the Android app (and Amazon FireOS, which is a target of it)'],
     ['appApple',    'the iOS / iPadOS / tvOS apps and their shared Swift code'],
     ['appWeb',      'the website and progressive web app (PHP + JavaScript)'],
     ['data',        'source song data and seed data'],
+    /* #2137 — exact copies of shared MWBM standards, checked against their
+       master copies in CI (docs/standards/: the language policy and its lock). */
+    ['docs',        'exact copies of shared MWBM standards (docs/standards/), never edited here'],
     ['help',        'the user-facing help articles'],
     ['tests',       'the test suites, for every platform'],
     ['tools',       'build, data-preparation and developer scripts'],

@@ -1,0 +1,21 @@
+# .gitattributes — iHymns
+#
+# Exact copies of the shared language policy (MWBM-MEDIA-LANG) and its files.
+#
+# These files are checked byte for byte against the master copies in
+# MWBMPartners/MeedyaSuite-core by tools/media-lang/check_copies.py, which runs
+# in CI. "-text" tells git never to convert their line endings (for example on
+# a Windows checkout with core.autocrlf), because a converted copy no longer
+# matches the master's checksum and the check fails for a reason that has
+# nothing to do with its content. Never edit these files here: change the
+# master and take the new version with the checker's --update mode.
+docs/standards/media-language-bcp47-policy.md -text
+docs/standards/MWBM-MEDIA-LANG.lock -text
+docs/standards/data/bcp47-language-data-v1.schema.json -text
+tests/fixtures/bcp47-language-policy-v1.json -text
+tests/fixtures/bcp47-language-policy-v1.schema.json -text
+tools/media-lang/check_copies.py -text
+appWeb/private_html/lib/media-language/MediaLanguagePolicy.php -text
+appWeb/private_html/lib/media-language/bcp47-language-data-v1.json -text
+appWeb/private_html/lib/media-language/README.md -text
+appWeb/private_html/lib/media-language/tests/run-conformance.php -text
