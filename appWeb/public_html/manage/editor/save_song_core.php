@@ -1614,26 +1614,42 @@ function editorSaveSongCore(): array
                client is managing the collection and currently holds none, which is
                exactly how "the curator removed the last link" arrives. */
             if (is_array($song['translations'] ?? null)) {
+                $translationTableReady = false;
                 try {
-                    if (_songTranslationsTableExists($db)) {
-                        /* Steps 1–4 (normalise, check the FK parents, read what is
-                           stored, apply the difference) live in
-                           songTranslationsSaveLinks() — includes/song_translations_sync.php
-                           — so they can be tested against a real database (#2137
-                           review). */
-                        foreach (songTranslationsSaveLinks($db, $songId, $song['translations']) as $w) {
-                            $translationWarnings[] = $w;
-                        }
-                    }
+                    $translationTableReady = _songTranslationsTableExists($db);
                 } catch (\Throwable $_e) {
                     if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 — see the first such guard above. */
                     /* Best-effort, exactly like the Works auto-link above: a
                        translation-link problem must never cost the curator the
                        lyrics/credits edit they actually came here to make. The
                        warning is surfaced to the client so the failure is VISIBLE
-                       (the whole point of #1626 was a silent no-op). */
+                       (the whole point of #1626 was a silent no-op). Nothing has
+                       been written to the links yet, so they ARE unchanged. */
                     error_log('[editor save_song] translation links failed: ' . $_e->getMessage());
-                    $translationWarnings[] = 'Translation links could not be saved — see server logs.';
+                    $translationWarnings[] = 'The translation links were left unchanged because the server could not check its translations table — see server logs.';
+                }
+                if ($translationTableReady) {
+                    /* Steps 1–4 (normalise, check the FK parents, read what is
+                       stored, apply the difference) live in
+                       songTranslationsSaveLinks() — includes/song_translations_sync.php
+                       — so they can be tested against a real database (#2137
+                       review). #2137 review round 5 (L2): they run ALL OR
+                       NOTHING, inside a savepoint —
+                       songTranslationsSaveLinksAllOrNothing() undoes every link
+                       write with ROLLBACK TO SAVEPOINT if any of them fails, and
+                       returns "the translation links were left unchanged
+                       because …". It used to be called inside the catch above,
+                       which logged the error and then COMMITTED whatever had
+                       already been written — a stored link deleted just before
+                       the failing write was lost (the fourth review reproduced
+                       it). This call is deliberately OUTSIDE any catch: the only
+                       things it lets through are an error that has already
+                       rolled back the whole transaction, and a failed undo —
+                       and in both the whole save must stop (the outer handler
+                       below rolls it back), never commit half the links. */
+                    foreach (songTranslationsSaveLinksAllOrNothing($db, $songId, $song['translations']) as $w) {
+                        $translationWarnings[] = $w;
+                    }
                 }
             }
 

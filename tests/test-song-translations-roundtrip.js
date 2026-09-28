@@ -103,8 +103,12 @@ check('the whole-song save core references tblSongTranslations at all',
 check('the translations block was located for inspection',
     transBlock.length > 0);
 
-check('the save core hands the links to songTranslationsSaveLinks() (the code tested against a database)',
-    /songTranslationsSaveLinks\(\$db, \$songId, \$song\['translations'\]\)/.test(saveSrc));
+/* #2137 review round 5 (L2) — through the all-or-nothing wrapper, which undoes
+   every link write if one fails; never the bare steps, whose partial writes the
+   old catch used to commit. */
+check('the save core hands the links to songTranslationsSaveLinksAllOrNothing() (the code tested against a database)',
+    /songTranslationsSaveLinksAllOrNothing\(\$db, \$songId, \$song\['translations'\]\)/.test(saveSrc)
+    && !/songTranslationsSaveLinks\(\$db/.test(saveSrc));
 
 check('the write is gated on the table existing (un-migrated env degrades)',
     /_songTranslationsTableExists\(\$db\)/.test(transBlock)

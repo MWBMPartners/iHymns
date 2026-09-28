@@ -36,8 +36,11 @@ declare(strict_types=1);
  *     the (a)–(d) cases in Parts B and C).
  *
  * Part A runs the pure comparison, songTranslationsPlanSync(). Part B runs
- * the real save steps, songTranslationsSaveLinks(), against a real database
- * built the way schema.sql looks AFTER the #2131 card (no fk_Trans_Lang).
+ * the real save steps against a real database built the way schema.sql looks
+ * AFTER the #2131 card (no fk_Trans_Lang) — through
+ * songTranslationsSaveLinksAllOrNothing(), the call the song save makes
+ * since round 5, inside a transaction the test then commits as the caller
+ * does.
  * Part C runs one more scenario against a database built the way it looked
  * BEFORE that card — in its OWN php process, for a reason its own comment,
  * right before it runs, explains. Both B and C are skipped, loudly, without
@@ -176,6 +179,23 @@ $plan = songTranslationsPlanSync(['ro' => $want('T3', 'mo')],
 $check('two stored links of one language, one stored as "mo ": the editor sends back "mo" (trimmed) — that row is recognised as the kept one, and `ro` is deleted',
     $plan['delete'] === [4] && $plan['update'] === [] && $plan['warnings'] === [], json_encode($plan));
 
+echo "\nPart A4 — what counts as a link in the payload (#2137 review round 5, I6)\n";
+foreach ([
+    'an object with a song and a language' => [['songId' => 'T1', 'language' => 'pt'], true],
+    'an empty object (names nothing)'      => [[], true],
+    'a JSON null language'                 => [['songId' => 'T1', 'language' => null], true],
+    'a numeric song id'                    => [['songId' => 123, 'language' => 'pt'], true],
+    'a string'                             => ['junk', false],
+    'a number'                             => [42, false],
+    'null'                                 => [null, false],
+    'a list ["T1", "pt"]'                  => [['T1', 'pt'], false],
+    'a song that is a list'                => [['songId' => ['T1'], 'language' => 'pt'], false],
+    'a language that is an object'         => [['songId' => 'T1', 'language' => ['code' => 'pt']], false],
+    'a language that is true'              => [['songId' => 'T1', 'language' => true], false],
+] as $what => [$entry, $want]) {
+    $check("{$what} " . ($want ? 'is' : 'is NOT') . ' a link', songTranslationsIsLinkShaped($entry) === $want);
+}
+
 /* ---------------------------------------------------------------- Part B */
 echo "\nPart B — the real save steps (songTranslationsSaveLinks) against a real database\n";
 $dsn = getenv('IHYMNS_TEST_DSN') ?: '';
@@ -221,8 +241,13 @@ if ($db === null) {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
         foreach (['S1', 'T1', 'T2', 'T3', 'T4', 'T5'] as $id) { $db->query("INSERT INTO tblSongs VALUES ('{$id}')"); }
 
-        /** Store links for S1 exactly as given, then run the real save with $sent. */
-        $scenario = static function (array $storedRows, array $sent) use ($db): array {
+        /** Store links for S1 exactly as given, then run the real save with $sent
+            — the call the song save makes (save_song_core.php): the
+            all-or-nothing wrapper inside the caller's transaction, which the
+            caller then COMMITS. $raw sends $sent as the payload itself (for
+            entries that are not links); $alsoInTransaction runs first inside
+            the same transaction, standing in for the rest of the song save. */
+        $scenario = static function (array $storedRows, array $sent, bool $raw = false, ?callable $alsoInTransaction = null) use ($db): array {
             $db->query('DELETE FROM tblSongTranslations');
             $ins = $db->prepare("INSERT INTO tblSongTranslations (SourceSongId, TranslatedSongId, TargetLanguage, Translator, Verified, CreatedAt)
                                  VALUES ('S1', ?, ?, ?, ?, '2020-01-01 00:00:00')");
@@ -233,7 +258,8 @@ if ($db === null) {
             $ins->close();
             $before = $db->query('SELECT Id, TranslatedSongId, TargetLanguage, Translator, Verified, CreatedAt FROM tblSongTranslations ORDER BY Id')->fetch_all(MYSQLI_ASSOC);
             $db->begin_transaction();
-            $warnings = songTranslationsSaveLinks($db, 'S1', array_map(
+            if ($alsoInTransaction !== null) { $alsoInTransaction(); }
+            $warnings = songTranslationsSaveLinksAllOrNothing($db, 'S1', $raw ? $sent : array_map(
                 static fn(array $s): array => ['songId' => $s[0], 'language' => $s[1]], $sent
             ));
             $db->commit();
@@ -338,6 +364,51 @@ if ($db === null) {
                 $a === $b && $b[0]['TargetLanguage'] === $value && str_contains(implode(' ', $w), '"English" is not a language code'),
                 json_encode([$a, $w]));
         }
+
+        /* #2137 review round 5 (L2) — the link writes are ALL OR NOTHING.
+           The reviewer's case: a junk row "pt-BR" + no-break space → T5 that
+           the database counts as the same language as "pt-BR". Changing
+           `pt → T1` to `pt-BR → T1` fails on the unique key part-way; the
+           caller used to catch that and COMMIT, and the `pt` row (already
+           deleted) was lost. Reproduced on MariaDB 11.8 and MySQL 8.4. */
+        $junk = "pt-BR\u{00A0}";
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T5', $junk, 'Zed', 1]], [['T1', 'pt-BR'], ['T5', $junk]]);
+        $check('(L2) stored pt → T1 (Ana) and a junk "pt-BR"+no-break-space → T5; the curator changes the first to pt-BR → T1, which fails part-way: the links are exactly as before',
+            $a === $b, json_encode([$a, $w], JSON_UNESCAPED_UNICODE));
+        $check('…and the one warning says they were left unchanged, and why (two would share a language)',
+            count($w) === 1 && str_starts_with($w[0], 'The translation links were left unchanged because two of them would have been stored under the same language')
+            && str_contains($w[0], 'The rest of the song was saved'), json_encode($w, JSON_UNESCAPED_UNICODE));
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'es', 'Luis', 1], ['T5', $junk, 'Zed', 1]], [['T1', 'pt-BR'], ['T5', $junk]]);
+        $check('…with a link removed in the same save (es → T2 is deleted BEFORE the failing write): that delete is undone too — all or nothing',
+            $a === $b && count($w) === 1 && str_contains($w[0], 'left unchanged'), json_encode([$a, $w], JSON_UNESCAPED_UNICODE));
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T5', 'ｐｔ-ＢＲ', 'Zed', 1]], [['T1', 'pt-BR'], ['T5', 'ｐｔ-ＢＲ']]);
+        $check('…the same with a junk full-width "ｐｔ-ＢＲ" → T5: unchanged, with the warning',
+            $a === $b && count($w) === 1 && str_contains($w[0], 'left unchanged'), json_encode([$a, $w], JSON_UNESCAPED_UNICODE));
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T5', $junk, 'Zed', 1]], [['T1', 'pt-BR'], ['T5', $junk]], false,
+            static function () use ($db): void { $db->query("INSERT INTO tblSongs VALUES ('MARK')"); });
+        $markKept = $db->query("SELECT COUNT(*) FROM tblSongs WHERE SongId = 'MARK'")->fetch_row()[0];
+        $db->query("DELETE FROM tblSongs WHERE SongId = 'MARK'");
+        $check('…and ONLY the links are undone: a write the song save made earlier in the same transaction is kept (a savepoint is rolled back, not the save)',
+            $a === $b && (int)$markKept === 1, 'MARK rows: ' . $markKept);
+
+        /* #2137 review round 5 (I6) — an entry that is not a link makes the
+           WHOLE translation save refuse and change nothing. It used to be
+           skipped, and `de → T2` was then deleted as if removed. */
+        [$b, $a, $w] = $scenario([['T2', 'de', 'Eva', 1]], ['junk'], true);
+        $check('(I6) a payload of ["junk"] over a stored de → T2: nothing changes, and the warning says so (entry 1)',
+            $a === $b && count($w) === 1 && str_contains($w[0], 'left unchanged') && str_contains($w[0], 'entry 1'), json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T2', 'de', 'Eva', 1], ['T3', 'es', 'Luis', 1]], [['songId' => 'T2', 'language' => 'de'], 42], true);
+        $check('…one good link then a number: the whole save refuses — es → T3 (which the payload did not name) is NOT deleted',
+            $a === $b && count($w) === 1 && str_contains($w[0], 'entry 2'), json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1]], [['T1', 'pt-BR']], true);
+        $check('…a link sent as a list (["T1", "pt-BR"]) is not a link: refused, pt → T1 unchanged',
+            $a === $b && count($w) === 1 && str_contains($w[0], 'left unchanged'), json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1]], [['songId' => ['T1'], 'language' => 'pt']], true);
+        $check('…a link whose song is itself a list: refused, unchanged',
+            $a === $b && count($w) === 1 && str_contains($w[0], 'left unchanged'), json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'es', 'Luis', 1]], [['songId' => 'T1', 'language' => 'pt'], []], true);
+        $check('…but an EMPTY object still names nothing and is skipped as before (es → T2, not sent, is removed)',
+            array_column($a, 'TargetLanguage') === ['pt'] && $w === [], json_encode([$a, $w]));
 
         /* the ordinary cases still work */
         [$b, $a, $w] = $scenario([['T1', 'pt', '', 0], ['T2', 'es', '', 0]], [['T2', 'es'], ['T3', 'de']]);

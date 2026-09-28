@@ -88,6 +88,22 @@ declare(strict_types=1);
  * yet, a target song that no longer exists, a link to the song itself, two
  * links sent for one language, and a link with no language or no song.
  *
+ * THE FOURTH independent review (#2137 review round 5) found three more ways
+ * a link could still be lost, each reproduced on MariaDB 11.8 and MySQL 8.4:
+ *   - whitespace: a stored "English " (or with a tab, a line break, a
+ *     vertical tab or a NUL around it) was keyed untrimmed while the save
+ *     trims what the editor sends, so the protection never matched — now one
+ *     trim set, IHYMNS_TRANSLATION_LINK_TRIM, serves both;
+ *   - a write failing part-way: a stored junk row the database counts as the
+ *     same language made the last write fail after an earlier one had
+ *     deleted a link, and the caller committed what had been written — now
+ *     the song save calls songTranslationsSaveLinksAllOrNothing(), which
+ *     undoes every link write with ROLLBACK TO SAVEPOINT and says the links
+ *     were left unchanged;
+ *   - a payload entry that is not a link (`"junk"`) was skipped, and the
+ *     stored links were then deleted as if removed — now the whole
+ *     translation save refuses, changing nothing (songTranslationsIsLinkShaped()).
+ *
  * WHAT THIS CANNOT DO. A failed link is tied back to a stored row only by
  * its song or its language. If a curator changes BOTH at once (`pt → T1`
  * becomes `pt-BR → T2`) and that change cannot be written, nothing ties it
@@ -111,6 +127,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_translations_schema.php';   /* songTranslationsLanguageFkPresent() */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';              /* songRelocateIsTransactionFatal() — the ONE list of errors that have already rolled the whole save back */
 
 /**
  * The characters the save trims from both ends of what the editor sends — a
@@ -319,8 +336,18 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
  * (moved here from save_song_core.php so they can be tested against a real
  * database, #2137 review). Reads what is stored for $songId, decides with
  * songTranslationsPlanSync(), and writes only the difference. Runs inside the
- * caller's transaction and throws what mysqli throws; the caller keeps its
- * best-effort catch.
+ * caller's transaction and throws what mysqli throws. The song save does NOT
+ * call this directly: it calls songTranslationsSaveLinksAllOrNothing() (below),
+ * which undoes every write this made if any of them fails (#2137 review
+ * round 5).
+ *
+ * #2137 review round 5 (I6) — a payload entry that is not a link (not an
+ * object, or an object whose song or language is not text) makes the WHOLE
+ * translation save refuse, before anything is read or written, with a plain
+ * warning. It used to be skipped, and the stored links it might have named
+ * were then deleted as if the curator had removed them (the fourth review
+ * reproduced `de → T2` deleted by a payload of `["junk"]`). The save cannot
+ * tell what such an entry meant, so it changes nothing.
  *
  * @param \mysqli $db
  * @param string  $songId The source song (SourceSongId).
@@ -330,6 +357,16 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
  */
 function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): array
 {
+    $position = 0;
+    foreach ($sent as $tr) {
+        $position++;
+        if (!songTranslationsIsLinkShaped($tr)) {
+            return ['The translation links were left unchanged because entry ' . $position
+                . ' of the list the editor sent is not a translation link, so the save could not tell'
+                . ' which links you meant to keep. Reload the editor and try again.'];
+        }
+    }
+
     $warnings = [];
     /* ---- 1. Normalise the desired set, keyed by language ----
        The client sends [{songId, language}, …] — the same shape
@@ -371,7 +408,7 @@ function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): ar
         ];
     };
     foreach ($sent as $tr) {
-        if (!is_array($tr)) { continue; }
+        if (!is_array($tr)) { continue; }   /* cannot happen: every entry passed songTranslationsIsLinkShaped() above; kept so a later edit cannot turn a stray value into a PHP error */
         /* Trimmed by IHYMNS_TRANSLATION_LINK_TRIM — the same set a stored
            language is trimmed by before it is compared (round 5). */
         $tId   = trim((string)($tr['songId']   ?? ''), IHYMNS_TRANSLATION_LINK_TRIM);
@@ -610,4 +647,136 @@ function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): ar
         $nStm->close();
     }
     return $warnings;
+}
+
+/**
+ * Is this payload entry shaped like a translation link? (#2137 review
+ * round 5, I6)
+ *
+ * A link is an OBJECT — in PHP, after json_decode(…, true), an array that is
+ * not a list — whose `songId` and `language`, where present, are text (a
+ * number is accepted as text; a missing value or JSON null counts as empty).
+ * An empty object names nothing, which the save already skips. Anything else
+ * — a string, a number, a list such as ["T1", "pt"], or a link whose song or
+ * language is itself a list or an object — is not a link.
+ *
+ * WHAT IT DOES NOT CHECK: whether the song exists or the language is a
+ * language. Those are the save's own per-link checks, which skip one link with
+ * a warning and protect what it may belong with. This check is only about
+ * entries the save cannot even read as a link, where it cannot know which
+ * stored link is meant — so the whole translation save is refused instead.
+ */
+function songTranslationsIsLinkShaped(mixed $entry): bool
+{
+    if (!is_array($entry)) {
+        return false;
+    }
+    if ($entry !== [] && array_is_list($entry)) {
+        return false;
+    }
+    foreach (['songId', 'language'] as $field) {
+        $v = $entry[$field] ?? null;
+        if ($v !== null && !is_string($v) && !is_int($v) && !is_float($v)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** The savepoint that makes the translation links' writes one unit (#2137 review round 5). */
+const IHYMNS_TRANSLATION_LINKS_SAVEPOINT = 'ihymns_translation_links';
+
+/**
+ * The song save's translation links, ALL OR NOTHING (#2137 review round 5,
+ * finding L2). This is what save_song_core.php calls.
+ *
+ * ELI5: the links are saved as one piece. If any write fails part-way, every
+ * link write this save already made is undone, the links are left exactly as
+ * they were, and the curator is told so — while the rest of the song (lyrics,
+ * credits…) is still saved.
+ *
+ * WHY: songTranslationsSaveLinks() deletes, then updates, then inserts. The
+ * fourth independent review found a stored junk row ("pt-BR" followed by a
+ * no-break space) that the database counts as the same language as "pt-BR":
+ * when a curator changed `pt → T1` to `pt-BR → T1`, the save deleted the `pt`
+ * row, the write of `pt-BR` then failed on the unique key, the caller caught
+ * the error and COMMITTED — and the `pt` link, translator and all, was gone.
+ * Reproduced on MariaDB 11.8 and MySQL 8.4.
+ *
+ * HOW: a SAVEPOINT is set before the first read and released only once every
+ * write has succeeded. On any error that has not already rolled back the whole
+ * transaction, the unit is undone with the SQL statement
+ * `ROLLBACK TO SAVEPOINT` — NOT `$db->rollback(0, name)`, whose second
+ * argument names a TRANSACTION and would throw away the whole song save (the
+ * same trap is recorded in lyric_lines_sync.php, #2073 finding F6). The lead's
+ * decision put the rollback "in the caller"; it lives in this small function,
+ * which the caller calls, so that the exact code the song save runs can be
+ * tested against a real database (tests/php/test-song-translations-sync.php).
+ *
+ * WHAT IT LETS THROUGH, on purpose — each stops the WHOLE song save, which the
+ * caller's outer handler then rolls back:
+ *   - an error songRelocateIsTransactionFatal() recognises (a deadlock or lock
+ *     timeout): the database has already rolled the transaction back, so
+ *     carrying on would "commit" nothing and report a false success;
+ *   - a failure of the ROLLBACK TO SAVEPOINT itself: the links may then be
+ *     half written, and committing that is exactly the fault this exists to
+ *     prevent. Refusing the whole save loses nothing — the curator saves again.
+ * It must be called inside the caller's transaction (a savepoint outside one
+ * does not survive to be rolled back to).
+ *
+ * @return list<string> Warnings for the curator (plain sentences).
+ */
+function songTranslationsSaveLinksAllOrNothing(\mysqli $db, string $songId, array $sent): array
+{
+    try {
+        if ($db->savepoint(IHYMNS_TRANSLATION_LINKS_SAVEPOINT) !== true) {
+            /* Only reachable with mysqli error reporting switched off (the
+               site switches it on in db_mysql.php): no savepoint means
+               nothing could be undone, so nothing is attempted. */
+            return [songTranslationsLeftUnchangedMessage(new \RuntimeException('the savepoint could not be set'))];
+        }
+    } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) {
+            throw $e;
+        }
+        /* Nothing has been read or written yet, so "unchanged" is true. */
+        error_log('[editor save_song] translation links left unchanged (savepoint): ' . $e->getMessage());
+        return [songTranslationsLeftUnchangedMessage($e)];
+    }
+    try {
+        $warnings = songTranslationsSaveLinks($db, $songId, $sent);
+        $db->release_savepoint(IHYMNS_TRANSLATION_LINKS_SAVEPOINT);
+        return $warnings;
+    } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) {
+            throw $e;
+        }
+        /* Undo this unit only. If THIS fails, it throws out of here on
+           purpose — see the docblock: the whole save stops rather than
+           committing half the links. */
+        $db->query('ROLLBACK TO SAVEPOINT ' . IHYMNS_TRANSLATION_LINKS_SAVEPOINT);
+        error_log('[editor save_song] translation links left unchanged: ' . $e->getMessage());
+        return [songTranslationsLeftUnchangedMessage($e)];
+    }
+}
+
+/**
+ * The plain sentence for "the translation links were left unchanged", with
+ * the reason when it is one a curator can act on (#2137 review round 5).
+ * The database's own message goes to the server log, never to the page.
+ */
+function songTranslationsLeftUnchangedMessage(\Throwable $e): string
+{
+    $reason = 'saving them failed part-way';
+    for ($depth = 0, $x = $e; $x !== null && $depth < 10; $depth++, $x = $x->getPrevious()) {
+        if ($x instanceof \mysqli_sql_exception && (int)$x->getCode() === 1062) {
+            /* ER_DUP_ENTRY on uq_Translation (SourceSongId, TargetLanguage) */
+            $reason = 'two of them would have been stored under the same language'
+                . ' (the database treats two of the languages stored or sent for this song as the same one;'
+                . ' check the links\' languages for stray spaces or unusual characters)';
+            break;
+        }
+    }
+    return 'The translation links were left unchanged because ' . $reason
+        . '. The rest of the song was saved; see the server logs for the details.';
 }

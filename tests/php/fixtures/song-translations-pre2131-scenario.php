@@ -124,7 +124,8 @@ try {
         $ins->close();
         $before = $db->query("SELECT {$cols} FROM tblSongTranslations ORDER BY Id")->fetch_all(MYSQLI_ASSOC);
         $db->begin_transaction();
-        $warnings = songTranslationsSaveLinks($db, 'S1', array_map(
+        /* The call the song save makes: all or nothing (#2137 review round 5). */
+        $warnings = songTranslationsSaveLinksAllOrNothing($db, 'S1', array_map(
             static fn(array $l): array => ['songId' => $l[0], 'language' => $l[1]], $sent
         ));
         $db->commit();
