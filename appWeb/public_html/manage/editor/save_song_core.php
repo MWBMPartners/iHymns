@@ -59,7 +59,8 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';   /* #1860 go-live — workAutolinkSafe(), replaces the pre-#1860 inline ISWC-only Works fork */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';   /* #1862 — pdRecomputeForSong(), called post-commit below (the credits loop just replaced the contributor set) */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_language.php';
-require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_translations_schema.php';   /* #2131 — songTranslationsLanguageFkPresent() */   /* #2137 — the shared language rules: plain refusal messages + the per-section/per-line check */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_translations_schema.php';   /* #2131 — songTranslationsLanguageFkPresent() */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_translations_sync.php';     /* #2137 review — songTranslationsPlanSync(): the stored-vs-sent comparison */   /* #2137 — the shared language rules: plain refusal messages + the per-section/per-line check */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmitSongEvent(), fired beside the song.create/edit logActivity (dormant no-op until enabled) */
 
 /**
@@ -1597,6 +1598,10 @@ function editorSaveSongCore(): array
              * The diff is keyed on TargetLanguage because that is what the table's
              * `uq_Translation (SourceSongId, TargetLanguage)` UNIQUE key allows to
              * exist at most once — one translation per language per source song.
+             * #2137 review — keyed on the TIDIED language on both sides, so a link
+             * stored under a retired code (`iw`) is updated in place to `he`
+             * rather than deleted and re-inserted; the comparison itself is
+             * songTranslationsPlanSync() (includes/song_translations_sync.php). 
              * @see https://dev.mysql.com/doc/refman/8.0/en/create-index.html
              * ------------------------------------------------------------------ */
             $translationWarnings = [];
@@ -1618,6 +1623,10 @@ function editorSaveSongCore(): array
                            mirrors the legacy endpoint's
                            `ON DUPLICATE KEY UPDATE TranslatedSongId = VALUES(…)`. */
                         $desired = [];
+                        /* Languages whose STORED link must survive this save even
+                           though the editor's copy of it is skipped below for a
+                           reason that is not the curator's (#2137 review). */
+                        $keep = [];
                         foreach ($song['translations'] as $tr) {
                             if (!is_array($tr)) { continue; }
                             $tId   = trim((string)($tr['songId']   ?? ''));
@@ -1639,6 +1648,7 @@ function editorSaveSongCore(): array
                                 $translationWarnings[] = 'Language "' . $tLang
                                     . '" is not a language code this site can store — translation link to '
                                     . $tId . ' skipped.';
+                                $keep[mb_strtolower($tLang)] = true;   /* a stored row with this value is left as it is */
                                 continue;
                             }
                             $desired[mb_strtolower($tidyLang)] = ['songId' => $tId, 'language' => $tidyLang];
@@ -1701,6 +1711,7 @@ function editorSaveSongCore(): array
                                         . ' regional and script languages" card on /manage/setup-database'
                                         . ' — translation link to ' . $d['songId'] . ' skipped.';
                                     unset($desired[$key]);
+                                    $keep[$key] = true;   /* skipped for the server's reason, not removed by the curator */
                                     continue;
                                 }
                                 if (!isset($idOk[mb_strtolower($d['songId'])])) {
@@ -1727,9 +1738,10 @@ function editorSaveSongCore(): array
                         $exRes = $exStm->get_result();
                         $existing = [];
                         while ($exRow = $exRes->fetch_assoc()) {
-                            $existing[mb_strtolower((string)$exRow['TargetLanguage'])] = [
-                                'id'     => (int)$exRow['Id'],
-                                'songId' => (string)$exRow['TranslatedSongId'],
+                            $existing[] = [
+                                'id'       => (int)$exRow['Id'],
+                                'songId'   => (string)$exRow['TranslatedSongId'],
+                                'language' => (string)$exRow['TargetLanguage'],
                             ];
                         }
                         $exStm->close();
@@ -1738,28 +1750,27 @@ function editorSaveSongCore(): array
                            A song with no translation links (the overwhelmingly common
                            case) reaches here with both sides empty and performs ZERO
                            writes — the save path stays behaviourally identical to
-                           before #1626 for every song that has never used the panel. */
-                        foreach ($existing as $langKey => $ex) {
-                            if (isset($desired[$langKey])) { continue; }
+                           before #1626 for every song that has never used the panel.
+                           songTranslationsPlanSync() decides; this only writes.
+                           UPDATEs are in place, so a row's Translator / Verified /
+                           CreatedAt survive a re-point or a tidied language. */
+                        $plan = songTranslationsPlanSync($desired, $existing, $keep, 'mediaLanguageTagForStorage');
+                        foreach ($plan['warnings'] as $w) { $translationWarnings[] = $w; }
+                        foreach ($plan['delete'] as $delId) {
                             $dStm = $db->prepare('DELETE FROM tblSongTranslations WHERE Id = ?');
-                            $dStm->bind_param('i', $ex['id']);
+                            $dStm->bind_param('i', $delId);
                             $dStm->execute();
                             $dStm->close();
                         }
-                        foreach ($desired as $langKey => $d) {
-                            if (isset($existing[$langKey])) {
-                                /* Re-pointed to a different song: UPDATE in place so
-                                   the row's Translator / Verified / CreatedAt survive. */
-                                if (strcasecmp($existing[$langKey]['songId'], $d['songId']) !== 0) {
-                                    $uStm = $db->prepare(
-                                        'UPDATE tblSongTranslations SET TranslatedSongId = ? WHERE Id = ?'
-                                    );
-                                    $uStm->bind_param('si', $d['songId'], $existing[$langKey]['id']);
-                                    $uStm->execute();
-                                    $uStm->close();
-                                }
-                                continue; /* unchanged ⇒ no write at all */
-                            }
+                        foreach ($plan['update'] as $u) {
+                            $uStm = $db->prepare(
+                                'UPDATE tblSongTranslations SET TranslatedSongId = ?, TargetLanguage = ? WHERE Id = ?'
+                            );
+                            $uStm->bind_param('ssi', $u['songId'], $u['language'], $u['id']);
+                            $uStm->execute();
+                            $uStm->close();
+                        }
+                        foreach ($plan['insert'] as $d) {
                             /* New link. Translator defaults to '' and Verified to 0 —
                                neither is modelled by the editor payload, and both are
                                curator-maintained elsewhere. */

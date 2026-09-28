@@ -111,8 +111,10 @@ check('it DIFFS — no blanket "DELETE ... WHERE SourceSongId" wipe',
     !/DELETE FROM tblSongTranslations WHERE SourceSongId/.test(saveSrc),
     'a wipe+reinsert would reset the curator-owned Translator / Verified columns');
 
-check('a re-pointed link UPDATEs in place, preserving Translator / Verified',
-    /UPDATE tblSongTranslations SET TranslatedSongId = \? WHERE Id = \?/.test(transBlock));
+/* #2137 review — the same in-place UPDATE now also carries the tidied
+   language (a link stored as `iw` becomes `he` without losing its row). */
+check('a re-pointed link (or a tidied language) UPDATEs in place, preserving Translator / Verified',
+    /UPDATE tblSongTranslations SET TranslatedSongId = \?, TargetLanguage = \? WHERE Id = \?/.test(transBlock));
 
 check('removals DELETE by primary key',
     /DELETE FROM tblSongTranslations WHERE Id = \?/.test(transBlock));
@@ -244,7 +246,13 @@ function diffTranslations(payload, existingRows, sourceId, knownLangs, knownSong
         if (!knownSongs.includes(d.songId.toLowerCase())) { warnings.push('song'); desired.delete(k); }
     }
 
-    const existing = new Map(existingRows.map((r) => [r.language.toLowerCase(), r]));
+    /* #2137 review — stored rows are matched by their TIDIED language too
+       (a link stored as `iw` matches `he`), and a tidied match updates the
+       language in place. Two stored rows that tidy to one language are left
+       alone with a warning; that case, and the retired codes that cause it,
+       need the real shared rule, so they are tested against the real PHP in
+       tests/php/test-song-translations-sync.php rather than modelled here. */
+    const existing = new Map(existingRows.map((r) => [(tidyTag(r.language) || r.language).toLowerCase(), r]));
     const deletes = [];
     const updates = [];
     const inserts = [];
@@ -252,7 +260,9 @@ function diffTranslations(payload, existingRows, sourceId, knownLangs, knownSong
     for (const [k, d] of desired) {
         const ex = existing.get(k);
         if (!ex) { inserts.push(d); continue; }
-        if (ex.songId.toLowerCase() !== d.songId.toLowerCase()) updates.push({ id: ex.id, songId: d.songId });
+        if (ex.songId.toLowerCase() !== d.songId.toLowerCase() || ex.language !== d.language) {
+            updates.push({ id: ex.id, songId: d.songId, language: d.language });
+        }
     }
     return { skipped: false, deletes, updates, inserts, warnings };
 }
@@ -305,8 +315,11 @@ check('links in different languages both persist',
 
 /* Repeated saves must not accumulate duplicates. */
 r = run([{ songId: 'SDAH-123', language: 'es' }], [{ id: 7, songId: 'sdah-123', language: 'ES' }]);
-check('case differences do not create a duplicate row',
-    r.inserts.length === 0 && r.updates.length === 0 && r.deletes.length === 0);
+/* #2137 review — no duplicate and no delete; the stored `ES` is tidied to
+   `es` in place (same row, so Translator / Verified survive). */
+check('case differences do not create a duplicate row (the stored spelling is tidied in place)',
+    r.inserts.length === 0 && r.deletes.length === 0
+    && r.updates.length === 1 && r.updates[0].id === 7 && r.updates[0].language === 'es');
 
 /* Guard rails. */
 r = run([{ songId: 'MP-1008', language: 'en' }], []);
