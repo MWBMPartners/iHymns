@@ -35,6 +35,10 @@ declare(strict_types=1);
  *     page's own language; and a GUARD derived from the tree fails if any
  *     language value falls back to 'en' again (a line marked #2134, the song
  *     request feature filed separately, is reported, not failed).
+ * (K) #2131 — whole-song translations may use regional and script tags:
+ *     schema.sql has no fk_Trans_Lang (uq_Translation stays), the migration
+ *     drops the link and its leftover index only if present, it is
+ *     registered with an OR-probe, and the remap tool asks the live schema.
  * (I) GUARD, derived from the tree (rule #34): no PHP file under
  *     appWeb/public_html/ contains a hand-written language-tag pattern of the
  *     shapes the five retired checkers used. Mutation-proven: re-adding one
@@ -308,6 +312,26 @@ mliCheck("the 'en' guard actually scanned the site's PHP and JS (found {$enScann
 mliCheck("no language value falls back to 'en' (store und, or leave the value out)", $enOffenders === [],
     implode("\n        ", $enOffenders));
 echo '  NOTE  known and filed separately (#2134, song requests): ' . ($enKnown === [] ? 'none left' : implode(', ', $enKnown)) . "\n";
+
+/* ---------------------------------------------------------------- (K) --- */
+echo "(K) whole-song translations may use regional and script languages (#2131)\n";
+mliCheck('schema.sql: no fk_Trans_Lang, no link from TargetLanguage to tblLanguages',
+    !str_contains($schemaSql, 'CONSTRAINT fk_Trans_Lang') && !str_contains($schemaSql, 'REFERENCES tblLanguages(Code)'));
+mliCheck('schema.sql: the one-translation-per-language rule (uq_Translation) stays',
+    str_contains($schemaSql, 'UNIQUE KEY uq_Translation (SourceSongId, TargetLanguage)'));
+$fkMigSrc = (string)file_get_contents($repoRoot . '/appWeb/.sql/migrate-drop-song-translations-language-fk.php');
+mliCheck('the migration drops the link and its leftover index, each only if present (running it twice is harmless)',
+    str_contains($fkMigSrc, 'if (_migDropTransLangFk_fkExists($db))')
+    && str_contains($fkMigSrc, "ALTER TABLE tblSongTranslations DROP FOREIGN KEY fk_Trans_Lang")
+    && str_contains($fkMigSrc, 'if (_migDropTransLangFk_indexExists($db))')
+    && str_contains($fkMigSrc, "ALTER TABLE tblSongTranslations DROP INDEX fk_Trans_Lang"));
+mliCheck('the migration is registered, pending while the link OR its index exists',
+    str_contains($registrySrc, "'script' => 'migrate-drop-song-translations-language-fk.php'")
+    && str_contains($registrySrc, "_migProbe_constraintExists(\$db, 'tblSongTranslations', 'fk_Trans_Lang')")
+    && str_contains($registrySrc, "_migProbe_indexExists(\$db, 'tblSongTranslations', 'fk_Trans_Lang')"));
+$auditSrc = (string)file_get_contents($inc . '/language_tag_audit.php');
+mliCheck('the curator remap tool asks the live schema before insisting on the registry',
+    str_contains($auditSrc, 'if (songTranslationsLanguageFkPresent($db)) {'));
 
 echo "\n  {$passed} passed, " . count($failures) . " failed\n";
 if ($failures !== []) {

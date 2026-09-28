@@ -58,7 +58,8 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow(), called unconditionally after the UPSERT below */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';   /* #1860 go-live — workAutolinkSafe(), replaces the pre-#1860 inline ISWC-only Works fork */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';   /* #1862 — pdRecomputeForSong(), called post-commit below (the credits loop just replaced the contributor set) */
-require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_language.php';   /* #2137 — the shared language rules: plain refusal messages + the per-section/per-line check */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_language.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_translations_schema.php';   /* #2131 — songTranslationsLanguageFkPresent() */   /* #2137 — the shared language rules: plain refusal messages + the per-section/per-line check */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmitSongEvent(), fired beside the song.create/edit logActivity (dormant no-op until enabled) */
 
 /**
@@ -1628,17 +1629,33 @@ function editorSaveSongCore(): array
                                 $translationWarnings[] = 'A song cannot be a translation of itself — skipped.';
                                 continue;
                             }
-                            $desired[mb_strtolower($tLang)] = ['songId' => $tId, 'language' => $tLang];
+                            /* #2131 / #2137 — the language is tidied by the ONE
+                               shared rule (`pt-br` → `pt-BR`), so two spellings
+                               of one language can never make two links; a value
+                               that is not a language code is skipped with a
+                               warning rather than sent to the database. */
+                            $tidyLang = mediaLanguageTagForStorage($tLang);
+                            if (!is_string($tidyLang)) {
+                                $translationWarnings[] = 'Language "' . $tLang
+                                    . '" is not a language code this site can store — translation link to '
+                                    . $tId . ' skipped.';
+                                continue;
+                            }
+                            $desired[mb_strtolower($tidyLang)] = ['songId' => $tId, 'language' => $tidyLang];
                         }
 
-                        /* ---- 2. Pre-validate against both FK parents ----
-                           tblSongTranslations has FKs to tblSongs (both id columns)
-                           and to tblLanguages.Code. tblSongs.Language is a free-text
-                           BCP-47 tag (`pt-BR`, `zh-Hans-CN`) while tblLanguages.Code
-                           holds IANA SUBTAGS, so a composite tag copied off the
-                           target song WILL violate fk_Trans_Lang. Validating up front
-                           means we never issue a doomed statement — a curator's
-                           lyrics edit is never lost to an unlinkable language code. */
+                        /* ---- 2. Pre-validate against the FK parents ----
+                           tblSongTranslations has FKs to tblSongs (both id columns).
+                           #2131 — on a server where the migration
+                           migrate-drop-song-translations-language-fk.php has NOT
+                           been run yet, it also still has fk_Trans_Lang to
+                           tblLanguages.Code, which holds bare codes only, so a
+                           `pt-BR` link WOULD violate it. On such a server the
+                           language is still checked against tblLanguages first
+                           (songTranslationsLanguageFkPresent()), so a doomed
+                           statement is never issued and a curator's lyrics edit is
+                           never lost to it; once the migration has run, the check
+                           above (the shared rule) is the only one. */
                         if ($desired !== []) {
                             $wantLangs = array_values(array_unique(array_map(
                                 static fn(array $d): string => $d['language'], $desired
@@ -1650,16 +1667,19 @@ function editorSaveSongCore(): array
                             /* Placeholder strings are built from a COUNT, never from
                                user data — the one interpolation CLAUDE.md rule #5
                                permits. Every VALUE below is bound. */
+                            $langFkPresent = songTranslationsLanguageFkPresent($db);
                             $langOk = [];
-                            $lp   = implode(',', array_fill(0, count($wantLangs), '?'));
-                            $lStm = $db->prepare("SELECT Code FROM tblLanguages WHERE Code IN ($lp)");
-                            $lStm->bind_param(str_repeat('s', count($wantLangs)), ...$wantLangs);
-                            $lStm->execute();
-                            $lRes = $lStm->get_result();
-                            /* Key on the lowercased tag but keep the table's CANONICAL
-                               casing as the value, so we store `en`, not `EN`. */
-                            while ($lRow = $lRes->fetch_assoc()) { $langOk[mb_strtolower($lRow['Code'])] = $lRow['Code']; }
-                            $lStm->close();
+                            if ($langFkPresent) {
+                                $lp   = implode(',', array_fill(0, count($wantLangs), '?'));
+                                $lStm = $db->prepare("SELECT Code FROM tblLanguages WHERE Code IN ($lp)");
+                                $lStm->bind_param(str_repeat('s', count($wantLangs)), ...$wantLangs);
+                                $lStm->execute();
+                                $lRes = $lStm->get_result();
+                                /* Key on the lowercased tag but keep the table's
+                                   casing as the value, so we store `en`, not `EN`. */
+                                while ($lRow = $lRes->fetch_assoc()) { $langOk[mb_strtolower($lRow['Code'])] = $lRow['Code']; }
+                                $lStm->close();
+                            }
 
                             $idOk = [];
                             /* @deleted-visible: write-path FK pre-check (#1694)
@@ -1675,10 +1695,11 @@ function editorSaveSongCore(): array
                             $iStm->close();
 
                             foreach ($desired as $key => $d) {
-                                if (!isset($langOk[mb_strtolower($d['language'])])) {
+                                if ($langFkPresent && !isset($langOk[mb_strtolower($d['language'])])) {
                                     $translationWarnings[] = 'Language "' . $d['language']
-                                        . '" is not in the languages table — translation link to '
-                                        . $d['songId'] . ' skipped.';
+                                        . '" cannot be linked on this server yet: run the "Translations: allow'
+                                        . ' regional and script languages" card on /manage/setup-database'
+                                        . ' — translation link to ' . $d['songId'] . ' skipped.';
                                     unset($desired[$key]);
                                     continue;
                                 }
@@ -1689,7 +1710,9 @@ function editorSaveSongCore(): array
                                     continue;
                                 }
                                 /* Adopt the canonical stored spellings. */
-                                $desired[$key]['language'] = $langOk[mb_strtolower($d['language'])];
+                                if ($langFkPresent) {
+                                    $desired[$key]['language'] = $langOk[mb_strtolower($d['language'])];
+                                }
                                 $desired[$key]['songId']   = $idOk[mb_strtolower($d['songId'])];
                             }
                         }

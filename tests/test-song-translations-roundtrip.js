@@ -134,15 +134,28 @@ check('IN-list placeholders are built from a count, never from user data',
 check('no string concatenation of values into any translation SQL',
     !/(SELECT|INSERT|UPDATE|DELETE)[^;]{0,400}?tblSongTranslations[^;]{0,400}?['"]\s*\.\s*\$/.test(transBlock));
 
-/* Both FK parents are pre-validated. tblSongs.Language is a free-text BCP-47
-   tag ("pt-BR") while tblLanguages.Code holds IANA subtags, so a composite tag
-   copied off the target song would violate fk_Trans_Lang and — inside the save
-   transaction — could cost the curator their lyrics edit. */
-check('schema really does constrain TargetLanguage to tblLanguages.Code',
-    /fk_Trans_Lang[\s\S]{0,160}?REFERENCES tblLanguages\(Code\)/.test(schemaSrc));
+/* #2131 — the language is no longer tied to tblLanguages. That link
+   (fk_Trans_Lang) held bare codes only, so a `pt-BR` or `zh-Hans` translation
+   could never be recorded. schema.sql drops it (existing servers run
+   migrate-drop-song-translations-language-fk.php); the one-translation-per-
+   language rule stays. */
+check('schema no longer ties TargetLanguage to tblLanguages, and keeps uq_Translation (#2131)',
+    !/CONSTRAINT fk_Trans_Lang/.test(schemaSrc)
+    && !/REFERENCES tblLanguages\(Code\)/.test(schemaSrc)
+    && /UNIQUE KEY uq_Translation \(SourceSongId, TargetLanguage\)/.test(schemaSrc));
 
-check('the language tag is validated against tblLanguages before insert',
-    /SELECT Code FROM tblLanguages WHERE Code IN \(\$lp\)/.test(transBlock));
+/* The language is tidied by the ONE shared rule before anything else, and the
+   old registry lookup survives ONLY for a server that has not run the migration
+   yet — there the link still exists, and a `pt-BR` INSERT inside the save
+   transaction could cost the curator their lyrics edit. */
+check('the language is tidied by the shared rule before it is used (#2131 / #2137)',
+    /\$tidyLang = mediaLanguageTagForStorage\(\$tLang\)/.test(transBlock));
+
+check('the tblLanguages lookup runs only while the old link still exists on the server',
+    /\$langFkPresent = songTranslationsLanguageFkPresent\(\$db\)/.test(transBlock)
+    && /if \(\$langFkPresent\) \{\s*\$lp/.test(transBlock)
+    && /SELECT Code FROM tblLanguages WHERE Code IN \(\$lp\)/.test(transBlock)
+    && /if \(\$langFkPresent && !isset\(\$langOk/.test(transBlock));
 
 check('the target song is validated against tblSongs before insert',
     /SELECT SongId FROM tblSongs WHERE SongId IN \(\$ip\)/.test(transBlock));
@@ -184,11 +197,31 @@ check('the UI mirrors the (SourceSongId, TargetLanguage) UNIQUE key',
 /* ---------------------------------------------------------------------- */
 
 /**
- * Mirrors the PHP diff in editorSaveSongCore(): keyed on TargetLanguage
- * (case-insensitively, matching the utf8mb4_unicode_ci UNIQUE key), returning
- * the writes it would issue. `payload === null` models an ABSENT key.
+ * A deliberately small stand-in for the shared language rule
+ * (mediaLanguageTagForStorage(), includes/media_language.php) covering only the
+ * shapes the cases below use — language, optional script, optional region —
+ * with its letter-case tidying. The structural check above pins that the real
+ * code calls the shared rule; the rule itself is tested against the policy's
+ * own cases by tests/php/test-media-language-conformance.php.
  */
-function diffTranslations(payload, existingRows, sourceId, knownLangs, knownSongs) {
+function tidyTag(tag) {
+    const m = /^([A-Za-z]{2,3})(?:-([A-Za-z]{4}))?(?:-([A-Za-z]{2}|\d{3}))?$/.exec(tag);
+    if (!m) return null;
+    return [
+        m[1].toLowerCase(),
+        m[2] ? m[2][0].toUpperCase() + m[2].slice(1).toLowerCase() : '',
+        m[3] ? m[3].toUpperCase() : '',
+    ].filter(Boolean).join('-');
+}
+
+/**
+ * Mirrors the PHP diff in editorSaveSongCore(): keyed on the TIDIED
+ * TargetLanguage (case-insensitively, matching the utf8mb4_unicode_ci UNIQUE
+ * key), returning the writes it would issue. `payload === null` models an
+ * ABSENT key. `fkPresent` models whether the server has run the #2131
+ * migration yet (true = not yet: the old tblLanguages link still exists).
+ */
+function diffTranslations(payload, existingRows, sourceId, knownLangs, knownSongs, fkPresent = true) {
     if (!Array.isArray(payload)) return { skipped: true, deletes: [], updates: [], inserts: [], warnings: [] };
 
     const warnings = [];
@@ -202,10 +235,12 @@ function diffTranslations(payload, existingRows, sourceId, knownLangs, knownSong
             warnings.push('self');
             continue;
         }
-        desired.set(lang.toLowerCase(), { songId: id, language: lang }); /* last wins */
+        const tidy = tidyTag(lang);
+        if (!tidy) { warnings.push('lang'); continue; }
+        desired.set(tidy.toLowerCase(), { songId: id, language: tidy }); /* last wins */
     }
     for (const [k, d] of [...desired]) {
-        if (!knownLangs.includes(d.language.toLowerCase())) { warnings.push('lang'); desired.delete(k); continue; }
+        if (fkPresent && !knownLangs.includes(d.language.toLowerCase())) { warnings.push('lang'); desired.delete(k); continue; }
         if (!knownSongs.includes(d.songId.toLowerCase())) { warnings.push('song'); desired.delete(k); }
     }
 
@@ -225,6 +260,8 @@ function diffTranslations(payload, existingRows, sourceId, knownLangs, knownSong
 const LANGS = ['en', 'es', 'fr'];
 const SONGS = ['mp-1008', 'sdah-123', 'hlc-9', 'mp-1'];
 const run = (p, e, known = SONGS) => diffTranslations(p, e, 'MP-1008', LANGS, known);
+/* #2131 — the same diff on a server that HAS run the migration. */
+const runMigrated = (p, e) => diffTranslations(p, e, 'MP-1008', LANGS, SONGS, false);
 
 /* The common path: a song that has never used the panel must issue NO writes. */
 let r = run([], []);
@@ -277,7 +314,28 @@ check('a self-link is dropped with a warning',
     r.inserts.length === 0 && r.warnings.includes('self'));
 
 r = run([{ songId: 'SDAH-123', language: 'pt-BR' }], []);
-check('a BCP-47 tag absent from tblLanguages is skipped, not thrown',
+check('before the #2131 migration: a regional tag absent from tblLanguages is skipped, not thrown',
+    r.inserts.length === 0 && r.warnings.includes('lang'));
+
+/* #2131 — after the migration: regional and script forms are real languages. */
+r = runMigrated([{ songId: 'SDAH-123', language: 'pt-BR' }], []);
+check('after the migration: a pt-BR translation link is stored',
+    r.inserts.length === 1 && r.inserts[0].language === 'pt-BR' && r.warnings.length === 0);
+
+r = runMigrated([{ songId: 'SDAH-123', language: 'zh-hant' }], []);
+check('after the migration: letter case is tidied (zh-hant is stored as zh-Hant)',
+    r.inserts.length === 1 && r.inserts[0].language === 'zh-Hant');
+
+r = runMigrated([{ songId: 'SDAH-123', language: 'pt-br' }, { songId: 'HLC-9', language: 'pt-BR' }], []);
+check('two spellings of one language collapse to one link (last wins)',
+    r.inserts.length === 1 && r.inserts[0].songId === 'HLC-9');
+
+r = runMigrated([{ songId: 'SDAH-123', language: 'pt-BR' }, { songId: 'HLC-9', language: 'pt-PT' }], []);
+check('pt-BR and pt-PT are two different languages (policy TEXT-050)',
+    r.inserts.length === 2);
+
+r = runMigrated([{ songId: 'SDAH-123', language: 'Portuguese' }], []);
+check('a language NAME is skipped with a warning, never stored as a tag',
     r.inserts.length === 0 && r.warnings.includes('lang'));
 
 r = run([{ songId: 'GONE-1', language: 'es' }], [], SONGS);

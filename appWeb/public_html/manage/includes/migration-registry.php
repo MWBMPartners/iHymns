@@ -5158,4 +5158,32 @@ return [
             return $default !== null && $default !== 'und';
         },
     ],
+    /* #2131 (part of #2137, the shared language policy) — whole-song
+       translations may use regional and script languages (pt-BR, zh-Hans).
+       Drops the one hard link from tblSongTranslations.TargetLanguage to
+       tblLanguages (bare codes only) plus the index MariaDB/MySQL created for
+       it, so a migrated database matches a fresh schema.sql install. No data
+       is changed; uq_Translation stays. Idempotent: safe in "Apply all". */
+    'drop-song-translations-language-fk' => [
+        'script' => 'migrate-drop-song-translations-language-fk.php',
+        'card' => [
+            'title'  => 'Translations: allow regional and script languages (#2131)',
+            'body'   => 'Removes the <code>fk_Trans_Lang</code> link from'
+                      . ' <code>tblSongTranslations.TargetLanguage</code> to'
+                      . ' <code>tblLanguages</code>, which holds bare language codes only.'
+                      . ' Until this runs, a whole-song translation in a regional or script'
+                      . ' form (<code>pt-BR</code>, <code>zh-Hans</code>) cannot be linked; the'
+                      . ' song editor skips it with a warning that points here. Also removes'
+                      . ' the index the database created for that link, so this server matches'
+                      . ' a fresh install. No data is changed, and the one-translation-per-language'
+                      . ' rule stays. Idempotent &mdash; safe to re-run.',
+            'button' => 'Run Translation Languages Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending while EITHER the link or
+           its leftover index still exists, so a partial apply never shows the
+           card as done. Read from the live schema — never `=> true`. */
+        'probe' => static fn(\mysqli $db): bool =>
+               _migProbe_constraintExists($db, 'tblSongTranslations', 'fk_Trans_Lang')
+            || _migProbe_indexExists($db, 'tblSongTranslations', 'fk_Trans_Lang'),
+    ],
 ];

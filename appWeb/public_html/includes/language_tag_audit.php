@@ -525,24 +525,29 @@ function languageTagRemap(\mysqli $db, string $fromTag, string $toTag): array
             continue;
         }
 
-        /* 'direct'. tblSongTranslations.TargetLanguage carries the schema's
-           one hard FK to tblLanguages (fk_Trans_Lang) plus
-           uq_Translation(SourceSongId, TargetLanguage) — remap only when
-           $toTag already exists in the registry, and skip-report any row
+        /* 'direct'. tblSongTranslations.TargetLanguage has
+           uq_Translation(SourceSongId, TargetLanguage) — skip-report any row
            whose remap would collide with the unique key (row-by-row, so one
-           collision doesn't abort every other row's remap). */
+           collision doesn't abort every other row's remap). #2131 — on a
+           server that has not yet run the migration dropping fk_Trans_Lang,
+           the column still has that hard link to tblLanguages (bare codes
+           only), so there the remap also needs $toTag to be in the registry;
+           after the migration it does not. */
         if ($table === 'tblSongTranslations' && $col === 'TargetLanguage') {
-            $existsStmt = $db->prepare('SELECT 1 FROM tblLanguages WHERE Code = ? LIMIT 1');
-            $existsStmt->bind_param('s', $toTag);
-            $existsStmt->execute();
-            $toTagRegistered = $existsStmt->get_result()->fetch_row() !== null;
-            $existsStmt->close();
-            if (!$toTagRegistered) {
-                $perSource[$label] = [
-                    'updated' => 0, 'skipped' => 0,
-                    'note' => "skipped — '{$toTag}' is not in the language registry yet (tblSongTranslations.TargetLanguage has a hard foreign key; add it to the registry on this page first).",
-                ];
-                continue;
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_translations_schema.php';
+            if (songTranslationsLanguageFkPresent($db)) {
+                $existsStmt = $db->prepare('SELECT 1 FROM tblLanguages WHERE Code = ? LIMIT 1');
+                $existsStmt->bind_param('s', $toTag);
+                $existsStmt->execute();
+                $toTagRegistered = $existsStmt->get_result()->fetch_row() !== null;
+                $existsStmt->close();
+                if (!$toTagRegistered) {
+                    $perSource[$label] = [
+                        'updated' => 0, 'skipped' => 0,
+                        'note' => "skipped — this server still links translations to the language registry, which holds bare codes only; run the \"Translations: allow regional and script languages\" card on /manage/setup-database, then remap again.",
+                    ];
+                    continue;
+                }
             }
 
             $idsStmt = $db->prepare('SELECT Id FROM tblSongTranslations WHERE TargetLanguage = ?');

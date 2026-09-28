@@ -1662,28 +1662,28 @@ CREATE TABLE IF NOT EXISTS tblSongTranslations (
         ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT fk_Trans_Target
         FOREIGN KEY (TranslatedSongId) REFERENCES tblSongs(SongId)
-        ON DELETE CASCADE ON UPDATE CASCADE,
+        ON DELETE CASCADE ON UPDATE CASCADE
     /* uq_Translation is (SourceSongId, TargetLanguage): ONE translation per
        language per source song. A second Spanish rendering of the same hymn
        is not an additional row here — it is a separate tblSongs record, and
-       which one is "the" Spanish counterpart is a curatorial choice.
+       which one is "the" Spanish counterpart is a curatorial choice. Because
+       TargetLanguage is a full tag, `pt-BR` and `pt-PT` are two different
+       languages here, as the shared language policy requires (TEXT-050).
 
-       fk_Trans_Lang is the ONLY hard foreign key to tblLanguages in this
-       file, and it is the outlier: every other language column in the schema
-       (tblSongs.Language, tblLyricLines.LanguageCode, tblSongLanguages
-       .Language, the whole #1088 pair) is deliberately free-text with NO FK,
-       precisely so a BCP 47 tag carrying a script or region subtag can never
-       RESTRICT-fail an import (rule #21). tblLanguages is seeded from the
-       IANA registry's `Type: language` records only — bare primary subtags —
-       so a translation tagged zh-Hans or pt-BR cannot be recorded through
-       this constraint even though the column is VARCHAR(35) and shaped for
-       exactly those tags. Do not "fix" that by widening the seed — it would
-       turn tblLanguages from a subtag registry into a tag table. Dropping
-       this one constraint to match the rest of the schema is the change that
-       would need discussing. */
-    CONSTRAINT fk_Trans_Lang
-        FOREIGN KEY (TargetLanguage) REFERENCES tblLanguages(Code)
-        ON DELETE RESTRICT ON UPDATE CASCADE
+       #2131 — there is deliberately NO foreign key from TargetLanguage to
+       tblLanguages any more. There used to be one, `fk_Trans_Lang`, the only
+       hard link to tblLanguages in this file. tblLanguages is seeded from the
+       IANA registry's `Type: language` records only (bare codes: `pt`, `zh`),
+       so that link made a translation tagged `pt-BR` or `zh-Hans` impossible
+       to record, even though the column is VARCHAR(35) and shaped for exactly
+       those tags. It now matches every other language column in the schema
+       (tblSongs.Language, tblLyricLines.LanguageCode, the #1088 pair): free
+       text, checked by the application with the shared language policy's rule
+       (includes/media_language.php) before it is saved (rule #21). Do not
+       "fix" it the other way by widening the registry seed — that would turn
+       tblLanguages from a registry of language codes into a table of every
+       combination anybody might use. Existing databases drop the link with
+       migrate-drop-song-translations-language-fk.php. */
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
