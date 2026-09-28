@@ -81,11 +81,17 @@ struct SongMetadataView: View {
     /// — a song is usually single-language, but the schema allows a mixed
     /// component (e.g. a chorus repeated in a second language), and this
     /// surfaces that honestly rather than only ever showing `detail.language`.
+    ///
+    /// #2136 — each badge shows the language's NAME in the reader's language
+    /// ("Portuguese (Brazil)"), not its upper-cased code ("PT-BR"), and so does
+    /// the spoken label: a code such as "ZH" cannot tell Simplified from
+    /// Traditional Chinese, and a screen reader reading "Z H" helps nobody.
     private var languageBadges: some View {
         let languages = Self.distinctLanguages(in: detail)
+        let names = languages.map { LanguageDisplay.name(for: $0) }
         return HStack(spacing: 6) {
             ForEach(languages, id: \.self) { language in
-                Text(language.uppercased())
+                Text(LanguageDisplay.name(for: language))
                     .font(.caption2.bold())
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
@@ -94,7 +100,7 @@ struct SongMetadataView: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Language\(languages.count == 1 ? "" : "s"): \(languages.joined(separator: ", "))")
+        .accessibilityLabel("Language\(names.count == 1 ? "" : "s"): \(names.joined(separator: ", "))")
     }
 
     static func distinctLanguages(in detail: SongDetail) -> [String] {

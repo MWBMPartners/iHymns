@@ -205,10 +205,12 @@ public struct CatalogueListView: View {
                         Button {
                             viewModel.toggleLanguageFilter(language)
                         } label: {
+                            /* #2136 — the language's name, not its code; the
+                               filter itself still matches the exact tag. */
                             if viewModel.selectedLanguages.contains(language) {
-                                Label(language, systemImage: "checkmark")
+                                Label(LanguageDisplay.name(for: language), systemImage: "checkmark")
                             } else {
-                                Text(language)
+                                Text(LanguageDisplay.name(for: language))
                             }
                         }
                     }
