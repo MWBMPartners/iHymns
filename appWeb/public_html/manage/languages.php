@@ -223,20 +223,23 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     exit;
                 }
 
-                /* Pre-flight cite count across tblSongs.Language and
-                   tblSongbooks.Language — languageAdminUsageCounts() (#1694/
+                /* Pre-flight cite count across tblSongs.Language,
+                   tblSongbooks.Language and (#2137 review) whole-song
+                   translation links — languageAdminUsageCounts() (#1694/
                    #1765 @deleted-visible/@disabled-visible integrity counts,
                    see its doc-comment). */
-                $usage         = languageAdminUsageCounts($db, $code);
-                $songCount     = $usage['songs'];
-                $songbookCount = $usage['songbooks'];
+                $usage            = languageAdminUsageCounts($db, $code);
+                $songCount        = $usage['songs'];
+                $songbookCount    = $usage['songbooks'];
+                $translationCount = $usage['translations'];
 
-                if (!$force && ($songCount + $songbookCount) > 0) {
+                if (!$force && ($songCount + $songbookCount + $translationCount) > 0) {
                     http_response_code(409);
                     echo json_encode([
                         'error'      => 'Language is in use.',
                         'songs'      => $songCount,
                         'songbooks'  => $songbookCount,
+                        'translations' => $translationCount,
                         'requires_force' => true,
                     ]);
                     exit;
@@ -254,6 +257,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     'forced'         => $force ? 1 : 0,
                     'songs_at_time'  => $songCount,
                     'sbooks_at_time' => $songbookCount,
+                    'translations_at_time' => $translationCount,
                 ]);
                 echo json_encode(['success' => true, 'code' => $code]);
                 exit;
@@ -1078,7 +1082,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                    "force delete" red+warning state. */
                 pendingDelete.force = true;
                 dmDetailEl.textContent =
-                    ` ${d.songs ?? 0} song(s) and ${d.songbooks ?? 0} songbook(s) cite this language. ` +
+                    ` ${d.songs ?? 0} song(s), ${d.songbooks ?? 0} songbook(s) and ${d.translations ?? 0} translation link(s) use this language. ` +
                     'Click again to delete anyway.';
                 dmWarnEl.classList.remove('d-none');
                 dmConfirm.textContent = 'Delete anyway';

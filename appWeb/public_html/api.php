@@ -22199,11 +22199,13 @@ if ($action !== null) {
 
             try {
                 $usage = languageAdminUsageCounts($db, $code);
-                if (!$force && ($usage['songs'] + $usage['songbooks']) > 0) {
+                /* #2137 review — translation links count too. */
+                if (!$force && ($usage['songs'] + $usage['songbooks'] + $usage['translations']) > 0) {
                     sendJson([
                         'error'          => 'Language is in use.',
                         'songs'          => $usage['songs'],
                         'songbooks'      => $usage['songbooks'],
+                        'translations'   => $usage['translations'],
                         'requires_force' => true,
                     ], 409);
                     break;
@@ -22214,6 +22216,7 @@ if ($action !== null) {
 
                 logActivity('api.admin.language.delete', 'language', $code, [
                     'forced' => $force ? 1 : 0, 'songs_at_time' => $usage['songs'], 'sbooks_at_time' => $usage['songbooks'],
+                    'translations_at_time' => $usage['translations'],
                 ]);
                 sendJson(['ok' => true, 'code' => $code]);
             } catch (\Throwable $e) {

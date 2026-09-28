@@ -15490,9 +15490,11 @@ paths:
       tags: [Admin — Languages]
       summary: Delete a tblLanguages row
       description: |
-        Refused with **409** when any song or songbook still cites the
-        code (including every `<code>-*` sub-tag), unless `force` is
-        sent — the same two-step confirm the admin page uses.
+        Refused with **409** when any song, songbook or whole-song
+        translation link still uses the code (including every `<code>-*`
+        sub-tag), unless `force` is sent — the same two-step confirm the
+        admin page uses. Translation links are counted since the #2137
+        review (`translations`, added).
       security:
         - bearerAuth: []
       parameters:
@@ -15533,7 +15535,7 @@ paths:
         "404":
           description: Language not found
         "409":
-          description: Language is still cited by songs/songbooks — resend with force=true
+          description: Language is still used by songs, songbooks or translation links — resend with force=true
           content:
             application/json:
               schema:
@@ -15542,6 +15544,7 @@ paths:
                   error:          { type: string }
                   songs:          { type: integer }
                   songbooks:      { type: integer }
+                  translations:   { type: integer, description: 'Added in the #2137 review — whole-song translation links using the code' }
                   requires_force: { type: boolean, example: true }
 
   /api.php?action=admin_language_remap_tag:
