@@ -279,7 +279,12 @@ function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): ar
         /* @deleted-visible: write-path FK pre-check (#1694)
            — a translation link naming a hidden song must
            SURVIVE the save (dropping it would silently
-           destroy data that comes back on restore). */
+           destroy data that comes back on restore).
+           @disabled-visible: same reasoning, one predicate over
+           (#1765) — a link to a song in a disabled songbook must
+           survive too; disabling a songbook is reversible. (This
+           marker sat elsewhere in save_song_core.php's function
+           before these steps moved here, #2137 review.) */
         $ip   = implode(',', array_fill(0, count($wantIds), '?'));
         $iStm = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ip)");
         $iStm->bind_param(str_repeat('s', count($wantIds)), ...$wantIds);
