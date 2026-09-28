@@ -737,12 +737,21 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   reported and a no-break-space song kept the card "pending" for ever); each log row records WHO ran it — from
   the web the signed-in user (`UserId`) and `ranBy: "web"`, from the command line `ranBy: "command line"` — and a
   confirmed web run that cannot tell who is signed in changes nothing (`migrateBackfillSongLanguageActor()`); and
-  every fill and its log row are one transaction. **If somebody changes a song while a confirmed run is under way,
-  their change always stands**, but how depends on the database: on MySQL (and MariaDB without snapshot
-  isolation) that one song is skipped and the rest filled; on MariaDB 11.8, where `innodb_snapshot_isolation` is
-  on by default, the whole run stops with "Record has changed since last read" and is rolled back — nothing
-  filled, nothing logged — and can simply be run again. (An earlier note said only "that song is skipped".) All
-  of this is tested against a real database in `tests/php/test-song-language-backfill.php` Part C, on both.
+  every fill and its log row are one transaction. **If somebody changes a song's language while a confirmed run is
+  under way, their change stands** — any change to its bytes, since round 5 of the review. How depends on the
+  database: on MySQL (and MariaDB without snapshot isolation) that one song is skipped and the rest filled; on
+  MariaDB 11.8, where `innodb_snapshot_isolation` is on by default, the whole run stops with "Record has changed
+  since last read" and is rolled back — nothing filled, nothing logged — and can simply be run again. (An earlier
+  note said only "that song is skipped".) Until round 5 this note said "their change always stands", and that was
+  not true: the check compared the value the card had read by the column's collation, which counts an empty
+  value, a space, a no-break space and a zero-width space as the same, so on MySQL 8.4 (and MariaDB with snapshot
+  isolation off) a change from empty to one of those spaces, or from a space to empty, was overwritten with the
+  songbook's language. The check now compares bytes
+  (`CAST(Language AS BINARY) <=> CAST(? AS BINARY)`). What it still cannot see: a change that ends with exactly
+  the bytes the card read (somebody changing the value and changing it back) — there is then nothing of theirs to
+  lose. A confirmed run also refuses, changing nothing, when the activity log table or its `Details` column is
+  missing. All of this is tested against a real database in `tests/php/test-song-language-backfill.php` Part C, on
+  both (each concurrent case in both snapshot-isolation modes on MariaDB).
 - **Two orders, on purpose, never mixed.**
   - *Stored order* (the policy's Part A) is the same for everyone and is what the site returns and keeps:
     the original's language first, then every other language by its code (`de`, `en`, `es` …), general

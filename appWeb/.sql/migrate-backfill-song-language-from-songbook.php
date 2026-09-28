@@ -183,16 +183,30 @@ function migrateBackfillSongLanguageFromSongbook(\mysqli $db, bool $apply, calla
     $res->close();
 
     $pick   = $db->prepare('SELECT SongId, Language FROM tblSongs WHERE SongbookAbbr = ? ORDER BY SongId');
-    /* `Language <=> ?` (null-safe equals, bound to the value just read):
-       the row is changed only if nobody else changed it in between. If
-       someone did, the database decides what happens next, and both ways are
-       safe (#2137 review round 4 — this comment used to promise only the
-       first): on MySQL, and MariaDB without snapshot isolation, the UPDATE
-       matches no row and that one song is skipped; on MariaDB 11.8 with
-       `innodb_snapshot_isolation` on (its default), the UPDATE itself fails
-       with "Record has changed since last read", and the catch below rolls
-       the WHOLE run back. Either way the other person's change stands. */
-    $update = $apply ? $db->prepare('UPDATE tblSongs SET Language = ? WHERE SongId = ? AND Language <=> ?') : null;
+    /* `CAST(Language AS BINARY) <=> CAST(? AS BINARY)` (null-safe equals,
+       byte for byte, bound to the value just read): the row is changed only
+       if nobody else changed it in between. If someone did, the database
+       decides what happens next, and both ways are safe (#2137 review round
+       4 — this comment used to promise only the first): on MySQL, and
+       MariaDB without snapshot isolation, the UPDATE matches no row and that
+       one song is skipped; on MariaDB 11.8 with `innodb_snapshot_isolation`
+       on (its default), the UPDATE itself fails with "Record has changed
+       since last read", and the catch below rolls the WHOLE run back.
+       #2137 review round 5 (L5) — BYTES, not the column's collation. Until
+       this round the guard was `Language <=> ?`, compared by the collation
+       (utf8mb4_unicode_ci), which counts an empty value, a space, a no-break
+       space and a zero-width space as equal. So on MySQL 8.4 (and MariaDB
+       with snapshot isolation off) somebody changing an empty language to a
+       no-break or zero-width space, or to a space, or a space to empty,
+       while the card ran had their change OVERWRITTEN with the songbook's
+       language — the fourth review reproduced four such cases. Compared as
+       bytes, any change at all is seen. (A binary COLLATION would not do:
+       utf8mb4_bin still ignores trailing spaces.) The card only ever fills a
+       value that was NULL or only ASCII spaces, tabs and line breaks, and
+       those are the same bytes in every character set the connection could
+       use; so a mismatch of character sets can only make a song fail to
+       match — skipped, the safe way — never make a changed one match. */
+    $update = $apply ? $db->prepare('UPDATE tblSongs SET Language = ? WHERE SongId = ? AND CAST(Language AS BINARY) <=> CAST(? AS BINARY)') : null;
     /* Straight into tblActivityLog rather than through logActivity(): that
        helper stops after 200 rows per request (a guard against runaway
        loops), and a trail that stopped part-way could not be used to undo

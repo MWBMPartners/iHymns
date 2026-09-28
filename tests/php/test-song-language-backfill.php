@@ -59,12 +59,24 @@ declare(strict_types=1);
  *     isolation on, the whole run fails and rolls back; with it off, and on
  *     MySQL, that one song is skipped. Both are checked where they occur.
  *
+ * Part C, round 5 (#2137, the fourth review):
+ *   - the guard against another person's change compares BYTES: their
+ *     change from empty to a no-break space, a zero-width space or a space,
+ *     or from a space to empty, is never overwritten (it was, on MySQL 8.4
+ *     and on MariaDB with snapshot isolation off) — in every mode;
+ *   - a confirmed run with no activity log table, or one with no Details
+ *     column, changes nothing and says why; a dry run still reports.
+ *
  * Mutation-proven (see the commit bodies): putting back the rewrite branch,
  * `$apply = true;` in the script, and removing 'manual' => true each turn
  * checks red. Round 4: dropping the `Language <=> ?` guard, treating only ''
  * as blank, dropping the transaction, the probe's old SQL TRIM() test, the
  * probe without the PHP blank test, not writing UserId, and not writing
- * ranBy each turn checks red.
+ * ranBy each turn checks red. Round 5: comparing the guard by the column's
+ * collation again (`Language <=> ?`), dropping the guard, and dropping the
+ * refusal when the activity log is missing (the third review's B4 — no test
+ * caught it until round 5, although an earlier note implied one did) each
+ * turn checks red on MariaDB 11.8 and MySQL 8.4.
  *
  * Database: IHYMNS_TEST_DSN="host=127.0.0.1;port=3306;user=root;pass=" (the
  * same variable test-schema-installs.php reads). A throwaway database named
@@ -429,10 +441,31 @@ if ($db === null) {
         if ($snapshotVar !== null && strtoupper((string)$snapshotVar[1]) === 'ON') {
             $modes['with snapshot isolation switched off for the session'] = 'OFF';
         }
+        /* #2137 review round 5 (L5) — besides `fr`, the fourth review's
+           changes the column's collation calls "equal": empty to a no-break
+           space, to a zero-width space, to a space, and a space to empty. On
+           MySQL 8.4 (and MariaDB with snapshot isolation off) the old guard,
+           `Language <=> ?`, matched them anyway and OVERWROTE the other
+           person's change; the guard now compares bytes. [HR-2 before, their
+           change] — HR-2 is NULL after setUp(). */
+        $theirChanges = [
+            'NULL to fr'                   => [null, 'fr'],
+            'empty to a no-break space'    => ['', "\u{00A0}"],
+            'empty to a zero-width space'  => ['', "\u{200B}"],
+            'empty to a space'             => ['', ' '],
+            'a space to empty'             => [' ', ''],
+        ];
         foreach ($modes as $modeLabel => $sessionSetting) {
+          foreach ($theirChanges as $changeLabel => [$hr2Before, $theirs]) {
             $setUp();
+            if ($hr2Before !== null) {
+                $pre = $db->prepare("UPDATE tblSongs SET Language = ? WHERE SongId = 'HR-2'");
+                $pre->bind_param('s', $hr2Before);
+                $pre->execute();
+                $pre->close();
+            }
             if ($sessionSetting !== null) { $db->query("SET SESSION innodb_snapshot_isolation = {$sessionSetting}"); }
-            $other = proc_open([PHP_BINARY, $helper, $host, (string)$port, $user, $pass, $name, 'HR-2', 'fr', '1500'],
+            $other = proc_open([PHP_BINARY, $helper, $host, (string)$port, $user, $pass, $name, 'HR-2', $theirs, '1500'],
                 [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $otherPipes);
             $ready = trim((string)fgets($otherPipes[1]));
             $threw = null;
@@ -451,12 +484,35 @@ if ($db === null) {
             $skipped = $threw === null && $now['ZH-3'] === 'zh' && $logged === ['ZH-3'];
             $rolledBack = $threw !== null && str_contains($threw, 'Record has changed since last read')
                 && $now['ZH-3'] === '' && $logged === [];
-            $check("another person's change during a run is never overwritten ({$modeLabel}): HR-2 keeps their `fr`, no log row"
+            $check("another person's change during a run is never overwritten ({$modeLabel}; {$changeLabel}): HR-2 keeps their value, no log row"
                 . ' claims HR-2, and the run either skipped that song or stopped and rolled back — here it '
                 . ($skipped ? 'skipped that song' : ($rolledBack ? 'stopped and rolled back' : 'did neither')),
                 $ready === 'locked' && $otherCode === 0 && str_contains($otherRest, 'committed')
-                && $now['HR-2'] === 'fr' && !in_array('HR-2', $logged, true) && ($skipped || $rolledBack),
-                json_encode(['ready' => $ready, 'threw' => $threw, 'HR-2' => $now['HR-2'], 'ZH-3' => $now['ZH-3'], 'logged' => $logged, 'other' => trim($otherRest)]));
+                && $now['HR-2'] === $theirs && !in_array('HR-2', $logged, true) && ($skipped || $rolledBack),
+                json_encode(['ready' => $ready, 'threw' => $threw, 'HR-2' => $now['HR-2'], 'ZH-3' => $now['ZH-3'], 'logged' => $logged, 'other' => trim($otherRest)], JSON_UNESCAPED_UNICODE));
+          }
+        }
+
+        /* --- #2137 review round 5 (I5): no activity log, no change (the
+               third review's B4 — its planted fault went unnoticed) --- */
+        foreach (['the activity log table is missing' => 'DROP TABLE tblActivityLog',
+                  'the activity log has no Details column' => 'ALTER TABLE tblActivityLog DROP COLUMN Details'] as $what => $sql) {
+            $setUp();
+            $fresh = $snapshot();
+            $db->query($sql);
+            $refused = null;
+            try {
+                migrateBackfillSongLanguageFromSongbook($db, true, $noOut, $cliActor);
+            } catch (\RuntimeException $e) {
+                $refused = $e->getMessage();
+            }
+            $check("a confirmed run when {$what} changes nothing, and says why in plain words",
+                $refused === 'tblActivityLog is missing, so the changes could not be recorded; nothing was changed.'
+                && $snapshot() === $fresh, (string)$refused);
+            $dryAnyway = migrateBackfillSongLanguageFromSongbook($db, false, $noOut, $cliActor);
+            $check("…while a dry run when {$what} still lists what it would fill (it writes nothing)",
+                array_column($dryAnyway['filled'], 'songId') === ['HR-2', 'ZH-3'] && $snapshot() === $fresh,
+                json_encode($dryAnyway['filled']));
         }
     } finally {
         if ($prepend !== null) { @unlink($prepend); }
