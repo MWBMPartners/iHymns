@@ -173,13 +173,14 @@ function songAltTitlesList(\mysqli $db, string $songId): array
  * @param string      $title    Trimmed, non-empty, <=255 CODE POINTS
  *                               (`mb_strlen`, not `strlen` — a multi-byte
  *                               title must not be cut mid-character).
- * @param string|null $language Trimmed; `''` or `null` -> `NULL`. Otherwise
- *                               must match the SAME soft BCP-47 grammar
- *                               `song_importers.php` already uses for a
- *                               songbook-language folder suffix
- *                               (`/^[a-z]{2,3}(-[A-Za-z0-9]+)*$/i`), then
- *                               capped to 35 code points (the column
- *                               width) via `mb_substr`.
+ * @param string|null $language `''` or `null` -> `NULL`. Otherwise tidied
+ *                               by the ONE shared language rule
+ *                               (`mediaLanguageTagForStorage()`, #2137 —
+ *                               MWBM-MEDIA-LANG LANG-001): letter case is
+ *                               fixed and a value that is not a language
+ *                               tag, or is longer than the 35-character
+ *                               column, is refused (never cut short, which
+ *                               would store a different tag).
  * @param string|null $note     Trimmed, <=255 code points; `''` or `null`
  *                               -> `NULL`.
  * @return array{id:int, created:bool, row:array{id:int,title:string,language:string,note:string,sortOrder:int}}
@@ -196,18 +197,14 @@ function songAltTitleAdd(\mysqli $db, string $songId, string $title, ?string $la
         throw new \InvalidArgumentException('title must be 255 characters or fewer.');
     }
 
-    /* Same soft BCP-47 grammar + code-point cap `song_importers.php` already
-       validates a songbook-language folder suffix against
-       (`_bulkImport_upsertSongbook()`) — reused rather than re-typed, so an
-       alt title's language and a songbook's language agree on what counts
-       as a plausible tag. */
-    $language = $language === null ? '' : trim($language);
-    if ($language === '') {
-        $language = null;
-    } elseif (!preg_match('/^[a-z]{2,3}(-[A-Za-z0-9]+)*$/i', $language)) {
-        throw new \InvalidArgumentException('language is not a recognised BCP-47 tag.');
-    } else {
-        $language = mb_substr($language, 0, 35);
+    /* #2137 — the ONE shared language rule decides (it replaced a local loose
+       pattern plus a silent cut to 35 characters): tidied, or refused with the
+       same plain sentence every other language box shows. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    $rawLanguage = $language === null ? '' : $language;
+    $language    = mediaLanguageTagForStorage($rawLanguage);
+    if ($language === false) {
+        throw new \InvalidArgumentException(mediaLanguageRefusalMessage($rawLanguage));
     }
 
     $note = $note === null ? '' : trim($note);

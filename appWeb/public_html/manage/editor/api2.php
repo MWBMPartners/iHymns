@@ -395,6 +395,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 /* #1235 P3 / #1088 — shared per-line enrichment (translations / annotations)
    write+read layer; the SAME contract the future native API (#1201) reuses. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'line_enrichment.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_language.php';   /* #2137 — the shared language rules: tidy/refuse the song, section and line languages */
 /* #2073 — voice parts / echo spans / rounds. ELI5: this is the one place that
    knows "who sings this line" and "how a round of voices comes in one after
    another" — the eight vocal-part and round actions below, and load_song's
@@ -2727,6 +2728,22 @@ try {
         [$column, $type] = ED2_META_FIELDS[$field];
         $raw = $body['value'] ?? null;
 
+        /* ---- #2137 — the song's language: tidied by the ONE shared rule ----
+           This field used to reach the generic trim-and-store path below with
+           no check at all, so `pt_br` or `English` could be written straight
+           into tblSongs.Language. Now `pt-br` is stored as `pt-BR`, and a value
+           that is not a language code is refused with a plain sentence (422 —
+           the status, not the wording, is what the client branches on, rule
+           #35). An empty value keeps today's behaviour (stored as ''). */
+        if ($field === 'language') {
+            $rawLanguage = $raw === null ? '' : (string)$raw;
+            $tidyLanguage = mediaLanguageTagForStorage($rawLanguage);
+            if ($tidyLanguage === false) {
+                ed2_respond(['ok' => false, 'error' => mediaLanguageRefusalMessage($rawLanguage, 'the song')], 422);
+            }
+            $raw = $tidyLanguage ?? '';
+        }
+
         /* ---- #1741 P1 existence gate ---------------------------------------
            Five of the identity columns above may not exist yet on an install
            that hasn't run the "song-identity-fields" migration card. `Isrc`
@@ -3404,6 +3421,11 @@ try {
         $comp   = is_array($body['component'] ?? null) ? $body['component'] : [];
         if ($songId === '' || !$comp) { ed2_respond(['ok' => false, 'error' => 'songId + component are required.'], 400); }
         if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        /* #2137 — refuse a section or line language that is not a language code,
+           naming the box, before anything is written (the shared write path
+           tidies letter case but cannot answer the curator). */
+        $languageRefusal = mediaLanguageFirstRefusalInComponents([$comp]);
+        if ($languageRefusal !== null) { ed2_respond(['ok' => false, 'error' => $languageRefusal], 422); }
 
         $compId    = isset($comp['id']) ? (int)$comp['id'] : 0;
         $type      = mb_substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse';
@@ -5623,6 +5645,9 @@ try {
         $mode   = (($body['mode'] ?? 'replace') === 'append') ? 'append' : 'replace';
         if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
         if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        /* #2137 — same refusal as component_upsert, for every section at once. */
+        $languageRefusal = mediaLanguageFirstRefusalInComponents($rows);
+        if ($languageRefusal !== null) { ed2_respond(['ok' => false, 'error' => $languageRefusal], 422); }
 
         $db->begin_transaction();
         try {

@@ -50,46 +50,37 @@ function _songMedia_tableExists(\mysqli $db): bool
 }
 
 /**
- * Validate + normalise an IETF BCP 47 language tag (#681).
+ * Check and tidy a language tag a person or iHymns itself supplied (#681).
  *
- * v1 grammar (matches the songbook editor's $validateBcp47): lowercase
- * 2-3 letter language, optional 4-letter Title Case script, optional
- * 2-letter UPPER region or 3-digit numeric area code. Variants /
- * extensions / private-use are out of scope and rejected so a tampered
- * POST can't smuggle exotic subtags into the column.
+ * #2137 — this used to hold its own regular expression, which REJECTED a tag
+ * whose letter case was off (`en-gb`) instead of fixing it, and disagreed with
+ * the songbook form's separate checker (that one rejected variants such as
+ * `de-1996`). Both now delegate to the ONE shared rule,
+ * `mediaLanguageTagForStorage()` in includes/media_language.php, which follows
+ * the MWBM-MEDIA-LANG policy (rule LANG-001): letter case is fixed
+ * (`EN-gb` → `en-GB`), retired codes are replaced (`iw` → `he`), and a value
+ * that is not a language tag at all (`English`, `pt_BR`) is refused.
  *
- * Returns:
- *   - null  if `$tag` is empty (caller decides whether to default to
- *           'en' for a NOT NULL column or NULL for a nullable one).
- *   - the trimmed tag, capped to 35 chars (the new column width per
- *     #681), if it matches the v1 grammar.
- *   - false if the input is non-empty but malformed; caller should
- *     400 / refuse to save.
+ * The name and the three-way answer are kept, because every existing caller
+ * (the song editor save, the importers, the curator remap tool, the language
+ * audit) already branches on exactly these answers:
+ *   - null   the value is empty (the caller decides between `und` and NULL);
+ *   - false  the value cannot be stored — not a well-formed tag, or longer
+ *            than the 35 characters every language column holds (it is never
+ *            cut short, because a shortened tag is a different tag);
+ *   - string the canonical tag to store.
+ *
+ * Values read from FILES (an imported song's `lang`, a TTML `xml:lang`) use
+ * `mediaLanguageReadExternal()` instead, which also reads old three-letter
+ * codes such as `eng` (policy LANG-002).
  *
  * @return string|null|false
+ * @throws \RuntimeException when the shared rules are not installed on the server.
  */
 function _ietfBcp47Validate(string $raw)
 {
-    $tag = trim($raw);
-    if ($tag === '') return null;
-    if (strlen($tag) > 35) return false;
-    /* Subtag breakdown:
-       - language:  2-3 lowercase letters (ISO 639-1 / 639-3)
-       - script:    optional 4-letter Title-case (ISO 15924)
-       - region:    optional 2-letter UPPERCASE (ISO 3166-1) or 3-digit (UN M.49)
-       - variant*:  zero or more — each is 5-8 alphanumeric, OR 4 chars
-                    starting with a digit (the IANA grammar covers
-                    ʻfonipaʼ, ʻvalenciaʼ, and digit-prefixed forms
-                    like ʻ1996ʼ for German post-1996 orthography).
-       Variants land last; extensions and private-use are still out
-       of scope for the picker. */
-    if (!preg_match(
-        '/^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2}|-[0-9]{3})?(-([a-zA-Z0-9]{5,8}|[0-9][a-zA-Z0-9]{3}))*$/',
-        $tag
-    )) {
-        return false;
-    }
-    return $tag;
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    return mediaLanguageTagForStorage($raw);
 }
 
 /**
@@ -569,6 +560,90 @@ function _bulkImportRightsFromSong(array $song): array
 }
 
 /**
+ * Read every language value in one imported song with the shared policy's
+ * FILE reader (#2137, policy LANG-002), before anything is saved.
+ *
+ * ELI5: an imported file might say `eng`, `EN-gb` or `Englsh`. The first two
+ * become `en` and `en-GB`. The third is not guessed at: it is left out (or set
+ * to "unknown" where a language is required) and listed so someone can fix it.
+ *
+ * Covers the four places an imported song carries a language:
+ *   - `language`                 the song's own (a required column: an
+ *                                unreadable value becomes `und`; an empty one
+ *                                stays empty and the caller applies its default);
+ *   - `components[i].language`   each section's (optional: unreadable → no value);
+ *   - `components[i].languages`  each line's, parallel to the lines
+ *                                (optional: unreadable → null, so the line
+ *                                inherits its section's language);
+ *   - `altTitles[i].language`    each alternative title's (optional).
+ *
+ * Returns the song with those values replaced by canonical tags, and a list of
+ * [where, original text] pairs for every value that could not be read — the
+ * caller reports those (mediaLanguageReportUnrecognised()) once it knows the
+ * song is really being written.
+ *
+ * @param array<string,mixed> $song
+ * @return array{0: array<string,mixed>, 1: list<array{0:string,1:string}>}
+ * @throws \RuntimeException when the shared rules are not installed.
+ */
+function _bulkImport_normaliseLanguages(array $song): array
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    $notes = [];
+
+    $read = mediaLanguageReadExternal(isset($song['language']) ? (string)$song['language'] : '');
+    if ($read['unrecognised'] !== null) {
+        $notes[] = ['language', $read['unrecognised']];
+        $song['language'] = IHYMNS_LANGUAGE_UNKNOWN;
+    } else {
+        $song['language'] = $read['tag'] ?? '';
+    }
+
+    if (isset($song['components']) && is_array($song['components'])) {
+        foreach ($song['components'] as $ci => $comp) {
+            if (!is_array($comp)) {
+                continue;
+            }
+            $where = 'section ' . ($ci + 1);
+            if (isset($comp['language']) && is_string($comp['language'])) {
+                $r = mediaLanguageReadExternal($comp['language']);
+                if ($r['unrecognised'] !== null) {
+                    $notes[] = [$where . ' language', $r['unrecognised']];
+                }
+                $song['components'][$ci]['language'] = $r['tag'];
+            }
+            if (isset($comp['languages']) && is_array($comp['languages'])) {
+                foreach ($comp['languages'] as $li => $lineLang) {
+                    if (!is_string($lineLang)) {
+                        continue;
+                    }
+                    $r = mediaLanguageReadExternal($lineLang);
+                    if ($r['unrecognised'] !== null) {
+                        $notes[] = ['line ' . ((int)$li + 1) . ' of ' . $where . ' language', $r['unrecognised']];
+                    }
+                    $song['components'][$ci]['languages'][$li] = $r['tag'];
+                }
+            }
+        }
+    }
+
+    if (isset($song['altTitles']) && is_array($song['altTitles'])) {
+        foreach ($song['altTitles'] as $ai => $alt) {
+            if (!is_array($alt) || !isset($alt['language']) || !is_string($alt['language'])) {
+                continue;
+            }
+            $r = mediaLanguageReadExternal($alt['language']);
+            if ($r['unrecognised'] !== null) {
+                $notes[] = ['alternative title ' . ($ai + 1) . ' language', $r['unrecognised']];
+            }
+            $song['altTitles'][$ai]['language'] = $r['tag'] ?? '';
+        }
+    }
+
+    return [$song, $notes];
+}
+
+/**
  * Persist one parsed song — INSERT-ONLY. If a row with the same
  * SongId already exists, the existing row is left untouched and the
  * call returns 'skipped'. This is the explicit user requirement for
@@ -618,15 +693,22 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
         : (int)$rawNumber;
     $songbookAbbr = (string)$song['songbook'];
     $songbookName = (string)$song['songbookName'];
-    /* IETF BCP 47 sanitise (#681). Bulk-import builds the song dict
-       in _bulkImport_parseTxt with 'language' => 'en' hard-coded
-       today, but any future caller (a CSV bulk import, a different
-       parser) can post a tag here. Soft-fallback to 'en' on a
-       malformed value — the bulk import already counts skipped /
-       failed entries and we'd rather not abort the whole archive
-       on one bad row. */
-    $validLang    = _ietfBcp47Validate((string)$song['language']);
-    $language     = $validLang ?? 'en';
+    /* #2137 — every language value in an imported song (the song's own, each
+       section's, each line's, each alternative title's) came from a FILE, so
+       it is read with the shared policy's file reader (LANG-002): `eng`
+       becomes `en`, `EN-gb` becomes `en-GB`, and anything unreadable is NOT
+       guessed at — it becomes `und` / no language and is reported below, so
+       one bad value never aborts the archive and never silently becomes a
+       wrong language. */
+    try {
+        [$song, $languageNotes] = _bulkImport_normaliseLanguages($song);
+    } catch (\RuntimeException $e) {
+        /* The shared language rules are missing on this server: fail this one
+           song with the plain reason (the caller counts and reports it) rather
+           than store an unchecked tag. */
+        return ['fail', $e->getMessage()];
+    }
+    $language     = $song['language'] !== '' ? $song['language'] : 'en';
     /* #1673 / #1896 — read the licensing / identifier / public-domain fields the
        parsers already collected, instead of the blanks this used to hardcode. */
     $rights       = _bulkImportRightsFromSong($song);
@@ -704,6 +786,15 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
            too instead of a phantom second 'create'. */
         if (_bulkImport_dryRun()) {
             return _bulkImport_dryRunSeen($songId) ? ['skipped', null] : ['create', null];
+        }
+
+        /* #2137 — report any language value the file reader could not read
+           (see _bulkImport_normaliseLanguages()). Placed after the dry-run
+           return (a preview writes nothing, not even a log row) and before the
+           transaction opens (so a rolled-back song does not take its report
+           down with it). */
+        foreach ($languageNotes as [$field, $raw]) {
+            mediaLanguageReportUnrecognised('song', $songId, $field, $raw);
         }
 
         $db->begin_transaction();
@@ -1288,15 +1379,17 @@ function _bulkImport_upsertSongbook(\mysqli $db, string $abbr, string $name, ?st
         }
     }
 
-    /* Language captured from the folder-name suffix (#780). Validated
-       against the picker's BCP 47 grammar so a malformed suffix can't
-       land bad data — falls through to NULL on rejection. */
-    $langTag = null;
-    if ($language !== null && $language !== '') {
-        $langTrim = trim($language);
-        if (preg_match('/^[a-z]{2,3}(-[A-Za-z0-9]+)*$/i', $langTrim)) {
-            $langTag = mb_substr($langTrim, 0, 35);
-        }
+    /* Language captured from the folder-name suffix (#780) or from the
+       imported file's own songbook metadata. #2137 — read with the shared
+       policy's FILE reader (LANG-002), which replaces the loose pattern and
+       the silent cut to 35 characters that used to live here: `eng` becomes
+       `en`, `EN-gb` becomes `en-GB`, and an unreadable value is stored as no
+       language and REPORTED (it used to vanish without a word). */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    $read    = mediaLanguageReadExternal($language);
+    $langTag = $read['tag'];
+    if ($read['unrecognised'] !== null) {
+        mediaLanguageReportUnrecognised('songbook', $abbr, 'language', $read['unrecognised']);
     }
 
     if ($langTag !== null) {
@@ -8773,12 +8866,13 @@ function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null)
 
         /* `language` is not in the interchange schema for a songbook, but
            _bulkImport_upsertSongbook() accepts one and a future exporter may add
-           it — read it tolerantly, validate it, and pass null when absent. */
-        $lang = isset($sb['language']) ? _ietfBcp47Validate((string)$sb['language']) : null;
+           it. #2137 — passed through AS FOUND: the upsert reads it with the
+           shared file reader and reports a value it cannot read, instead of
+           this parser silently dropping it. */
         $songbooks[] = [
             'abbrev'   => $abbr,
             'name'     => $name,
-            'language' => is_string($lang) ? $lang : null,
+            'language' => isset($sb['language']) && is_scalar($sb['language']) ? (string)$sb['language'] : null,
         ];
     }
 
@@ -8839,12 +8933,12 @@ function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null)
                 . '" — must be a positive integer');
         }
 
-        /* Language: soft-validated. A malformed tag falls back to 'en' rather than
-           killing the file, matching _bulkImport_saveSong()'s own tolerance — the
-           tag is cosmetic-ish metadata, not structure, and BCP 47 has enough exotic
-           legal forms that being fatal here would reject valid data. */
-        $langOk   = _ietfBcp47Validate((string)$raw['language']);
-        $language = is_string($langOk) ? $langOk : 'en';
+        /* Language: passed through AS FOUND (#2137). _bulkImport_saveSong() reads
+           it with the shared file reader: a readable tag is tidied, an unreadable
+           one becomes `und` and is reported. This used to turn a malformed tag
+           into 'en' here — a guess that looked like a fact. Never fatal to the
+           file: the tag is metadata, not structure. */
+        $language = is_scalar($raw['language'] ?? null) ? (string)$raw['language'] : '';
 
         if (!is_array($raw['components']) || $raw['components'] === []) {
             return $fail($tag . ' ("' . $songId . '") has no components — at least one is required');

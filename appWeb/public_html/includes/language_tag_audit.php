@@ -42,6 +42,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'language_names.php'; /* bcp47ResolveTable(), IHYMNS_BCP47_SUBTAG_KINDS */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php'; /* #2137 — the shared language rules (standard form, the policy's parser) */
 
 /**
  * Tables/columns that legitimately hold something OTHER than a song-facing
@@ -158,10 +159,22 @@ function languageTagSourceRemapKind(string $table, string $column): string
  * `WHERE Code IN (…)` per KIND, not per tag): `$registry[kind][lowercaseCode]`
  * is `true`/`false` (IsActive) when that code is known, absent when unknown.
  *
- *   'malformed'    — fails `_ietfBcp47Validate()` (grammar).
- *   'unregistered' — grammar OK but >=1 subtag absent from its registry table.
+ *   'malformed'    — fails `_ietfBcp47Validate()` (not a language tag at all).
+ *   'unregistered' — a tag, but >=1 subtag absent from its registry table.
  *   'inactive'     — every subtag known, >=1 with IsActive = 0.
- *   'ok'           — every subtag known and active — excluded from the panel.
+ *   'noncanonical' — (#2137) a valid, registered tag stored in a form other
+ *                    than its standard one: wrong letter case (`en-gb` for
+ *                    `en-GB`) or a retired code with a replacement (`iw` for
+ *                    `he`). Every save path now stores the standard form, but
+ *                    rows written before that are left as they are (policy
+ *                    COMPAT-040: report, do not silently rewrite) — this class
+ *                    is how a curator finds them. The panel pre-fills the
+ *                    standard form as the remap target.
+ *   'ok'           — every subtag known and active, standard form —
+ *                    excluded from the panel.
+ *
+ * The registry checks run on the STANDARD form, so `iw-il` is judged by `he`
+ * and `IL`, not by the retired `iw`.
  *
  * @param string $tag
  * @param array{language:array<string,bool>,script:array<string,bool>,region:array<string,bool>,variant:array<string,bool>} $registry
@@ -174,11 +187,20 @@ function bcp47ClassifyTag(string $tag, array $registry): string
     }
 
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_importers.php'; /* _ietfBcp47Validate() */
-    if (_ietfBcp47Validate($tag) === false) {
+    $canonical = _ietfBcp47Validate($tag);
+    if ($canonical === false || $canonical === null) {
         return 'malformed';
     }
 
-    $d = bcp47DecomposeTag($tag);
+    /* A private-use (`x-…`) or old "grandfathered" tag (`i-default`) has no
+       language / script / region subtags to look up in the registry tables;
+       the only thing to report about it is its form. */
+    $parsed = mediaLanguageParse($canonical);
+    if ($parsed === null || $parsed->kind !== \Mwbm\MediaLanguage\TagKind::Ordinary) {
+        return $canonical !== $tag ? 'noncanonical' : 'ok';
+    }
+
+    $d = bcp47DecomposeTag($canonical);
     if ($d['lang'] === '') {
         /* Grammar passed but the decomposer couldn't even find a primary
            subtag — defensive; the two should never disagree given they
@@ -227,7 +249,10 @@ function bcp47ClassifyTag(string $tag, array $registry): string
         }
     }
 
-    return $anyInactive ? 'inactive' : 'ok';
+    if ($anyInactive) {
+        return 'inactive';
+    }
+    return $canonical !== $tag ? 'noncanonical' : 'ok';
 }
 
 /**
@@ -247,6 +272,23 @@ function bcp47ClassifyTag(string $tag, array $registry): string
  */
 function bcp47DecomposeTag(string $tag): array
 {
+    /* #2137 — when the shared language rules are loaded, decompose with them
+       (the policy's own parser: it knows extlangs, extensions and private use,
+       which the hand-written tokeniser below does not) — one parser, not two.
+       The tokeniser stays only as the degraded path for a server where the
+       shared code is missing, so the curator audit page still renders. */
+    if (mediaLanguageReady()) {
+        $parsed = \Mwbm\MediaLanguage\Policy::canonicalise($tag);
+        if ($parsed->kind !== \Mwbm\MediaLanguage\TagKind::Ordinary) {
+            return ['lang' => '', 'script' => '', 'region' => '', 'variants' => []];
+        }
+        return [
+            'lang'     => (string)$parsed->language,
+            'script'   => (string)($parsed->script ?? ''),
+            'region'   => (string)($parsed->region ?? ''),
+            'variants' => array_values($parsed->variants),
+        ];
+    }
     $parts = preg_split('/-/', trim($tag)) ?: [];
     if (empty($parts) || !preg_match('/^[a-z]{2,3}$/i', $parts[0])) {
         return ['lang' => '', 'script' => '', 'region' => '', 'variants' => []];
@@ -385,15 +427,19 @@ function languageTagAuditScan(\mysqli $db): array
         if ($class === 'ok') {
             continue;
         }
+        /* #2137 — the standard form, offered as the remap target for a
+           'noncanonical' row (null when the tag has none, i.e. malformed). */
+        $standard = _ietfBcp47Validate($tag);
         $rows[] = [
-            'tag'      => $tag,
-            'class'    => $class,
-            'total'    => (int)($usage['total'] ?? 0),
-            'bySource' => $usage['bySource'] ?? [],
+            'tag'       => $tag,
+            'class'     => $class,
+            'total'     => (int)($usage['total'] ?? 0),
+            'bySource'  => $usage['bySource'] ?? [],
+            'canonical' => is_string($standard) ? $standard : null,
         ];
     }
 
-    $classRank = ['malformed' => 0, 'unregistered' => 1, 'inactive' => 2];
+    $classRank = ['malformed' => 0, 'unregistered' => 1, 'inactive' => 2, 'noncanonical' => 3];
     usort($rows, static function (array $a, array $b) use ($classRank): int {
         return ($classRank[$a['class']] <=> $classRank[$b['class']])
             ?: ($b['total'] <=> $a['total'])
@@ -443,8 +489,16 @@ const IHYMNS_LANGUAGE_TAG_REMAP_LINE_PATH_BATCH = 200;
 function languageTagRemap(\mysqli $db, string $fromTag, string $toTag): array
 {
     $fromTag = trim($fromTag);
-    $toTag   = trim($toTag);
-    if ($fromTag === '' || $toTag === '' || $fromTag === $toTag) {
+    /* #2137 — the target is stored in its STANDARD form (`pt-br` is written as
+       `pt-BR`), by the ONE shared rule; a target that is not a storable tag is
+       refused here too, as a floor under the caller's own check. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_importers.php'; /* _ietfBcp47Validate() */
+    $toTagStandard = _ietfBcp47Validate($toTag);
+    if (!is_string($toTagStandard)) {
+        return ['ok' => false, 'error' => 'to tag is not a language code this site can store.', 'perSource' => [], 'songsTouched' => 0, 'songsRemaining' => 0];
+    }
+    $toTag = $toTagStandard;
+    if ($fromTag === '' || $fromTag === $toTag) {
         return ['ok' => false, 'error' => 'from/to tag must both be set and different.', 'perSource' => [], 'songsTouched' => 0, 'songsRemaining' => 0];
     }
 

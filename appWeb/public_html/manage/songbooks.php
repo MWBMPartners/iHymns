@@ -24,6 +24,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    API endpoints in /api.php. Single source of truth so a tweak to the
    abbrev / colour / IETF-tag grammar lands on both surfaces in one go. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_validation.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_language.php';   /* #2137 — the shared language rules (mediaLanguageTagForStorage() for the bulk song-language action) */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_names.php'; /* also: bcp47SubtagSearch() — BCP 47 registry plan §4.3 */
 /* #1765 — PUBLICATION_IDENTIFIER_TYPES + mediaIdentifierPublicationClean(),
@@ -694,19 +695,25 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
         echo json_encode(['error' => 'language required — songbook has no Language set.']);
         exit;
     }
-    /* Defensive grammar check — same shape the IETF picker enforces.
-       Prevents a tampered POST smuggling exotic / malformed values
-       into tblSongs.Language. v1: lowercase 2-3 letter primary, plus
-       optional script (4-letter Title), region (2-letter UPPER or
-       3-digit numeric), variant (5-8 alphanumeric). Caps at 35 chars
-       (the column width per #681). */
-    if (!preg_match('/^[A-Za-z]{2,3}([-_][A-Za-z0-9]{1,8})*$/', $language)
-        || strlen($language) > 35
-    ) {
-        http_response_code(400);
-        echo json_encode(['error' => 'Malformed language tag.']);
+    /* #2137 — the shared policy rule decides (MWBM-MEDIA-LANG LANG-001): the
+       tag is tidied (letter case, retired codes) and a value that is not a
+       language tag, or is too long for the column, is refused with the same
+       plain sentence every other form uses. This replaced a loose local
+       pattern that even let an underscore through ("pt_BR"), which is not a
+       language tag at all. */
+    try {
+        $canonicalLanguage = mediaLanguageTagForStorage($language);
+    } catch (\RuntimeException $e) {
+        http_response_code(503);
+        echo json_encode(['error' => $e->getMessage()]);
         exit;
     }
+    if (!is_string($canonicalLanguage)) {
+        http_response_code(400);
+        echo json_encode(['error' => mediaLanguageRefusalMessage($language)]);
+        exit;
+    }
+    $language = $canonicalLanguage;
 
     try {
         /* Resolve abbreviation. */
@@ -809,7 +816,6 @@ $registerAffiliation = function (?string $name) use ($db): void {
 };
 $validateAbbr   = fn(string $abbr): ?string => validateSongbookAbbr($abbr);
 $validateColour = fn(string $c): ?string    => validateSongbookColour($c);
-$validateBcp47  = fn(string $tag): ?string  => validateSongbookBcp47($tag);
 
 /* Probe for the series schema BEFORE the POST handler so the
    series-membership reconciliation block inside it can gate on
@@ -1198,12 +1204,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 /* Places adoption sweep — display string + FK. */
                 $publicationCity   = trim((string)($_POST['publication_city']    ?? '')) ?: null;
                 $publicationCityId = (int)($_POST['publication_city_id'] ?? 0) ?: null;
-                /* #673 / #681 — optional language; full IETF BCP 47 tag. */
-                $language    = trim((string)($_POST['language']         ?? '')) ?: null;
-                if ($language !== null) {
-                    $language = mb_substr($language, 0, 35);
-                    if ($e = $validateBcp47($language)) { $error = $e; break; }
-                }
+                /* #673 / #681 / #2137 — optional language; the shared policy rule
+                   tidies it (letter case fixed, never cut short) or refuses it. */
+                [$language, $e] = normaliseSongbookLanguage((string)($_POST['language'] ?? ''));
+                if ($e !== null) { $error = $e; break; }
 
                 /* #672 — bibliographic + authority-control identifiers.
                    #1765 Feature 7 — $iaUrl is no longer read from $_POST

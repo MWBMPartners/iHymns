@@ -215,7 +215,8 @@ function _ttmlAgentAndBg(?array $meta): array
  * Parse a TTML document into a neutral timed-lyrics structure:
  *
  *   [
- *     'language'          => 'en'|null,        // root xml:lang
+ *     'language'          => 'en'|null,        // root xml:lang, canonical (#2137 — read with the shared file reader)
+ *     'languageUnrecognised' => string|null,  // #2137 — the raw root xml:lang when the reader could not read it
  *     'hasTiming'         => bool,             // line-level
  *     'hasWordTiming'     => bool,
  *     'hasSyllableTiming' => bool,
@@ -263,8 +264,18 @@ function lyricsIngest_parseTtml(string $ttml): array
         throw new \RuntimeException('root element is not <tt> (not a TTML document)');
     }
 
-    $language = $root->hasAttribute('xml:lang') ? trim($root->getAttribute('xml:lang')) : null;
-    if ($language === '') { $language = null; }
+    /* #2137 — a TTML `xml:lang` comes from another system, so it is read with
+       the shared policy's FILE reader (MWBM-MEDIA-LANG LANG-002): `EN-us`
+       becomes `en-US`, an old three-letter `eng` becomes `en`, and a value it
+       cannot read is NOT guessed at — `language` is null and the original text
+       is returned in `languageUnrecognised` for the caller to report. This
+       used to pass the attribute through unchecked. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    $rootLangRead = mediaLanguageReadExternal(
+        $root->hasAttribute('xml:lang') ? $root->getAttribute('xml:lang') : null
+    );
+    $language             = $rootLangRead['tag'];
+    $languageUnrecognised = $rootLangRead['unrecognised'];
 
     /* #2073 D2 fix (1 of 3): read the <head><metadata><ttm:agent xml:id=…
        type=…><ttm:name>…</ttm:name></ttm:agent> voice DEFINITIONS. Before
@@ -332,8 +343,13 @@ function lyricsIngest_parseTtml(string $ttml): array
         $lineEnd   = _ttmlAttrMs($p, 'end');
         if ($lineStart !== null) { $hasTiming = true; }
 
-        $lineLang = $p->hasAttribute('xml:lang') ? trim($p->getAttribute('xml:lang')) : null;
-        if ($lineLang === '') { $lineLang = null; }
+        /* #2137 — same file reader as the root `xml:lang` above. An unreadable
+           value becomes null (the line inherits) and is NOT lost: the raw
+           attribute is kept in the line's `meta` by _ttmlMeta() (its probe
+           list includes `xml:lang`), which is written to MetaJson. */
+        $lineLang = mediaLanguageReadExternal(
+            $p->hasAttribute('xml:lang') ? $p->getAttribute('xml:lang') : null
+        )['tag'];
 
         $pMeta = _ttmlMeta($p);
 
@@ -494,6 +510,7 @@ function lyricsIngest_parseTtml(string $ttml): array
 
     return [
         'language'          => $language,
+        'languageUnrecognised' => $languageUnrecognised,   // #2137 — raw root xml:lang the reader could not read, else null
         'hasTiming'         => $hasTiming,
         'hasWordTiming'     => $hasWordTiming,
         'hasSyllableTiming' => $hasSyllableTiming,
@@ -1220,7 +1237,16 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
         throw new \RuntimeException('cannot create a song without a title');
     }
     $abbr     = 'Misc';
-    $language = trim((string)($payload['language'] ?? 'en')) ?: 'en';
+    /* #2137 — the sender's `language` is read with the shared FILE reader
+       (policy LANG-002): tidied if readable; if not, stored as `und`
+       ("undetermined") and reported below once the song exists, never guessed. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    $langRead = mediaLanguageReadExternal(isset($payload['language']) ? (string)$payload['language'] : '');
+    if ($langRead['unrecognised'] !== null) {
+        $language = IHYMNS_LANGUAGE_UNKNOWN;
+    } else {
+        $language = $langRead['tag'] ?? 'en';
+    }
     /* #1751 — ELI5: clean up the ISRC the same way the editor already does,
        so whatever we save here reads identically to a curator-typed one.
        DETAILED / WHY: ONE fold (rule #22) — the same ihymns_canonical_isrc()
@@ -1359,6 +1385,12 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
         }
 
         $db->commit();
+        /* #2137 — report an unreadable `language` from the sender now that the
+           song exists (after the commit, so the report cannot roll back with it
+           or hold the transaction open). */
+        if ($langRead['unrecognised'] !== null) {
+            mediaLanguageReportUnrecognised('song', $songId, 'lyrics-ingest language', $langRead['unrecognised']);
+        }
         return $songId;
     } catch (\Throwable $e) {
         try { $db->rollback(); } catch (\Throwable $_) {}

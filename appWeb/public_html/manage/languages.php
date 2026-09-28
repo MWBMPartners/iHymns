@@ -486,8 +486,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <div class="card-body">
             <p class="text-secondary small mb-3">
                 Every DISTINCT language tag actually stored on a song, songbook, lyric line, translation, or
-                request that either isn't grammatically valid BCP 47, isn't yet in the registry above, or is in
-                the registry but retired (inactive). Derived live from the catalogue on every visit to this page
+                request that either isn't grammatically valid BCP 47, isn't yet in the registry above, is in
+                the registry but retired (inactive), or is stored in a non-standard form (such as
+                <code>en-gb</code> for <code>en-GB</code>). Derived live from the catalogue on every visit to this page
                 — nothing here is cached or stored. Free-text tags always stay saveable elsewhere (a script
                 subtag must never fail import) — this panel is where a curator reviews and cleans them up.
             </p>
@@ -511,8 +512,23 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <?php foreach ($unknownRows as $row):
                         $tag = $row['tag']; $class = $row['class']; $total = $row['total'];
                         $primarySubtag = strtolower((string)strtok($tag, '-'));
-                        $badgeClass = $class === 'malformed' ? 'bg-danger' : ($class === 'unregistered' ? 'bg-warning text-dark' : 'bg-secondary');
-                        $badgeLabel = $class === 'malformed' ? 'Malformed' : ($class === 'unregistered' ? 'Unregistered' : 'Retired subtag');
+                        /* #2137 — 'noncanonical': a valid tag stored in a form other than
+                           its standard one (`en-gb` for `en-GB`, `iw` for `he`). Saves now
+                           always store the standard form; older rows are reported here,
+                           never rewritten behind anyone's back (policy COMPAT-040). */
+                        $badgeClass = match ($class) {
+                            'malformed'    => 'bg-danger',
+                            'unregistered' => 'bg-warning text-dark',
+                            'noncanonical' => 'bg-info text-dark',
+                            default        => 'bg-secondary',
+                        };
+                        $badgeLabel = match ($class) {
+                            'malformed'    => 'Malformed',
+                            'unregistered' => 'Unregistered',
+                            'noncanonical' => 'Not in standard form',
+                            default        => 'Retired subtag',
+                        };
+                        $standardForm = ($class === 'noncanonical') ? (string)($row['canonical'] ?? '') : '';
                     ?>
                         <tr data-tag="<?= htmlspecialchars($tag, ENT_QUOTES, 'UTF-8') ?>" data-total="<?= (int)$total ?>" data-class="<?= htmlspecialchars($class, ENT_QUOTES, 'UTF-8') ?>">
                             <td><code><?= htmlspecialchars($tag, ENT_QUOTES, 'UTF-8') ?></code></td>
@@ -530,6 +546,14 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                     <a class="btn btn-sm btn-outline-info" href="/manage/languages?q=<?= urlencode($primarySubtag) ?>">
                                         <i aria-hidden="true" class="bi bi-toggle-on me-1"></i>Find &amp; activate
                                     </a>
+                                <?php elseif ($class === 'noncanonical'): ?>
+                                    <?php /* #2137 — nothing to add to the registry: the tag is already
+                                             known, just written in a non-standard form. Offer the remap
+                                             only, with the standard form pre-filled below. */ ?>
+                                    <button type="button" class="btn btn-sm btn-outline-warning unk-remap-btn"
+                                            aria-label="Remap <?= htmlspecialchars($tag, ENT_QUOTES, 'UTF-8') ?> to its standard form <?= htmlspecialchars($standardForm, ENT_QUOTES, 'UTF-8') ?>">
+                                        <i aria-hidden="true" class="bi bi-arrow-left-right me-1"></i>Remap to <?= htmlspecialchars($standardForm, ENT_QUOTES, 'UTF-8') ?>
+                                    </button>
                                 <?php else: ?>
                                     <a class="btn btn-sm btn-outline-secondary unk-add-registry-btn"
                                        href="/manage/languages?prefill_code=<?= urlencode($primarySubtag) ?>" data-bs-toggle="modal" data-bs-target="#languageModal" data-mode="create" data-prefill-code="<?= htmlspecialchars($primarySubtag, ENT_QUOTES, 'UTF-8') ?>">
@@ -547,7 +571,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                 <div class="d-flex flex-wrap align-items-end gap-2 bg-body-secondary p-2 rounded">
                                     <div>
                                         <label class="form-label small text-muted mb-1" for="unk-to-tag-<?= htmlspecialchars($rowIdSuffix, ENT_QUOTES, 'UTF-8') ?>">Remap to (BCP 47 tag)</label>
-                                        <input type="text" class="form-control form-control-sm unk-to-tag" id="unk-to-tag-<?= htmlspecialchars($rowIdSuffix, ENT_QUOTES, 'UTF-8') ?>" placeholder="e.g. en-GB" style="max-width:12rem">
+                                        <input type="text" class="form-control form-control-sm unk-to-tag" id="unk-to-tag-<?= htmlspecialchars($rowIdSuffix, ENT_QUOTES, 'UTF-8') ?>" placeholder="e.g. en-GB" style="max-width:12rem"<?php if ($standardForm !== ''): ?> value="<?= htmlspecialchars($standardForm, ENT_QUOTES, 'UTF-8') ?>"<?php endif; ?>>
                                     </div>
                                     <div>
                                         <label class="form-label small text-muted mb-1" for="unk-confirm-<?= htmlspecialchars($rowIdSuffix, ENT_QUOTES, 'UTF-8') ?>">Type <strong><?= (int)$total ?></strong> to confirm</label>

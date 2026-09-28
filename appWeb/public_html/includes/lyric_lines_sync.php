@@ -626,6 +626,7 @@ function lyricLinesWriteComponents(\mysqli $db, string $songId, array $component
        is always loaded in the web/import contexts that call this; migrations use
        lyricLinesProjectSong, never this). */
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'line_enrichment.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';   /* #2137 — mediaLanguageTagForStorage() for each section's language */
 
     /* Normalise each component ONCE — type/number/language coercion + the validated
        per-line language array — so the thin-row upsert (shadow) and the line build
@@ -638,10 +639,21 @@ function lyricLinesWriteComponents(\mysqli $db, string $songId, array $component
             ? (mb_substr(trim((string)($c['type'] ?? 'verse')), 0, 20) ?: 'verse')
             : (substr(trim((string)($c['type'] ?? 'verse')), 0, 20) ?: 'verse');
         $langsJson = lineEnrichmentBuildLanguagesJson($c['languages'] ?? null, count($lines));
+        /* #2137 — the section's language is tidied by the ONE shared rule
+           (mediaLanguageTagForStorage(), policy LANG-001: `EN-gb` → `en-GB`,
+           `iw` → `he`). This used to store the trimmed text exactly as sent.
+           A value that cannot be stored as a tag is KEPT AS TYPED rather than
+           dropped here (policy LANG-026 — a malformed value is never silently
+           discarded); the editors refuse such a value with a message before
+           calling this (mediaLanguageFirstRefusalInComponents()), the importers
+           already read it with the file reader, and anything else that gets
+           through is listed by the curator language audit on /manage/languages. */
+        $rawCompLang  = (isset($c['language']) && trim((string)$c['language']) !== '') ? trim((string)$c['language']) : null;
+        $tidyCompLang = $rawCompLang !== null ? mediaLanguageTagForStorage($rawCompLang) : null;
         $norm[] = [
             'type'          => $type,
             'number'        => max(0, (int)($c['number'] ?? 0)),
-            'language'      => (isset($c['language']) && trim((string)$c['language']) !== '') ? trim((string)$c['language']) : null,
+            'language'      => is_string($tidyCompLang) ? $tidyCompLang : $rawCompLang,
             'lines'         => $lines,
             'chords'        => (isset($c['chords']) && is_array($c['chords'])) ? array_values($c['chords']) : null,
             'notes'         => (isset($c['notes'])  && is_array($c['notes']))  ? array_values($c['notes'])  : null,

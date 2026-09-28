@@ -58,6 +58,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ilyrics_id.php';   /* #1860 go-live — ilidStampNewRow(), called unconditionally after the UPSERT below */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'work_admin.php';   /* #1860 go-live — workAutolinkSafe(), replaces the pre-#1860 inline ISWC-only Works fork */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';   /* #1862 — pdRecomputeForSong(), called post-commit below (the credits loop just replaced the contributor set) */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_language.php';   /* #2137 — the shared language rules: plain refusal messages + the per-section/per-line check */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmitSongEvent(), fired beside the song.create/edit logActivity (dormant no-op until enabled) */
 
 /**
@@ -226,15 +227,22 @@ function editorSaveSongCore(): array
 
         $title        = (string)$song['title'];
         $songbookName = (string)($song['songbookName'] ?? '');
-        /* IETF BCP 47 validation (#681). Empty string normalises to
-           'en' for tblSongs.Language NOT NULL DEFAULT 'en'; a malformed
-           tag (variants, extensions, anything past the v1 grammar) is
-           rejected up-front so the rest of the save runs against a
-           well-formed value. */
+        /* IETF BCP 47 check (#681, #2137). The ONE shared rule tidies the tag
+           (`pt-br` is saved as `pt-BR`) and refuses a value that is not a
+           language code, with a plain sentence, BEFORE anything is written.
+           The same check runs on every section's and every line's language
+           (mediaLanguageFirstRefusalInComponents()), so a curator is told
+           which box is wrong instead of the value quietly vanishing.
+           Empty string normalises to 'en' for tblSongs.Language NOT NULL
+           DEFAULT 'en'. */
         $rawLang = (string)($song['language'] ?? 'en');
         $valid   = _ietfBcp47Validate($rawLang);
         if ($valid === false) {
-            return ['status' => 400, 'body' => ['error' => 'Invalid IETF BCP 47 language tag: ' . $rawLang]];
+            return ['status' => 400, 'body' => ['error' => mediaLanguageRefusalMessage($rawLang, 'the song')]];
+        }
+        $componentLanguageRefusal = mediaLanguageFirstRefusalInComponents($song['components'] ?? null);
+        if ($componentLanguageRefusal !== null) {
+            return ['status' => 400, 'body' => ['error' => $componentLanguageRefusal]];
         }
         $language     = $valid ?? 'en';
         $copyright    = (string)($song['copyright']   ?? '');
@@ -1238,16 +1246,15 @@ function editorSaveSongCore(): array
                 $lines  = json_encode($comp['lines'] ?? [], JSON_UNESCAPED_UNICODE);
                 $bindValsLegacy = [$songId, $type, $cNum, $order, $lines];
                 if ($hasComponentLanguage) {
-                    /* Trim + cap to 35 chars (the BCP 47 column width).
-                       Empty / null = inherit from the song; only persist
-                       a value that's plausibly a tag. */
-                    $lang = trim((string)($comp['language'] ?? ''));
-                    if ($lang === '' || !preg_match('/^[A-Za-z]{2,3}([-_][A-Za-z0-9]{1,8})*$/', $lang)) {
-                        $lang = null;
-                    } else {
-                        $lang = function_exists('mb_substr') ? mb_substr($lang, 0, 35) : substr($lang, 0, 35);
-                    }
-                    $bindValsLegacy[] = $lang;
+                    /* #2137 — the ONE shared rule tidies the section's language
+                       (`pt-br` → `pt-BR`). Empty / null = inherit from the song.
+                       A value that is not a language code never reaches here:
+                       it was refused with a message before the transaction
+                       (mediaLanguageFirstRefusalInComponents() above). This
+                       used to accept an underscore (`pt_BR`) and cut long
+                       values to 35 characters, which changes a tag's meaning. */
+                    $lang = mediaLanguageTagForStorage((string)($comp['language'] ?? ''));
+                    $bindValsLegacy[] = is_string($lang) ? $lang : null;
                 }
                 /* #1860 Phase 5 §3.4 — Label/SourceWorkId, gated + PF1-carried exactly
                    like chords/languages below: explicit (even empty/null) wins,

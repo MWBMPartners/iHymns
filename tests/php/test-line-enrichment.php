@@ -78,8 +78,8 @@ assertEq(lineEnrichmentValidateOffsets(8, 2, 10, 10, false), [8, 2],
     'offsets: multi-line span allows end<start (different lines)');
 
 /* ==================================================================== */
-/* BCP 47 language validation (fallback grammar — canonical validator     */
-/* not loaded in this unit context; production uses _ietfBcp47Validate)   */
+/* BCP 47 language validation — the ONE shared rule (#2137: delegates to   */
+/* mediaLanguageTagForStorage(), the MWBM-MEDIA-LANG policy's LANG-001)    */
 /* ==================================================================== */
 assertEq(lineEnrichmentValidateLanguage('en'), 'en', 'lang: bare language');
 assertEq(lineEnrichmentValidateLanguage('ja-Latn'), 'ja-Latn', 'lang: language+script');
@@ -87,11 +87,20 @@ assertEq(lineEnrichmentValidateLanguage('zh-Hans-CN'), 'zh-Hans-CN', 'lang: lang
 assertEq(lineEnrichmentValidateLanguage('  fr  '), 'fr', 'lang: trims');
 assertEq(lineEnrichmentValidateLanguage(''), null, 'lang: empty = null');
 assertEq(lineEnrichmentValidateLanguage('not a tag!'), null, 'lang: malformed rejected');
-/* A grammar-VALID but very long tag (each subtag <=8 chars) must be truncated to
-   the 35-char column width — a malformed over-long subtag would be rejected, not
-   capped, so build the input from legal 8-char subtags. */
-assertEq(mb_strlen((string)lineEnrichmentValidateLanguage('en' . str_repeat('-aaaaaaaa', 6))), 35,
-    'lang: a valid over-long tag is capped at the 35-char column width');
+/* #2137 — letter case is FIXED, not refused (policy LANG-001). */
+assertEq(lineEnrichmentValidateLanguage('KO-latn'), 'ko-Latn', 'lang: letter case is tidied (KO-latn -> ko-Latn)');
+/* #2137 — an underscore is not a separator in a language tag; the old
+   fallback pattern let `pt_BR` through. */
+assertEq(lineEnrichmentValidateLanguage('pt_BR'), null, 'lang: pt_BR (underscore) is refused, not stored');
+/* #2137 — a tag too long for the 35-character column is REFUSED, never cut
+   short. This used to assert the opposite (a cut to 35 characters), but a
+   shortened tag is a DIFFERENT tag — `sr-Latn-ME-x-longname` cut to fit would
+   silently mean something else. Built from distinct, well-formed private-use
+   parts so the only thing wrong with it is its length. */
+$longTag = 'en-x-' . implode('-', ['aaaaaaaa', 'bbbbbbbb', 'cccccccc', 'dddddddd']);
+assertEq(strlen($longTag) > 35, true, 'lang: the long test tag really is longer than the column');
+assertEq(lineEnrichmentValidateLanguage($longTag), null,
+    'lang: a well-formed tag longer than the 35-character column is refused, not cut short');
 
 /* ==================================================================== */
 /* Per-line LanguagesJson builder (#1235 P3 / #1253) — the shared builder  */

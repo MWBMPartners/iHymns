@@ -14458,13 +14458,11 @@ if ($action !== null) {
             $copyright   = trim((string)($body['copyright']        ?? '')) ?: null;
             $affiliation = trim((string)($body['affiliation']      ?? '')) ?: null;
 
-            $language    = trim((string)($body['language']         ?? '')) ?: null;
-            if ($language !== null) {
-                $language = mb_substr($language, 0, 35);
-                if ($e = validateSongbookBcp47($language)) {
-                    sendJson(['error' => $e], 400);
-                    break;
-                }
+            /* #2137 — tidied by the shared policy rule, never cut short. */
+            [$language, $e] = normaliseSongbookLanguage((string)($body['language'] ?? ''));
+            if ($e !== null) {
+                sendJson(['error' => $e], 400);
+                break;
             }
 
             $websiteUrl   = trim((string)($body['website_url']         ?? '')) ?: null;

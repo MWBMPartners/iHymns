@@ -49,7 +49,9 @@ declare(strict_types=1);
  *     `engli` -> malformed, `xq` -> unregistered (against a synthetic
  *     registry that doesn't know it), `pt-BR` -> ok (registry knows both,
  *     active), `zz-Latn` -> unregistered (zz unknown), a retired-subtag
- *     tag -> inactive (registry knows it, IsActive=false).
+ *     tag -> inactive (registry knows it, IsActive=false). #2137 adds the
+ *     'noncanonical' class: `pt-br`, `iw-IL` and `X-Private` are valid tags
+ *     stored in a non-standard form and are reported, not rewritten.
  *
  * MUTATION-PROVEN (rule #34) — every check below was actually broken, run,
  * confirmed RED, and restored; see the commit body for the transcript.
@@ -193,9 +195,9 @@ echo '  check D: ' . count($knownSpecialCases) . " known special case(s) verifie
  * ============================================================================= */
 
 $activeRegistry = [
-    'language' => ['pt' => true, 'de' => true],
+    'language' => ['pt' => true, 'de' => true, 'he' => true],
     'script'   => ['latn' => true],
-    'region'   => ['br' => true],
+    'region'   => ['br' => true, 'il' => true],
     'variant'  => ['1996' => false], // retired
 ];
 
@@ -205,6 +207,12 @@ $truthTable = [
     ['tag' => 'pt-BR',        'expect' => 'ok',           'note' => 'both subtags known + active'],
     ['tag' => 'zz-Latn',      'expect' => 'unregistered', 'note' => "zz isn't in the synthetic registry even though Latn is"],
     ['tag' => 'de-1996',      'expect' => 'inactive',     'note' => 'de is known+active, 1996 variant is known but retired'],
+    /* #2137 — a valid, registered tag stored in a non-standard form is
+       reported (never silently rewritten), and judged by its standard form. */
+    ['tag' => 'pt-br',        'expect' => 'noncanonical', 'note' => 'registered, but the region should be upper case (pt-BR)'],
+    ['tag' => 'iw-IL',        'expect' => 'noncanonical', 'note' => 'iw is the retired code for Hebrew; checked as he-IL, standard form he-IL'],
+    ['tag' => 'x-private',    'expect' => 'ok',           'note' => 'a private-use tag has no registry subtags; already in standard form'],
+    ['tag' => 'X-Private',    'expect' => 'noncanonical', 'note' => 'private-use subtags are lower case in standard form'],
 ];
 foreach ($truthTable as $case) {
     $got = bcp47ClassifyTag($case['tag'], $activeRegistry);

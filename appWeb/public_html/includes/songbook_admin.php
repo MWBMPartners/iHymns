@@ -153,13 +153,11 @@ function songbookAdminValidateCreate(\mysqli $db, array $in): array
        free-typing leaves the hidden id empty so we persist the string only. */
     $publicationCity   = trim((string)($in['publication_city']    ?? '')) ?: null;
     $publicationCityId = (int)($in['publication_city_id'] ?? 0) ?: null;
-    /* #673 / #681 — optional language, validated against the v1 IETF
-       BCP 47 grammar. Empty selection saves as NULL. */
-    $language   = trim((string)($in['language']         ?? '')) ?: null;
-    if ($language !== null) {
-        $language = mb_substr($language, 0, 35);
-        if ($e = validateSongbookBcp47($language)) { return [null, $e, 400, 'language']; }
-    }
+    /* #673 / #681 / #2137 — optional language. Empty saves as NULL; anything
+       else is tidied by the shared policy rule (letter case fixed, never cut
+       short) or refused with a plain sentence. */
+    [$language, $e] = normaliseSongbookLanguage((string)($in['language'] ?? ''));
+    if ($e !== null) { return [null, $e, 400, 'language']; }
 
     /* #672 — bibliographic + authority-control identifiers. All nullable,
        all VARCHAR. trim()→null normalises blank inputs to real NULL.

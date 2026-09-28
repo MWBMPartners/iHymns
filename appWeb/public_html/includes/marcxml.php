@@ -152,115 +152,78 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_identifiers.php';
 const MARCXML_MINIMAL_LEADER = '00000nam a2200000 a 4500';
 
 /**
- * MARCXML_LANGUAGE_CODE_MAP — common MARC (ISO 639-2/B, "bibliographic")
- * 3-letter language codes mapped to their ISO 639-1 2-letter BCP-47 primary
- * subtag, for folding MARC 041/008 language data into
- * `tblSongbooks.Language` (an IETF BCP 47 free-text column, rule #21's
- * "language tags are free-text VARCHAR" convention applied one grain up).
+ * Resolve a MARC 041/008 three-letter language code to a BCP-47 tag.
  *
  * ELI5: MARC records say "eng" for English, "fre" for French, "ger" for
- * German — iHymns stores languages the web-standard way, "en"/"fr"/"de".
- * This is the lookup table between the two.
+ * German; iHymns stores languages the web-standard way, "en"/"fr"/"de". This
+ * turns the first into the second, and says "I don't know" (an empty string)
+ * rather than guessing.
  *
- * DETAILED / WHY NOT EXHAUSTIVE, AND WHY THAT'S SAFE: the full ISO 639-2
- * registry has ~450 entries (most for languages with no ISO 639-1
- * 2-letter code at all, e.g. many indigenous/liturgical/historical
- * languages). This table covers the languages a hymnal/songbook catalogue
- * realistically encounters — major world languages plus the languages of
- * historically hymn-publishing regions (European, several African, several
- * Asian). `marcxmlLanguageCodeToBcp47()`'s FALLBACK for an unmapped code is
- * the lowercase 3-letter MARC code itself, NEVER a rejection — `Language`
- * is a free-text `VARCHAR(35)` with no FK and only soft dropdown validation
- * (see its schema.sql comment), so an unmapped code degrading to "less
- * pretty than a proper 2-letter tag" is safe; growing this table later is a
- * one-line addition, never a schema change (the rule #20 VARCHAR-not-ENUM
- * posture applied to a PHP lookup table, not a DB column, but the same
- * spirit — a fixed table you can only grow, never one you must migrate).
- *
- * @link https://www.loc.gov/marc/languages/  MARC List for Languages (the ISO 639-2/B codes this table's KEYS are drawn from)
- * @link https://www.iso.org/iso-639-language-code  ISO 639-1 (the VALUES)
- */
-const MARCXML_LANGUAGE_CODE_MAP = [
-    'eng' => 'en', 'fre' => 'fr', 'fra' => 'fr', 'ger' => 'de', 'deu' => 'de',
-    'ita' => 'it', 'spa' => 'es', 'por' => 'pt', 'lat' => 'la', 'dut' => 'nl',
-    'nld' => 'nl', 'gre' => 'el', 'ell' => 'el', 'heb' => 'he', 'rus' => 'ru',
-    'pol' => 'pl', 'cze' => 'cs', 'ces' => 'cs', 'slo' => 'sk', 'slk' => 'sk',
-    'hun' => 'hu', 'rum' => 'ro', 'ron' => 'ro', 'bul' => 'bg', 'srp' => 'sr',
-    'hrv' => 'hr', 'slv' => 'sl', 'mac' => 'mk', 'mkd' => 'mk', 'alb' => 'sq',
-    'sqi' => 'sq', 'lit' => 'lt', 'lav' => 'lv', 'est' => 'et', 'ice' => 'is',
-    'isl' => 'is', 'wel' => 'cy', 'cym' => 'cy', 'gle' => 'ga', 'gla' => 'gd',
-    'bre' => 'br', 'cor' => 'kw', 'baq' => 'eu', 'eus' => 'eu', 'cat' => 'ca',
-    'glg' => 'gl', 'swe' => 'sv', 'nor' => 'no', 'nob' => 'nb', 'nno' => 'nn',
-    'dan' => 'da', 'fin' => 'fi', 'tur' => 'tr', 'ukr' => 'uk', 'bel' => 'be',
-    'mlt' => 'mt', 'epo' => 'eo', 'afr' => 'af', 'ara' => 'ar', 'per' => 'fa',
-    'fas' => 'fa', 'amh' => 'am', 'swa' => 'sw', 'yor' => 'yo', 'ibo' => 'ig',
-    'hau' => 'ha', 'zul' => 'zu', 'xho' => 'xh', 'som' => 'so', 'chi' => 'zh',
-    'zho' => 'zh', 'jpn' => 'ja', 'kor' => 'ko', 'vie' => 'vi', 'tha' => 'th',
-    'ind' => 'id', 'may' => 'ms', 'msa' => 'ms', 'tgl' => 'tl', 'hin' => 'hi',
-    'ben' => 'bn', 'pan' => 'pa', 'guj' => 'gu', 'mar' => 'mr', 'tam' => 'ta',
-    'tel' => 'te', 'kan' => 'kn', 'mal' => 'ml', 'sin' => 'si', 'urd' => 'ur',
-    'san' => 'sa', 'khm' => 'km', 'lao' => 'lo', 'bur' => 'my', 'mya' => 'my',
-    'geo' => 'ka', 'kat' => 'ka', 'arm' => 'hy', 'hye' => 'hy', 'aze' => 'az',
-    'kaz' => 'kk', 'uzb' => 'uz', 'mon' => 'mn', 'nep' => 'ne', 'sna' => 'sn',
-];
-
-/**
- * Resolve a MARC 041/008 3-letter language code to a BCP-47 primary subtag —
- * PURE.
- *
- * ELI5: "eng" becomes "en"; anything this file's table doesn't know about is
- * handed back lowercased, unchanged, rather than dropped.
+ * #2137 — this used to look codes up in a hand-typed table of about 110 codes
+ * kept in this file, and handed back any code it did not know unchanged
+ * (so "xyz" could be stored as if it were a language). It now uses the shared
+ * language policy's FILE reader (MWBM-MEDIA-LANG LANG-002,
+ * `mediaLanguageReadExternal()`), which reads the full ISO 639-2 list from the
+ * policy's reference data (both the bibliographic form MARC uses, "ger", and
+ * the terminology form, "deu", plus withdrawn codes). The policy's section 8.2
+ * asks every app to read that data rather than keep its own list.
  *
  * @param string $code3 A MARC ISO 639-2/B code, any case (e.g. "eng", "ENG").
- * @return string '' for an empty/blank input (nothing to map); the BCP-47
- *                subtag when known; else the lowercased 3-letter code
- *                unchanged (a safe, honest fallback — see the const's
- *                doc-comment on why this never rejects).
+ * @return string '' for a blank or unreadable code (the caller reports the
+ *                unreadable one and leaves the language blank); otherwise the
+ *                canonical BCP-47 tag ("en").
+ * @throws \RuntimeException when the shared language rules are not installed
+ *                           (this runs on IMPORT, a write path).
  */
 function marcxmlLanguageCodeToBcp47(string $code3): string
 {
-    $code3 = strtolower(trim($code3));
-    if ($code3 === '') return '';
-    return MARCXML_LANGUAGE_CODE_MAP[$code3] ?? $code3;
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    return mediaLanguageReadExternal($code3)['tag'] ?? '';
 }
 
 /**
- * Reverse of marcxmlLanguageCodeToBcp47() — resolve a stored BCP-47 primary
- * subtag to the MARC 041/008 3-letter ISO 639-2 code for EXPORT. PURE.
- * (#1765 review.)
+ * Reverse of marcxmlLanguageCodeToBcp47() — resolve a stored BCP-47 tag to the
+ * MARC 041/008 three-letter ISO 639-2 code for EXPORT. (#1765 review.)
  *
- * ELI5: MARC 041 $a must be a 3-letter code ("eng"), but iHymns stores the
- * 2-letter BCP-47 tag ("en"). This turns "en" back into "eng" for export;
- * an already-3-letter code is handed back unchanged, and anything we can't
- * resolve to a valid 3-letter code returns '' so the caller can OMIT 041
- * rather than emit an invalid 2-letter value.
+ * ELI5: MARC 041 $a must be a three-letter code ("eng"), but iHymns stores the
+ * BCP-47 tag ("en"). This turns "en" back into "eng", and returns '' when the
+ * language has no ISO 639-2 code, so the caller can OMIT 041 rather than emit
+ * an invalid value.
  *
- * The inverse table is built from MARCXML_LANGUAGE_CODE_MAP with "first
- * 3-letter wins per 2-letter"; that table lists the bibliographic (639-2/B)
- * code first for every 2-way collision (per/fas, chi/zho, geo/kat, arm/hye,
- * bur/mya, may/msa), so the preferred /B code is what comes back.
+ * #2137 — the code comes from the shared policy's writing table
+ * (`Policy::iso6392CodesForWriting()`, rule TRACK-070), in the BIBLIOGRAPHIC
+ * form MARC uses ("per", "ger", "chi"), not the terminology form ("fas", "deu",
+ * "zho"). A stored value that is itself an old three-letter code ("eng") is read
+ * first, so it still exports as "eng". Script and region play no part: MARC
+ * 041 records the language only.
  *
- * @param string $code A stored language value (BCP-47 tag, or already a
- *                     3-letter code), any case.
- * @return string The 3-letter ISO 639-2 code, or '' when it cannot be
- *                resolved to a valid one.
+ * Reading never fails: if the shared rules are missing on a server this
+ * returns '' (041 is left out) rather than breaking the export.
+ *
+ * @param string $code A stored language value (BCP-47 tag, or an old
+ *                     three-letter code), any case.
+ * @return string The three-letter ISO 639-2/B code, or '' when it cannot be
+ *                resolved to a real one.
  */
 function marcxmlBcp47ToLanguageCode(string $code): string
 {
-    $code = strtolower(trim($code));
-    if ($code === '') return '';
-    /* Already a 3-letter alpha code → honest passthrough (mirrors
-       marcxmlLanguageCodeToBcp47()'s unknown-code fallback). */
-    if (strlen($code) === 3 && ctype_alpha($code)) return $code;
-
-    static $inverse = null;
-    if ($inverse === null) {
-        $inverse = [];
-        foreach (MARCXML_LANGUAGE_CODE_MAP as $three => $two) {
-            if (!isset($inverse[$two])) { $inverse[$two] = $three; }
-        }
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    if (trim($code) === '' || !mediaLanguageReady()) {
+        return '';
     }
-    return $inverse[$code] ?? '';
+    $tag = mediaLanguageReadExternal($code)['tag'];
+    if ($tag === null) {
+        return '';
+    }
+    $b = \Mwbm\MediaLanguage\Policy::iso6392CodesForWriting($tag)['b'];
+    /* The table answers `und` whenever a language has no ISO 639-2 code;
+       emitting that for a real-but-uncoded language would claim "undetermined"
+       about a language we do know, so it is left out — unless the stored value
+       really was `und`. */
+    if ($b === 'und' && $tag !== 'und') {
+        return '';
+    }
+    return $b;
 }
 
 /* =========================================================================
@@ -721,8 +684,15 @@ function marcxmlApplySimple(array $df, array $subRules, string $tag, array &$col
                 continue;
             }
         } elseif ($transform === 'lang') {
+            $rawLang = $val;
             $val = marcxmlLanguageCodeToBcp47($val);
             if ($val === '') {
+                /* #2137 — an unreadable code is reported, never guessed at or
+                   stored as if it were a language (policy LANG-002). */
+                if (trim($rawLang) !== '') {
+                    $errors[] = "{$tag}\${$code}: " . var_export($rawLang, true)
+                        . ' is not a language code in the ISO 639-2 list — the language was left blank';
+                }
                 continue;
             }
         }
@@ -892,9 +862,16 @@ function marcxmlMapToEntity(array $record, string $entityKind): array
     if (!isset($collected['Language'])) {
         $ctrl008 = (string)($record['control']['008'] ?? '');
         if (strlen($ctrl008) >= 38) {
-            $bcp = marcxmlLanguageCodeToBcp47(substr($ctrl008, 35, 3));
+            $raw008 = substr($ctrl008, 35, 3);
+            $bcp = marcxmlLanguageCodeToBcp47($raw008);
             if ($bcp !== '') {
                 $collected['Language'][] = ['value' => $bcp, 'mode' => 'first'];
+            } elseif (trim($raw008) !== '' && trim($raw008, '|') !== '') {
+                /* #2137 — reported, never guessed (see the 041 branch above).
+                   Blank or fill characters ("|||") in 008 mean "not coded",
+                   which is not a problem worth reporting. */
+                $errors[] = '008/35-37: ' . var_export($raw008, true)
+                    . ' is not a language code in the ISO 639-2 list — the language was left blank';
             }
         }
     }

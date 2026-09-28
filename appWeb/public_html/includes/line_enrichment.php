@@ -609,23 +609,31 @@ function lineEnrichmentForSong(\mysqli $db, string $songId): array
 /* ---------------------------------------------------------- Language util --- */
 
 /**
- * Validate a BCP 47 language tag via the canonical validator when available
- * (_ietfBcp47Validate, song_importers.php) so song / component / line all enforce
- * the SAME grammar; falls back to a conservative regex if it isn't loaded.
- * Returns the trimmed tag (capped at the 35-char column width) or null.
+ * Check and tidy a per-line language tag (a line's own language, a line
+ * translation's or transliteration's language, an annotation's language).
+ * Returns the canonical tag, or null when the value is empty or cannot be
+ * stored.
+ *
+ * #2137 — delegates to the ONE shared rule (`mediaLanguageTagForStorage()`,
+ * MWBM-MEDIA-LANG LANG-001), so a song, a section and a line all accept and
+ * tidy exactly the same tags. It used to fall back to its own loose pattern
+ * when the song-importer file was not loaded — one that let an underscore
+ * through (`pt_BR`, which is not a language tag) and any letter case — and it
+ * cut long values to 35 characters, which can turn one tag into another. A
+ * value too long for the column is now refused (null) instead.
+ *
+ * Callers that write per-line languages from an EDITOR refuse a bad value
+ * with a message before they get here (see
+ * `mediaLanguageFirstRefusalInComponents()`); this function's null is the
+ * quiet last line of defence for everything else.
+ *
+ * @throws \RuntimeException when the shared rules are not installed on the server.
  */
 function lineEnrichmentValidateLanguage(string $tag): ?string
 {
-    $tag = trim($tag);
-    if ($tag === '') { return null; }
-    if (function_exists('_ietfBcp47Validate')) {
-        $valid = _ietfBcp47Validate($tag);   // trimmed tag | null (empty) | false (malformed)
-        if ($valid === false || $valid === null) { return null; }
-        return mb_substr((string)$valid, 0, 35);
-    }
-    /* Fallback grammar: language(2-3) + optional script(4) + region(2) + variants. */
-    if (!preg_match('/^[A-Za-z]{2,3}([-_][A-Za-z0-9]{1,8})*$/', $tag)) { return null; }
-    return mb_substr($tag, 0, 35);
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    $valid = mediaLanguageTagForStorage($tag);   // canonical tag | null (empty) | false (cannot be stored)
+    return is_string($valid) ? $valid : null;
 }
 
 /**

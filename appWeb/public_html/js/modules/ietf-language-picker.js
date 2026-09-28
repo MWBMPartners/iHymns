@@ -65,11 +65,10 @@
  * never fail ingest) but is never SILENT: `updateUnknownWarning()` below
  * renders an inline amber note the moment a subtag was neither picked nor
  * matched exactly against the last search results, and additionally warns
- * BEFORE the server ever rejects a grammatically-malformed tag (mirroring
- * `includes/song_importers.php`'s `_ietfBcp47Validate()` regex — see
- * `isGrammaticallyValidBcp47()` below; kept byte-identical to the PHP
- * source by `tests/test-ietf-picker-live-dom.js`, never just a "keep these
- * in sync" comment, rule #35).
+ * BEFORE the server refuses a grammatically-malformed tag (see
+ * `isGrammaticallyValidBcp47()` below — an EARLY WARNING only; the server's
+ * shared language rule, `includes/media_language.php`, is the one that
+ * decides, #2137).
  *
  * Markup contract — caller renders something like:
  *
@@ -157,22 +156,26 @@ const NOUNS = {
 };
 
 /**
- * Grammar-only BCP 47 validity check — a CLIENT-SIDE MIRROR of
- * `includes/song_importers.php`'s `_ietfBcp47Validate()` regex, used ONLY
- * to warn a curator BEFORE they hit the server's real rejection (M3 — the
- * plan's §4.4). This is never itself the authority: the server keeps
- * enforcing the real check on save; a mismatch here would only ever
- * produce a wrong WARNING, never a wrong SAVE. Kept byte-identical to the
- * PHP source (not just "similar") by a CI assertion in
- * tests/test-ietf-picker-live-dom.js, which is the MECHANISM rule #35
- * asks for in place of a "keep these two in sync" comment — a regex is
- * one of the few shapes that genuinely cannot be shared verbatim across a
- * PHP/JS boundary without a network round-trip, so a guarded mirror is the
- * pragmatic middle ground, not a violation of the rule.
+ * Grammar-only BCP 47 validity check, used ONLY to warn a curator BEFORE they
+ * hit the server's real refusal (M3 — the plan's §4.4). It is never the
+ * authority: the server's ONE shared language rule (`includes/media_language.php`,
+ * which follows the MWBM-MEDIA-LANG policy, #2137) decides on save, and a
+ * mismatch here can only ever produce a wrong WARNING, never a wrong SAVE.
+ *
+ * #2137 — corrected claim. This comment used to say the pattern below was
+ * "kept byte-identical to the PHP source by a CI assertion in
+ * tests/test-ietf-picker-live-dom.js". No such assertion existed, and the PHP
+ * pattern it named has now been replaced by the shared policy code, which
+ * accepts more than this does (extensions, private use, any letter case — it
+ * tidies case rather than refusing). That is safe here because this check only
+ * ever sees tags built by composeTag() below, which already writes the letter
+ * case in standard form and only ever joins a language, script, region and
+ * variants. The one known gap: a repeated variant (`de-1996-1996`) passes this
+ * check but is refused by the server.
  *
  * @param {string} tag
  * @returns {boolean} true when EMPTY (nothing to validate yet) or grammar-valid.
- * @see includes/song_importers.php::_ietfBcp47Validate()
+ * @see includes/media_language.php::mediaLanguageTagForStorage()
  */
 export function isGrammaticallyValidBcp47(tag) {
     const t = (tag || '').trim();
