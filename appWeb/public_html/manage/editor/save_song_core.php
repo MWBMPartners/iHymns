@@ -60,7 +60,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pd_suggest.php';   /* #1862 — pdRecomputeForSong(), called post-commit below (the credits loop just replaced the contributor set) */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_language.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_translations_schema.php';   /* #2131 — songTranslationsLanguageFkPresent() */
-require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_translations_sync.php';     /* #2137 review — songTranslationsPlanSync(): the stored-vs-sent comparison */   /* #2137 — the shared language rules: plain refusal messages + the per-section/per-line check */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_translations_sync.php';     /* #2137 reviews — songTranslationsSaveLinks(): the translation links' save steps */   /* #2137 — the shared language rules: plain refusal messages + the per-section/per-line check */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'webhooks.php';   /* #1909 — webhookEmitSongEvent(), fired beside the song.create/edit logActivity (dormant no-op until enabled) */
 
 /**
@@ -1600,8 +1600,10 @@ function editorSaveSongCore(): array
              * exist at most once — one translation per language per source song.
              * #2137 review — keyed on the TIDIED language on both sides, so a link
              * stored under a retired code (`iw`) is updated in place to `he`
-             * rather than deleted and re-inserted; the comparison itself is
-             * songTranslationsPlanSync() (includes/song_translations_sync.php). 
+             * rather than deleted and re-inserted. The steps themselves live in
+             * songTranslationsSaveLinks() and the comparison in
+             * songTranslationsPlanSync() (includes/song_translations_sync.php),
+             * which also records the clash rules settled by the second review.
              * @see https://dev.mysql.com/doc/refman/8.0/en/create-index.html
              * ------------------------------------------------------------------ */
             $translationWarnings = [];
@@ -1614,173 +1616,13 @@ function editorSaveSongCore(): array
             if (is_array($song['translations'] ?? null)) {
                 try {
                     if (_songTranslationsTableExists($db)) {
-                        /* ---- 1. Normalise the desired set, keyed by language ----
-                           The client sends [{songId, language}, …] — the same shape
-                           SongData::_getTranslations() emits, so the round trip is
-                           symmetrical. Keyed case-insensitively because the column
-                           collation (utf8mb4_unicode_ci) makes the UNIQUE key
-                           case-insensitive too; last-one-wins on a collision
-                           mirrors the legacy endpoint's
-                           `ON DUPLICATE KEY UPDATE TranslatedSongId = VALUES(…)`. */
-                        $desired = [];
-                        /* Languages whose STORED link must survive this save even
-                           though the editor's copy of it is skipped below for a
-                           reason that is not the curator's (#2137 review). */
-                        $keep = [];
-                        foreach ($song['translations'] as $tr) {
-                            if (!is_array($tr)) { continue; }
-                            $tId   = trim((string)($tr['songId']   ?? ''));
-                            $tLang = trim((string)($tr['language'] ?? ''));
-                            if ($tId === '' || $tLang === '') { continue; }
-                            /* A song cannot be a translation of itself — the same
-                               rule the legacy add_translation endpoint enforced. */
-                            if (strcasecmp($tId, $songId) === 0) {
-                                $translationWarnings[] = 'A song cannot be a translation of itself — skipped.';
-                                continue;
-                            }
-                            /* #2131 / #2137 — the language is tidied by the ONE
-                               shared rule (`pt-br` → `pt-BR`), so two spellings
-                               of one language can never make two links; a value
-                               that is not a language code is skipped with a
-                               warning rather than sent to the database. */
-                            $tidyLang = mediaLanguageTagForStorage($tLang);
-                            if (!is_string($tidyLang)) {
-                                $translationWarnings[] = 'Language "' . $tLang
-                                    . '" is not a language code this site can store — translation link to '
-                                    . $tId . ' skipped.';
-                                $keep[mb_strtolower($tLang)] = true;   /* a stored row with this value is left as it is */
-                                continue;
-                            }
-                            $desired[mb_strtolower($tidyLang)] = ['songId' => $tId, 'language' => $tidyLang];
-                        }
-
-                        /* ---- 2. Pre-validate against the FK parents ----
-                           tblSongTranslations has FKs to tblSongs (both id columns).
-                           #2131 — on a server where the migration
-                           migrate-drop-song-translations-language-fk.php has NOT
-                           been run yet, it also still has fk_Trans_Lang to
-                           tblLanguages.Code, which holds bare codes only, so a
-                           `pt-BR` link WOULD violate it. On such a server the
-                           language is still checked against tblLanguages first
-                           (songTranslationsLanguageFkPresent()), so a doomed
-                           statement is never issued and a curator's lyrics edit is
-                           never lost to it; once the migration has run, the check
-                           above (the shared rule) is the only one. */
-                        if ($desired !== []) {
-                            $wantLangs = array_values(array_unique(array_map(
-                                static fn(array $d): string => $d['language'], $desired
-                            )));
-                            $wantIds = array_values(array_unique(array_map(
-                                static fn(array $d): string => $d['songId'], $desired
-                            )));
-
-                            /* Placeholder strings are built from a COUNT, never from
-                               user data — the one interpolation CLAUDE.md rule #5
-                               permits. Every VALUE below is bound. */
-                            $langFkPresent = songTranslationsLanguageFkPresent($db);
-                            $langOk = [];
-                            if ($langFkPresent) {
-                                $lp   = implode(',', array_fill(0, count($wantLangs), '?'));
-                                $lStm = $db->prepare("SELECT Code FROM tblLanguages WHERE Code IN ($lp)");
-                                $lStm->bind_param(str_repeat('s', count($wantLangs)), ...$wantLangs);
-                                $lStm->execute();
-                                $lRes = $lStm->get_result();
-                                /* Key on the lowercased tag but keep the table's
-                                   casing as the value, so we store `en`, not `EN`. */
-                                while ($lRow = $lRes->fetch_assoc()) { $langOk[mb_strtolower($lRow['Code'])] = $lRow['Code']; }
-                                $lStm->close();
-                            }
-
-                            $idOk = [];
-                            /* @deleted-visible: write-path FK pre-check (#1694)
-                               — a translation link naming a hidden song must
-                               SURVIVE the save (dropping it would silently
-                               destroy data that comes back on restore). */
-                            $ip   = implode(',', array_fill(0, count($wantIds), '?'));
-                            $iStm = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ip)");
-                            $iStm->bind_param(str_repeat('s', count($wantIds)), ...$wantIds);
-                            $iStm->execute();
-                            $iRes = $iStm->get_result();
-                            while ($iRow = $iRes->fetch_assoc()) { $idOk[mb_strtolower($iRow['SongId'])] = $iRow['SongId']; }
-                            $iStm->close();
-
-                            foreach ($desired as $key => $d) {
-                                if ($langFkPresent && !isset($langOk[mb_strtolower($d['language'])])) {
-                                    $translationWarnings[] = 'Language "' . $d['language']
-                                        . '" cannot be linked on this server yet: run the "Translations: allow'
-                                        . ' regional and script languages" card on /manage/setup-database'
-                                        . ' — translation link to ' . $d['songId'] . ' skipped.';
-                                    unset($desired[$key]);
-                                    $keep[$key] = true;   /* skipped for the server's reason, not removed by the curator */
-                                    continue;
-                                }
-                                if (!isset($idOk[mb_strtolower($d['songId'])])) {
-                                    $translationWarnings[] = 'Song "' . $d['songId']
-                                        . '" no longer exists — translation link skipped.';
-                                    unset($desired[$key]);
-                                    continue;
-                                }
-                                /* Adopt the canonical stored spellings. */
-                                if ($langFkPresent) {
-                                    $desired[$key]['language'] = $langOk[mb_strtolower($d['language'])];
-                                }
-                                $desired[$key]['songId']   = $idOk[mb_strtolower($d['songId'])];
-                            }
-                        }
-
-                        /* ---- 3. Read what is already stored (idx_Source) ---- */
-                        $exStm = $db->prepare(
-                            'SELECT Id, TranslatedSongId, TargetLanguage
-                               FROM tblSongTranslations WHERE SourceSongId = ?'
-                        );
-                        $exStm->bind_param('s', $songId);
-                        $exStm->execute();
-                        $exRes = $exStm->get_result();
-                        $existing = [];
-                        while ($exRow = $exRes->fetch_assoc()) {
-                            $existing[] = [
-                                'id'       => (int)$exRow['Id'],
-                                'songId'   => (string)$exRow['TranslatedSongId'],
-                                'language' => (string)$exRow['TargetLanguage'],
-                            ];
-                        }
-                        $exStm->close();
-
-                        /* ---- 4. Apply the diff ----
-                           A song with no translation links (the overwhelmingly common
-                           case) reaches here with both sides empty and performs ZERO
-                           writes — the save path stays behaviourally identical to
-                           before #1626 for every song that has never used the panel.
-                           songTranslationsPlanSync() decides; this only writes.
-                           UPDATEs are in place, so a row's Translator / Verified /
-                           CreatedAt survive a re-point or a tidied language. */
-                        $plan = songTranslationsPlanSync($desired, $existing, $keep, 'mediaLanguageTagForStorage');
-                        foreach ($plan['warnings'] as $w) { $translationWarnings[] = $w; }
-                        foreach ($plan['delete'] as $delId) {
-                            $dStm = $db->prepare('DELETE FROM tblSongTranslations WHERE Id = ?');
-                            $dStm->bind_param('i', $delId);
-                            $dStm->execute();
-                            $dStm->close();
-                        }
-                        foreach ($plan['update'] as $u) {
-                            $uStm = $db->prepare(
-                                'UPDATE tblSongTranslations SET TranslatedSongId = ?, TargetLanguage = ? WHERE Id = ?'
-                            );
-                            $uStm->bind_param('ssi', $u['songId'], $u['language'], $u['id']);
-                            $uStm->execute();
-                            $uStm->close();
-                        }
-                        foreach ($plan['insert'] as $d) {
-                            /* New link. Translator defaults to '' and Verified to 0 —
-                               neither is modelled by the editor payload, and both are
-                               curator-maintained elsewhere. */
-                            $nStm = $db->prepare(
-                                'INSERT INTO tblSongTranslations (SourceSongId, TranslatedSongId, TargetLanguage)
-                                 VALUES (?, ?, ?)'
-                            );
-                            $nStm->bind_param('sss', $songId, $d['songId'], $d['language']);
-                            $nStm->execute();
-                            $nStm->close();
+                        /* Steps 1–4 (normalise, check the FK parents, read what is
+                           stored, apply the difference) live in
+                           songTranslationsSaveLinks() — includes/song_translations_sync.php
+                           — so they can be tested against a real database (#2137
+                           review). */
+                        foreach (songTranslationsSaveLinks($db, $songId, $song['translations']) as $w) {
+                            $translationWarnings[] = $w;
                         }
                     }
                 } catch (\Throwable $_e) {

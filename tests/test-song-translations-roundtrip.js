@@ -40,11 +40,16 @@ const SAVE_CORE = join(WEB, 'manage', 'editor', 'save_song_core.php');
 const EDITOR_JS = join(WEB, 'manage', 'editor', 'editor.js');
 const SONG_DATA = join(WEB, 'includes', 'SongData.php');
 const SCHEMA_SQL = join(__dirname, '..', 'appWeb', '.sql', 'schema.sql');
+/* #2137 review — steps 1–4 of the save moved into songTranslationsSaveLinks()
+   in this file, so they can be tested against a real database
+   (tests/php/test-song-translations-sync.php); the save core calls it. */
+const SYNC_PHP = join(WEB, 'includes', 'song_translations_sync.php');
 
 const saveSrc = readFileSync(SAVE_CORE, 'utf8');
 const editorSrc = readFileSync(EDITOR_JS, 'utf8');
 const songDataSrc = readFileSync(SONG_DATA, 'utf8');
 const schemaSrc = readFileSync(SCHEMA_SQL, 'utf8');
+const syncSrc = readFileSync(SYNC_PHP, 'utf8');
 
 let passed = 0;
 let failed = 0;
@@ -59,8 +64,9 @@ function check(label, cond, detail = '') {
    accidentally match some unrelated statement elsewhere in a 1400-line file. */
 const blockStart = saveSrc.indexOf('Translation links (#352)');
 const blockEnd = saveSrc.indexOf('$db->commit();', blockStart);
-const transBlock = blockStart > -1 && blockEnd > blockStart
-    ? saveSrc.slice(blockStart, blockEnd)
+const saveLinksAt = syncSrc.indexOf('function songTranslationsSaveLinks');
+const transBlock = blockStart > -1 && blockEnd > blockStart && saveLinksAt > -1
+    ? saveSrc.slice(blockStart, blockEnd) + '\n' + syncSrc.slice(saveLinksAt)
     : '';
 
 /* ---------------------------------------------------------------------- */
@@ -96,6 +102,9 @@ check('the whole-song save core references tblSongTranslations at all',
 
 check('the translations block was located for inspection',
     transBlock.length > 0);
+
+check('the save core hands the links to songTranslationsSaveLinks() (the code tested against a database)',
+    /songTranslationsSaveLinks\(\$db, \$songId, \$song\['translations'\]\)/.test(saveSrc));
 
 check('the write is gated on the table existing (un-migrated env degrades)',
     /_songTranslationsTableExists\(\$db\)/.test(transBlock)
@@ -228,6 +237,10 @@ function diffTranslations(payload, existingRows, sourceId, knownLangs, knownSong
 
     const warnings = [];
     const desired = new Map();
+    /* #2137 review — two links SENT for one language (not the same link
+       twice): nothing changes for that language (keep), and a warning. */
+    const sentByKey = new Map();
+    const keep = new Set();
     for (const t of payload) {
         if (!t) continue;
         const id = String(t.songId || '').trim();
@@ -238,12 +251,21 @@ function diffTranslations(payload, existingRows, sourceId, knownLangs, knownSong
             continue;
         }
         const tidy = tidyTag(lang);
-        if (!tidy) { warnings.push('lang'); continue; }
-        desired.set(tidy.toLowerCase(), { songId: id, language: tidy }); /* last wins */
+        if (!tidy) { warnings.push('lang'); keep.add(lang.toLowerCase()); continue; }
+        const k = tidy.toLowerCase();
+        const list = sentByKey.get(k) || [];
+        if (!list.some((e) => e.raw === lang.toLowerCase() && e.songId.toLowerCase() === id.toLowerCase())) {
+            list.push({ songId: id, language: tidy, raw: lang.toLowerCase() });
+        }
+        sentByKey.set(k, list);
+    }
+    for (const [k, list] of sentByKey) {
+        if (list.length > 1) { warnings.push('same-language'); keep.add(k); continue; }
+        desired.set(k, list[0]);
     }
     for (const [k, d] of [...desired]) {
-        if (fkPresent && !knownLangs.includes(d.language.toLowerCase())) { warnings.push('lang'); desired.delete(k); continue; }
-        if (!knownSongs.includes(d.songId.toLowerCase())) { warnings.push('song'); desired.delete(k); }
+        if (fkPresent && !knownLangs.includes(d.language.toLowerCase())) { warnings.push('lang'); desired.delete(k); keep.add(k); continue; }
+        if (!knownSongs.includes(d.songId.toLowerCase())) { warnings.push('song'); desired.delete(k); keep.add(k); }
     }
 
     /* #2137 review — stored rows are matched by their TIDIED language too
@@ -256,7 +278,7 @@ function diffTranslations(payload, existingRows, sourceId, knownLangs, knownSong
     const deletes = [];
     const updates = [];
     const inserts = [];
-    for (const [k, ex] of existing) if (!desired.has(k)) deletes.push(ex.id);
+    for (const [k, ex] of existing) if (!desired.has(k) && !keep.has(k)) deletes.push(ex.id);
     for (const [k, d] of desired) {
         const ex = existing.get(k);
         if (!ex) { inserts.push(d); continue; }
@@ -303,10 +325,15 @@ r = run([{ songId: 'HLC-9', language: 'es' }], [{ id: 7, songId: 'SDAH-123', lan
 check('re-pointing a language UPDATEs the existing row instead of churning it',
     r.updates.length === 1 && r.updates[0].id === 7 && r.inserts.length === 0 && r.deletes.length === 0);
 
-/* The UNIQUE key allows one row per language — the diff must not emit two. */
+/* The UNIQUE key allows one row per language — the diff must not emit two.
+   #2137 review — nor guess which one was meant ("last wins" lost a stored
+   link's translator): two sent links for one language change nothing. */
 r = run([{ songId: 'SDAH-123', language: 'es' }, { songId: 'HLC-9', language: 'es' }], []);
-check('two same-language links collapse to one (last wins, uq_Translation)',
-    r.inserts.length === 1 && r.inserts[0].songId === 'HLC-9');
+check('two same-language links to different songs: neither is stored, with a warning',
+    r.inserts.length === 0 && r.warnings.includes('same-language'));
+r = run([{ songId: 'SDAH-123', language: 'es' }, { songId: 'HLC-9', language: 'es' }], [{ id: 7, songId: 'SDAH-123', language: 'es' }]);
+check('…and a stored link for that language is kept as it is',
+    r.deletes.length === 0 && r.updates.length === 0 && r.inserts.length === 0);
 
 /* Different languages coexist happily. */
 r = run([{ songId: 'SDAH-123', language: 'es' }, { songId: 'HLC-9', language: 'fr' }], []);
@@ -340,8 +367,8 @@ check('after the migration: letter case is tidied (zh-hant is stored as zh-Hant)
     r.inserts.length === 1 && r.inserts[0].language === 'zh-Hant');
 
 r = runMigrated([{ songId: 'SDAH-123', language: 'pt-br' }, { songId: 'HLC-9', language: 'pt-BR' }], []);
-check('two spellings of one language collapse to one link (last wins)',
-    r.inserts.length === 1 && r.inserts[0].songId === 'HLC-9');
+check('two spellings of one language to different songs: neither is stored, with a warning (#2137 review)',
+    r.inserts.length === 0 && r.warnings.includes('same-language'));
 
 r = runMigrated([{ songId: 'SDAH-123', language: 'pt-BR' }, { songId: 'HLC-9', language: 'pt-PT' }], []);
 check('pt-BR and pt-PT are two different languages (policy TEXT-050)',
@@ -354,6 +381,9 @@ check('a language NAME is skipped with a warning, never stored as a tag',
 r = run([{ songId: 'GONE-1', language: 'es' }], [], SONGS);
 check('a vanished target song is skipped with a warning',
     r.inserts.length === 0 && r.warnings.includes('song'));
+r = run([{ songId: 'GONE-1', language: 'es' }], [{ id: 7, songId: 'SDAH-123', language: 'es' }], SONGS);
+check('…and the link stored for that language is NOT deleted (#2137 review)',
+    r.deletes.length === 0 && r.updates.length === 0);
 
 /* A bad entry must not take its valid siblings down with it. */
 r = run([{ songId: 'SDAH-123', language: 'es' }, { songId: 'GONE-1', language: 'fr' }], []);
