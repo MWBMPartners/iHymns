@@ -103,6 +103,11 @@ declare(strict_types=1);
  *   - a payload entry that is not a link (`"junk"`) was skipped, and the
  *     stored links were then deleted as if removed — now the whole
  *     translation save refuses, changing nothing (songTranslationsIsLinkShaped()).
+ * And one successful change that still threw details away: `pt → T1` (a
+ * translator, verified) changed to `pt-BR → T1` was deleted and re-inserted
+ * bare. The planner now pairs a stored row whose language nobody sent back
+ * with a sent link to the SAME song whose language is new, and updates it in
+ * place, as `iw → he` already was (unambiguous pairs only — see the planner).
  *
  * WHAT THIS CANNOT DO. A failed link is tied back to a stored row only by
  * its song or its language. If a curator changes BOTH at once (`pt → T1`
@@ -245,6 +250,7 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
 {
     $plan = ['delete' => [], 'update' => [], 'insert' => [], 'warnings' => [], 'blocked' => []];
     $isProtected = static fn(array $r): bool => isset($protected[(int)$r['id']]);
+    $unmatchedStored = [];   /* single stored rows whose language nobody sent back (round 5) */
 
     /* Group the stored rows by the language they tidy to (the same key a
        failed link is matched by — songTranslationsGroupKey()). */
@@ -305,9 +311,10 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
         }
         $stored = $rows[0];
         if (!isset($desired[$key])) {
-            if (!$isProtected($stored)) {
-                $plan['delete'][] = (int)$stored['id'];
-            }
+            /* Nobody sent this language back. It is deleted below — unless
+               it is protected, or it pairs with a sent link to the SAME
+               song whose language is new (round 5, L3). */
+            $unmatchedStored[] = $stored;
             continue;
         }
         $want = $desired[$key];
@@ -323,10 +330,53 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
         }
     }
 
+    /* #2137 review round 5 (L3) — a successful language change of the SAME
+       song keeps the link's details. A stored row whose language nobody sent
+       back, and a sent link whose language is not stored, that point at the
+       same song are one link whose language label became more precise
+       (`pt → T1` sent back as `pt-BR → T1`): the row is UPDATED in place, so
+       its translator, verified flag and creation date survive — exactly as
+       `iw → he` already is. It used to be deleted and a bare row inserted
+       (the fourth review reproduced Ana's verified `pt → T1` becoming an
+       unattributed, unverified `pt-BR → T1`).
+       Paired only when it is unambiguous: exactly ONE such stored row and
+       exactly ONE such sent link for that song, and the stored row is not
+       protected (a protected row is never changed; that case stays as round
+       4 left it — the row kept, the new link added). Anything else — two
+       stored rows or two new links for one song — cannot be told apart from
+       "removed one link, added another", so it is treated that way. */
+    $unmatchedDesired = [];
     foreach ($desired as $key => $want) {
         if (!isset($byKey[$key])) {
-            $plan['insert'][] = $want;
+            $unmatchedDesired[$key] = $want;
         }
+    }
+    $storedBySong = [];
+    foreach ($unmatchedStored as $r) {
+        $storedBySong[mb_strtolower((string)$r['songId'])][] = $r;
+    }
+    $desiredBySong = [];
+    foreach ($unmatchedDesired as $key => $want) {
+        $desiredBySong[mb_strtolower((string)$want['songId'])][] = $key;
+    }
+    $paired = [];
+    foreach ($desiredBySong as $song => $keys) {
+        $candidates = $storedBySong[$song] ?? [];
+        if (count($keys) !== 1 || count($candidates) !== 1 || $isProtected($candidates[0])) {
+            continue;
+        }
+        $want = $unmatchedDesired[$keys[0]];
+        $plan['update'][] = ['id' => (int)$candidates[0]['id'], 'songId' => $want['songId'], 'language' => $want['language']];
+        $paired[(int)$candidates[0]['id']] = true;
+        unset($unmatchedDesired[$keys[0]]);
+    }
+    foreach ($unmatchedStored as $r) {
+        if (!isset($paired[(int)$r['id']]) && !$isProtected($r)) {
+            $plan['delete'][] = (int)$r['id'];
+        }
+    }
+    foreach ($unmatchedDesired as $want) {
+        $plan['insert'][] = $want;
     }
     return $plan;
 }

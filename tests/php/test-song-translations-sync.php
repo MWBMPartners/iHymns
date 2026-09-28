@@ -179,7 +179,32 @@ $plan = songTranslationsPlanSync(['ro' => $want('T3', 'mo')],
 $check('two stored links of one language, one stored as "mo ": the editor sends back "mo" (trimmed) — that row is recognised as the kept one, and `ro` is deleted',
     $plan['delete'] === [4] && $plan['update'] === [] && $plan['warnings'] === [], json_encode($plan));
 
-echo "\nPart A4 — what counts as a link in the payload (#2137 review round 5, I6)\n";
+/* #2137 review round 5 (L3) — a stored row whose language nobody sent back
+   and a sent link whose language is new, pointing at the SAME song, are one
+   link whose language became more precise: updated in place. */
+echo "\nPart A4 — a language change of the same song keeps the row (#2137 review round 5, L3)\n";
+$pt1 = ['id' => 1, 'songId' => 'T1', 'language' => 'pt'];
+$plan = songTranslationsPlanSync(['pt-br' => $want('T1', 'pt-BR')], [$pt1], [], $tidy);
+$check('pt → T1 sent back as pt-BR → T1: row 1 updated in place to pt-BR (no delete, no insert)',
+    $plan['update'] === [['id' => 1, 'songId' => 'T1', 'language' => 'pt-BR']] && $plan['delete'] === [] && $plan['insert'] === [],
+    json_encode($plan));
+$plan = songTranslationsPlanSync(['pt-br' => $want('t1', 'pt-BR')], [$pt1], [], $tidy);
+$check('…the song id is compared ignoring letter case, as the database does',
+    $plan['update'] === [['id' => 1, 'songId' => 't1', 'language' => 'pt-BR']] && $plan['delete'] === [], json_encode($plan));
+$plan = songTranslationsPlanSync(['pt-br' => $want('T1', 'pt-BR')], [$pt1], [1 => true], $tidy);
+$check('a PROTECTED row is never changed: not paired — it is kept, and the new link added (as round 4 left it)',
+    $plan['update'] === [] && $plan['delete'] === [] && array_column($plan['insert'], 'language') === ['pt-BR'], json_encode($plan));
+$plan = songTranslationsPlanSync(['pt-br' => $want('T1', 'pt-BR')], [$pt1, ['id' => 2, 'songId' => 'T1', 'language' => 'es']], [], $tidy);
+$check('two stored rows for that song (pt and es → T1): ambiguous, so not paired — removed and added, as before',
+    $plan['update'] === [] && $plan['delete'] === [1, 2] && array_column($plan['insert'], 'language') === ['pt-BR'], json_encode($plan));
+$plan = songTranslationsPlanSync(['pt-br' => $want('T1', 'pt-BR'), 'es-mx' => $want('T1', 'es-MX')], [$pt1], [], $tidy);
+$check('two new links for that song (pt-BR and es-MX → T1): ambiguous, so not paired',
+    $plan['update'] === [] && $plan['delete'] === [1] && count($plan['insert']) === 2, json_encode($plan));
+$plan = songTranslationsPlanSync(['pt-br' => $want('T2', 'pt-BR')], [$pt1], [], $tidy);
+$check('a different song: not paired (a change of language AND song is a removal plus a new link)',
+    $plan['update'] === [] && $plan['delete'] === [1] && count($plan['insert']) === 1, json_encode($plan));
+
+echo "\nPart A5 — what counts as a link in the payload (#2137 review round 5, I6)\n";
 foreach ([
     'an object with a song and a language' => [['songId' => 'T1', 'language' => 'pt'], true],
     'an empty object (names nothing)'      => [[], true],
@@ -317,15 +342,29 @@ if ($db === null) {
            migration" half of the fault this file's own Part C proves the
            OTHER half of. This database has no fk_Trans_Lang (it is built the
            way schema.sql looks after the #2131 card), so pt -> pt-BR simply
-           succeeds: the pt row is gone, a fresh pt-BR row is there instead.
-           A server that HAS NOT run the card cannot reach this database
-           shape at all, which is exactly why the "pt survives untouched"
-           half needs its own database and its own PHP process — see Part C,
-           below, and its long comment on why. */
+           succeeds. A server that HAS NOT run the card cannot reach this
+           database shape at all, which is exactly why the "pt survives
+           untouched" half needs its own database and its own PHP process —
+           see Part C, below, and its long comment on why.
+           #2137 review round 5 (L3) — and it now succeeds IN PLACE: the same
+           row, keeping Ana, the verified flag and the date (the pairing is
+           unchanged; only its language label became more precise). Until
+           round 5 the pt row was deleted and a bare pt-BR row inserted
+           (reproduced on MariaDB 11.8 and MySQL 8.4). */
         [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1]], [['T1', 'pt-BR']]);
-        $check('post-#2131: pt -> pt-BR succeeds outright — the pt row is gone, a fresh pt-BR row is there',
-            count($a) === 1 && $a[0]['TargetLanguage'] === 'pt-BR' && $a[0]['TranslatedSongId'] === 'T1' && $w === [],
+        $check('(L3) post-#2131: pt → T1 (Ana, verified) changed to pt-BR → T1 succeeds IN PLACE — same row, Ana, verified, same date; only the language changed',
+            count($a) === 1 && $a[0]['TargetLanguage'] === 'pt-BR' && $a[0]['TranslatedSongId'] === 'T1'
+            && $a[0]['Id'] === $b[0]['Id'] && $a[0]['Translator'] === 'Ana' && (int)$a[0]['Verified'] === 1
+            && $a[0]['CreatedAt'] === $b[0]['CreatedAt'] && $w === [],
             json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'es', 'Luis', 1]], [['T1', 'pt-BR'], ['T2', 'es-MX']]);
+        $check('(L3) two language changes in one save (pt → pt-BR on T1, es → es-MX on T2): both rows kept in place with their translators',
+            array_column($a, 'TargetLanguage') === ['pt-BR', 'es-MX'] && array_column($a, 'Id') === array_column($b, 'Id')
+            && array_column($a, 'Translator') === ['Ana', 'Luis'] && $w === [], json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1]], [['T2', 'pt-BR']]);
+        $check('(L3) a change of language AND song is still a removal plus a new link (nothing ties them together)',
+            count($a) === 1 && $a[0]['TargetLanguage'] === 'pt-BR' && $a[0]['TranslatedSongId'] === 'T2' && $a[0]['Translator'] === ''
+            && $a[0]['Id'] !== $b[0]['Id'], json_encode([$a, $w]));
 
         /* #2137 review round 4 — a link that cannot be written protects,
            by row id, every stored row pointing at its song AND the row
