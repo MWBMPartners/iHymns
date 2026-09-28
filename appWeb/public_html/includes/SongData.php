@@ -731,7 +731,11 @@ class SongData
                    tooltip. Returns an empty array on pre-#673
                    deploys; the existing single-language behaviour
                    then takes over via the legacy `language` field. */
-                $contained = $songLanguagesMap[(string)$_b['id']] ?? [];
+                $contained = $songLanguagesMap[(string)$_b['id']]['groups'] ?? [];
+                /* #2137 — the WHOLE tags of the book's songs, for names
+                   (tooltips); `languages` below stays the group list the
+                   language filter matches on. */
+                $_b['languageTags'] = $songLanguagesMap[(string)$_b['id']]['tags'] ?? [];
                 $own       = '';
                 if (!empty($_b['language']) && preg_match('/^([a-z]{2,3})/i', (string)$_b['language'], $m)) {
                     $own = strtolower($m[1]);
@@ -1176,8 +1180,10 @@ class SongData
     }
 
     /**
-     * Pull `[abbr => ['en','af',…]]` — for each songbook, the set of
-     * distinct primary language subtags that appear on its songs (#857).
+     * Pull `[abbr => ['groups' => ['en','af',…], 'tags' => ['af','en-GB',…]]]`
+     * — for each songbook, the distinct language GROUPS (base codes, for the
+     * filter) and the distinct WHOLE tags (for names; #2137) that appear on
+     * its songs (#857).
      *
      * Used to fix songbook-tile visibility under the "Show languages"
      * filter: a songbook tagged English (e.g. Advent Hymns) which
@@ -1190,7 +1196,7 @@ class SongData
      * returns an empty map and the legacy single-language filter
      * behaviour stays in effect.
      *
-     * @return array<string, string[]>
+     * @return array<string, array{groups: list<string>, tags: list<string>}>
      */
     private function _songbookSongLanguagesMap(): array
     {
@@ -1223,30 +1229,52 @@ class SongData
                this is ever widened to concatenate whole tags or titles, that
                limit becomes a real ceiling and the query needs revisiting.
                https://dev.mysql.com/doc/refman/8.0/en/aggregate-functions.html#function_group-concat */
-            $sql = "SELECT SongbookAbbr,
-                           GROUP_CONCAT(
-                               DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1))
-                               ORDER BY Language SEPARATOR ','
-                           ) AS langs
+            /* #2137 — one row per distinct (book, WHOLE tag), not a
+               GROUP_CONCAT of base codes: the tile's tooltip names every form
+               ("Chinese (Simplified), Chinese (Traditional)"), which base codes
+               cannot. Rows, not GROUP_CONCAT, so the group_concat_max_len
+               ceiling described above can never bite. */
+            $sql = "SELECT SongbookAbbr, Language
                       FROM tblSongs
                      WHERE Language IS NOT NULL AND Language <> ''
                        AND " . $this->_visible('') . "
-                     GROUP BY SongbookAbbr";   /* #1694 — a hidden song's language must not mint a chip */
+                     GROUP BY SongbookAbbr, Language";   /* #1694 — a hidden song's language must not mint a chip */
             $res = $this->db->query($sql);
-            $out = [];
+            $tagsByBook = [];
             if ($res) {
                 while ($row = $res->fetch_assoc()) {
-                    $abbr  = (string)$row['SongbookAbbr'];
-                    /* #2132 — und / mul / zxx always pass the language filter, so
-                       they are not listed as a language the book contains. */
-                    $langs = array_values(array_filter(
-                        explode(',', (string)($row['langs'] ?? '')),
-                        static fn($s) => $s !== '' && preg_match('/^[a-z]{2,3}$/', $s)
-                            && !in_array($s, ['und', 'mul', 'zxx'], true)
-                    ));
-                    $out[$abbr] = $langs;
+                    $tagsByBook[(string)$row['SongbookAbbr']][] = (string)$row['Language'];
                 }
                 $res->close();
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+            $out = [];
+            foreach ($tagsByBook as $abbr => $rawTags) {
+                $tags = [];
+                $groups = [];
+                foreach ($rawTags as $raw) {
+                    $tidy = mediaLanguageReady() ? mediaLanguageTagForStorage($raw) : $raw;
+                    $tag  = is_string($tidy) ? $tidy : trim($raw);
+                    $group = mediaLanguageGroup($tag);
+                    /* #2132 — und / mul / zxx always pass the language filter,
+                       so they are not listed as a language the book contains. */
+                    if ($group === '' || in_array($group, ['und', 'mul', 'zxx'], true)) {
+                        continue;
+                    }
+                    $tags[$tag] = true;
+                    if (preg_match('/^[a-z]{2,3}$/', $group)) {
+                        $groups[$group] = true;
+                    }
+                }
+                $groupList = array_keys($groups);
+                sort($groupList);
+                $out[$abbr] = [
+                    'groups' => $groupList,
+                    /* Stored order (policy Part A): the same everywhere. */
+                    'tags'   => array_column(mediaLanguageSortStored(
+                        array_map(static fn(string $t): array => ['tag' => $t], array_keys($tags)), 'tag'
+                    ), 'tag'),
+                ];
             }
             return $out;
         } catch (\Throwable $e) {

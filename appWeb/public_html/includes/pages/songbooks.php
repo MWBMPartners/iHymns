@@ -75,20 +75,14 @@ $stats = $songData->getStats();
                        #857 — also expose the contained-languages union
                        so a book tagged English but holding Afrikaans
                        songs surfaces under an Afrikaans filter. */
-                    $bookLang = (string)($book['language'] ?? '');
-                    $langCode = '';
-                    if ($bookLang !== '' && preg_match('/^([a-z]{2,3})/i', $bookLang, $m)) {
-                        $langCode = mb_strtoupper($m[1]);
-                    }
-                    $bookLangs    = $book['languages'] ?? [];
-                    $bookLangsCsv = !empty($bookLangs) ? implode(',', $bookLangs) : '';
-                    $bookLangNames = [];
-                    foreach ($bookLangs as $sub) {
-                        $bookLangNames[] = resolveLanguageName($sub);
-                    }
-                    $bookLangsTitle = !empty($bookLangNames)
-                        ? implode(', ', $bookLangNames)
-                        : resolveLanguageName($bookLang);
+                    /* #2137 — whole tag on the badge, full names in the
+                       tooltip and the accessible name (see home.php). */
+                    $tile           = songbookTileLanguage($book);
+                    $bookLang       = $tile['tag'];
+                    $langCode       = $tile['badge'];
+                    $bookLangsCsv   = $tile['groupsCsv'];
+                    $bookLangsTitle = $tile['title'];
+                    $bookLangName   = $tile['name'];
                     /* #1223 — unofficial-songbook flag. SongData casts
                        tblSongbooks.IsOfficial (#502) to a strict bool;
                        empty() also treats a missing key (pre-migration /
@@ -124,7 +118,7 @@ $stats = $songData->getStats();
                         <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
                            class="stretched-link text-decoration-none text-reset"
                            data-navigate="songbook"
-                           aria-label="Open <?= htmlspecialchars($book['name']) ?><?= $isUnofficial ? ' (unofficial songbook)' : '' ?> — <?= number_format($book['songCount']) ?> songs<?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>"></a>
+                           aria-label="Open <?= htmlspecialchars($book['name']) ?><?= $isUnofficial ? ' (unofficial songbook)' : '' ?> — <?= number_format($book['songCount']) ?> songs<?= $bookLangName !== '' ? ' (' . htmlspecialchars($bookLangName) . ')' : '' ?>"></a>
                         <?php if ($langCode !== ''): ?>
                             <!-- #856 / #857: tooltip resolves the IETF tag to
                                  the full language name; when the book contains

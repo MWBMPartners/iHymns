@@ -29,6 +29,9 @@
  *  https://developer.mozilla.org/docs/Web/HTTP/Headers/Content-Security-Policy/script-src
  * ========================================================================== */
 
+import { STORAGE_LANGUAGE_FILTER } from '../constants.js';
+import { isPreferenceTag, orderByPreference } from '../utils/language-tags.js';
+
 /**
  * Wire the per-line translation toggle on the song page. Idempotent — the
  * SPA injects a fresh song fragment (and a fresh button, if the new song has
@@ -68,4 +71,38 @@ export function initLineTranslations() {
             labelEl.textContent = next ? 'Hide translation' : 'Show translation';
         }
     });
+}
+
+/**
+ * Put the reader's own languages first in the song page's "Also in …"
+ * translation picker (#2137 — the shared language policy's UI-020).
+ *
+ * ELI5: the server lists the other-language versions with the original first
+ * and the rest A to Z by name. If you told iHymns which languages you read,
+ * this moves those to the top, in your order — once, when the page opens.
+ *
+ * DETAIL: the song page is a shared, cached page piece (rule #6 in
+ * .claude/CLAUDE.md), so the server cannot know who is reading it; only the
+ * browser can. Everything else about the order stays the server's (original
+ * first, then by name). Nothing moves later, when an item is picked (UI-050).
+ * DOM-first (rule #30): each `<li>` carries `data-language-tag`, emitted by
+ * includes/pages/song.php. The preference list is the same saved list the
+ * language filter uses (STORAGE_LANGUAGE_FILTER).
+ */
+export function orderTranslationPicker() {
+    const menu = document.querySelector('.page-song .song-translations .dropdown-menu');
+    if (!menu || menu.dataset.readerOrdered === '1') { return; }
+    menu.dataset.readerOrdered = '1';
+    let preferences = [];
+    try {
+        const raw = localStorage.getItem(STORAGE_LANGUAGE_FILTER);
+        const parsed = raw ? JSON.parse(raw) : [];
+        preferences = Array.isArray(parsed) ? parsed.filter(isPreferenceTag) : [];
+    } catch (_e) {
+        preferences = [];   /* private mode / corrupt value: keep the server's order */
+    }
+    if (preferences.length === 0) { return; }
+    const items = Array.from(menu.querySelectorAll(':scope > li[data-language-tag]'));
+    const ordered = orderByPreference(items, preferences, (li) => li.dataset.languageTag || '');
+    ordered.forEach((li) => menu.appendChild(li));
 }

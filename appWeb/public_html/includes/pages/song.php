@@ -342,15 +342,31 @@ try {
     $translations = [];
 }
 
-/* Title each translation by its native name if present, falling back
-   to the English name — lets a Spanish reader see "Español" rather
-   than "Spanish". */
+/* #2137 — names and order for a READER (the shared language policy, Part B).
+
+   Label: the language's name in the site's interface language, English today
+   ("Portuguese (Brazil)"), with the language's own name ("português") as a
+   smaller second label. This used to show ONLY the language's own name, which
+   the policy's UI-011 rules out as a menu's only label: a reader looking for
+   Korean may not recognise "한국어".
+
+   Order: the original first, then every other language alphabetically by that
+   name (UI-030, UI-040), general before specific within one language. This
+   fragment is cached and shared by every visitor (rule #6), so it cannot know
+   any one person's language preferences; song-translations.js moves the
+   reader's own languages to the top in the browser (UI-020), once, when the
+   page loads — never when something is picked (UI-050). */
+$translations = mediaLanguageSortForReader($translations, 'target_language', 'is_original', [], 'resolveLanguageName');
 foreach ($translations as &$_t) {
-    $_t['display_label'] = ($_t['native_name'] !== '' && $_t['native_name'] !== null)
-        ? (string)$_t['native_name']
-        : (string)$_t['language_name'];
+    $_name   = trim((string)($_t['language_name'] ?? ''));
+    $_native = trim((string)($_t['native_name'] ?? ''));
+    $_t['display_label'] = $_name !== ''
+        ? $_name
+        : (!empty($_t['is_original']) ? 'Original' : (string)$_t['target_language']);
+    $_t['secondary_label'] = ($_native !== '' && strcasecmp($_native, $_t['display_label']) !== 0) ? $_native : '';
+    $_t['language_group']  = mediaLanguageGroup((string)$_t['target_language']);
 }
-unset($_t);
+unset($_t, $_name, $_native);
 
 /* ===================================================================
  * Cross-book counterparts (#807) — same hymn appearing in different
@@ -693,8 +709,10 @@ try {
                                            we don't want a SELECT for every page. */
                                         require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'language_names.php';
                                     ?>
+                                    <?php /* #2137 — the name is the text a screen reader reads; the
+                                             code stays as the visible badge (UI-010). */ ?>
                                     <span class="badge bg-secondary text-light small"
-                                          title="<?= htmlspecialchars(resolveLanguageName($a['language'])) ?>"><?= htmlspecialchars($a['language']) ?></span>
+                                          title="<?= htmlspecialchars(resolveLanguageName($a['language'])) ?>"><span class="visually-hidden"><?= htmlspecialchars(resolveLanguageName($a['language'])) ?></span><span aria-hidden="true"><?= htmlspecialchars($a['language']) ?></span></span>
                                 <?php endif; ?>
                                 <?php if (!empty($a['note'])): ?>
                                     <span class="text-muted">(<?= htmlspecialchars($a['note']) ?>)</span>
@@ -876,14 +894,26 @@ try {
                         </button>
                         <ul class="dropdown-menu">
                             <?php foreach ($translations as $t): ?>
-                                <li>
+                                <?php /* #2137 — data-language-tag / -group let song-translations.js
+                                         put the reader's own languages first (UI-020) without the
+                                         server knowing who is reading this shared fragment. The
+                                         English name is NOT marked lang= (it is English); only the
+                                         language's own name is (a11y audit m3). */ ?>
+                                <li data-language-tag="<?= htmlspecialchars($t['target_language']) ?>"
+                                    data-language-group="<?= htmlspecialchars($t['language_group']) ?>">
                                     <a class="dropdown-item"
                                        href="/song/<?= htmlspecialchars($t['song_id']) ?>"
                                        data-navigate="song"
-                                       hreflang="<?= htmlspecialchars($t['target_language']) ?>"
-                                       lang="<?= htmlspecialchars($t['target_language']) ?>"
-                                       dir="<?= htmlspecialchars($t['text_direction'] ?: 'ltr') ?>">
+                                       hreflang="<?= htmlspecialchars($t['target_language']) ?>">
                                         <span class="fw-semibold"><?= htmlspecialchars($t['display_label']) ?></span>
+                                        <?php if ($t['secondary_label'] !== ''): ?>
+                                            <small class="text-muted ms-1"
+                                                   lang="<?= htmlspecialchars($t['target_language']) ?>"
+                                                   dir="<?= htmlspecialchars($t['text_direction'] ?: 'ltr') ?>"><?= htmlspecialchars($t['secondary_label']) ?></small>
+                                        <?php endif; ?>
+                                        <?php if (!empty($t['is_original'])): ?>
+                                            <small class="text-muted ms-1">(original)</small>
+                                        <?php endif; ?>
                                         <?php if (!empty($t['translator'])): ?>
                                             <small class="text-muted ms-1">— tr. <?= htmlspecialchars($t['translator']) ?></small>
                                         <?php endif; ?>
@@ -1420,10 +1450,13 @@ try {
                 <div class="lyric-label" aria-hidden="true">
                     <?= htmlspecialchars($label) ?>
                     <?php if ($showLangBadge): ?>
+                        <?php /* #2137 — the section's language by NAME ("Chinese (Traditional)"),
+                                 not its upper-cased base code: "ZH" could not tell zh-Hans from
+                                 zh-Hant. The tag stays available as the tooltip. */ ?>
                         <span class="badge bg-info text-dark ms-2"
                               style="font-size: 0.65rem; vertical-align: middle;"
-                              title="<?= htmlspecialchars(resolveLanguageName($compLang)) ?>">
-                            <?= htmlspecialchars(strtoupper(preg_replace('/-.*$/', '', $compLang) ?: $compLang)) ?>
+                              title="<?= htmlspecialchars($compLang) ?>">
+                            <?= htmlspecialchars(resolveLanguageName($compLang)) ?>
                         </span>
                     <?php endif; ?>
                 </div>

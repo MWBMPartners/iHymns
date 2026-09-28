@@ -2623,6 +2623,12 @@ paths:
         tblSongbooks.Language and tblSongs.Language (lowercase, sorted,
         de-duplicated). Lightweight replacement for hitting `songbooks` just to
         derive the language chip set. No authentication; cached 5 min.
+
+        #2137 / #2132 — `und` (language not known), `mul` (several) and `zxx`
+        (no language) are never listed: the language filter always shows
+        songs with those, so they are not a choice. `names` (added, #2137)
+        gives each subtag's English name so a client can label a chip
+        "Chinese" rather than "ZH".
       parameters:
         - name: action
           in: query
@@ -2640,6 +2646,14 @@ paths:
                     type: array
                     items: { type: string }
                     example: ["en", "es", "fr", "sw"]
+                  names:
+                    type: object
+                    description: |
+                      Added in #2137. Subtag → English name, from the language
+                      registry (CLDR English names). A subtag with no known name
+                      maps to itself.
+                    additionalProperties: { type: string }
+                    example: { en: English, es: Spanish, fr: French, sw: Swahili }
 
   /api.php?action=languages:
     get:
@@ -3097,6 +3111,23 @@ paths:
         Each entry carries the target language, the translator credit
         (if recorded), a verified flag for curated rows, and the song
         title and number for direct rendering.
+
+        #2137 (the shared MWBM-MEDIA-LANG language policy):
+          - the language is identified by its tag, so a version tagged with a
+            region or script (`pt-BR`, `zh-Hant`) is listed; it used to be
+            dropped, because the list was joined to a registry of bare codes;
+          - `languageName` is the full English name ("Portuguese (Brazil)",
+            previously just the base language's name), `languageNativeName`
+            the language's own name, `textDirection` (added) `ltr`/`rtl`
+            taken from the script when the tag names one;
+          - `isOriginal` (added) is true for the song the others were
+            translated from;
+          - the list is ordered for the person asking: the languages in their
+            preference list first (sent by the site as the
+            `X-Preferred-Languages` header, or saved on their account), in
+            their order; then the original; then the rest alphabetically by
+            name. It used to be ordered by the base language's name, with
+            the original wherever it happened to fall.
       parameters:
         - name: action
           in: query
@@ -7579,10 +7610,16 @@ paths:
     get:
       operationId: getUserPreferredLanguages
       tags: [Preferences]
-      summary: Get the authenticated user's saved language-filter subtag list
+      summary: Get the authenticated user's saved language preferences
       description: |
-        Returns the user's saved primary language subtags, or `[]` if
-        no filter has been set. On a pre-#736 deployment (the
+        Returns the user's saved language preferences, or `[]` if no
+        filter has been set, in two fields (#2137):
+          - `languages` (added) — the list as saved: whole IETF BCP 47 tags
+            (`pt-BR`, not just `pt`), highest priority first;
+          - `subtags` — unchanged in meaning: the distinct base codes,
+            sorted.
+        Lists saved before #2137 held base codes only and read back
+        correctly in both fields. On a pre-#736 deployment (the
         `tblUsers.PreferredLanguagesJson` column is absent), the
         response includes `migration_needed: true` and an empty list
         so the client can render the picker without a filter applied.
@@ -7603,10 +7640,16 @@ paths:
                 properties:
                   subtags:
                     type: array
+                    description: Distinct base codes, sorted (the field's original meaning).
                     items:
                       type: string
                       pattern: '^[a-z]{2,3}$'
-                    example: ["en", "es"]
+                    example: ["en", "pt"]
+                  languages:
+                    type: array
+                    description: Added in #2137. Whole tags in the user's priority order.
+                    items: { type: string }
+                    example: ["pt-BR", "en"]
                   migration_needed:
                     type: boolean
                     description: Present and true on pre-#736 deployments only.
@@ -7617,12 +7660,17 @@ paths:
     post:
       operationId: saveUserPreferredLanguages
       tags: [Preferences]
-      summary: Save the authenticated user's language-filter subtag list
+      summary: Save the authenticated user's language preferences
       description: |
-        Server-side normalisation: invalid subtags are dropped, the
-        list is lowercased, primary-subtag-only, deduplicated, and
-        sorted (`parsePreferredLanguageSubtags` in
-        `includes/language_filter.php`). An empty array clears the
+        Send `languages` (added, #2137): whole tags, highest priority
+        first. The older `subtags` key is still accepted. Server-side
+        normalisation (`parsePreferredLanguageSubtags` in
+        `includes/language_filter.php`): invalid entries are dropped, each
+        tag is tidied by the shared language rule (`pt-br` → `pt-BR`),
+        repeats are removed, and the ORDER IS KEPT (it used to cut each
+        entry to its base code and sort the list). Filtering still matches
+        by language group, so a `pt-BR` preference shows `pt` and `pt-PT`
+        songs too. An empty array clears the
         filter — the column is set to `NULL` to distinguish "no
         filter set" from "filter set to empty set" (which would
         mean "show nothing").
@@ -7639,14 +7687,18 @@ paths:
           application/json:
             schema:
               type: object
-              required: [subtags]
+              description: Send `languages` (preferred) or the older `subtags`; if both are sent, `languages` is used.
               properties:
+                languages:
+                  type: array
+                  description: Added in #2137. BCP 47 tags, highest priority first.
+                  items: { type: string }
+                  example: ["pt-BR", "en", "es-MX"]
                 subtags:
                   type: array
-                  items:
-                    type: string
-                    description: Any BCP 47 tag — only the primary subtag is kept after normalisation.
-                  example: ["en", "es-MX", "pt-BR"]
+                  description: Older key, still accepted. Since #2137 whole tags are kept (not cut to base codes).
+                  items: { type: string }
+                  example: ["en", "es"]
       responses:
         "200":
           description: Saved (canonical normalised list returned)
@@ -7658,10 +7710,16 @@ paths:
                   ok:      { type: boolean, example: true }
                   subtags:
                     type: array
+                    description: Distinct base codes of the saved list, sorted.
                     items: { type: string }
                     example: ["en", "es", "pt"]
+                  languages:
+                    type: array
+                    description: Added in #2137. The saved list, as whole tags in priority order.
+                    items: { type: string }
+                    example: ["pt-BR", "en", "es-MX"]
         "400":
-          description: subtags must be an array
+          description: languages must be an array
         "401":
           description: Not authenticated
         "503":
@@ -25659,6 +25717,23 @@ components:
             disabled books are filtered out server-side — and only ever true
             in admin-mode reads.
           example: false
+        languages:
+          type: array
+          description: |
+            List reads only (#857). The distinct base language codes the
+            book contains — its own language plus its songs' — used by the
+            language filter. `und` / `mul` / `zxx` (not known, several, none)
+            are never included (#2132).
+          items: { type: string }
+          example: ["en", "pt"]
+        languageTags:
+          type: array
+          description: |
+            Added in #2137, list reads only. The whole language tags of the
+            book's songs (e.g. `pt-BR`), for naming them in full; `languages`
+            above is unchanged.
+          items: { type: string }
+          example: ["en", "pt-BR"]
 
     SongbookWriteInput:
       type: object
@@ -25963,16 +26038,28 @@ components:
           example: 202
         language:
           type: string
-          description: ISO 639-1 code of the related language
-          example: fr
+          description: |
+            The related version's IETF BCP 47 language tag, in canonical
+            form (e.g. `fr`, `pt-BR`, `zh-Hant`) — #2137: a full tag, not
+            only a base code.
+          example: pt-BR
         languageName:
           type: string
-          description: English name of the language
-          example: French
+          description: |
+            English name of the language, including its script or region
+            (#2137 — was the base language's name only).
+          example: Portuguese (Brazil)
         languageNativeName:
           type: string
-          description: Native name of the language
-          example: "Fran\u00E7ais"
+          description: The language's own name for itself (a second label, not the only one)
+          example: "portugu\u00EAs"
+        textDirection:
+          type: string
+          enum: [ltr, rtl]
+          description: Added in #2137. Taken from the script subtag when there is one, else the base language.
+        isOriginal:
+          type: boolean
+          description: Added in #2137. True for the song the others were translated from.
         translator:
           type: string
           description: Translator credit; empty for the inward link back to the source.

@@ -20,6 +20,8 @@
    prefix convention and must not be renamed. */
 import { EVT_LANGUAGE_FILTER_CHANGED, STORAGE_LANGUAGE_FILTER } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
+import { escapeHtml } from '../utils/html.js';
+import { isPreferenceTag, languageGroupOf, mergePreferenceOrder } from '../utils/language-tags.js';
 
 const STORAGE_KEY = STORAGE_LANGUAGE_FILTER;
 
@@ -28,9 +30,8 @@ function loadSavedSubtags() {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) return [];
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed)
-            ? parsed.filter(s => typeof s === 'string' && /^[a-z]{2,3}$/.test(s))
-            : [];
+        /* #2137 — whole tags (`pt-BR`) are kept, in the order chosen. */
+        return Array.isArray(parsed) ? parsed.filter(isPreferenceTag) : [];
     } catch (_e) { return []; }
 }
 
@@ -52,7 +53,9 @@ function saveToAccount(subtags) {
             'Authorization': 'Bearer ' + token,
             'X-Requested-With': 'XMLHttpRequest',
         },
-        body: JSON.stringify({ subtags }),
+        /* #2137 — `languages` is read by the server first; `subtags` keeps an
+           older server working during a staggered deploy. */
+        body: JSON.stringify({ languages: subtags, subtags }),
     }).catch(() => { /* best-effort */ });
 }
 
@@ -71,14 +74,34 @@ function saveToAccount(subtags) {
  */
 async function buildPicker(host) {
     let available = [];
+    let names = {};
     try {
         const resp = await apiFetch('/api?action=catalogue_language_subtags');
         if (resp.ok) {
             const j = await resp.json();
-            available = Array.isArray(j.subtags) ? j.subtags.slice() : [];
+            /* Only well-formed codes: each one is also written into the
+               checkbox's id and value below. */
+            available = Array.isArray(j.subtags) ? j.subtags.filter(isPreferenceTag) : [];
+            /* #2137 — the server sends each language's English name, from the
+               same registry the rest of the site names languages from. */
+            names = (j.names && typeof j.names === 'object') ? j.names : {};
         }
     } catch (_e) { /* offline → empty picker */ }
-    available.sort();
+    const nameOf = (sub) => (typeof names[sub] === 'string' && names[sub] !== '') ? names[sub] : sub;
+    /* #2137 — ordered for the reader (the shared language policy, UI-020 and
+       UI-040): their own languages first, in their priority order; then every
+       other language alphabetically by NAME ("Afrikaans, Bemba, Chinese…"),
+       not by code ("af, bem, zh…"). Drawn once; ticking a box never moves it
+       (UI-050). */
+    const savedForOrder = loadSavedSubtags();
+    const priority = [];
+    for (const g of savedForOrder.map(languageGroupOf)) {
+        if (available.includes(g) && !priority.includes(g)) priority.push(g);
+    }
+    const rest = available
+        .filter(sub => !priority.includes(sub))
+        .sort((a, b) => nameOf(a).localeCompare(nameOf(b), 'en', { sensitivity: 'base' }) || (a < b ? -1 : a > b ? 1 : 0));
+    available = priority.concat(rest);
 
     if (available.length === 0) {
         host.innerHTML = '<p class="small text-muted mb-0">' +
@@ -90,7 +113,7 @@ async function buildPicker(host) {
 
     const saved = loadSavedSubtags();
     const initialAll = saved.length === 0;
-    const set = new Set(saved);
+    const set = new Set(saved.map(languageGroupOf));
 
     /* Render the chip group. */
     const html = [];
@@ -107,7 +130,10 @@ async function buildPicker(host) {
             `<input type="checkbox" class="btn-check js-settings-lang-opt" ` +
             `id="${id}" value="${sub}" autocomplete="off"` +
             (checked ? ' checked' : '') + '>' +
-            `<label class="btn btn-outline-info" for="${id}">${sub.toUpperCase()}</label>`
+            /* #2137 — the language's name, not its upper-cased code ("ZH"
+               could stand for either Chinese script). The code stays as a
+               tooltip. Both come from the server; escaped before use. */
+            `<label class="btn btn-outline-info" for="${id}" title="${escapeHtml(sub)}">${escapeHtml(nameOf(sub))}</label>`
         );
     }
     html.push('</div>');
@@ -116,9 +142,11 @@ async function buildPicker(host) {
     const all  = host.querySelector('#settings-lang-all');
     const opts = Array.from(host.querySelectorAll('.js-settings-lang-opt'));
 
+    /* #2137 — keeps the person's priority order (and full tags such as
+       `pt-BR`); a newly ticked language goes last. This used to sort A-Z. */
     function readUi() {
         if (all.checked) return [];
-        return opts.filter(cb => cb.checked).map(cb => cb.value).sort();
+        return mergePreferenceOrder(loadSavedSubtags(), opts.filter(cb => cb.checked).map(cb => cb.value));
     }
 
     function commit() {

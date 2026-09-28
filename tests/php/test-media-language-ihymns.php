@@ -42,6 +42,10 @@ declare(strict_types=1);
  * (L) Stored order (policy Part A, TEXT-010): the helpers on a truth
  *     table, and the translation readers no longer JOIN the registry for
  *     identity, mark the original, and return stored order.
+ * (M) Presentation (policy Part B): composed names ("Portuguese (Brazil)"),
+ *     text direction from the script, the reader's order, preferences kept
+ *     whole and in order (with the old API shape still available), songbook
+ *     tiles, and source checks for the song page and the API.
  * (I) GUARD, derived from the tree (rule #34): no PHP file under
  *     appWeb/public_html/ contains a hand-written language-tag pattern of the
  *     shapes the five retired checkers used. Mutation-proven: re-adding one
@@ -364,6 +368,77 @@ mliCheck("a song's translation links are no longer ordered by plain text (ORDER 
 mliCheck('line translations are put in stored order under each line (public read and editor load)',
     str_contains($songDataSrc, "mediaLanguageSortStoredWithin(\$rows, 'lineId', 'targetLanguage')")
     && str_contains((string)file_get_contents($inc . '/line_enrichment.php'), "mediaLanguageSortStoredWithin(\$out['translations'], 'lineId', 'targetLanguage')"));
+
+/* ---------------------------------------------------------------- (M) --- */
+echo "(M) names, text direction and the reader's order (#2137)\n";
+require_once $inc . '/language_names.php';
+$langN   = ['pt' => 'Portuguese', 'zh' => 'Chinese', 'es' => 'Spanish', 'en' => 'English', 'he' => 'Hebrew', 'ca' => 'Catalan', 'und' => 'Unknown language'];
+$scriptN = ['hant' => 'Traditional', 'hans' => 'Simplified', 'arab' => 'Arabic', 'latn' => 'Latin'];
+$regionN = ['br' => 'Brazil', 'tw' => 'Taiwan', '419' => 'Latin America', 'es' => 'Spain', 'gb' => 'United Kingdom'];
+$variantN = ['valencia' => 'Valencian'];
+$names = [
+    ['pt-BR',          'Portuguese (Brazil)'],
+    ['zh-Hant',        'Chinese (Traditional)'],
+    ['zh-hans',        'Chinese (Simplified)'],
+    ['zh-Hant-TW',     'Chinese (Traditional, Taiwan)'],
+    ['es-419',         'Spanish (Latin America)'],
+    ['en',             'English'],
+    ['iw',             'Hebrew'],
+    ['ca-ES-valencia', 'Catalan (Spain, Valencian)'],
+    ['xq-GB',          'xq-GB'],
+    ['English',        'English'],
+    ['x-hymnal',       'x-hymnal'],
+];
+foreach ($names as [$tag, $want]) {
+    $got = languageComposeDisplayName($tag, $langN, $scriptN, $regionN, $variantN);
+    mliCheck("name of {$tag} = \"{$want}\"", $got === $want, 'got ' . mliShow($got));
+}
+mliCheck('pt-BR and pt-PT get DIFFERENT names (they used to both be "Portuguese")',
+    languageComposeDisplayName('pt-BR', $langN, $scriptN, $regionN, $variantN)
+    !== languageComposeDisplayName('pt-PT', $langN, $scriptN, $regionN, $variantN));
+$meta = ['he' => ['name' => 'Hebrew', 'nativeName' => '', 'dir' => 'rtl'], 'ar' => ['name' => 'Arabic', 'nativeName' => '', 'dir' => 'rtl'],
+         'pa' => ['name' => 'Punjabi', 'nativeName' => '', 'dir' => 'ltr'], 'az' => ['name' => 'Azerbaijani', 'nativeName' => '', 'dir' => 'ltr']];
+foreach ([['pa-Arab', 'rtl'], ['az-Arab', 'rtl'], ['ar-Latn', 'ltr'], ['he', 'rtl'], ['he-IL', 'rtl'], ['en', 'ltr'], ['dv-Thaa', 'rtl'], ['ff-Adlm', 'rtl'], ['sr-Cyrl', 'ltr']] as [$tag, $want]) {
+    mliCheck("text direction of {$tag} = {$want} (from the script when there is one)", languageTextDirection($tag, $meta) === $want);
+}
+$autoMeta = ['sr' => ['nativeName' => 'српски'], 'ur' => ['nativeName' => 'اردو'], 'pt' => ['nativeName' => 'português']];
+foreach ([['pt-BR', 'português'], ['pt', 'português'], ['sr-Latn', ''], ['ur-Latn', ''], ['sr-Cyrl-RS', ''], ['x-hymnal', ''], ['', '']] as [$tag, $want]) {
+    mliCheck("own-language name beside {$tag} = " . mliShow($want) . ' (none when the tag names its own script)', languageAutonymFor($tag, $autoMeta) === $want);
+}
+$nameOf = static fn(string $p): string => $langN[$p] ?? ['de' => 'German', 'ja' => 'Japanese', 'fr' => 'French'][$p] ?? $p;
+$menu = [['t' => 'de'], ['t' => 'ja', 'o' => true], ['t' => 'fr'], ['t' => 'en'], ['t' => 'zh-Hant'], ['t' => 'zh'], ['t' => 'und'], ['t' => 'en-GB']];
+mliCheck("reader's order: their languages first in their order (exact tag first), then the original, then A-Z by name, special codes last",
+    array_column(mediaLanguageSortForReader($menu, 't', 'o', ['fr', 'en-GB'], $nameOf), 't') === ['fr', 'en-GB', 'en', 'ja', 'zh', 'zh-Hant', 'de', 'und'],
+    implode(',', array_column(mediaLanguageSortForReader($menu, 't', 'o', ['fr', 'en-GB'], $nameOf), 't')));
+mliCheck('with no preferences: the original first, then A-Z by name',
+    array_column(mediaLanguageSortForReader($menu, 't', 'o', [], $nameOf), 't') === ['ja', 'zh', 'zh-Hant', 'en', 'en-GB', 'fr', 'de', 'und']);
+$prefs = parsePreferredLanguageSubtags('PT-br, en, pt-BR, garbage!, x-hymnal');
+mliCheck('preferences keep whole, tidied tags in the order given, no repeats (they used to be cut to base codes and sorted)',
+    $prefs === ['pt-BR', 'en', 'x-hymnal'], mliShow($prefs));
+mliCheck('the old API shape (sorted base codes) is still available for the subtags field',
+    preferredLanguageBaseSubtags($prefs) === ['en', 'pt']);
+[$pw, $pt, $pv] = applyLanguageFilterSql('s.Language', ['pt-BR', 'x-hymnal']);
+mliCheck('the SQL filter matches a pt-BR preference by its group (pt), and a private-use tag as a whole tag, all bound',
+    $pv === ['pt', 'und', 'mul', 'zxx', 'x-hymnal'] && str_contains($pw, 'LOWER(s.Language) IN (?)') && strlen($pt) === 5, mliShow([$pw, $pv]));
+$pred = makeLanguageFilterPredicate(['pt-BR']);
+mliCheck('the in-memory filter: a pt-BR preference keeps pt-PT and pt rows, drops es', $pred(['language' => 'pt-PT']) && $pred(['language' => 'pt']) && !$pred(['language' => 'es']));
+$tile = songbookTileLanguage(['language' => 'zh-hant', 'languages' => ['zh'], 'languageTags' => ['zh-Hans', 'zh-Hant']]);
+mliCheck('a songbook tile shows the WHOLE tag on its badge (ZH-HANT, not ZH), and keeps the filter group',
+    $tile['tag'] === 'zh-Hant' && $tile['badge'] === 'ZH-HANT' && $tile['groupsCsv'] === 'zh', mliShow($tile));
+mliCheck('a songbook whose language is not known shows no badge', songbookTileLanguage(['language' => 'und'])['badge'] === '');
+$songPage = (string)file_get_contents($repoRoot . '/appWeb/public_html/includes/pages/song.php');
+mliCheck("the song page orders its translation picker for a reader and tags each item for the browser's reordering",
+    str_contains($songPage, "mediaLanguageSortForReader(\$translations, 'target_language', 'is_original', [], 'resolveLanguageName')")
+    && str_contains($songPage, 'data-language-tag="'));
+mliCheck('the song page picker leads with the name, and marks the language\'s own name as secondary',
+    str_contains($songPage, "\$_t['display_label'] = \$_name !== ''") && str_contains($songPage, "\$_t['secondary_label']"));
+$apiSrc = (string)file_get_contents($repoRoot . '/appWeb/public_html/api.php');
+$stStart = strpos($apiSrc, "case 'song_translations':");
+$stBody  = $stStart === false ? '' : substr($apiSrc, $stStart, (int)strpos($apiSrc, "case 'user_access':", $stStart) - $stStart);
+mliCheck('the song_translations API never JOINs tblLanguages for identity, and orders for the reader',
+    $stBody !== '' && !str_contains($stBody, 'JOIN tblLanguages') && str_contains($stBody, 'mediaLanguageSortForReader('));
+mliCheck('user_preferred_languages keeps `subtags` (base codes) and adds `languages` (whole tags, in order)',
+    str_contains($apiSrc, "'subtags'   => preferredLanguageBaseSubtags(\$languages),") && str_contains($apiSrc, "'languages' => \$languages,"));
 
 echo "\n  {$passed} passed, " . count($failures) . " failed\n";
 if ($failures !== []) {

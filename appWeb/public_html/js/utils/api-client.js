@@ -51,6 +51,7 @@
  */
 
 import { EVT_FETCH_FAILED, EVT_FETCH_SUCCEEDED, STORAGE_LANGUAGE_FILTER } from '../constants.js';
+import { isPreferenceTag } from './language-tags.js';
 
 /**
  * Resolve the request URL from any shape `fetch()` accepts, ALWAYS returning
@@ -111,7 +112,13 @@ function isSameOrigin(url) {
  * Returns '' when "All" is selected or anything is malformed, which callers
  * treat as "send no header".
  *
- * @returns {string} Comma-separated subtags, or ''.
+ * #2137 — whole language tags (`pt-BR`, not just `pt`) are sent, in the
+ * order the person chose; the old `/^[a-z]{2,3}$/` filter here silently threw
+ * away any saved preference with a region or script. The server still MATCHES
+ * by language group (includes/language_filter.php), and orders lists by this
+ * priority (the shared language policy's UI-020).
+ *
+ * @returns {string} Comma-separated language tags, highest priority first, or ''.
  */
 function preferredLanguagesCsv() {
     try {
@@ -120,7 +127,7 @@ function preferredLanguagesCsv() {
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return '';
         return parsed
-            .filter((s) => typeof s === 'string' && /^[a-z]{2,3}$/.test(s))
+            .filter(isPreferenceTag)
             .join(',');
     } catch (_e) {
         /* Private-mode localStorage throw, or corrupt JSON — no filter. */

@@ -930,8 +930,11 @@ export class Router {
                song.php only emits the button (and the hidden translation rows
                it controls) when the song actually has approved per-line
                translations, so this is a cheap no-op on every other song. */
+            /* #2137 — the same module also puts the reader's own languages
+               first in the "Also in…" translation picker (the fragment is
+               shared and cached, so only the browser knows who is reading). */
             import('./song-translations.js')
-                .then(m => m.initLineTranslations())
+                .then(m => { m.initLineTranslations(); m.orderTranslationPicker(); })
                 .catch(err => console.error('[Router] song-translations init failed:', err));
             /* #1266 Phase 2 — per-user song highlights & notes. DOM-first
                (rule #33): the module reads SongId from `.page-song[data-song-id]`
@@ -1542,9 +1545,13 @@ export class Router {
                         <!-- a11y audit m3 (2026-08-28): lang on the endonym so a screen
                              reader pronounces it with the right language's rules rather
                              than the page's own (mirrors songbook-language-filter.php's
-                             matching fix). -->
+                             matching fix).
+                             #2137 — the language's name in the site's language comes first
+                             ("Portuguese (Brazil)"), its own name second: the shared
+                             policy's UI-011 rules out the own name as the ONLY label. The
+                             server sends the list already ordered for this reader. -->
                         <small class="text-muted d-block">
-                            <i class="fa-solid fa-language me-1" aria-hidden="true"></i><span${tr.language ? ` lang="${escapeHtml(tr.language)}"` : ''}>${escapeHtml(tr.languageNativeName || tr.languageName || tr.language)}</span>${tr.translator ? ` — ${escapeHtml(tr.translator)}` : ''}
+                            <i class="fa-solid fa-language me-1" aria-hidden="true"></i><span>${escapeHtml(tr.languageName || tr.language || '')}</span>${(tr.languageNativeName && tr.languageNativeName !== tr.languageName) ? ` · <span lang="${escapeHtml(tr.language || '')}" dir="${tr.textDirection === 'rtl' ? 'rtl' : 'ltr'}">${escapeHtml(tr.languageNativeName)}</span>` : ''}${tr.isOriginal ? ' (original)' : ''}${tr.translator ? ` — ${escapeHtml(tr.translator)}` : ''}
                         </small>
                     </div>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>

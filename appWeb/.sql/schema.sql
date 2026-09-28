@@ -951,7 +951,7 @@ CREATE TABLE IF NOT EXISTS tblUsers (
     LoginCount      INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Total successful login count',
     Settings        JSON            NULL DEFAULT NULL COMMENT 'Synced per-user app preferences (theme, font, accessibility, etc.)',
     AvatarService   VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Avatar resolver: gravatar, libravatar, dicebear, none. NULL = use site default. (#616)',
-    PreferredLanguagesJson JSON     NULL DEFAULT NULL COMMENT 'Synced per-user language-filter choice — JSON array of IETF BCP 47 primary subtags (e.g. ["en","es"]). NULL / [] = show all languages (#736)',
+    PreferredLanguagesJson JSON     NULL DEFAULT NULL COMMENT 'Synced per-user language-filter choice — JSON array of canonical IETF BCP 47 tags, highest priority first (e.g. ["pt-BR","en"]; #2137). Lists saved before #2137 hold base codes only and stay valid. Filtering matches by language group. NULL / [] = show all languages (#736)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 

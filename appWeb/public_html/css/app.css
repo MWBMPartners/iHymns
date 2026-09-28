@@ -4205,6 +4205,16 @@ body.reduce-motion .related-songs-chevron {
     background: transparent;
     color: var(--text-secondary);
     border: 1px solid var(--card-border);
+    /* #2137 — the badge now shows a songbook's WHOLE language tag
+       ("ZH-HANT", "PT-BR") instead of collapsing it to a base code ("ZH"
+       could be Simplified or Traditional Chinese). A rare long tag
+       ("ZH-HANT-TW") is cut with an ellipsis rather than spreading across
+       the tile; the full language NAMES are always in the tile's tooltip
+       and accessible name, so nothing is lost. */
+    max-width: 5.5rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 /* /songbooks tiles now carry the same offline-download button as the
    home-grid tiles (#878 follow-up), so the badge no longer hugs the

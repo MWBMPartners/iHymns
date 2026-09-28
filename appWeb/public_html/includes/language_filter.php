@@ -26,6 +26,14 @@ declare(strict_types=1);
  * languages) or `zxx` (no language) — see
  * IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN.
  *
+ * #2137 — the preference LIST keeps each person's whole tags, in the order
+ * they chose them (the shared language policy, MWBM-MEDIA-LANG UI-020: "the
+ * language groups of those preferences come first, in the user's priority
+ * order"). It used to be cut to base codes and sorted A-Z, which lost both the
+ * region/script and the priority. Only the MATCHING works by group: a `pt-BR`
+ * preference still shows `pt` and `pt-PT` songs. Lists of bare base codes
+ * saved before this change stay valid exactly as they are.
+ *
  * Resolution order for an incoming request:
  *
  *   1. Explicit `?lang=en,es,pt` query param — highest priority,
@@ -50,33 +58,89 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 /**
- * Parse a comma-separated list of language hints into a
- * canonical set of lowercase primary subtags. Invalid tokens
- * are silently dropped — a curator typing `en, es, garbage` gets
- * `["en", "es"]` rather than a 400.
+ * Parse a comma-separated list of preferred languages into canonical tags,
+ * keeping the order given (#2137). Invalid tokens are silently dropped — a
+ * curator typing `en, es, garbage` gets `["en", "es"]` rather than a 400.
  *
- * @param string|null $rawCsv Comma-list (e.g. "en,es,pt").
- * @return list<string> Sorted, deduplicated, lowercase primary subtags.
+ * ELI5: `"PT-br, en, pt-BR"` → `["pt-BR", "en"]`: tidied, first-come order
+ * kept, repeats removed. It used to return `["en", "pt"]` — cut to the base
+ * language and sorted, losing both the region and the person's priority.
+ *
+ * The name keeps its historical "Subtags" wording because callers already use
+ * it; the values are now whole tags. The OLD shape (sorted base codes) is still
+ * available from preferredLanguageBaseSubtags(), for the API field that has
+ * always returned it.
+ *
+ * @param string|null $rawCsv Comma-list (e.g. "pt-BR,en").
+ * @return list<string> Canonical tags, highest priority first, no repeats.
  */
 function parsePreferredLanguageSubtags(?string $rawCsv): array
 {
     if ($rawCsv === null || trim($rawCsv) === '') {
         return [];
     }
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
     $out = [];
     foreach (explode(',', $rawCsv) as $tok) {
         $tok = trim($tok);
         if ($tok === '') continue;
-        /* Take only the first component before a hyphen — `en-GB`
-           collapses to `en`, `zh-Hans-CN` collapses to `zh`. */
-        $primary = strtolower(explode('-', $tok, 2)[0]);
-        if (preg_match('/^[a-z]{2,3}$/', $primary)) {
-            $out[$primary] = true;
+        if (!mediaLanguageReady()) {
+            /* Degraded path (shared rules missing on this server): the old
+               behaviour — base code only — so a filter still works. */
+            $primary = strtolower(explode('-', $tok, 2)[0]);
+            if (preg_match('/^[a-z]{2,3}$/', $primary)) {
+                $out[$primary] = true;
+            }
+            continue;
+        }
+        $tag = mediaLanguageTagForStorage($tok);
+        if (is_string($tag)) {
+            $out[$tag] = true;   /* first occurrence wins, so the order is kept */
         }
     }
-    $list = array_keys($out);
-    sort($list);
-    return $list;
+    return array_keys($out);
+}
+
+/**
+ * The distinct language GROUPS a preference list covers, for MATCHING
+ * (#2137): `["pt-BR", "en", "pt-PT"]` → `["pt", "en"]`, in the list's own
+ * order. A private-use or old "grandfathered" preference is its own group, the
+ * whole tag (see mediaLanguageGroup()).
+ *
+ * @param list<string> $preferences
+ * @return list<string>
+ */
+function languageFilterGroups(array $preferences): array
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    $groups = [];
+    foreach ($preferences as $tag) {
+        $g = mediaLanguageGroup((string)$tag);
+        if ($g !== '') {
+            $groups[$g] = true;
+        }
+    }
+    return array_keys($groups);
+}
+
+/**
+ * The OLD shape of a preference list — sorted, distinct base codes
+ * (`["pt-BR", "en"]` → `["en", "pt"]`) — for the `subtags` field of the
+ * user_preferred_languages API actions, which has always returned exactly that
+ * and must keep doing so for anything already reading it (#2137). The whole
+ * tags in priority order are returned alongside, in the new `languages` field.
+ *
+ * @param list<string> $preferences
+ * @return list<string>
+ */
+function preferredLanguageBaseSubtags(array $preferences): array
+{
+    $bases = array_values(array_filter(
+        languageFilterGroups($preferences),
+        static fn(string $g): bool => preg_match('/^[a-z]{2,3}$/', $g) === 1
+    ));
+    sort($bases);
+    return $bases;
 }
 
 /**
@@ -170,8 +234,11 @@ function resolvePreferredLanguagesForRequest(?array $authUser): array
  *    OR LOWER(SUBSTRING_INDEX(<colExpr>, '-', 1)) IN (?, ?, …)
  *   )
  *
- * The IN list is the requested subtags plus the always-shown groups
- * `und`, `mul`, `zxx` (#2132), all bound.
+ * The IN list is the language GROUPS the preferences cover (#2137 — a
+ * `pt-BR` preference matches `pt`, `pt-BR` and `pt-PT` rows) plus the
+ * always-shown groups `und`, `mul`, `zxx` (#2132), all bound. A private-use or
+ * old "grandfathered" preference (`x-hymnal`, `i-default`) is matched as a
+ * whole tag in a second bound list, because its first part is not a language.
  * Untagged rows (NULL / empty) always pass — matches the spec.
  * Empty subtag list returns `[" AND 1=1", '', []]` so callers can
  * blindly concatenate without checking emptiness.
@@ -186,14 +253,25 @@ function applyLanguageFilterSql(string $colExpr, array $subtags): array
     if (empty($subtags)) {
         return [' AND 1=1', '', []];
     }
-    $values = array_values(array_unique(array_merge(array_values($subtags), IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN)));
-    $placeholders = implode(',', array_fill(0, count($values), '?'));
+    $firstParts = [];
+    $wholeTags  = [];
+    foreach (languageFilterGroups($subtags) as $g) {
+        if (str_contains($g, '-')) {
+            $wholeTags[] = $g;
+        } else {
+            $firstParts[] = $g;
+        }
+    }
+    $firstParts = array_values(array_unique(array_merge($firstParts, IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN)));
     $where = " AND ("
            .   "$colExpr IS NULL OR $colExpr = '' "
-           .   "OR LOWER(SUBSTRING_INDEX($colExpr, '-', 1)) IN ($placeholders)"
-           . ")";
-    $types = str_repeat('s', count($values));
-    return [$where, $types, $values];
+           .   "OR LOWER(SUBSTRING_INDEX($colExpr, '-', 1)) IN (" . implode(',', array_fill(0, count($firstParts), '?')) . ")";
+    if ($wholeTags !== []) {
+        $where .= " OR LOWER($colExpr) IN (" . implode(',', array_fill(0, count($wholeTags), '?')) . ")";
+    }
+    $where .= ")";
+    $values = array_merge($firstParts, $wholeTags);
+    return [$where, str_repeat('s', count($values)), $values];
 }
 
 /**
@@ -209,11 +287,13 @@ function makeLanguageFilterPredicate(array $subtags): callable
     if (empty($subtags)) {
         return static fn(array $_row): bool => true;
     }
-    $set = array_flip(array_merge($subtags, IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN));   /* #2132 */
+    /* Same rule as applyLanguageFilterSql(): match by language group
+       (#2137), and let und / mul / zxx through (#2132). */
+    $set = array_flip(array_merge(languageFilterGroups($subtags), IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN));
     return static function (array $row) use ($set): bool {
-        $tag = (string)($row['language'] ?? $row['Language'] ?? '');
+        $tag = trim((string)($row['language'] ?? $row['Language'] ?? ''));
         if ($tag === '') return true;                   // untagged → always show
         $primary = strtolower(explode('-', $tag, 2)[0]);
-        return isset($set[$primary]);
+        return isset($set[$primary]) || isset($set[strtolower($tag)]);
     };
 }

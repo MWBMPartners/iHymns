@@ -258,23 +258,20 @@ $homeCardEnd = '</div>';
                            data-songbook-languages so a book tagged
                            English but holding Afrikaans songs surfaces
                            when the user filters for Afrikaans. */
-                        $bookLang = (string)($book['language'] ?? '');
-                        $langCode = '';
-                        if ($bookLang !== '' && preg_match('/^([a-z]{2,3})/i', $bookLang, $m)) {
-                            $langCode = mb_strtoupper($m[1]);
-                        }
-                        $bookLangs    = $book['languages'] ?? [];
-                        $bookLangsCsv = !empty($bookLangs) ? implode(',', $bookLangs) : '';
-                        /* Tooltip lists every contained language by its
-                           full English name. Falls back to just the
-                           primary tag when there's only one. */
-                        $bookLangNames = [];
-                        foreach ($bookLangs as $sub) {
-                            $bookLangNames[] = resolveLanguageName($sub);
-                        }
-                        $bookLangsTitle = !empty($bookLangNames)
-                            ? implode(', ', $bookLangNames)
-                            : resolveLanguageName($bookLang);
+                        /* #2137 — the badge no longer collapses a tag to its
+                           upper-cased base code ("ZH" could be Simplified or
+                           Traditional Chinese). It shows the whole tag, and the
+                           tile's accessible name and tooltip use full language
+                           NAMES ("Chinese (Traditional)"), so a screen reader
+                           never reads out a bare code. The filter data
+                           (data-songbook-languages) stays at language-group
+                           granularity on purpose: the filter matches by group. */
+                        $tile        = songbookTileLanguage($book);
+                        $bookLang    = $tile['tag'];
+                        $langCode    = $tile['badge'];
+                        $bookLangsCsv   = $tile['groupsCsv'];
+                        $bookLangsTitle = $tile['title'];
+                        $bookLangName   = $tile['name'];
                         /* #1223 — unofficial-songbook flag (see
                            includes/pages/songbooks.php for full rationale).
                            A global per-book property (tblSongbooks.IsOfficial,
@@ -296,7 +293,7 @@ $homeCardEnd = '</div>';
                             <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
                                class="stretched-link text-decoration-none text-reset"
                                data-navigate="songbook"
-                               aria-label="<?= htmlspecialchars($book['name']) ?><?= $isUnofficial ? ' (unofficial songbook)' : '' ?> — <?= $book['songCount'] ?> songs<?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>"></a>
+                               aria-label="<?= htmlspecialchars($book['name']) ?><?= $isUnofficial ? ' (unofficial songbook)' : '' ?> — <?= $book['songCount'] ?> songs<?= $bookLangName !== '' ? ' (' . htmlspecialchars($bookLangName) . ')' : '' ?>"></a>
                             <?php if ($langCode !== ''): ?>
                                 <!-- Language indicator badge (#680) — small uppercase
                                      ISO 639 code in the tile's top-right corner.

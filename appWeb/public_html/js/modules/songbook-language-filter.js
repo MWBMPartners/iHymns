@@ -72,6 +72,7 @@
    prefix convention and must not be renamed. */
 import { EVT_LANGUAGE_FILTER_CHANGED, STORAGE_LANGUAGE_FILTER } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
+import { isPreferenceTag, languageGroupOf, mergePreferenceOrder } from '../utils/language-tags.js';
 
 const STORAGE_KEY = STORAGE_LANGUAGE_FILTER;
 
@@ -82,9 +83,11 @@ const STORAGE_KEY = STORAGE_LANGUAGE_FILTER;
 const ALWAYS_SHOWN_GROUPS = new Set(['und', 'mul', 'zxx']);
 
 /**
- * Read the saved preferred-language subtag list from localStorage.
- * Stored as a JSON array of lowercase primary subtags.
- * Returns [] on any error (including "private browsing mode").
+ * Read the saved preferred-language list from localStorage: a JSON array of
+ * language tags, highest priority first. #2137 — whole tags (`pt-BR`) are kept;
+ * this used to accept base codes only (`/^[a-z]{2,3}$/`), so a regional or
+ * script preference silently vanished. Older saved lists of base codes are
+ * still valid. Returns [] on any error (including "private browsing mode").
  */
 function loadSavedSubtags() {
     try {
@@ -92,7 +95,7 @@ function loadSavedSubtags() {
         if (!raw) return [];
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed)) return [];
-        return parsed.filter(s => typeof s === 'string' && /^[a-z]{2,3}$/.test(s));
+        return parsed.filter(isPreferenceTag);
     } catch (_e) {
         return [];
     }
@@ -128,7 +131,9 @@ function saveSubtagsToAccount(subtags) {
             'Authorization': 'Bearer ' + token,
             'X-Requested-With': 'XMLHttpRequest',
         },
-        body: JSON.stringify({ subtags }),
+        /* #2137 — `languages` is read by the server first; `subtags` keeps an
+           older server working during a staggered deploy. */
+        body: JSON.stringify({ languages: subtags, subtags }),
     }).catch(() => { /* best-effort */ });
 }
 
@@ -162,7 +167,14 @@ function findTileColumn(tile) {
  *     (untagged → always shown)
  */
 function applyFilter(rootEl, subtags) {
-    const set = new Set(subtags.map(s => s.toLowerCase()));
+    /* #2137 — matching is by language GROUP: a `pt-BR` preference shows `pt`
+       and `pt-PT` content too (the saved list keeps the whole tag; see
+       mergePreferenceOrder()). #2132 — und / mul / zxx are always shown. */
+    const set = new Set(subtags.map(languageGroupOf));
+    const passes = (tag) => {
+        const g = languageGroupOf(tag);
+        return set.has(g) || ALWAYS_SHOWN_GROUPS.has(g);
+    };
 
     /* Songbook tiles.
        #857: visibility is decided on the union of (the songbook's
@@ -180,12 +192,12 @@ function applyFilter(rootEl, subtags) {
 
         const tilePrimaries = (langsCsv
             ? langsCsv.split(',').map(s => s.trim()).filter(Boolean)
-            : (fallback ? [fallback.split('-', 1)[0]] : []));
+            : (fallback ? [fallback] : []));
 
         const shouldShow = (() => {
             if (set.size === 0) return true;        /* "All" → everything */
             if (tilePrimaries.length === 0) return true; /* untagged → always pass */
-            return tilePrimaries.some(p => set.has(p) || ALWAYS_SHOWN_GROUPS.has(p));
+            return tilePrimaries.some(passes);
         })();
 
         if (shouldShow) {
@@ -203,8 +215,7 @@ function applyFilter(rootEl, subtags) {
         const shouldShow = (() => {
             if (set.size === 0) return true;
             if (!rowLang) return true;
-            const primary = rowLang.split('-', 1)[0];
-            return set.has(primary) || ALWAYS_SHOWN_GROUPS.has(primary);   /* #2132 */
+            return passes(rowLang);
         })();
         if (shouldShow) {
             row.style.removeProperty('display');
@@ -217,8 +228,9 @@ function applyFilter(rootEl, subtags) {
 
     /* #855 — broadcast the change so independent modules (Song of
        the Day in particular) can re-render without a page reload.
-       Detail.subtags carries the canonical lowercase array; an empty
-       array means "All" / no filter. */
+       Detail.subtags carries the saved preference list (whole language
+       tags, highest priority first — #2137); an empty array means "All" /
+       no filter. */
     try {
         document.dispatchEvent(new CustomEvent(EVT_LANGUAGE_FILTER_CHANGED, {
             detail: { subtags: Array.from(set) },
@@ -305,27 +317,54 @@ export function bootSongbookLanguageFilter(root) {
         }
     }
 
-    /* Sync UI state from saved subtag list. */
+    /* Sync UI state from the saved list. Each checkbox is one language GROUP
+       (value = the base code, e.g. `pt`); it is ticked when any saved tag is
+       in that group (#2137 — a saved `pt-BR` ticks "Portuguese"). */
     function syncUiFromSubtags(subtags) {
         if (subtags.length === 0) {
             allCheckbox.checked = true;
             optionCheckboxes.forEach(cb => { cb.checked = false; });
         } else {
             allCheckbox.checked = false;
-            const set = new Set(subtags);
-            optionCheckboxes.forEach(cb => { cb.checked = set.has(cb.value); });
+            const groups = new Set(subtags.map(languageGroupOf));
+            optionCheckboxes.forEach(cb => { cb.checked = groups.has(cb.value); });
         }
-        refreshTrigger(subtags);
+        refreshTrigger(subtags.map(languageGroupOf).filter((g, i, a) => a.indexOf(g) === i));
     }
 
-    /* Read current subtag list from UI state. */
+    /* Read the new preference list from UI state, KEEPING the person's
+       priority order (#2137): languages already chosen stay in their order
+       (and keep their full tag, e.g. `pt-BR`); a newly ticked one goes last.
+       This used to return the ticked boxes sorted A-Z, which threw the
+       priority away on every change. */
     function readSubtagsFromUi() {
         if (allCheckbox.checked) return [];
-        return optionCheckboxes
-            .filter(cb => cb.checked)
-            .map(cb => cb.value)
-            .sort();
+        const checkedGroups = optionCheckboxes.filter(cb => cb.checked).map(cb => cb.value);
+        return mergePreferenceOrder(loadSavedSubtags(), checkedGroups);
     }
+
+    /* #2137 — the person's own languages first (the shared language policy's
+       UI-020), in their priority order, when the panel is first drawn. The
+       server renders this list alphabetically by name (UI-040) because the
+       page piece is cached and shared by everyone; only the browser knows who
+       is looking. Done ONCE here, never on a click (UI-050: a menu does not
+       move when something is selected). */
+    (function putReaderLanguagesFirst() {
+        const saved = loadSavedSubtags();
+        const allRow = allCheckbox.closest('.lang-filter-row');
+        if (!allRow || saved.length === 0) return;
+        const seen = new Set();
+        const firstGroups = saved.map(languageGroupOf).filter(g => (seen.has(g) ? false : seen.add(g)));
+        let anchor = allRow;
+        for (const group of firstGroups) {
+            const cb = optionCheckboxes.find(c => c.value === group);
+            const row = cb ? cb.closest('.lang-filter-row') : null;
+            if (row && row !== anchor) {
+                anchor.after(row);
+                anchor = row;
+            }
+        }
+    })();
 
     /* Restore on first boot. Try the saved value first; if it
        references a language no longer in the catalogue, the
@@ -403,8 +442,13 @@ export function bootSongbookLanguageFilter(root) {
         })
             .then(r => r.ok ? r.json() : null)
             .then(j => {
-                if (!j || !Array.isArray(j.subtags)) return;
-                const remote = j.subtags.filter(s => /^[a-z]{2,3}$/.test(s));
+                /* #2137 — `languages` holds the whole tags in the account's
+                   saved order; `subtags` (base codes) is the older field,
+                   used only if a server predates `languages`. */
+                const list = (j && Array.isArray(j.languages)) ? j.languages
+                    : ((j && Array.isArray(j.subtags)) ? j.subtags : null);
+                if (!list) return;
+                const remote = list.filter(isPreferenceTag);
                 /* Adopt the remote list — it's the canonical
                    "across all my devices" view. */
                 saveSubtags(remote);
