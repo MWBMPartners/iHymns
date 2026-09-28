@@ -629,10 +629,24 @@ function applyLanguageFilterSql(string $colExpr, array $subtags): array
        with 8–32 preferences, where this keeps it close to what it was.
        "Clean" is tested once per row, without anchors or escapes: after
        CONVERT … USING ascii every non-ASCII character is `?`, so "contains
-       no character outside A–Z, a–z, 0–9 and -" is exact. (An anchored
-       `^…$` test would not be: `$` also matches just before a final line
-       break, so `en` + a line feed would pass as clean.) An empty value
-       counts as clean and is untagged on both paths. */
+       no character outside A–Z, a–z, 0–9 and -" is exact on MariaDB and
+       MySQL 8 — but NOT on MySQL 5.7 (#2137 review round 5, correcting what
+       this note said): 5.7's regular expressions stop reading at a NUL byte,
+       so a value with a NUL in it is judged clean when everything BEFORE the
+       NUL is. Such a value then takes the fast path, whose bytes can differ
+       from the exact path's only AFTER the NUL (a trailing tab not trimmed,
+       a non-ASCII letter not turned into `?`). The results still agree:
+       everything before the NUL is identical on both paths, no constant the
+       SQL compares with contains a NUL, and REGEXP stops at it on both paths
+       — so every comparison gives the same answer. Checked on 5.7.44 by the
+       fourth review and again in round 5: 99 values with a NUL were judged
+       clean, and every one
+       gave the same result on both paths for all 28 preference lists, with
+       no difference from the in-memory filter outside the documented class
+       below. (An anchored `^…$` test would not be exact either: `$` also
+       matches just before a final line break, so `en` + a line feed would
+       pass as clean.) An empty value counts as clean and is untagged on both
+       paths. */
     [$fastSql, $fastValues] = $build("CAST(LOWER($colExpr) AS BINARY)", "LOWER($colExpr)", "CHAR_LENGTH($colExpr) = 0");
     $clean = "CONVERT($colExpr USING ascii) NOT REGEXP '[^A-Za-z0-9-]'";
 

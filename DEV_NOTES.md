@@ -817,7 +817,12 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   under byte comparisons, and it works on MySQL 5.7, which has no `REGEXP_REPLACE`. Because re-trimming for every
   comparison made the filter 2–5 times slower, a value that is "clean" (only ASCII letters, digits and hyphens —
   almost every stored value) is compared on a fast path that computes exactly the same bytes; only the rest take
-  the exact path. The in-memory
+  the exact path. (That "exactly" does not hold on MySQL 5.7, corrected in round 5: 5.7's regular expressions stop
+  reading at a NUL byte, so a value with a NUL in it can be judged clean and take the fast path, whose bytes then
+  differ from the exact path's after the NUL. The results still agree — everything before the NUL is the same on
+  both paths, and no comparison can match a NUL — and the review's harness confirmed it on 5.7.44: 99 such values,
+  the same answer on both paths for all 28 preference lists, and no difference from the in-memory filter outside
+  the documented class below.) The in-memory
   filter trims the same four characters (it used PHP's bare `trim()`, which also strips NUL and a vertical tab).
   **What still differs, stated plainly:** a MALFORMED stored value that begins the way a matching value begins is
   matched in SQL, where the shared rule matches nothing — SQL looks at the start of a value and does not check the
@@ -826,11 +831,16 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   line break inside. `tests/php/test-language-filter-scripts.php` pins exactly this list, so any other difference
   turns it red. And the alias lists need the shared rules installed. **Speed** (MariaDB 11.8 and MySQL 8.4 in
   throwaway containers on a development Mac, median of 5): on 300,000 rows a filter of 1–5 preferences takes about
-  230–430 ms, within about 30% of the code before round 4 (180–450 ms on the same machine); on the review's
-  20,000-row harness, 8 preferences take about 40 ms before and after. **At most 32 preferences are used** — the
+  230–430 ms, within about 30% of the code before round 4 (180–450 ms on the same machine). On the fourth review's
+  20,000-row tables (median of 5, MariaDB 11.8 and MySQL 8.4 — corrected in round 5, because an earlier line here
+  said "8 preferences take about 40 ms before and after", which is true only for clean values): with clean values,
+  8 preferences take 37–46 ms (42–53 ms before round 4) and 32 take 95–140 ms (116–198 ms before); when EVERY value
+  needs trimming (a tab at the end — the exact path's worst case), 8 take 117–130 ms (44–50 ms before) and 32 take
+  341–394 ms (161–202 ms before). **At most 32 preferences are used** — the
   first 32, in order (`IHYMNS_LANGUAGE_FILTER_MAX_PREFERENCES`, applied in `parsePreferredLanguageSubtags()` and
-  `languageFilterUsablePreferences()`): a 2,000-entry header used to build a 270 KB query taking 3–8 seconds, and
-  now costs what 32 do (about 0.1 s). The limit also applies to the saved account setting — saving a longer list
+  `languageFilterUsablePreferences()`): a 2,000-entry header used to build a query of up to 270 KB taking 3.6–21
+  seconds (median, depending on the data, whether the preferences name a script, and the server), and now costs
+  what 32 do (0.08–0.43 s, the same measurements). The limit also applies to the saved account setting — saving a longer list
   saves its first 32, and the save's answer shows what was kept. **Since round 5 the browser keeps to the same 32**
   (the lead's decision): the settings page's picker (`js/modules/settings-language-filter.js`) and the home/songbooks
   grid's dropdown (`js/modules/songbook-language-filter.js`) refuse a 33rd tick — the box does not tick and they say
@@ -866,21 +876,41 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   written, the save treats `pt → T1` as removed — it cannot tell that apart from deleting one link and adding
   another. In particular, "a vanished target does not delete the stored link" holds only when the link's
   language is unchanged: a song that no longer exists cannot be pointed at by any stored row, so only the
-  language half can match. Proven against a real database on MariaDB 11 and MySQL 8.4
+  language half can match. **Round 5 (the fourth review) closed four more ways to lose a link:** (1) a stored
+  language is compared after the SAME trim the save gives what the editor sends (`IHYMNS_TRANSLATION_LINK_TRIM`:
+  space, tab, CR, LF, NUL, vertical tab), so `"English "` or `"English\t"` re-pointed to another song is protected
+  like `English` — it used to be deleted; (2) the link writes are **all or nothing**: the song save calls
+  `songTranslationsSaveLinksAllOrNothing()`, which sets a savepoint, and if any write fails part-way (a stored junk
+  row such as `"pt-BR"` + a no-break space that the database counts as the same language as `pt-BR`) runs
+  `ROLLBACK TO SAVEPOINT`, so the links are exactly as before, the curator is told "The translation links were
+  left unchanged because …", and the rest of the song is still saved — it used to commit whatever had been
+  written, losing a link deleted before the failing write (a deadlock, and a failed undo, still stop the whole
+  save); (3) a payload entry that is not a link (not an object, a list such as `["T1", "pt"]`, a song or language
+  that is not text) makes the whole translation save refuse, changing nothing — it used to be skipped and the
+  stored links deleted as if removed; (4) a successful change of language on the SAME song (`pt → T1`, translator
+  Ana, verified, becomes `pt-BR → T1`) now updates the row in place, keeping the translator, the verified flag and
+  the date, as `iw → he` already did — it used to delete and insert a bare row. Only an unambiguous pair is
+  updated: one stored row whose language nobody sent back and one sent link with a new language, for the same
+  song, and the row not protected; two stored rows or two new links for one song are still read as "removed one,
+  added one". Proven against a real database on MariaDB 11 and MySQL 8.4
   (`tests/php/test-song-translations-sync.php` Parts B and C — C runs in its own PHP process against a database
   built the way the table looked BEFORE the card, because `songTranslationsLanguageFkPresent()`'s answer is cached
-  for the life of a process).
+  for the life of a process). Every one of the fourth review's seventeen planted translation faults turns it red on
+  both servers, including the two it did not catch before round 5 (a failed link keyed by its raw spelling, and a
+  sent clash protecting only its first link).
 - **Reporting, not rewriting.** The curator audit on `/manage/languages` lists stored tags that are
   malformed, unregistered, retired, or not in standard form (e.g. `en-gb`), and offers a remap. Importers
   report a language they cannot read as an `import.language_unrecognised` row on `/manage/activity-log`.
   Since the #2137 review fixes, a stored tag changes only when a person saves or confirms something: a song
   save tidies the tags it writes (a translation link stored as `iw` is updated in place to `he`, keeping its
-  translator and verified flag; of two stored links that tidy to one language, the one the curator keeps in
+  translator and verified flag, and since round 5 so is `pt → T1` changed to `pt-BR → T1`; of two stored links
+  that tidy to one language, the one the curator keeps in
   the editor survives and the other is deleted, and if the editor sends both or neither, both stay with a
   warning; two links sent for one language change nothing for it; a link that cannot be written — for any
   reason, including a target song that no longer exists or a new language the server cannot store yet — leaves
   the stored links sharing its song or its language exactly as they were (see the translations bullet above for
-  exactly when that holds) — `songTranslationsSaveLinks()`, tested against a real database); the
+  exactly when that holds); the link writes are all or nothing — `songTranslationsSaveLinksAllOrNothing()`
+  around `songTranslationsSaveLinks()`, tested against a real database); the
   language picker keeps a tag its boxes cannot show (`en-u-ca-gregory`, `x-hymnal`) instead of rewriting it;
   the songbook-language card fills only empty languages and only when confirmed; the remap is a curator
   action. No migration run by
