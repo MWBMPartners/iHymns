@@ -46,6 +46,25 @@ declare(strict_types=1);
  *   - A link skipped because its target song no longer exists no longer
  *     deletes the stored link for that language.
  *
+ * A THIRD fault, found after the second review's fixes were checked against a
+ * server that has not yet run the #2131 migration ("Translations: allow
+ * regional and script languages"): on such a server, changing a link's
+ * language from `pt` to `pt-BR` deleted the `pt` link — because the save
+ * could not store `pt-BR` either, the link was simply gone, with only a
+ * warning to show for it. The "keep this stored row, the editor's copy of it
+ * was skipped for a reason that is not the curator's" list was keyed by the
+ * language the editor SENT (`pt-BR`), which is not the language the row is
+ * actually stored under (`pt`) whenever the curator is trying to CHANGE it —
+ * so the key never matched and the row was deleted anyway. The lead's
+ * decision (#2137): when the new language cannot be stored, the existing
+ * link — language, target song, translator, verified flag, date — is left
+ * exactly as it is, and the warning names the "Translations: allow regional
+ * and script languages" card. Fixed by keying that keep-list on the TARGET
+ * SONG a failed link named, not the language it failed to become — the
+ * target song is the one thing that still ties a failed change back to
+ * whichever stored row it was trying to replace, whatever language that row
+ * happens to be filed under.
+ *
  * songTranslationsPlanSync() decides and touches no database, so the rules are
  * tested directly; songTranslationsSaveLinks() — the song save's steps 1–4,
  * moved here from save_song_core.php — reads, decides and writes, and is
@@ -191,8 +210,28 @@ function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): ar
     $sentByKey = [];
     /* Languages whose STORED link must survive this save even
        though the editor's copy of it is skipped below for a
-       reason that is not the curator's (#2137 review). */
+       reason that is not the curator's (#2137 review). Keyed by
+       the STORED row's own tidied language — never by the language
+       the editor tried and failed to change it to, which is very
+       often a different key (that is exactly the #2137-review-3
+       fault: changing a link from `pt` to `pt-BR` on a server that
+       cannot store `pt-BR` used to mark "pt-br" as safe to keep,
+       which never matched the stored row filed under "pt", so the
+       one link this save COULD write (nothing) still deleted the
+       one it could not replace). Resolved from $keepTargets once
+       the stored rows are read below (step 3), because the target
+       song a failed link named is the only thing that ties it back
+       to whichever stored row it was trying to replace. */
     $keep = [];
+    /* Target-song ids (lower-cased) of links this save could NOT
+       write for a reason that is not the curator's. If a stored
+       link already points at that same song, IT is the one being
+       replaced — under whatever language it is filed under, which
+       may differ from the language that failed — and must survive
+       this save exactly as it is. A brand-new link that fails has
+       no stored row to protect, so nothing here does anything for
+       it beyond the warning already recorded. */
+    $keepTargets = [];
     foreach ($sent as $tr) {
         if (!is_array($tr)) { continue; }
         $tId   = trim((string)($tr['songId']   ?? ''));
@@ -214,7 +253,7 @@ function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): ar
             $warnings[] = 'Language "' . $tLang
                 . '" is not a language code this site can store — translation link to '
                 . $tId . ' skipped.';
-            $keep[mb_strtolower($tLang)] = true;   /* a stored row with this value is left as it is */
+            $keepTargets[mb_strtolower($tId)] = true;   /* the stored link to this song, if any, is left as it is */
             continue;
         }
         $key = mb_strtolower($tidyLang);
@@ -300,7 +339,18 @@ function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): ar
                     . ' regional and script languages" card on /manage/setup-database'
                     . ' — translation link to ' . $d['songId'] . ' skipped.';
                 unset($desired[$key]);
-                $keep[$key] = true;   /* skipped for the server's reason, not removed by the curator */
+                /* #2137 review round 3 — skipped for the SERVER'S reason
+                   (the #2131 migration has not run), not removed by the
+                   curator. The stored link this was trying to change is
+                   found by the song it points to, not by "$key" (the
+                   language that failed): a curator changing a link's
+                   language from `pt` to `pt-BR` sends `pt-BR` as $key,
+                   but the stored row this save cannot touch is still
+                   filed under `pt` — a different key entirely. Marking
+                   "$key" as safe to keep protected nothing, and the `pt`
+                   row was deleted while the `pt-BR` replacement could
+                   never be written, losing the link outright. */
+                $keepTargets[mb_strtolower($d['songId'])] = true;
                 continue;
             }
             if (!isset($idOk[mb_strtolower($d['songId'])])) {
@@ -338,6 +388,28 @@ function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): ar
         ];
     }
     $exStm->close();
+
+    /* ---- 3b. Turn $keepTargets into real keep entries ----
+       Only now do we know what is actually stored, so only now can a
+       failed link's target song be matched back to the stored row it
+       was trying to replace. The match is the SAME grouping rule
+       songTranslationsPlanSync() itself uses for a stored row (tidy
+       its language; fall back to the raw stored value when that
+       fails) — so the key computed here is guaranteed to line up
+       with the key that row is filed under in $byKey there, whatever
+       language it happens to be stored as. #2137 review round 3:
+       "decide first, then write" — a row is never deleted here on the
+       strength of a replacement that could not be written; instead
+       this records, before any write happens, exactly which stored
+       rows a failed write must leave untouched. */
+    foreach ($existing as $row) {
+        if (!isset($keepTargets[mb_strtolower($row['songId'])])) {
+            continue;
+        }
+        $storedTidy = mediaLanguageTagForStorage($row['language']);
+        $storedKey = mb_strtolower(is_string($storedTidy) ? $storedTidy : $row['language']);
+        $keep[$storedKey] = true;
+    }
 
     /* ---- 4. Apply the diff ----
        A song with no translation links (the overwhelmingly common

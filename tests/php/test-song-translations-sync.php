@@ -8,7 +8,7 @@ declare(strict_types=1);
  *
  * ELI5: a song's translation links ("this hymn is SDAH-123 in Romanian")
  * come back from the editor on every save, and the save changes only what
- * differs. These checks prove that, on the cases the two reviews found:
+ * differs. These checks prove that, on the cases the reviews found:
  *   - a link stored as `iw` (the old code for Hebrew) is updated in place to
  *     `he`, keeping who translated it, whether it was checked, and when;
  *   - two stored links that are now one language (`mo` and `ro`): if the
@@ -19,17 +19,32 @@ declare(strict_types=1);
  *     stored `ro`): nothing changes for that language, and the curator is
  *     told to keep one — the stored link, translator and all, stays;
  *   - a link whose target song no longer exists is skipped WITHOUT deleting
- *     the link stored for that language.
+ *     the link stored for that language;
+ *   - a server that has NOT run the #2131 migration ("Translations: allow
+ *     regional and script languages") cannot store `pt-BR`: a curator
+ *     changing a link's language from `pt` to `pt-BR` there does not lose the
+ *     `pt` link — it is left exactly as it was, with a warning naming the
+ *     card that would let the change through (round 3, below in Part C). The
+ *     same change on a server that HAS run the card simply succeeds.
  *
  * Part A runs the pure comparison, songTranslationsPlanSync(). Part B runs
- * the real save steps, songTranslationsSaveLinks() — the code the song save
- * calls — against a real database (skipped, loudly, without one).
+ * the real save steps, songTranslationsSaveLinks(), against a real database
+ * built the way schema.sql looks AFTER the #2131 card (no fk_Trans_Lang).
+ * Part C runs one more scenario against a database built the way it looked
+ * BEFORE that card — in its OWN php process, for a reason its own comment,
+ * right before it runs, explains. Both B and C are skipped, loudly, without
+ * a database.
  *
  * Mutation-proven (see the commit bodies): keying stored rows by their raw
  * language, dropping the stored-clash choice, dropping the sent-clash check,
- * and dropping the "no longer exists" keep each turn checks red.
+ * dropping the "no longer exists" keep, and dropping the round-3 fix (keying
+ * the "keep this stored row" list by the language a failed change was TRYING
+ * to become, instead of the target song it was trying to change) each turn
+ * checks red.
  *
  * Database: IHYMNS_TEST_DSN="host=127.0.0.1;port=3306;user=root;pass=".
+ * Run against BOTH MariaDB and MySQL — the two servers this project supports
+ * — since nothing here is server-specific, only the connection is.
  *
  *   php tests/php/test-song-translations-sync.php
  */
@@ -202,12 +217,76 @@ if ($db === null) {
         [$b, $a, $w] = $scenario([], [['T1', 'pt-BR'], ['T1', 'pt-BR']]);
         $check('the same link sent twice is one link', count($a) === 1 && $a[0]['TargetLanguage'] === 'pt-BR' && $w === []);
 
+        /* item 8 (#2137 review round 3) — the "still works after the
+           migration" half of the fault this file's own Part C proves the
+           OTHER half of. This database has no fk_Trans_Lang (it is built the
+           way schema.sql looks after the #2131 card), so pt -> pt-BR simply
+           succeeds: the pt row is gone, a fresh pt-BR row is there instead.
+           A server that HAS NOT run the card cannot reach this database
+           shape at all, which is exactly why the "pt survives untouched"
+           half needs its own database and its own PHP process — see Part C,
+           below, and its long comment on why. */
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1]], [['T1', 'pt-BR']]);
+        $check('post-#2131: pt -> pt-BR succeeds outright — the pt row is gone, a fresh pt-BR row is there',
+            count($a) === 1 && $a[0]['TargetLanguage'] === 'pt-BR' && $a[0]['TranslatedSongId'] === 'T1' && $w === [],
+            json_encode([$a, $w]));
+
         /* the ordinary cases still work */
         [$b, $a, $w] = $scenario([['T1', 'pt', '', 0], ['T2', 'es', '', 0]], [['T2', 'es'], ['T3', 'de']]);
         $check('a removed link is deleted, a new one inserted, an unchanged one left',
             array_column($a, 'TargetLanguage') === ['es', 'de'] && $w === [], json_encode($a));
     } finally {
         $db->query("DROP DATABASE IF EXISTS `{$name}`");
+    }
+}
+
+/* ---------------------------------------------------------------- Part C */
+echo "\nPart C — the PRE-#2131 schema (fk_Trans_Lang still present): pt survives a failed change to pt-BR\n";
+if ($db === null) {
+    echo "  SKIP  no database — Part C did NOT run. Set IHYMNS_TEST_DSN; this is a gap, not a pass.\n";
+} else {
+    /* songTranslationsLanguageFkPresent() remembers its answer for the whole
+       PHP process (see its own doc comment — one database per request is a
+       safe assumption in production). Part B, just above, already asked it
+       once, against a database that HAS had the #2131 migration, in THIS
+       process. Asking it again here, against a second, un-migrated database,
+       would just return Part B's cached answer — this test would look like
+       it proved something about a server that has not run the migration
+       when it was really still testing the one that had. So this one
+       scenario runs in its own fresh PHP process instead (the same reason
+       tests/php/test-song-language-backfill.php spawns its migration script
+       via proc_open() rather than calling it in-process): a fresh process
+       has never asked the question before, so its answer is the truthful
+       one for the database it is actually given. */
+    $helper = __DIR__ . '/fixtures/song-translations-pre2131-scenario.php';
+    $proc = proc_open(
+        [PHP_BINARY, $helper, $host, (string)$port, $user, $pass],
+        [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes
+    );
+    if (!is_resource($proc)) {
+        $failed++;
+        echo "  FAIL  could not start the Part C subprocess\n";
+    } else {
+        $out = (string)stream_get_contents($pipes[1]);
+        $err = (string)stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $code = proc_close($proc);
+        echo $out;
+        if ($code !== 0) {
+            $failed++;
+            echo "  FAIL  Part C subprocess exited {$code}\n" . ($err !== '' ? $err . "\n" : '');
+        } elseif (preg_match('/(\d+) passed, (\d+) failed/', $out, $m)) {
+            /* Fold the subprocess's own tally into this script's, so the
+               final line at the bottom is complete rather than silently
+               missing what Part C checked. */
+            $passed += (int)$m[1];
+            $failed += (int)$m[2];
+        } else {
+            $failed++;
+            echo "  FAIL  could not read Part C's own pass/fail tally from its output\n";
+        }
     }
 }
 
