@@ -717,10 +717,14 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   variable, or with double-quoted `"en"` inside a longer expression it does not know — so reviewers still
   look. (`'lang' => 'en'` is deliberately not flagged: the geocoder in `manage/places-api.php` asks for
   place names in English that way, which is not a song's language.)
-- **The songbook-language card is a curator's decision** ("Give songs their songbook's language", manual,
-  never part of "Apply all"): it gives a songbook's language to songs that have none, and to songs in a
-  different language (the HAC import case), and never touches `und`, `mul`, `zxx`, `mis`, `qaa`–`qtz`,
-  private-use or malformed values. Run its dry run first; the change cannot be undone automatically.
+- **The songbook-language card is a curator's decision** ("Fill in a missing song language from its
+  songbook", manual, never part of "Apply all"): it gives a songbook's language ONLY to songs that have no
+  language at all, and never changes a song that has any value — a real tag, `und`/`mul`/`zxx`, or a
+  malformed value. (An earlier version also rewrote songs in a different language — `yue` in a `zh` book
+  became `zh` — with no record; that was removed.) Songs whose language differs from their songbook's are
+  listed for review by hand. The dry run lists every fill; a confirmed run records each one in the activity
+  log (`migration.song_language_backfill`, old → new), so it can be traced and undone. Its "dry run unless
+  confirmed" decision is `migrateBackfillSongLanguageConfirmed()`.
 - **Two orders, on purpose, never mixed.**
   - *Stored order* (the policy's Part A) is the same for everyone and is what the site returns and keeps:
     the original's language first, then every other language by its code (`de`, `en`, `es` …), general
@@ -777,9 +781,13 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   report a language they cannot read as an `import.language_unrecognised` row on `/manage/activity-log`.
   Since the #2137 review fixes, a stored tag changes only when a person saves or confirms something: a song
   save tidies the tags it writes (a translation link stored as `iw` is updated in place to `he`, keeping its
-  translator and verified flag; two links that tidy to one language are left alone with a warning); the
+  translator and verified flag; of two stored links that tidy to one language, the one the curator keeps in
+  the editor survives and the other is deleted, and if the editor sends both or neither, both stay with a
+  warning; two links sent for one language change nothing for it; a link whose target song no longer exists
+  does not delete the stored one — `songTranslationsSaveLinks()`, tested against a real database); the
   language picker keeps a tag its boxes cannot show (`en-u-ca-gregory`, `x-hymnal`) instead of rewriting it;
-  the songbook-language card runs only when confirmed; the remap is a curator action. No migration run by
+  the songbook-language card fills only empty languages and only when confirmed; the remap is a curator
+  action. No migration run by
   "Apply all" changes a stored tag (policy COMPAT-040).
 - **Apple app** (#2136): `LanguageDisplay` (`appApple/Packages/iHymnsKit/Sources/IHFeatures/LanguageDisplay.swift`)
   names a tag with the system's own `Locale.localizedString(forIdentifier:)` — in the device's language — and
