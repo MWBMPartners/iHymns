@@ -710,7 +710,7 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
     }
     /* #2132 — a song whose file gives no language is `und` ("not known"),
        never a guessed English. */
-    $language     = $song['language'] !== '' ? $song['language'] : IHYMNS_LANGUAGE_UNKNOWN;
+    $language     = mediaLanguageOrUnknown($song['language']);
     /* #1673 / #1896 — read the licensing / identifier / public-domain fields the
        parsers already collected, instead of the blanks this used to hardcode. */
     $rights       = _bulkImportRightsFromSong($song);

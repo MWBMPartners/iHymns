@@ -282,6 +282,11 @@ mliCheck("JSON-LD inLanguage no longer falls back to the page's own interface la
 $fallbackPatterns = [
     '/(?:language|lang)\b[^\n]{0,60}(?:\?\?|\|\||\?:)\s*[\'"]en[\'"]/i',   // x.language ?? 'en', lang || 'en'
     '/[\'"]language[\'"]\s*=>\s*[\'"]en[\'"]/',                                // 'language' => 'en'
+    /* #2137 review — the two shapes the first version missed: */
+    '/(?:language|lang)\b[^\n]{0,80}\?[^\n]{0,80}:\s*[\'"]en[\'"]/i',       // $x !== '' ? $x : 'en'  (a ternary's "else")
+    '/\$\w*(?:language|lang)\w*\s*(?:\?\?)?=\s*[\'"]en[\'"]/i',             // $language = 'en', $lang ??= 'en'
+    '/(?:language|lang)\w*\s+(?:\?\?|\|\||&&)?=\s*[\'"]en[\'"]/i',         // song.language = 'en' (JS; a space before "=",
+                                                                                   // so the HTML attribute lang="en" is not matched)
 ];
 $enScanned = 0;
 $enOffenders = [];
@@ -316,6 +321,39 @@ foreach ($it as $file) {
     }
 }
 mliCheck("the 'en' guard actually scanned the site's PHP and JS (found {$enScanned} files)", $enScanned > 300);
+/* The guard's own patterns, on the shapes they must catch and the ones they
+   must not (a guard that cannot fail proves nothing, rule #34). */
+$enMustCatch = [
+    "\$language = \$song['language'] !== '' ? \$song['language'] : 'en';",
+    "\$language = 'en';",
+    "\$lang ??= 'en';",
+    "song.language = 'en';",
+    "\$x = \$row['language'] ?? 'en';",
+    "'language' => 'en',",
+];
+$enMustPass = ['<html lang="en">', "if (\$lang === 'en') {", "\$language = mediaLanguageOrUnknown(\$valid);", "\$locale = 'en';"];
+$enMatches = static function (string $code) use ($fallbackPatterns): bool {
+    foreach ($fallbackPatterns as $re) { if (preg_match($re, $code) === 1) { return true; } }
+    return false;
+};
+foreach ($enMustCatch as $code) { mliCheck("the 'en' guard catches: {$code}", $enMatches($code)); }
+foreach ($enMustPass as $code) { mliCheck("the 'en' guard does not flag: {$code}", !$enMatches($code)); }
+
+/* The ONE unknown-language fallback (#2137 review): its behaviour, and the
+   four paths that save a song's language all calling it. */
+mliCheck('mediaLanguageOrUnknown(null) = und', mediaLanguageOrUnknown(null) === 'und');
+mliCheck("mediaLanguageOrUnknown('') and a blank value = und", mediaLanguageOrUnknown('') === 'und' && mediaLanguageOrUnknown(" \t") === 'und');
+mliCheck('mediaLanguageOrUnknown() leaves a given tag alone (pt-BR stays pt-BR)', mediaLanguageOrUnknown(' pt-BR ') === 'pt-BR');
+mliCheck('the fallback is und, never en', IHYMNS_LANGUAGE_UNKNOWN === 'und' && mediaLanguageOrUnknown(null) !== 'en');
+foreach ([
+    'appWeb/public_html/manage/editor/save_song_core.php',   // the whole-song save (both editors)
+    'appWeb/public_html/manage/editor/api2.php',             // the v2 editor's field save and create
+    'appWeb/public_html/includes/song_importers.php',        // the bulk importers
+    'appWeb/public_html/includes/lyrics_ingest.php',         // the lyrics-ingest API
+] as $savePath) {
+    mliCheck("{$savePath} gets a missing language from mediaLanguageOrUnknown()",
+        str_contains((string)file_get_contents($repoRoot . '/' . $savePath), 'mediaLanguageOrUnknown('));
+}
 mliCheck("no language value falls back to 'en' (store und, or leave the value out)", $enOffenders === [],
     implode("\n        ", $enOffenders));
 echo '  NOTE  known and filed separately (#2134, song requests): ' . ($enKnown === [] ? 'none left' : implode(', ', $enKnown)) . "\n";

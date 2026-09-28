@@ -404,6 +404,25 @@ function mediaLanguageGroup(string $tag): string
 }
 
 /**
+ * The language to store for a song whose language may be missing (#2132).
+ *
+ * ELI5: "no language given" is stored as `und` ("not known") — never as
+ * English, never as a blank. The ONE place that decision is written; every
+ * path that creates or saves a song calls it (the song save, the v2 editor's
+ * field save and create, the bulk importers, the lyrics-ingest API), so the
+ * fallback cannot drift back to a guessed `en` in one of them.
+ *
+ * It only fills a gap. A value that is present is returned unchanged
+ * (trimmed): checking and tidying it is mediaLanguageTagForStorage()'s job,
+ * done by the caller first.
+ */
+function mediaLanguageOrUnknown(?string $tag): string
+{
+    $tag = trim((string)$tag, " \t\r\n");
+    return $tag === '' ? IHYMNS_LANGUAGE_UNKNOWN : $tag;
+}
+
+/**
  * Is this tag an ordinary, real language (#2137 review)?
  *
  * ELI5: "does this say which language the words are in?" Yes for `en`,

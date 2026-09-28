@@ -247,7 +247,7 @@ function editorSaveSongCore(): array
         if ($componentLanguageRefusal !== null) {
             return ['status' => 400, 'body' => ['error' => $componentLanguageRefusal]];
         }
-        $language     = $valid ?? IHYMNS_LANGUAGE_UNKNOWN;
+        $language     = mediaLanguageOrUnknown($valid);
         $copyright    = (string)($song['copyright']   ?? '');
         /* Places adoption — composition / first-performance origin.
            VARCHAR mirror persists either way; the FK is set only

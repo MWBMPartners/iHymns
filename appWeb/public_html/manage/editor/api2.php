@@ -2327,19 +2327,14 @@ try {
 
             $songId = ed2_allocateSongId($db, $abbr);
             $norm   = ed2_normalizeTitle($title);
-            /* #1343-B — mint the opaque PublicId permalink at create (gated; an
-               un-migrated env omits the column and the backfill fills it later). */
-            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
-            if (songPublicId_columnReady($db)) {
-                $pubId = songPublicId_mintUnique($db);
-                $ins = $db->prepare('INSERT INTO tblSongs (SongId, PublicId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?, ?)');
-                $ins->bind_param('sssss', $songId, $pubId, $title, $norm, $abbr);
-            } else {
-                $ins = $db->prepare('INSERT INTO tblSongs (SongId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?)');
-                $ins->bind_param('ssss', $songId, $title, $norm, $abbr);
-            }
-            $ins->execute();
-            $ins->close();
+            /* #1343-B — the opaque PublicId permalink is minted at create (gated;
+               an un-migrated env omits the column and the backfill fills it
+               later). #2137 review — the language is written explicitly as
+               `und` ("not known yet"): leaving it to the column default made
+               every new song English on a server that has not run the und
+               card. Both live in songInsertNewRow(). */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_create.php';
+            songInsertNewRow($db, $songId, $title, $norm, $abbr);
             /* #1860 go-live — mint this song's permanent IL-id (ILS…). */
             ilidStampNewRow($db, 'song', $songId, 'SongId');
             ed2_touchRevision($db, $songId, $ed2UserId, 'create');
@@ -2416,16 +2411,10 @@ try {
         try {
             $newId = ed2_allocateSongId($db, $pendingAbbr);
             $norm  = ed2_normalizeTitle($title);
-            if (songPublicId_columnReady($db)) {
-                $pubId = songPublicId_mintUnique($db);
-                $ins = $db->prepare('INSERT INTO tblSongs (SongId, PublicId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?, ?)');
-                $ins->bind_param('sssss', $newId, $pubId, $title, $norm, $pendingAbbr);
-            } else {
-                $ins = $db->prepare('INSERT INTO tblSongs (SongId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?)');
-                $ins->bind_param('ssss', $newId, $title, $norm, $pendingAbbr);
-            }
-            $ins->execute();
-            $ins->close();
+            /* The same insert as create_song (#2137 review): `und` until the
+               snapshot below copies the source song's real language over it. */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_create.php';
+            songInsertNewRow($db, $newId, $title, $norm, $pendingAbbr);
             /* #1860 go-live — mint the duplicate's OWN permanent IL-id (ILS…),
                never copied from the source (a duplicate is a distinct row). */
             ilidStampNewRow($db, 'song', $newId, 'SongId');
@@ -2742,7 +2731,7 @@ try {
             if ($tidyLanguage === false) {
                 ed2_respond(['ok' => false, 'error' => mediaLanguageRefusalMessage($rawLanguage, 'the song')], 422);
             }
-            $raw = $tidyLanguage ?? IHYMNS_LANGUAGE_UNKNOWN;
+            $raw = mediaLanguageOrUnknown($tidyLanguage);
         }
 
         /* ---- #1741 P1 existence gate ---------------------------------------

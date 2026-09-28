@@ -1245,11 +1245,7 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
        too: it used to be created as 'en', a guess that looked like a fact. */
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
     $langRead = mediaLanguageReadExternal(isset($payload['language']) ? (string)$payload['language'] : '');
-    if ($langRead['unrecognised'] !== null) {
-        $language = IHYMNS_LANGUAGE_UNKNOWN;
-    } else {
-        $language = $langRead['tag'] ?? IHYMNS_LANGUAGE_UNKNOWN;
-    }
+    $language = mediaLanguageOrUnknown($langRead['unrecognised'] !== null ? null : $langRead['tag']);
     /* #1751 — ELI5: clean up the ISRC the same way the editor already does,
        so whatever we save here reads identically to a curator-typed one.
        DETAILED / WHY: ONE fold (rule #22) — the same ihymns_canonical_isrc()
