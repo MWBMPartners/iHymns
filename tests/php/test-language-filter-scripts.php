@@ -94,6 +94,32 @@ $check('the SQL builder, given only a malformed preference, applies no filter at
 $check('the request path drops malformed preferences before either builder sees them',
     parsePreferredLanguageSubtags('English, pt_BR, !!') === [] && parsePreferredLanguageSubtags('English, pt') === ['pt']);
 
+/* #2137 second review — stored values NOT in standard form. The in-memory
+   filter reads each with the shared rule (`iw` means `he`, `zh-yue` means
+   `yue`, not `zh`); the SQL filter must keep the same rows (checked in Part
+   B). These are the reviewer's rows and preference lists. */
+$nsRows = ['', 'und', 'mul', 'zxx', 'iw', 'he', 'in', 'id', 'zh', 'zh-yue', 'yue', 'zh-cmn-Hans', 'cmn-Hans', 'zh-Hans', 'zh-Hant',
+    'ZH-HANT', 'zh-hant-tw', 'i-klingon', 'tlh', 'sgn-BR', 'bzs', 'mis', 'mis-Latn', 'und-Latn', 'zxx-Latn', 'mul-Latn', 'qaa', 'qaa-GB',
+    'x-hymnal', 'X-HYMNAL', 'en-x-hymnal', 'en-u-ca-gregory', 'sr-Latn-RS', 'sr-Cyrl', 'sr', 'de-1996', 'de-Latn-1996', 'de',
+    'en-GB-oed', 'i-default', 'art-lojban', 'jbo', 'zh-min-nan', 'nan', 'English', 'en_GB', ' en', 'en ', 'pt-BR-x-foo', 'en', 'en-GB',
+    'sr-Latn-x-cyrl', 'zh-Hans-x-hant', 'ar-ajp', 'apc'];
+$nsPrefs = ['he', 'iw', 'id', 'zh', 'zh-Hans', 'zh-Hant', 'yue', 'tlh', 'mis', 'qaa', 'sr-Latn', 'en', 'en-GB', 'x-hymnal', 'i-default',
+    'jbo', 'nan', 'de-Latn', 'bzs', 'apc', 'zh-Hans, sr-Cyrl', 'und', 'en-x-hymnal', 'zh-Hant-TW'];
+$nsKeeps = [];
+foreach ($nsPrefs as $csv) {
+    $pred = makeLanguageFilterPredicate(parsePreferredLanguageSubtags($csv));
+    $nsKeeps[$csv] = array_values(array_filter($nsRows, static fn(string $t): bool => $pred(['language' => $t])));
+}
+$has = static fn(string $csv, string $row): bool => in_array($row, $nsKeeps[$csv], true);
+$check('in memory: a `he` preference keeps a row stored as the retired `iw`, and `id` keeps `in`',
+    $has('he', 'iw') && $has('id', 'in'));
+$check('in memory: a `zh` preference does NOT keep `zh-yue`, `zh-cmn-Hans` or `zh-min-nan` (they are Cantonese, Mandarin, Min Nan)',
+    !$has('zh', 'zh-yue') && !$has('zh', 'zh-cmn-Hans') && !$has('zh', 'zh-min-nan') && $has('zh', 'zh-Hant'));
+$check('in memory: `yue` keeps `zh-yue`, `tlh` keeps `i-klingon`, `jbo` keeps `art-lojban`, `bzs` keeps `sgn-BR`, `apc` keeps `ar-ajp`',
+    $has('yue', 'zh-yue') && $has('tlh', 'i-klingon') && $has('jbo', 'art-lojban') && $has('bzs', 'sgn-BR') && $has('apc', 'ar-ajp'));
+$check('in memory: `mis` as a preference matches `mis` exactly, not `mis-Latn`', $has('mis', 'mis') && !$has('mis', 'mis-Latn'));
+$check('in memory: a stored value with a leading or trailing space still matches (` en`, `en `)', $has('en', ' en') && $has('en', 'en '));
+
 echo "\nPart B — the SQL filter, against a real database\n";
 $dsn = getenv('IHYMNS_TEST_DSN') ?: '';
 $host = '127.0.0.1'; $port = 3306; $user = 'root'; $pass = '';
@@ -140,6 +166,27 @@ if ($db === null) {
             $check("SQL with \"{$csv}\" keeps the same rows as the in-memory filter",
                 $got === $predicateKeeps[$csv], 'SQL kept ' . implode(', ', $got));
         }
+        /* The non-standard rows: SQL keeps exactly what the shared rule keeps. */
+        $db->query('CREATE TABLE ns (Id INT NOT NULL PRIMARY KEY, Language VARCHAR(35) NULL) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+        $ins = $db->prepare('INSERT INTO ns (Id, Language) VALUES (?, ?)');
+        foreach ($nsRows as $i => $tag) { $ins->bind_param('is', $i, $tag); $ins->execute(); }
+        $ins->close();
+        $nsDiffs = [];
+        foreach ($nsPrefs as $csv) {
+            [$where, $types, $values] = applyLanguageFilterSql('Language', parsePreferredLanguageSubtags($csv));
+            $stmt = $db->prepare('SELECT Language FROM ns WHERE 1=1' . $where . ' ORDER BY Id');
+            if ($values !== []) { $stmt->bind_param($types, ...$values); }
+            $stmt->execute();
+            $got = array_map(static fn(array $r): string => (string)$r[0], $stmt->get_result()->fetch_all());
+            $stmt->close();
+            if ($got !== $nsKeeps[$csv]) {
+                $nsDiffs[] = "'{$csv}': SQL-only [" . implode(', ', array_diff($got, $nsKeeps[$csv])) . '] memory-only ['
+                    . implode(', ', array_diff($nsKeeps[$csv], $got)) . ']';
+            }
+        }
+        $check('SQL keeps the same rows as the in-memory filter for all ' . count($nsPrefs) . ' preference lists over '
+            . count($nsRows) . ' stored values not in standard form (retired, extlang, grandfathered, redundant, cased, spaced)',
+            $nsDiffs === [], implode('; ', $nsDiffs));
     } finally {
         $db->query("DROP DATABASE IF EXISTS `{$name}`");
     }

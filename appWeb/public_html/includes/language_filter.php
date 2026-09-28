@@ -258,7 +258,12 @@ function languageFilterPlan(array $preferences): array
         if (mediaLanguageReady()) {
             $parsed = \Mwbm\MediaLanguage\Policy::canonicalise($pref);
             if ($parsed->kind === \Mwbm\MediaLanguage\TagKind::Malformed) continue;
-            if ($parsed->kind !== \Mwbm\MediaLanguage\TagKind::Ordinary || $parsed->language === null) {
+            if ($parsed->kind !== \Mwbm\MediaLanguage\TagKind::Ordinary || $parsed->language === null
+                || in_array($parsed->language, ['und', 'mul', 'mis', 'zxx'], true)) {
+                /* Private-use and grandfathered tags, and (#2137 second review)
+                   the special codes und / mul / mis / zxx: exact matches only —
+                   two "not known" values need not be the same language
+                   (MATCH-040). */
                 $whole[strtolower($parsed->tag)] = true;
                 continue;
             }
@@ -328,30 +333,126 @@ function languageFilterScriptOf(string $tag): string
 }
 
 /**
+ * Every other way a stored value can name a language, from the shared data
+ * file's replacement tables (#2137 second review).
+ *
+ * ELI5: `iw` is an old code for Hebrew, `zh-yue` an old way to write
+ * Cantonese, `i-klingon` an old tag for Klingon. The shared rule
+ * (canonicalise(), which the in-memory filter uses) reads each as the
+ * language it means; SQL only sees the text. So that the two filters agree,
+ * this lists, for each language, the stored spellings that mean it — and, for
+ * each language, the spellings that START like it but mean something else
+ * (`zh-yue` starts with `zh` but is Cantonese, `yue`, not Chinese `zh`).
+ *
+ * Built once per request from the data file itself, and each candidate is
+ * judged by canonicalise(), so this can never disagree with the shared rule
+ * about what a spelling means. Candidates:
+ *   - `primary`: a retired language subtag (`iw` → `he`); a stored value whose
+ *     FIRST part is it means that language;
+ *   - `prefix`: an extlang form (`zh-yue` → `yue`); the value itself, or it
+ *     followed by more parts;
+ *   - `whole`: a grandfathered or redundant tag (`i-klingon`, `sgn-BR`,
+ *     `zh-min-nan`); the value exactly.
+ *
+ * @return array{aliases: array<string, array{primary: list<string>, prefix: list<string>, whole: list<string>}>,
+ *               startsLike: array<string, list<array{0:string, 1:string}>>}
+ *         Both keyed by lower-case language; startsLike lists [candidate, kind]
+ *         pairs that begin with "<language>-" but do NOT mean that language.
+ *         Empty when the shared rules are not installed.
+ */
+function languageFilterAliasIndex(): array
+{
+    static $index = null;
+    if ($index !== null) {
+        return $index;
+    }
+    $index = ['aliases' => [], 'startsLike' => []];
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    if (!mediaLanguageReady()) {
+        return $index;
+    }
+    $data = json_decode((string)@file_get_contents(mediaLanguageLibraryDir() . DIRECTORY_SEPARATOR . 'bcp47-language-data-v1.json'), true);
+    if (!is_array($data)) {
+        return $index;
+    }
+    $candidates = [];
+    foreach (array_keys((array)($data['preferred']['language'] ?? [])) as $old) {
+        $candidates[] = [strtolower((string)$old), 'primary'];
+    }
+    foreach ((array)($data['extlangs'] ?? []) as $extlang => $prefixes) {
+        foreach ((array)$prefixes as $prefix) {
+            $candidates[] = [strtolower($prefix . '-' . $extlang), 'prefix'];
+        }
+    }
+    foreach (array_keys((array)($data['grandfathered'] ?? [])) as $tag) {
+        $candidates[] = [strtolower((string)$tag), 'whole'];
+    }
+    foreach (array_keys((array)($data['redundant_preferred'] ?? [])) as $tag) {
+        $candidates[] = [strtolower((string)$tag), 'whole'];
+    }
+    foreach ($candidates as [$cand, $kind]) {
+        $parsed = \Mwbm\MediaLanguage\Policy::canonicalise($cand);
+        $means = ($parsed->kind === \Mwbm\MediaLanguage\TagKind::Ordinary && $parsed->language !== null)
+            ? strtolower($parsed->language) : null;
+        if ($means !== null && $means !== explode('-', $cand, 2)[0]) {
+            $index['aliases'][$means][$kind][] = $cand;
+        }
+        if ($kind !== 'primary' && str_contains($cand, '-')) {
+            $first = explode('-', $cand, 2)[0];
+            if ($means !== $first) {
+                $index['startsLike'][$first][] = [$cand, $kind];
+            }
+        }
+    }
+    foreach ($index['aliases'] as &$kinds) {
+        $kinds += ['primary' => [], 'prefix' => [], 'whole' => []];
+    }
+    unset($kinds);
+    return $index;
+}
+
+/**
  * Build a SQL WHERE-clause fragment + bind-param pair to apply
  * the language filter at SELECT time.
  *
- * The fragment looks like:
+ * With T = LOWER(TRIM(col)) and P = T's first part, the fragment is:
  *   AND (
- *       <colExpr> IS NULL OR <colExpr> = ''
- *    OR LOWER(SUBSTRING_INDEX(<colExpr>, '-', 1)) IN (?, ?, …)          -- any form of these
- *    OR LOWER(<colExpr>) IN (?, …)                                     -- whole-tag preferences
- *    OR (LOWER(SUBSTRING_INDEX(<colExpr>, '-', 1)) = ?                 -- one per script-limited language:
- *        AND (LOWER(<colExpr>) NOT REGEXP ? OR LOWER(<colExpr>) REGEXP ?))  -- no script, or an allowed one
+ *       col IS NULL OR TRIM(col) = ''                        -- untagged: always shown
+ *    OR P IN ('und', 'mul', 'zxx')                           -- always shown (#2132)
+ *    OR T IN (?, …)                                          -- exact-match preferences
+ *    OR ( (P IN (L, retired codes for L) OR T = / LIKE an extlang form of L
+ *          OR T = a grandfathered or redundant tag meaning L)
+ *         AND T's second part is not an extlang that makes it another language (`zh-yue`)
+ *         AND T is not a grandfathered/redundant tag that starts like L but means another
+ *         [AND (T names no script OR T names one of the preferred scripts)] )   -- one per language L
  *   )
  *
- * Matching is by language (#2137 — a `pt-BR` preference matches `pt`,
- * `pt-BR` and `pt-PT` rows), except that a preference naming a SCRIPT drops
- * rows written in a different script (#2137 review, MATCH-040: `zh-Hans`
- * keeps `zh` and `zh-Hans-CN` but not `zh-Hant`; `sr-Latn` does not keep
- * `sr-Cyrl`). `und`, `mul` and `zxx` always pass (#2132), and so do
- * untagged rows. Every value is bound; the two REGEXP patterns are built only
- * from four-letter scripts the shared rule has already validated.
+ * The rules are the in-memory filter's (Policy::matchTags(), below), and
+ * tests/php/test-language-filter-scripts.php checks the two keep the same
+ * rows, on MariaDB and MySQL 8.4, including stored values that are not in
+ * standard form:
+ *   - matching is by language (#2137 — `pt-BR` matches `pt`, `pt-BR`,
+ *     `pt-PT`), and a preference naming a SCRIPT drops rows in another script
+ *     (#2137 review, MATCH-040);
+ *   - a stored retired or old form matches the language it means (`iw` for
+ *     `he`, `in` for `id`, `zh-yue` for `yue`, `i-klingon` for `tlh`), and a
+ *     form that only STARTS like a language does not match it (`zh-yue` is
+ *     not Chinese `zh`) — languageFilterAliasIndex() (#2137 second review);
+ *   - a private-use or grandfathered preference, and `und` / `mul` / `mis` /
+ *     `zxx` as a preference, match exactly only;
+ *   - `und`, `mul` and `zxx` rows, and untagged rows, always pass (#2132);
+ *   - letter case and leading/trailing SPACES are ignored (TRIM).
+ * Every value is bound; the REGEXP patterns are built only from four-letter
+ * scripts the shared rule has validated.
  *
- * What SQL cannot do: it compares the stored text, so a row stored under a
- * retired code (`iw`) does not match a `he` preference here, although the
- * in-memory filter below does. Empty preferences return `[" AND 1=1", '', []]`
- * so callers can concatenate without checking.
+ * What SQL still cannot match the way the shared rule does, stated plainly:
+ * MySQL's TRIM() removes spaces only, so a stored value with a leading or
+ * trailing TAB or line break is compared with it; a malformed stored value
+ * whose first part happens to be a real code (`en-toolongsubtag`) is matched
+ * by that first part, where the shared rule matches nothing; and without the
+ * shared rules installed there are no alias lists at all.
+ * Empty preferences return `[" AND 1=1", '', []]` so callers can concatenate
+ * without checking.
  *
  * @param string       $colExpr SQL column expression (e.g. `s.Language`,
  *                              `Language`, or a coalesce expression).
@@ -364,22 +465,63 @@ function applyLanguageFilterSql(string $colExpr, array $subtags): array
     if (empty($subtags)) {
         return [' AND 1=1', '', []];
     }
-    $plan   = languageFilterPlan($subtags);
-    $any    = array_values(array_unique(array_merge($plan['any'], IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN)));
-    $values = $any;
-    $where  = " AND ("
-            .   "$colExpr IS NULL OR $colExpr = '' "
-            .   "OR LOWER(SUBSTRING_INDEX($colExpr, '-', 1)) IN (" . implode(',', array_fill(0, count($any), '?')) . ")";
+    $plan  = languageFilterPlan($subtags);
+    $index = languageFilterAliasIndex();
+    $t = "LOWER(TRIM($colExpr))";
+    $p = "LOWER(SUBSTRING_INDEX(TRIM($colExpr), '-', 1))";
+    $in = static fn(int $n): string => implode(',', array_fill(0, $n, '?'));
+
+    $always = IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN;
+    $values = $always;
+    $where  = " AND ($colExpr IS NULL OR TRIM($colExpr) = '' OR $p IN (" . $in(count($always)) . ")";
     if ($plan['whole'] !== []) {
-        $where .= " OR LOWER($colExpr) IN (" . implode(',', array_fill(0, count($plan['whole']), '?')) . ")";
+        $where .= " OR $t IN (" . $in(count($plan['whole'])) . ")";
         $values = array_merge($values, $plan['whole']);
     }
-    foreach ($plan['byScript'] as $lang => $scripts) {
-        $where .= " OR (LOWER(SUBSTRING_INDEX($colExpr, '-', 1)) = ?"
-               .  " AND (LOWER($colExpr) NOT REGEXP ? OR LOWER($colExpr) REGEXP ?))";
-        $values[] = (string)$lang;
-        $values[] = '^[a-z]{2,8}(-[a-z]{3}){0,3}-[a-z]{4}(-|$)';
-        $values[] = '^[a-z]{2,8}(-[a-z]{3}){0,3}-(' . implode('|', $scripts) . ')(-|$)';
+    $languages = array_fill_keys($plan['any'], null) + $plan['byScript'];
+    foreach ($languages as $lang => $scripts) {
+        $lang    = (string)$lang;
+        $aliases = $index['aliases'][$lang] ?? ['primary' => [], 'prefix' => [], 'whole' => []];
+        $primary = array_values(array_unique(array_merge([$lang], $aliases['primary'])));
+        $match   = ["$p IN (" . $in(count($primary)) . ")"];
+        $vals    = $primary;
+        foreach ($aliases['prefix'] as $form) {
+            $match[] = "$t = ? OR $t LIKE ?";
+            array_push($vals, $form, $form . '-%');
+        }
+        if ($aliases['whole'] !== []) {
+            $match[] = "$t IN (" . $in(count($aliases['whole'])) . ")";
+            $vals = array_merge($vals, $aliases['whole']);
+        }
+        $clause = '((' . implode(' OR ', $match) . ')';
+        /* Forms that start like L but mean another language. An extlang form
+           is always exactly "L-xxx", so its SECOND part is enough to spot it
+           (one IN list, not one LIKE per form — the first version of this ran
+           about 80 comparisons on every `zh` row and was 7 times slower). */
+        $extlangSeconds = [];
+        $wholeForms = [];
+        foreach ($index['startsLike'][$lang] ?? [] as [$form, $kind]) {
+            if ($kind === 'prefix') {
+                $extlangSeconds[] = explode('-', $form, 2)[1];
+            } else {
+                $wholeForms[] = $form;
+            }
+        }
+        if ($extlangSeconds !== []) {
+            $clause .= " AND SUBSTRING_INDEX(SUBSTRING_INDEX($t, '-', 2), '-', -1) NOT IN (" . $in(count($extlangSeconds)) . ")";
+            $vals = array_merge($vals, $extlangSeconds);
+        }
+        if ($wholeForms !== []) {
+            $clause .= " AND $t NOT IN (" . $in(count($wholeForms)) . ")";
+            $vals = array_merge($vals, $wholeForms);
+        }
+        if ($scripts !== null) {
+            $clause .= " AND ($t NOT REGEXP ? OR $t REGEXP ?)";
+            $vals[] = '^[a-z]{2,8}(-[a-z]{3}){0,3}-[a-z]{4}(-|$)';
+            $vals[] = '^[a-z]{2,8}(-[a-z]{3}){0,3}-(' . implode('|', $scripts) . ')(-|$)';
+        }
+        $where .= ' OR ' . $clause . ')';
+        $values = array_merge($values, $vals);
     }
     $where .= ")";
     return [$where, str_repeat('s', count($values)), $values];

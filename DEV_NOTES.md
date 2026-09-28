@@ -754,7 +754,17 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   hides content in another script (`zh-Hans` hides `zh-Hant`, `sr-Latn` hides `sr-Cyrl`; policy MATCH-040).
   The same rule runs in SQL (`applyLanguageFilterSql()`), in PHP (`makeLanguageFilterPredicate()`, via the
   shared `Policy::matchTags()`) and in the browser (`preferenceMatchesTag()`);
-  `tests/php/test-language-filter-scripts.php` checks the SQL and PHP agree row for row on a real database.
+  `tests/php/test-language-filter-scripts.php` checks the SQL and PHP agree row for row on a real database
+  (MariaDB and MySQL 8.4), including 55 stored values not in standard form. For that, the SQL also matches
+  the old spellings the shared data file maps to the preferred language (`iw` for `he`, `in` for `id`,
+  `zh-yue` for `yue`, `i-klingon` for `tlh`, `sgn-BR` for `bzs`), never treats a spelling that only starts
+  like a language as that language (`zh-yue` is Cantonese, not `zh`), treats `und`/`mul`/`mis`/`zxx` as
+  preferences that match only themselves, and ignores letter case and surrounding spaces
+  (`languageFilterAliasIndex()`). What still differs, stated plainly: MySQL's `TRIM()` removes spaces only,
+  so a stored value with a surrounding TAB or line break is compared with it; a malformed stored value whose
+  first part is a real code is matched by that part in SQL but matches nothing in PHP; and the alias lists
+  need the shared rules installed. On 300,000 rows the SQL filter now takes about 60–170 ms against
+  40–110 ms before (measured on MariaDB 11 and MySQL 8.4); a song catalogue is far smaller.
   A malformed preference matches nothing — not even the identical malformed value — and a list holding only
   malformed preferences counts as none, so nothing is filtered (policy MATCH-010 / AUTO-010, core
   `aaaa585`); the server judges that with the shared rules, the browser can only rule out values not

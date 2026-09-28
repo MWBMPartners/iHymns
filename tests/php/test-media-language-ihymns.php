@@ -267,7 +267,7 @@ mliCheck('the migration is registered, with a probe that reads the live column d
     && str_contains($registrySrc, "_migProbe_columnDefaultValue(\$db, 'tblSongs', 'Language')"));
 [$fWhere, $fTypes, $fVals] = applyLanguageFilterSql('s.Language', ['en']);
 mliCheck('the SQL language filter lets und / mul / zxx through, all bound',
-    $fVals === ['en', 'und', 'mul', 'zxx'] && $fTypes === 'ssss' && substr_count($fWhere, '?') === 4, mliShow([$fWhere, $fVals]));
+    $fVals === ['und', 'mul', 'zxx', 'en'] && $fTypes === 'ssss' && substr_count($fWhere, '?') === 4, mliShow([$fWhere, $fVals]));
 $pred = makeLanguageFilterPredicate(['en']);
 mliCheck('the in-memory filter keeps und, zxx and mul-Latn rows, and still drops fr',
     $pred(['language' => 'und']) && $pred(['language' => 'zxx']) && $pred(['Language' => 'mul-Latn']) && !$pred(['language' => 'fr']));
@@ -473,7 +473,7 @@ mliCheck('the old API shape (sorted base codes) is still available for the subta
     preferredLanguageBaseSubtags($prefs) === ['en', 'pt']);
 [$pw, $pt, $pv] = applyLanguageFilterSql('s.Language', ['pt-BR', 'x-hymnal']);
 mliCheck('the SQL filter matches a pt-BR preference by its group (pt), and a private-use tag as a whole tag, all bound',
-    $pv === ['pt', 'und', 'mul', 'zxx', 'x-hymnal'] && str_contains($pw, 'LOWER(s.Language) IN (?)') && strlen($pt) === 5, mliShow([$pw, $pv]));
+    $pv === ['und', 'mul', 'zxx', 'x-hymnal', 'pt'] && str_contains($pw, 'LOWER(TRIM(s.Language)) IN (?)') && strlen($pt) === 5, mliShow([$pw, $pv]));
 $pred = makeLanguageFilterPredicate(['pt-BR']);
 mliCheck('the in-memory filter: a pt-BR preference keeps pt-PT and pt rows, drops es', $pred(['language' => 'pt-PT']) && $pred(['language' => 'pt']) && !$pred(['language' => 'es']));
 $tile = songbookTileLanguage(['language' => 'zh-hant', 'languages' => ['zh'], 'languageTags' => ['zh-Hans', 'zh-Hant']]);
