@@ -113,6 +113,20 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_translations_schema.php';   /* songTranslationsLanguageFkPresent() */
 
 /**
+ * The characters the save trims from both ends of what the editor sends — a
+ * link's song id and its language — before it reads them: PHP's own default
+ * set for trim() (space, tab, line feed, carriage return, NUL, vertical tab).
+ *
+ * #2137 review round 5 — named, because a STORED language must be trimmed by
+ * exactly the same set before it is compared with a sent one (see
+ * songTranslationsGroupKey()). This is deliberately wider than the shared
+ * language rule's own trim (space, tab, CR, LF): here the question is not
+ * "what tag is this?" but "is this stored row the one the editor sent back?",
+ * and the editor's copy has already lost everything in this set.
+ */
+const IHYMNS_TRANSLATION_LINK_TRIM = " \t\n\r\0\x0B";
+
+/**
  * The key a translation link is grouped under: its language tidied by the
  * shared rule, lower-cased. A value the rule cannot read (a name such as
  * "English", or an empty value) keys under itself, lower-cased, so a stored
@@ -122,10 +136,20 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_translations_schema.php';   /
  * written (#2137 review round 4), so the two can never be keyed by different
  * rules. That mismatch is exactly how the round-3 fault happened.
  *
+ * #2137 review round 5 — the value is first trimmed exactly as the save trims
+ * what the editor sends (IHYMNS_TRANSLATION_LINK_TRIM). A stored "English "
+ * (or with a tab, a line break, a vertical tab or a NUL around it) comes back
+ * from the editor as "English", because the save trims it; keyed untrimmed,
+ * the stored row and the failed link it belonged with got different keys, the
+ * protection never matched, and a re-point that could not be written deleted
+ * the stored row (translator, verified flag and all). Found by the fourth
+ * independent review; reproduced on MariaDB 11 and MySQL 8.4.
+ *
  * @param callable(string): (string|false|null) $tidy mediaLanguageTagForStorage()
  */
 function songTranslationsGroupKey(string $language, callable $tidy): string
 {
+    $language = trim($language, IHYMNS_TRANSLATION_LINK_TRIM);
     $t = $language === '' ? null : $tidy($language);
     return mb_strtolower(is_string($t) ? $t : $language);
 }
@@ -220,9 +244,14 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
             $want = $desired[$key] ?? null;
             $chosen = null;
             if ($want !== null && isset($want['raw'])) {
+                /* 'raw' was trimmed by the save; the stored spelling is
+                   trimmed the same way before comparing (round 5), or a
+                   stored "mo " could never be recognised as the one the
+                   curator kept, and the warning's advice ("remove all but
+                   one … and save") would never work for it. */
                 $hits = array_values(array_filter(
                     $rows,
-                    static fn(array $r): bool => mb_strtolower((string)$r['language']) === $want['raw']
+                    static fn(array $r): bool => mb_strtolower(trim((string)$r['language'], IHYMNS_TRANSLATION_LINK_TRIM)) === $want['raw']
                 ));
                 $chosen = count($hits) === 1 ? $hits[0] : null;
             }
@@ -343,8 +372,10 @@ function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): ar
     };
     foreach ($sent as $tr) {
         if (!is_array($tr)) { continue; }
-        $tId   = trim((string)($tr['songId']   ?? ''));
-        $tLang = trim((string)($tr['language'] ?? ''));
+        /* Trimmed by IHYMNS_TRANSLATION_LINK_TRIM — the same set a stored
+           language is trimmed by before it is compared (round 5). */
+        $tId   = trim((string)($tr['songId']   ?? ''), IHYMNS_TRANSLATION_LINK_TRIM);
+        $tLang = trim((string)($tr['language'] ?? ''), IHYMNS_TRANSLATION_LINK_TRIM);
         if ($tId === '' && $tLang === '') { continue; }   /* an empty row: it names nothing, so it can protect nothing */
         /* Half a link (#2137 review round 4): it used to be dropped in
            silence, and a stored link to the same song — or filed under

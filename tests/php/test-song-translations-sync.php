@@ -151,6 +151,31 @@ $check('a protected row is never changed either: its re-point comes back blocked
 $plan = songTranslationsPlanSync([], $english, [7 => true], $tidy);
 $check('a protected row that the editor did not send back is kept', $plan['delete'] === [], json_encode($plan));
 
+/* #2137 review round 5 (L1) — the save trims what the editor sends with
+   PHP's trim(); a STORED value is keyed after the very same trim, so a
+   stored "English " (tab, CR, LF, vertical tab, NUL) groups with the
+   "English" the editor sends back. */
+echo "\nPart A3 — surrounding whitespace (#2137 review round 5)\n";
+$sameAsDefaultTrim = true;
+for ($b = 0; $b < 256; $b++) {
+    if (trim('x' . chr($b)) !== trim('x' . chr($b), IHYMNS_TRANSLATION_LINK_TRIM)) { $sameAsDefaultTrim = false; }
+}
+$check('the save and the key trim exactly the characters PHP\'s own trim() does (checked for every byte)', $sameAsDefaultTrim);
+$padded = ['a trailing space' => 'English ', 'a tab' => "English\t", 'a carriage return' => "English\r",
+           'a leading line feed' => "\nEnglish", 'a trailing vertical tab' => "English\x0B", 'a trailing NUL' => "English\0",
+           'spaces around a retired code' => " iw\t"];
+foreach ($padded as $what => $value) {
+    $check("a stored value with {$what} keys like the value itself",
+        songTranslationsGroupKey($value, $tidy) === songTranslationsGroupKey(trim($value), $tidy),
+        json_encode([songTranslationsGroupKey($value, $tidy), songTranslationsGroupKey(trim($value), $tidy)]));
+}
+$check('…so a failed `English → T2` protects a row stored as "English\t" → T1',
+    songTranslationsProtectedIds([$failedAt('English', 'T2')], [['id' => 9, 'songId' => 'T1', 'language' => "English\t"]], $tidy) === [9 => true]);
+$plan = songTranslationsPlanSync(['ro' => $want('T3', 'mo')],
+    [['id' => 3, 'songId' => 'T3', 'language' => "mo "], ['id' => 4, 'songId' => 'T4', 'language' => 'ro']], [], $tidy);
+$check('two stored links of one language, one stored as "mo ": the editor sends back "mo" (trimmed) — that row is recognised as the kept one, and `ro` is deleted',
+    $plan['delete'] === [4] && $plan['update'] === [] && $plan['warnings'] === [], json_encode($plan));
+
 /* ---------------------------------------------------------------- Part B */
 echo "\nPart B — the real save steps (songTranslationsSaveLinks) against a real database\n";
 $dsn = getenv('IHYMNS_TEST_DSN') ?: '';
@@ -298,6 +323,21 @@ if ($db === null) {
         [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'es', 'Luis', 1]], [['T2', 'pt'], ['T1', 'English']]);
         $check('a change that would touch a protected row is not made, and protects in turn: pt → T1 and es → T2 both survive',
             $a === $b && str_contains(implode(' ', $w), 'was not saved'), json_encode([$a, $w]));
+
+        /* #2137 review round 5 (L1) — a stored unreadable language with
+           characters the save trims around it: the re-point to T2 cannot be
+           written, and the stored row must survive. Before this round each
+           of these was DELETED (reproduced on MariaDB 11 and MySQL 8.4),
+           because the stored row was keyed untrimmed and the failed link
+           trimmed. */
+        foreach (['a trailing space' => 'English ', 'a tab' => "English\t", 'a carriage return' => "English\r",
+                  'a leading line feed' => "\nEnglish", 'a trailing vertical tab' => "English\x0B", 'a trailing NUL' => "English\0"]
+                 as $what => $value) {
+            [$b, $a, $w] = $scenario([['T1', $value, 'Ana', 1]], [['T2', $value]]);
+            $check("stored English with {$what} → T1 (Ana, verified), re-pointed to T2 (cannot be written): the stored row survives unchanged",
+                $a === $b && $b[0]['TargetLanguage'] === $value && str_contains(implode(' ', $w), '"English" is not a language code'),
+                json_encode([$a, $w]));
+        }
 
         /* the ordinary cases still work */
         [$b, $a, $w] = $scenario([['T1', 'pt', '', 0], ['T2', 'es', '', 0]], [['T2', 'es'], ['T3', 'de']]);
