@@ -5,7 +5,7 @@ declare(strict_types=1);
 /**
  * iHymns — how iHymns USES the shared language policy (#2137)
  *
- * ELI5: the policy's own 268 examples are checked by
+ * ELI5: the policy's own 290 examples are checked by
  * test-media-language-conformance.php. THIS file checks iHymns' side: that
  * every place iHymns saves, imports or reads a language code goes through the
  * shared rules — letter case fixed rather than refused, old three-letter codes

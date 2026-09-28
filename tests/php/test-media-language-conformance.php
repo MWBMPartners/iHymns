@@ -7,7 +7,7 @@ declare(strict_types=1);
  *
  * ELI5: MWBM's apps share one written rule book for language codes (the
  * MWBM-MEDIA-LANG policy) and one PHP implementation of it. The rule book
- * comes with 268 worked examples ("given this, the answer must be that").
+ * comes with 290 worked examples ("given this, the answer must be that").
  * This test runs every one of those examples against iHymns' own copy of
  * the PHP code and its own copy of the reference data, and fails the build
  * if any example gives the wrong answer — so iHymns cannot quietly drift
@@ -115,7 +115,7 @@ if (trim($stderr) !== '') {
 $failures = [];
 
 /* The runner's own summary line, e.g.
-   "MWBM-MEDIA-LANG PHP conformance: 268/268 cases run (…), 0 failure(s)." */
+   "MWBM-MEDIA-LANG PHP conformance: 290/290 cases run (…), 0 failure(s)." */
 if (!preg_match('/conformance: (\d+)\/(\d+) cases run .*?, (\d+) failure\(s\)\./s', $stdout, $m)) {
     $failures[] = 'the runner printed no summary line, so it cannot be shown to have run anything';
 } else {

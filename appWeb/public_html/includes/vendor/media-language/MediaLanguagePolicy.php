@@ -135,9 +135,11 @@ enum Role: string
  * safe to share, cache and compare freely.
  *
  * $tag is the canonical string form (`en-GB`, `zh-Hant-TW`, ...) for every
- * kind except Malformed, where it is the original text instead — LANG-026
+ * kind except Malformed, where it is the value's own text instead — LANG-026
  * says a malformed value "keeps its text", because it must never be
- * silently dropped or guessed at.
+ * silently dropped or guessed at. The text kept is the value after
+ * LANG-001 step 1's trim (LANG-026): `" en_US "` keeps `en_US`, and a value
+ * of nothing but whitespace keeps the empty text.
  *
  * $language/$extlang/$script/$region/$variants/$extensions/$privateUse are
  * only meaningful when $kind is Ordinary (a PrivateUse tag has no language
@@ -399,10 +401,13 @@ final class Policy
         // wider default set if that default ever changes.
         $stripped = trim($raw, " \t\r\n");
         if ($stripped === '') {
-            // An empty string (after trimming) is not a tag at all. Keep
-            // the ORIGINAL, untrimmed text, for the same reason LANG-026
-            // keeps a malformed value's text generally.
-            return new LanguageTag($raw, TagKind::Malformed, null, null, null, null, [], [], []);
+            // An empty string (after trimming) is not a tag at all. It keeps
+            // its text AFTER the trim, like every other malformed value
+            // (LANG-026, settled in policy revision 4): so " " and "\t\n"
+            // keep ''. Before that decision this returned the untrimmed
+            // $raw here - the only place PHP kept untrimmed text, and the
+            // one place it disagreed with the Rust crate.
+            return new LanguageTag($stripped, TagKind::Malformed, null, null, null, null, [], [], []);
         }
 
         $data = self::data();
@@ -557,6 +562,10 @@ final class Policy
      * and keep the original text somewhere so a person can fix it
      * (COMPAT-040) - this function only reports "I don't know", it never
      * decides what to store for "I don't know".
+     *
+     * A field holding several values (ID3v2.4 separates them with a NUL)
+     * gives only the first, the primary language, here; use
+     * fromLegacyThreeLetterAll() to read every one of them.
      */
     public static function fromLegacyThreeLetter(string $raw): ?string
     {
@@ -568,11 +577,54 @@ final class Policy
         // still remains after that (ID3v2.4 separates several values in
         // one field with a NUL, and the first is the primary language),
         // split on it and read only the first value, trimmed the same way.
-        $value = trim(rtrim($raw, "\0"), " \t\r\n");
+        $value = self::stripLegacyPadding($raw);
         if (str_contains($value, "\0")) {
             $value = trim(explode("\0", $value, 2)[0], " \t\r\n");
         }
+        return self::readOneLegacyValue($value);
+    }
 
+    /**
+     * Reads EVERY NUL-separated value in a field (LANG-002: "If the field
+     * holds several values ... split them first and read each on its own;
+     * the first is the primary language").
+     *
+     * Returns one entry per value, in the order written, so the position
+     * still says which value is which: entry 0 is always the primary
+     * language and is exactly what fromLegacyThreeLetter() returns for the
+     * same input. An entry is null when that one value is unrecognised (the
+     * caller then stores `und` for it and keeps its text), rather than being
+     * left out, which would make a later value look like the primary one.
+     * Never empty: a field with nothing in it gives one null.
+     *
+     * Trailing NUL padding and LANG-001's four whitespace characters come
+     * off the whole field first, then off each value, exactly as for the
+     * single-value reader. An empty value between two NULs ("eng\0\0fre")
+     * is unrecognised, like any other empty value.
+     *
+     * @return list<string|null>
+     */
+    public static function fromLegacyThreeLetterAll(string $raw): array
+    {
+        $values = [];
+        foreach (explode("\0", self::stripLegacyPadding($raw)) as $value) {
+            $values[] = self::readOneLegacyValue(trim($value, " \t\r\n"));
+        }
+        return $values;
+    }
+
+    /** LANG-002's "before the steps": trailing NULs (fixed-width padding)
+     * first, then LANG-001's four whitespace characters from both ends.
+     * NULs inside the value are left alone - they separate several values. */
+    private static function stripLegacyPadding(string $raw): string
+    {
+        return trim(rtrim($raw, "\0"), " \t\r\n");
+    }
+
+    /** LANG-002's numbered steps for ONE value that has already had its
+     * padding removed and contains no NUL separator. */
+    private static function readOneLegacyValue(string $value): ?string
+    {
         if (strtoupper($value) === 'XXX' && strlen($value) === 3) {
             // ID3's own "language not known" marker (LANG-002 step 3).
             return 'und';
@@ -591,7 +643,7 @@ final class Policy
         if (preg_match('/\A([A-Za-z]{3})-([A-Za-z]{2})\z/', $value, $m) === 1
             && !in_array(strtolower($m[1]), self::data()['languages'], true)
         ) {
-            $base = self::fromLegacyThreeLetter($m[1]);
+            $base = self::readOneLegacyValue($m[1]);
             if ($base === null || $base === 'und') {
                 return null;
             }
@@ -636,7 +688,12 @@ final class Policy
      */
     public static function fromPosixLocale(string $raw): ?string
     {
-        $value = trim($raw);
+        // Only LANG-001's four whitespace characters are trimmed. PHP's bare
+        // trim() also strips a NUL byte and a vertical tab, which this
+        // policy does not allow for, so they are named explicitly (the same
+        // as canonicalise() does). Changed in policy revision 4: the bare
+        // trim() read "\x0Ben_US" as en-US.
+        $value = trim($raw, " \t\r\n");
         if ($value === '' || $value === 'C' || $value === 'POSIX') {
             return null;
         }
@@ -723,13 +780,19 @@ final class Policy
      * `Film.en-GB.sdh.srt` or, with a clash-avoiding number,
      * `Mr. Robot.fr-CA.commentary.2.srt`.
      *
-     * The tag comes first, always, straight after the stem: it is the
-     * canonical tag (LANG-001), or `und` when $tag is malformed - a
+     * The tag comes first, always, straight after the stem. $tag is read
+     * with LANG-002's reader (fromLegacyThreeLetter()) exactly as
+     * parseSidecarName() will read the name back - so `fre` is written as
+     * `fr`, and a value the reader does not recognise (a malformed value,
+     * or an unregistered three-letter code such as `zzz`) as `und`. What
+     * this writes is therefore always what the reader reads back. A
      * malformed value never goes into a file name, because it could hold
      * characters that are unsafe in a path (LANG-026 keeps its text for
      * reporting, not for naming files with). A grandfathered or
-     * private-use tag keeps its own canonical text (`i-default`, `x-foo`),
-     * since neither of those is malformed.
+     * private-use tag keeps its own canonical text (`i-default`, `x-foo`).
+     * (Before policy revision 4 this canonicalised $tag as a tag instead,
+     * which wrote `fre` and `zzz` into names unchanged - names a reader
+     * then read back as `fr` and `und`.)
      *
      * $roles may hold any of this file's Role values, but only Sdh,
      * Forced and Commentary ever produce a word in the name (TEXT-030
@@ -772,8 +835,7 @@ final class Policy
             );
         }
 
-        $canonical = self::canonicalise($tag);
-        $language = $canonical->isMalformed() ? 'und' : $canonical->tag;
+        $language = self::fromLegacyThreeLetter($tag) ?? 'und';
 
         $allowedRoleWords = ['sdh', 'forced', 'commentary'];
         $seen = [];
@@ -828,13 +890,19 @@ final class Policy
      * part that reads (case-insensitively) as `sdh`, `cc`, `hi`, `forced`
      * or `commentary` adds a role - `cc` and `hi` both mean `sdh`, because
      * other tools write them, and repeats are silently folded into one;
-     * anything else is ignored, rather than treated as an error.
+     * anything else is ignored, rather than treated as an error - and kept
+     * in 'ignored', exactly as written and in the order found, because
+     * TEXT-030 says such a part SHOULD be reported (`Film.en.sdh.backup.srt`
+     * gives ['backup']). A run of ten or more digits is in 'ignored' too;
+     * an earlier number part overridden by a later one is not (it was a
+     * number, just not the one that counts).
      *
      * @return array{
      *     tag: string|null,
      *     unrecognised: string|null,
      *     roles: list<string>,
      *     number: int|null,
+     *     ignored: list<string>,
      *     extension: string
      * }|null
      */
@@ -854,6 +922,7 @@ final class Policy
             'unrecognised' => null,
             'roles' => [],
             'number' => null,
+            'ignored' => [],
             'extension' => $extension,
         ];
         if ($middle === []) {
@@ -885,7 +954,9 @@ final class Policy
             $lowered = strtolower($piece);
             if (isset($roleWords[$lowered])) {
                 $roles[$roleWords[$lowered]] = true;
+                continue;
             }
+            $result['ignored'][] = $piece;
         }
         $roleList = array_keys($roles);
         usort($roleList, static fn (string $a, string $b): int => self::SUBTITLE_ROLE_RANK[$a] <=> self::SUBTITLE_ROLE_RANK[$b]);
@@ -1203,13 +1274,25 @@ final class Policy
     /**
      * Builds a menu label from structured data (UI-070):
      * "English (United Kingdom) — Audio Description — 5.1" - language
-     * name, then roles in TRACK-050's order, then (for audio) the channel
-     * layout, joined with " — " (space, em dash, space).
+     * name, then roles once each, in TRACK-050's order, then (for audio)
+     * the channel layout, joined with " — " (space, em dash, space).
+     *
+     * A role listed twice appears once ("Roles appear once each" - policy
+     * revision 4; before it a repeated role was shown twice). Duplicates are
+     * removed BEFORE sorting, keeping the first of each, so roles TRACK-050
+     * ranks the same keep the order they were given in.
      *
      * $roles is a list of raw role identifiers (see the Role enum); only
      * roles present in $roleNames are actually shown (a role with no
      * localised word supplied is silently skipped, rather than showing a
-     * raw internal identifier to a user). $languageName and every value in
+     * raw internal identifier to a user).
+     *
+     * An empty part adds nothing, not even a separator: an empty
+     * $languageName, an empty word in $roleNames or an empty $channels is
+     * left out, so ('English', no roles, channels '') gives "English", not
+     * "English — ". The Rust crate's label() does the same since Codex's
+     * review r7 found it did not; the case file's label-06 and label-07
+     * check both. $languageName and every value in
      * $roleNames are expected to already be localised - this function only
      * orders and joins them, per its one job (see the class doc comment:
      * this is not where names come from).
@@ -1227,7 +1310,12 @@ final class Policy
         ?string $channels = null
     ): string {
         $rankTable = $trackType === 'audio' ? self::AUDIO_ROLE_RANK : self::SUBTITLE_ROLE_RANK;
-        $sortedRoles = $roles;
+        $sortedRoles = [];
+        foreach ($roles as $role) {
+            if (!in_array($role, $sortedRoles, true)) {
+                $sortedRoles[] = $role;
+            }
+        }
         usort($sortedRoles, static fn (string $a, string $b): int => ($rankTable[$a] ?? 4) <=> ($rankTable[$b] ?? 4));
 
         $parts = [$languageName];
@@ -1370,6 +1458,7 @@ final class Policy
             return null;
         }
         self::requireUniqueIdentifiers($tracks);
+        $preferences = self::usablePreferences($preferences);
 
         $isSpecial = static fn (array $t): bool => self::trackRoleRank($t, 'audio') >= self::AUDIO_ROLE_RANK['commentary'];
         $eligible = array_values(array_filter($tracks, static fn (array $t): bool => !$isSpecial($t)));
@@ -1379,11 +1468,19 @@ final class Policy
             $eligible = $tracks;
         }
 
-        $positions = self::canonicalPositions($eligible, 'audio');
+        // Canonical order counts EVERY audio track, including those that
+        // cannot be chosen (AUTO-020, as clarified in policy revision 4): an
+        // original track that is never chosen - commentary, say - still
+        // brings its language group forward, as it does in stored order.
+        // Before revision 4 this was worked out from $eligible only.
+        $positions = self::canonicalPositions($tracks, 'audio');
         // The PLACING role decides rank (0 = main, 1 = alternate,
-        // 2 = audio description - commentary/other never reach here,
-        // having been filtered into $isSpecial above), remapped when the
-        // user asked for audio description so THAT rank comes first.
+        // 2 = audio description, 3 = commentary, 4 = other), remapped when
+        // the user asked for audio description so THAT rank comes first.
+        // Commentary and other only get here when every track is one of
+        // them, and then commentary still ranks before other, whether or
+        // not audio description was asked for (AUTO-020, policy revision 4
+        // - before it both became 3 and tied).
         $rolePriority = static function (array $track) use ($accessibility): int {
             $placement = self::trackRoleRank($track, 'audio');
             if (!empty($accessibility['audio_description'])) {
@@ -1391,7 +1488,7 @@ final class Policy
                     2 => 0,
                     0 => 1,
                     1 => 2,
-                    default => 3,
+                    default => $placement,
                 };
             }
             return $placement;
@@ -1507,6 +1604,7 @@ final class Policy
         if ($mode === SubtitleMode::Off) {
             return null;
         }
+        $preferences = self::usablePreferences($preferences);
 
         $positions = self::canonicalPositions($tracks, 'subtitle');
 
@@ -1514,8 +1612,17 @@ final class Policy
             if ($audioTag === null) {
                 return null;
             }
+            // Nothing to match a forced track against: a malformed audio
+            // value (it matches nothing, MATCH-010), or a primary language
+            // of und, mul or zxx. A private-use tag (`x-foo`) or a
+            // grandfathered tag with no replacement (`i-default`) DOES have
+            // something to match - a forced track with exactly that tag
+            // (MATCH-040; settled in policy revision 4 - before it, every tag
+            // that was not an ordinary one gave nothing here).
             $audio = self::canonicalise($audioTag);
-            if ($audio->kind !== TagKind::Ordinary || in_array($audio->language, ['und', 'mul', 'zxx'], true)) {
+            if ($audio->isMalformed()
+                || ($audio->kind === TagKind::Ordinary && in_array($audio->language, ['und', 'mul', 'zxx'], true))
+            ) {
                 return null;
             }
             $candidates = [];
@@ -1605,7 +1712,9 @@ final class Policy
             return $always();
         }
 
-        // Automatic.
+        // Automatic. $preferences has had malformed entries removed above,
+        // so a user whose preferences are ALL malformed counts as having
+        // none and gets forced-only behaviour (AUTO-010, policy revision 4).
         if ($preferences === []) {
             return $forcedOnly();
         }
@@ -2043,6 +2152,24 @@ final class Policy
             $strippedB = '0';
         }
         return (strlen($strippedA) <=> strlen($strippedB)) ?: strcmp($strippedA, $strippedB);
+    }
+
+    /**
+     * AUTO-010 (as clarified in policy revision 4): a malformed preference
+     * is ignored in selection, as it is in menus - it matches nothing - and
+     * a user whose preferences are ALL malformed counts as having none. Only
+     * that second part changes an answer (automatic subtitle mode), but
+     * filtering once keeps every step honest about which preferences exist.
+     *
+     * @param list<string> $preferences
+     * @return list<string>
+     */
+    private static function usablePreferences(array $preferences): array
+    {
+        return array_values(array_filter(
+            $preferences,
+            static fn (string $preference): bool => !self::canonicalise($preference)->isMalformed()
+        ));
     }
 
     /**
