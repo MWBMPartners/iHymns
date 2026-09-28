@@ -608,7 +608,17 @@ return [
             'button' => 'Fill Missing Song Languages (dry-run unless confirmed)',
         ],
         /* Pending while at least one song has NO language in a songbook that
-           declares one ordinary language — the only thing the script changes. */
+           declares one ordinary language — the only thing the script changes.
+           #2137 review round 4: decided with the card's OWN tests
+           (mediaLanguageIsBlank() for the song, the tidy-and-ordinary test
+           for the songbook), in PHP. It used to ask the database whether
+           TRIM(Language) = '', and the column's collation answered
+           differently from the card: a tab-only song was "not empty" (so the
+           card could fill it while this said "done") and a no-break-space
+           song was "empty" (so this said "pending" for ever while the card
+           rightly left it alone). The query below only narrows the rows to a
+           generous superset — NULL, or no ASCII letter or digit at all, which
+           every blank value is — and PHP makes the decision. */
         'probe' => static function (\mysqli $db): bool {
             try {
                 if (!_migProbe_columnExists($db, 'tblSongs', 'Language')
@@ -624,16 +634,24 @@ return [
                    @disabled-visible: same reasoning, one predicate over
                    (#1765) — a row in a disabled songbook still needs the tag. */
                 $res = $db->query(
-                    "SELECT DISTINCT b.Language AS bookLang
+                    "SELECT b.Language AS bookLang, s.Language AS songLang
                        FROM tblSongs s
                        JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
                       WHERE b.Language IS NOT NULL AND b.Language <> ''
-                        AND (s.Language IS NULL OR TRIM(s.Language) = '')"
+                        AND (s.Language IS NULL OR s.Language NOT REGEXP '[A-Za-z0-9]')"
                 );
                 $needs = false;
+                $bookFillable = [];   /* songbook language → can the card fill from it? */
                 while ($res && ($row = $res->fetch_assoc())) {
-                    $bookTag = mediaLanguageTagForStorage((string)$row['bookLang']);
-                    if (is_string($bookTag) && mediaLanguageIsOrdinaryLanguage($bookTag)) {
+                    if (!mediaLanguageIsBlank($row['songLang'] === null ? null : (string)$row['songLang'])) {
+                        continue;   /* a value — the card lists it, it never fills it */
+                    }
+                    $bookLang = (string)$row['bookLang'];
+                    if (!isset($bookFillable[$bookLang])) {
+                        $bookTag = mediaLanguageTagForStorage($bookLang);
+                        $bookFillable[$bookLang] = is_string($bookTag) && mediaLanguageIsOrdinaryLanguage($bookTag);
+                    }
+                    if ($bookFillable[$bookLang]) {
                         $needs = true;
                         break;
                     }

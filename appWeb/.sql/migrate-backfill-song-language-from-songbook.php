@@ -14,8 +14,10 @@ declare(strict_types=1);
  * songbook's language.
  *
  * WHAT IT CHANGES — only this:
- *   a song whose language is EMPTY (NULL or blank), in a songbook that
- *   declares ONE ordinary language, is given that language.
+ *   a song whose language is EMPTY — NULL, or nothing but spaces, tabs and
+ *   line breaks (mediaLanguageIsBlank(), the one test for this; a no-break
+ *   or zero-width space is a VALUE and is listed, not filled) — in a
+ *   songbook that declares ONE ordinary language, is given that language.
  *
  * WHAT IT NEVER CHANGES (#2137 reviews):
  *   a song that already has ANY value — a real tag, a special code such as
@@ -40,9 +42,21 @@ declare(strict_types=1);
  *   - The dry run lists every song it would fill (id, "none" → new language)
  *     and every song it would leave alone because its language differs.
  *   - The confirmed run writes one activity-log row per filled song (action
- *     `migration.song_language_backfill`; Details: from, to, songbook, and
- *     "set from songbook by the backfill card"), in the same transaction as
- *     the change, so every fill can be traced and undone.
+ *     `migration.song_language_backfill`; Details: from, to, songbook,
+ *     "set from songbook by the backfill card", and who ran it), in the same
+ *     transaction as the change, so every fill can be traced and undone.
+ *     WHO ran it (#2137 review round 4): from the web, the row's UserId is
+ *     the signed-in user and Details.ranBy is "web"; from the command line,
+ *     UserId is empty and Details.ranBy is "command line". A confirmed web
+ *     run that cannot tell who is signed in changes nothing.
+ *   - If another person changes a song's language while a confirmed run is
+ *     under way, their change is never overwritten. What happens next
+ *     depends on the database, and both are safe: on MySQL (and MariaDB
+ *     without snapshot isolation) that one song is skipped and the rest are
+ *     filled; on MariaDB 11.8, whose `innodb_snapshot_isolation` is on by
+ *     default, the whole run stops with "Record has changed since last
+ *     read" and is rolled back — nothing filled, nothing logged — so it can
+ *     simply be run again. Both observed in tests/php/test-song-language-backfill.php.
  *
  * Idempotent — a filled song has a language, so a second run fills nothing.
  *
@@ -89,18 +103,42 @@ function migrateBackfillSongLanguageConfirmed(bool $isCli, array $argv, array $g
 }
 
 /**
+ * Who is running this card, for the activity log (#2137 review round 4)?
+ *
+ * ELI5: the trail must say who did it. From the web that is the signed-in
+ * user; from the command line there is no signed-in user, so the trail says
+ * "command line" instead of leaving it blank as if nobody did it.
+ *
+ * @param bool       $isCli       Is this a command-line run?
+ * @param array|null $currentUser The signed-in user (getCurrentUser(): 'id'), or null.
+ * @return array{userId: int|null, ranBy: string} ranBy is "command line" or "web".
+ */
+function migrateBackfillSongLanguageActor(bool $isCli, ?array $currentUser): array
+{
+    if ($isCli) {
+        return ['userId' => null, 'ranBy' => 'command line'];
+    }
+    $id = (int)($currentUser['id'] ?? 0);
+    return ['userId' => $id > 0 ? $id : null, 'ranBy' => 'web'];
+}
+
+/**
  * Do the work against one database connection.
  *
  * @param \mysqli               $db
  * @param bool                  $apply false = report only
  * @param callable(string):void $out   one line of output
+ * @param array{userId: int|null, ranBy: string} $actor
+ *        Who is running it (migrateBackfillSongLanguageActor()), written into
+ *        every activity-log row. Required, so no caller can forget it.
  * @return array{filled: list<array{songId:string, to:string, songbook:string}>,
  *               differing: list<array{songId:string, language:string, songbook:string, songbookLanguage:string}>,
  *               matched:int, booksSkipped:int}
  * @throws \RuntimeException when the shared rules are missing, or (on a
- *         confirmed run) when there is nowhere to record the changes.
+ *         confirmed run) when there is nowhere to record the changes, or no
+ *         way to say who made them.
  */
-function migrateBackfillSongLanguageFromSongbook(\mysqli $db, bool $apply, callable $out): array
+function migrateBackfillSongLanguageFromSongbook(\mysqli $db, bool $apply, callable $out, array $actor): array
 {
     $result = ['filled' => [], 'differing' => [], 'matched' => 0, 'booksSkipped' => 0];
 
@@ -128,6 +166,14 @@ function migrateBackfillSongLanguageFromSongbook(\mysqli $db, bool $apply, calla
     if ($apply && !$columnExists('tblActivityLog', 'Details')) {
         throw new \RuntimeException('tblActivityLog is missing, so the changes could not be recorded; nothing was changed.');
     }
+    /* …and the trail must say who: a web run with no signed-in user (which
+       the setup page's own sign-in check should make impossible) or an
+       actor this function does not recognise changes nothing. */
+    $ranBy  = (string)($actor['ranBy'] ?? '');
+    $userId = isset($actor['userId']) ? (int)$actor['userId'] : null;
+    if ($apply && !($ranBy === 'command line' || ($ranBy === 'web' && $userId !== null && $userId > 0))) {
+        throw new \RuntimeException('Could not tell who is running this card, so the changes could not be recorded; nothing was changed.');
+    }
 
     $books = [];
     $res = $db->query("SELECT Abbreviation, Language FROM tblSongbooks WHERE Language IS NOT NULL AND Language <> '' ORDER BY Abbreviation");
@@ -138,16 +184,26 @@ function migrateBackfillSongLanguageFromSongbook(\mysqli $db, bool $apply, calla
 
     $pick   = $db->prepare('SELECT SongId, Language FROM tblSongs WHERE SongbookAbbr = ? ORDER BY SongId');
     /* `Language <=> ?` (null-safe equals, bound to the value just read):
-       the row is changed only if nobody else changed it in between. */
+       the row is changed only if nobody else changed it in between. If
+       someone did, the database decides what happens next, and both ways are
+       safe (#2137 review round 4 — this comment used to promise only the
+       first): on MySQL, and MariaDB without snapshot isolation, the UPDATE
+       matches no row and that one song is skipped; on MariaDB 11.8 with
+       `innodb_snapshot_isolation` on (its default), the UPDATE itself fails
+       with "Record has changed since last read", and the catch below rolls
+       the WHOLE run back. Either way the other person's change stands. */
     $update = $apply ? $db->prepare('UPDATE tblSongs SET Language = ? WHERE SongId = ? AND Language <=> ?') : null;
     /* Straight into tblActivityLog rather than through logActivity(): that
        helper stops after 200 rows per request (a guard against runaway
        loops), and a trail that stopped part-way could not be used to undo
        the run. Every other column of the table has a default. */
     $record = $apply
-        ? $db->prepare('INSERT INTO tblActivityLog (Action, EntityType, EntityId, Result, Details) VALUES (?, \'song\', ?, \'success\', ?)')
+        ? $db->prepare('INSERT INTO tblActivityLog (UserId, Action, EntityType, EntityId, Result, Details) VALUES (?, ?, \'song\', ?, \'success\', ?)')
         : null;
 
+    /* One transaction for every fill AND its log row: a fill whose record
+       could not be written must not survive (tested by making the log refuse
+       a row part-way through). */
     if ($apply) {
         $db->begin_transaction();
     }
@@ -167,7 +223,7 @@ function migrateBackfillSongLanguageFromSongbook(\mysqli $db, bool $apply, calla
             while ($row = $songs->fetch_assoc()) {
                 $songId  = (string)$row['SongId'];
                 $songRaw = trim((string)($row['Language'] ?? ''), " \t\r\n");
-                if ($songRaw !== '') {
+                if (!mediaLanguageIsBlank($row['Language'] === null ? null : (string)$row['Language'])) {
                     /* ANY value is kept. One that says a different language
                        from the songbook is listed for a curator to review. */
                     $songTag = mediaLanguageTagForStorage($songRaw);
@@ -185,7 +241,7 @@ function migrateBackfillSongLanguageFromSongbook(\mysqli $db, bool $apply, calla
                     $update->bind_param('sss', $bookTag, $songId, $before);
                     $update->execute();
                     if ($update->affected_rows !== 1) {
-                        continue;   // changed by someone else since it was read — leave it
+                        continue;   // changed by someone else since it was read — leave it (see the UPDATE's comment)
                     }
                     $details = json_encode([
                         'field'    => 'Language',
@@ -193,9 +249,11 @@ function migrateBackfillSongLanguageFromSongbook(\mysqli $db, bool $apply, calla
                         'to'       => $bookTag,
                         'songbook' => $abbr,
                         'note'     => 'set from songbook by the backfill card',
+                        'ranBy'    => $ranBy,
                     ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
                     $action = IHYMNS_BACKFILL_SONG_LANGUAGE_ACTION;
-                    $record->bind_param('sss', $action, $songId, $details);
+                    $logUser = $ranBy === 'web' ? $userId : null;
+                    $record->bind_param('isss', $logUser, $action, $songId, $details);
                     $record->execute();
                 }
                 $result['filled'][] = ['songId' => $songId, 'to' => $bookTag, 'songbook' => $abbr];
@@ -239,7 +297,10 @@ function migrateBackfillSongLanguageFromSongbook(\mysqli $db, bool $apply, calla
 }
 
 if (!defined('IHYMNS_MIGRATION_NO_AUTORUN')) {
-    $isCli = PHP_SAPI === 'cli';
+    /* Run from /manage/setup-database (which defines IHYMNS_SETUP_DASHBOARD
+       before it requires this file) is a WEB run, whatever the server's PHP
+       type: confirmed by `confirm=1`, recorded against the signed-in user. */
+    $isCli = PHP_SAPI === 'cli' && !defined('IHYMNS_SETUP_DASHBOARD');
     $out = static function (string $line) use ($isCli): void {
         echo $isCli ? $line . "\n" : htmlspecialchars($line, ENT_QUOTES) . "<br>\n";
     };
@@ -254,8 +315,9 @@ if (!defined('IHYMNS_MIGRATION_NO_AUTORUN')) {
         if ($isCli) { exit(1); }
         return;
     }
+    $actor = migrateBackfillSongLanguageActor($isCli, (!$isCli && function_exists('getCurrentUser')) ? getCurrentUser() : null);
     try {
-        migrateBackfillSongLanguageFromSongbook($db, $apply, $out);
+        migrateBackfillSongLanguageFromSongbook($db, $apply, $out, $actor);
     } catch (\RuntimeException $e) {
         $out('ERROR: ' . $e->getMessage());
         if ($isCli) { exit(1); }

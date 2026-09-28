@@ -724,7 +724,19 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   became `zh` — with no record; that was removed.) Songs whose language differs from their songbook's are
   listed for review by hand. The dry run lists every fill; a confirmed run records each one in the activity
   log (`migration.song_language_backfill`, old → new), so it can be traced and undone. Its "dry run unless
-  confirmed" decision is `migrateBackfillSongLanguageConfirmed()`.
+  confirmed" decision is `migrateBackfillSongLanguageConfirmed()`. Since round 4 of the review: "no language"
+  means NULL or only spaces, tabs and line breaks (`mediaLanguageIsBlank()` in `includes/media_language.php`) —
+  a no-break or zero-width space is a value, listed, never filled; the card's "pending" check decides with that
+  same function (it used to ask the database, whose collation disagreed both ways, so a tab-only song was never
+  reported and a no-break-space song kept the card "pending" for ever); each log row records WHO ran it — from
+  the web the signed-in user (`UserId`) and `ranBy: "web"`, from the command line `ranBy: "command line"` — and a
+  confirmed web run that cannot tell who is signed in changes nothing (`migrateBackfillSongLanguageActor()`); and
+  every fill and its log row are one transaction. **If somebody changes a song while a confirmed run is under way,
+  their change always stands**, but how depends on the database: on MySQL (and MariaDB without snapshot
+  isolation) that one song is skipped and the rest filled; on MariaDB 11.8, where `innodb_snapshot_isolation` is
+  on by default, the whole run stops with "Record has changed since last read" and is rolled back — nothing
+  filled, nothing logged — and can simply be run again. (An earlier note said only "that song is skipped".) All
+  of this is tested against a real database in `tests/php/test-song-language-backfill.php` Part C, on both.
 - **Two orders, on purpose, never mixed.**
   - *Stored order* (the policy's Part A) is the same for everyone and is what the site returns and keeps:
     the original's language first, then every other language by its code (`de`, `en`, `es` …), general

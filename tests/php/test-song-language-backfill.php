@@ -40,9 +40,31 @@ declare(strict_types=1);
  *   - the script itself, run as a command-line process against the database:
  *     without --confirm nothing changes; with it, the fills happen.
  *
- * Mutation-proven (see the commit body): putting back the rewrite branch,
+ * Part C (#2137 review round 4, a real database):
+ *   - "no language" means NULL or only spaces, tabs and line breaks
+ *     (mediaLanguageIsBlank()): those songs are filled; a no-break or
+ *     zero-width space is a value, listed and left alone;
+ *   - the card's "pending" check agrees with the card itself: a tab-only
+ *     song makes it pending, a no-break-space song does not, and after a run
+ *     it is done — checked against the card's own dry run on each data set;
+ *   - who ran it: a web run records the signed-in user (UserId) and
+ *     ranBy "web", a command-line run ranBy "command line" — both through
+ *     the function and through the real script (the web one as
+ *     /manage/setup-database runs it); a web run with nobody signed in
+ *     changes nothing;
+ *   - a fill and its log row are one transaction: when the log refuses a row
+ *     part-way through, no fill survives;
+ *   - another person's change made while the card runs is never overwritten
+ *     (fixtures/backfill-other-session.php). On MariaDB 11.8 with snapshot
+ *     isolation on, the whole run fails and rolls back; with it off, and on
+ *     MySQL, that one song is skipped. Both are checked where they occur.
+ *
+ * Mutation-proven (see the commit bodies): putting back the rewrite branch,
  * `$apply = true;` in the script, and removing 'manual' => true each turn
- * checks red.
+ * checks red. Round 4: dropping the `Language <=> ?` guard, treating only ''
+ * as blank, dropping the transaction, the probe's old SQL TRIM() test, the
+ * probe without the PHP blank test, not writing UserId, and not writing
+ * ranBy each turn checks red.
  *
  * Database: IHYMNS_TEST_DSN="host=127.0.0.1;port=3306;user=root;pass=" (the
  * same variable test-schema-installs.php reads). A throwaway database named
@@ -119,6 +141,18 @@ foreach ($confirmCases as [$label, $isCli, $argv, $get, $want]) {
 $scriptSrc = (string)file_get_contents($script);
 $check('the script decides with that function (so the test above is the rule it runs by)',
     preg_match('/\$apply = migrateBackfillSongLanguageConfirmed\(/', $scriptSrc) === 1);
+/* #2137 review round 4 — who ran it. */
+$check('who ran it? command line → no user, "command line"',
+    migrateBackfillSongLanguageActor(true, ['id' => 5]) === ['userId' => null, 'ranBy' => 'command line']);
+$check('who ran it? web, signed in as user 7 → user 7, "web"',
+    migrateBackfillSongLanguageActor(false, ['id' => 7, 'role' => 'global_admin']) === ['userId' => 7, 'ranBy' => 'web']);
+$check('who ran it? web, nobody signed in → no user, "web" (a confirmed run then refuses — Part C)',
+    migrateBackfillSongLanguageActor(false, null) === ['userId' => null, 'ranBy' => 'web']);
+$check('the script asks that function, with the signed-in user on the web',
+    str_contains($scriptSrc, "migrateBackfillSongLanguageActor(\$isCli, (!\$isCli && function_exists('getCurrentUser')) ? getCurrentUser() : null)"));
+$check('"no language" is NULL or only spaces, tabs and line breaks — not a no-break or zero-width space',
+    mediaLanguageIsBlank(null) && mediaLanguageIsBlank('') && mediaLanguageIsBlank(" \t\r\n ") && mediaLanguageIsBlank("\t")
+    && !mediaLanguageIsBlank("\u{00A0}") && !mediaLanguageIsBlank("\u{200B}") && !mediaLanguageIsBlank("\x0B") && !mediaLanguageIsBlank('en'));
 
 /* ---------------------------------------------------------------- Part B */
 echo "\nPart B — against a real database\n";
@@ -193,9 +227,10 @@ if ($db === null) {
         $collect = static function (string $l) use (&$lines): void { $lines[] = $l; };
 
         $probe = $entry['probe'];
+        $cliActor = ['userId' => null, 'ranBy' => 'command line'];
         $check('probe: pending before the run (three songs with no language)', $probe($db) === true);
 
-        $dry = migrateBackfillSongLanguageFromSongbook($db, false, $collect);
+        $dry = migrateBackfillSongLanguageFromSongbook($db, false, $collect, $cliActor);
         $dryText = implode("\n", $lines);
         $check('a dry run changes nothing and writes no activity-log row', $snapshot() === $before && $logRows() === []);
         $check('a dry run lists every song it would fill, "none" → the songbook\'s language: exactly ZH-3 → zh and HR-2 → hr',
@@ -208,7 +243,7 @@ if ($db === null) {
             && str_contains($dryText, '[review by hand, not changed] HR-1: "de" differs from songbook HR (hr)'));
 
         $lines = [];
-        $res = migrateBackfillSongLanguageFromSongbook($db, true, $collect);
+        $res = migrateBackfillSongLanguageFromSongbook($db, true, $collect, $cliActor);
         $after = $snapshot();
         $check('a confirmed run fills ONLY the songs with no language (ZH-3 → zh, HR-2 → hr)',
             $after['ZH-3'] === 'zh' && $after['HR-2'] === 'hr'
@@ -233,9 +268,13 @@ if ($db === null) {
             $details[0]['from'] === null && $details[0]['to'] === 'hr' && $details[1]['from'] === '' && $details[1]['to'] === 'zh'
             && $details[0]['note'] === 'set from songbook by the backfill card' && $details[1]['songbook'] === 'ZH',
             json_encode($details));
+        $userIds = array_column($db->query('SELECT UserId FROM tblActivityLog ORDER BY EntityId')->fetch_all(MYSQLI_ASSOC), 'UserId');
+        $check('…and who ran it: "command line", with no user',
+            array_column($details, 'ranBy') === ['command line', 'command line'] && $userIds === [null, null],
+            json_encode([$details, $userIds]));
         $check('probe: done after the run, although yue, de, und… still differ from their songbook', $probe($db) === false);
 
-        $again = migrateBackfillSongLanguageFromSongbook($db, true, $collect);
+        $again = migrateBackfillSongLanguageFromSongbook($db, true, $collect, $cliActor);
         $check('a second confirmed run changes nothing and logs nothing more',
             $snapshot() === $after && $again['filled'] === [] && count($logRows()) === 2);
 
@@ -262,6 +301,163 @@ if ($db === null) {
         $check('the script run WITH --confirm fills ZH-3 and HR-2 and nothing else',
             $code === 0 && array_diff_assoc($cliAfter, $fresh) === ['HR-2' => 'hr', 'ZH-3' => 'zh'] && count($logRows()) === 2,
             "exit {$code}: " . json_encode(array_diff_assoc($cliAfter, $fresh)));
+
+        /* ============================================================ Part C */
+        echo "\nPart C — #2137 review round 4\n";
+        $webActor = static fn(int $id): array => ['userId' => $id, 'ranBy' => 'web'];
+        $noOut = static function (string $_l): void {};
+        $userIdsNow = static fn(): array => array_column(
+            $db->query('SELECT UserId FROM tblActivityLog ORDER BY EntityId')->fetch_all(MYSQLI_ASSOC), 'UserId');
+
+        /* --- blank means NULL or only the rule's four trim characters (B6),
+               and the "pending" check agrees with the card (item 4) --- */
+        $loadSongs = static function (array $songs) use ($db): void {
+            $db->query('DELETE FROM tblSongs');
+            $db->query('DELETE FROM tblActivityLog');
+            $ins = $db->prepare('INSERT INTO tblSongs (SongId, SongbookAbbr, Language) VALUES (?, ?, ?)');
+            foreach ($songs as [$id, $book, $lang]) { $ins->bind_param('sss', $id, $book, $lang); $ins->execute(); }
+            $ins->close();
+        };
+        $setUp();
+        $spaced = [['HR-SP', 'HR', '   '], ['HR-TAB', 'HR', "\t"], ['HR-CRLF', 'HR', "\r\n"], ['HR-MIX', 'HR', " \t\n "],
+                   ['HR-NBSP', 'HR', "\u{00A0}"], ['HR-ZWSP', 'HR', "\u{200B}"], ['HR-VT', 'HR', "\x0B"], ['HR-OK', 'HR', 'hr']];
+        $loadSongs($spaced);
+        $before = $snapshot();
+        $check('probe: pending when songs hold only spaces, tabs or line breaks', $probe($db) === true);
+        $res = migrateBackfillSongLanguageFromSongbook($db, true, $noOut, $cliActor);
+        $after = $snapshot();
+        $check('songs holding only spaces, tabs or line breaks are filled (they have no language)',
+            array_diff_assoc($after, $before) === ['HR-CRLF' => 'hr', 'HR-MIX' => 'hr', 'HR-SP' => 'hr', 'HR-TAB' => 'hr'],
+            json_encode(array_diff_assoc($after, $before), JSON_UNESCAPED_UNICODE));
+        $check('a no-break space, a zero-width space and a vertical tab are values: listed for review, not filled',
+            $after['HR-NBSP'] === "\u{00A0}" && $after['HR-ZWSP'] === "\u{200B}" && $after['HR-VT'] === "\x0B"
+            && count(array_filter($res['differing'], static fn(array $d): bool => in_array($d['songId'], ['HR-NBSP', 'HR-ZWSP', 'HR-VT'], true))) === 3);
+        $check('probe: done after the run, although the no-break-space song is still there', $probe($db) === false);
+
+        /* The probe against the card's own dry run, one data set at a time. */
+        $agreement = [];
+        foreach ([
+            'only a tab-only song'          => [['HR-TAB', 'HR', "\t"], ['HR-OK', 'HR', 'hr']],
+            'only a no-break-space song'    => [['HR-NBSP', 'HR', "\u{00A0}"], ['HR-OK', 'HR', 'hr']],
+            'only a zero-width-space song'  => [['HR-ZWSP', 'HR', "\u{200B}"]],
+            'only a line-break song'        => [['HR-LF', 'HR', "\n"]],
+            'a blank song in a mul book'    => [['MULTI-X', 'MULTI', "\t"], ['HR-OK', 'HR', 'hr']],
+            'nothing blank'                 => [['HR-OK', 'HR', 'hr'], ['ZH-Y', 'ZH', 'yue']],
+        ] as $label => $songs) {
+            $loadSongs($songs);
+            $dryFill = migrateBackfillSongLanguageFromSongbook($db, false, $noOut, $cliActor)['filled'];
+            $agreement[$label] = [$probe($db), $dryFill !== []];
+        }
+        $check('the "pending" check says yes exactly when the card\'s own dry run would fill something (tab-only: yes;'
+            . ' no-break space: no; zero-width space: no; line break: yes; a blank song in a mul book: no; nothing blank: no)',
+            array_map(static fn(array $a): bool => $a[0] === $a[1], $agreement) === array_fill_keys(array_keys($agreement), true)
+            && array_column($agreement, 0) === [true, false, false, true, false, false],
+            json_encode($agreement));
+
+        /* --- who ran it (item 8(ii)) --- */
+        $setUp();
+        migrateBackfillSongLanguageFromSongbook($db, true, $noOut, $webActor(42));
+        $webDetails = array_map(static fn(array $r): array => json_decode((string)$r['Details'], true), $logRows());
+        $check('a web run records the signed-in user (UserId 42) and ranBy "web" on every row',
+            $userIdsNow() === ['42', '42'] && array_column($webDetails, 'ranBy') === ['web', 'web'],
+            json_encode([$userIdsNow(), $webDetails]));
+        $setUp();
+        $fresh = $snapshot();
+        $refused = null;
+        try {
+            migrateBackfillSongLanguageFromSongbook($db, true, $noOut, ['userId' => null, 'ranBy' => 'web']);
+        } catch (\RuntimeException $e) {
+            $refused = $e->getMessage();
+        }
+        $check('a confirmed web run with nobody signed in changes nothing, and says why',
+            $refused !== null && str_contains($refused, 'Could not tell who is running this card') && $snapshot() === $fresh && $logRows() === [],
+            (string)$refused);
+
+        /* The real script as /manage/setup-database runs it: that page defines
+           IHYMNS_SETUP_DASHBOARD, has signed the user in (getCurrentUser()),
+           and passes confirm=1 on the query string. */
+        $asDashboard = static function (?int $signedInId) use ($script, $prepend): array {
+            $wrap = tempnam(sys_get_temp_dir(), 'ihymns-backfill-web-');
+            file_put_contents($wrap, '<?php define("IHYMNS_SETUP_DASHBOARD", true);'
+                . ' function getCurrentUser(): ?array { return ' . ($signedInId === null ? 'null' : "['id' => {$signedInId}]") . '; }'
+                . ' $_GET["confirm"] = "1"; require ' . var_export($script, true) . ';');
+            $proc = proc_open([PHP_BINARY, '-d', 'auto_prepend_file=' . $prepend, $wrap], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+            $out = (string)stream_get_contents($pipes[1]) . (string)stream_get_contents($pipes[2]);
+            fclose($pipes[1]);
+            fclose($pipes[2]);
+            $code = proc_close($proc);
+            @unlink($wrap);
+            return [$code, $out];
+        };
+        $setUp();
+        [$code, $out] = $asDashboard(7);
+        $dashDetails = array_map(static fn(array $r): array => json_decode((string)$r['Details'], true), $logRows());
+        $check('the real script, run the way /manage/setup-database runs it, records user 7 and ranBy "web"',
+            $code === 0 && $userIdsNow() === ['7', '7'] && array_column($dashDetails, 'ranBy') === ['web', 'web'],
+            "exit {$code}: " . trim($out) . ' ' . json_encode($userIdsNow()));
+        $setUp();
+        $fresh = $snapshot();
+        [$code, $out] = $asDashboard(null);
+        $check('…and with nobody signed in it changes nothing and says why',
+            $snapshot() === $fresh && $logRows() === [] && str_contains($out, 'Could not tell who is running this card'), trim($out));
+        $setUp();
+        [$code, $out] = $runCli(['--confirm']);
+        $cliDetails = array_map(static fn(array $r): array => json_decode((string)$r['Details'], true), $logRows());
+        $check('the real script from the command line records no user and ranBy "command line"',
+            $code === 0 && $userIdsNow() === [null, null] && array_column($cliDetails, 'ranBy') === ['command line', 'command line'],
+            "exit {$code}: " . json_encode([$userIdsNow(), $cliDetails]));
+
+        /* --- a fill and its log row are one transaction (B7) --- */
+        $setUp();
+        $fresh = $snapshot();
+        $db->query("CREATE TRIGGER trg_t2137_refuse_log BEFORE INSERT ON tblActivityLog FOR EACH ROW
+                    BEGIN IF NEW.EntityId = 'ZH-3' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'test: the log refuses this row'; END IF; END");
+        $threw = null;
+        try {
+            migrateBackfillSongLanguageFromSongbook($db, true, $noOut, $cliActor);
+        } catch (\Throwable $e) {
+            $threw = $e->getMessage();
+        }
+        $check('when the log refuses a row part-way through (ZH-3, after HR-2 was filled and logged), no fill survives',
+            $threw !== null && str_contains($threw, 'the log refuses this row') && $snapshot() === $fresh && $logRows() === [],
+            (string)$threw . ' ' . json_encode(array_diff_assoc($snapshot(), $fresh)));
+
+        /* --- another person's change is never overwritten (B5, item 8(i)) --- */
+        $helper = __DIR__ . '/fixtures/backfill-other-session.php';
+        $snapshotVar = $db->query("SHOW VARIABLES LIKE 'innodb_snapshot_isolation'")->fetch_row();
+        $modes = ['as this server is configured' => null];
+        if ($snapshotVar !== null && strtoupper((string)$snapshotVar[1]) === 'ON') {
+            $modes['with snapshot isolation switched off for the session'] = 'OFF';
+        }
+        foreach ($modes as $modeLabel => $sessionSetting) {
+            $setUp();
+            if ($sessionSetting !== null) { $db->query("SET SESSION innodb_snapshot_isolation = {$sessionSetting}"); }
+            $other = proc_open([PHP_BINARY, $helper, $host, (string)$port, $user, $pass, $name, 'HR-2', 'fr', '1500'],
+                [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $otherPipes);
+            $ready = trim((string)fgets($otherPipes[1]));
+            $threw = null;
+            try {
+                migrateBackfillSongLanguageFromSongbook($db, true, $noOut, $cliActor);
+            } catch (\Throwable $e) {
+                $threw = $e->getMessage();
+            }
+            $otherRest = (string)stream_get_contents($otherPipes[1]) . (string)stream_get_contents($otherPipes[2]);
+            fclose($otherPipes[1]);
+            fclose($otherPipes[2]);
+            $otherCode = proc_close($other);
+            if ($sessionSetting !== null) { $db->query('SET SESSION innodb_snapshot_isolation = DEFAULT'); }
+            $now = $snapshot();
+            $logged = array_column($logRows(), 'EntityId');
+            $skipped = $threw === null && $now['ZH-3'] === 'zh' && $logged === ['ZH-3'];
+            $rolledBack = $threw !== null && str_contains($threw, 'Record has changed since last read')
+                && $now['ZH-3'] === '' && $logged === [];
+            $check("another person's change during a run is never overwritten ({$modeLabel}): HR-2 keeps their `fr`, no log row"
+                . ' claims HR-2, and the run either skipped that song or stopped and rolled back — here it '
+                . ($skipped ? 'skipped that song' : ($rolledBack ? 'stopped and rolled back' : 'did neither')),
+                $ready === 'locked' && $otherCode === 0 && str_contains($otherRest, 'committed')
+                && $now['HR-2'] === 'fr' && !in_array('HR-2', $logged, true) && ($skipped || $rolledBack),
+                json_encode(['ready' => $ready, 'threw' => $threw, 'HR-2' => $now['HR-2'], 'ZH-3' => $now['ZH-3'], 'logged' => $logged, 'other' => trim($otherRest)]));
+        }
     } finally {
         if ($prepend !== null) { @unlink($prepend); }
         $db->query("DROP DATABASE IF EXISTS `{$name}`");

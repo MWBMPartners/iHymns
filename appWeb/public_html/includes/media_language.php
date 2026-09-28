@@ -425,6 +425,26 @@ function mediaLanguageOrUnknown(?string $tag): string
 }
 
 /**
+ * Is this stored language value "not given at all"? (#2137 review round 4)
+ *
+ * ELI5: nothing there, or only spaces, tabs and line breaks — the four
+ * characters the shared rule trims (LANG-001). A no-break space, a zero-width
+ * space or anything else is NOT blank: it is a value, even if a wrong one,
+ * and code that fills blanks must leave it for a person to look at.
+ *
+ * The ONE test for this. The songbook-language backfill card fills exactly
+ * the songs it says yes to, and the card's "pending" check decides with it
+ * too — they used to decide differently (the check asked the database, whose
+ * collation counts a no-break space as nothing and a tab as something), so a
+ * tab-only song was never reported and a no-break-space song kept the card
+ * "pending" for ever.
+ */
+function mediaLanguageIsBlank(?string $value): bool
+{
+    return $value === null || trim($value, " \t\r\n") === '';
+}
+
+/**
  * Is this tag an ordinary, real language (#2137 review)?
  *
  * ELI5: "does this say which language the words are in?" Yes for `en`,
