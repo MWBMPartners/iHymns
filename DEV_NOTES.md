@@ -664,10 +664,13 @@ request and reused for the index's own per-child `<lastmod>`. Host resolution ca
 iHymns follows the shared MWBM language policy, **MWBM-MEDIA-LANG 1.0.0**. The rules themselves are in
 [`docs/standards/media-language-bcp47-policy.md`](docs/standards/media-language-bcp47-policy.md) and are
 not repeated here; this note says how iHymns applies them and where the code is. That file, the policy's
-268 test cases (`tests/fixtures/bcp47-language-policy-v1.json`), its reference data and the shared PHP
+290 test cases (`tests/fixtures/bcp47-language-policy-v1.json`), its reference data and the shared PHP
 implementation (`appWeb/public_html/includes/vendor/media-language/`) are **exact copies** of the master in
-MWBMPartners/MeedyaSuite-core. CI (`tools/media-lang/check_copies.py` in the `lint` job) fails if a copy is
-edited here. Never edit them: change the master, then run
+MWBMPartners/MeedyaSuite-core, pinned in `docs/standards/MWBM-MEDIA-LANG.lock` (core `aaaa585` since
+28 September 2026). CI (`tools/media-lang/check_copies.py` in the `lint` job) fails if a copy is edited
+here, and — since that commit — if the three PHP files (`MediaLanguagePolicy.php`, `README.md`,
+`tests/run-conformance.php`) are not all listed and laid out as in the master, or the repository tracks
+any other `run-conformance.php`. Never edit them: change the master, then run
 `python3 tools/media-lang/check_copies.py --update <core commit>`.
 
 - **Where the shared code lives, and why not in `private_html`.** It sits in the web folder's
@@ -697,9 +700,9 @@ edited here. Never edit them: change the master, then run
   under `appWeb/public_html` for the one pattern shape the five retired checkers used (`[a-z]{2,3}(-…`); a
   differently written pattern would not be caught, so reviewers still have to look. Three deliberate
   exceptions exist, each because the shared PHP cannot run there: the SQL `REGEXP` patterns in
-  `includes/language_filter.php` (script matching inside the database), its degraded-path script reader
-  (used only when the shared code is missing), and `scriptOf()` in `js/utils/language-tags.js` (the
-  browser).
+  `includes/language_filter.php` (script matching inside the database), its degraded-path readers (used
+  only when the shared code is missing), and `scriptOf()` / `isPreferenceTag()` in
+  `js/utils/language-tags.js` (the browser).
 - **Unknown is `und`, never English.** A song whose language nobody gave is stored as `und` ("not known").
   Nothing fills in `en`, the page's language, or any other default (#2132) — including a brand-new song from
   the v2 editor, whose INSERT writes `und` explicitly (`includes/song_create.php`) so the column default does
@@ -747,7 +750,10 @@ edited here. Never edit them: change the master, then run
   The same rule runs in SQL (`applyLanguageFilterSql()`), in PHP (`makeLanguageFilterPredicate()`, via the
   shared `Policy::matchTags()`) and in the browser (`preferenceMatchesTag()`);
   `tests/php/test-language-filter-scripts.php` checks the SQL and PHP agree row for row on a real database.
-  Old lists of bare codes stay valid.
+  A malformed preference matches nothing — not even the identical malformed value — and a list holding only
+  malformed preferences counts as none, so nothing is filtered (policy MATCH-010 / AUTO-010, core
+  `aaaa585`); the server judges that with the shared rules, the browser can only rule out values not
+  shaped like a tag. Old lists of bare codes stay valid.
 - **Whole-song translations accept regional and script tags** once the "Translations: allow regional and
   script languages" migration card has been run (#2131). Until then the song editor skips such a link with a
   warning pointing at the card (`includes/song_translations_schema.php` asks the live database).
