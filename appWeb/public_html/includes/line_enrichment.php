@@ -590,6 +590,11 @@ function lineEnrichmentForSong(\mysqli $db, string $songId): array
     $tr = $t->get_result();
     while ($row = $tr->fetch_assoc()) { $out['translations'][] = lineEnrichmentShapeTranslation($row); }
     $t->close();
+    /* #2137 — under each line, the shared policy's STORED order by language
+       (Part A); SortOrder is never sent by the editors, so the SQL order above
+       was really insertion order. The lines' own order is unchanged. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    $out['translations'] = mediaLanguageSortStoredWithin($out['translations'], 'lineId', 'targetLanguage');
 
     $a = $db->prepare(
         "SELECT an.* FROM tblLyricLineAnnotations an

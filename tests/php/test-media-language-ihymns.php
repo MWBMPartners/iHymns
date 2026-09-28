@@ -39,6 +39,9 @@ declare(strict_types=1);
  *     schema.sql has no fk_Trans_Lang (uq_Translation stays), the migration
  *     drops the link and its leftover index only if present, it is
  *     registered with an OR-probe, and the remap tool asks the live schema.
+ * (L) Stored order (policy Part A, TEXT-010): the helpers on a truth
+ *     table, and the translation readers no longer JOIN the registry for
+ *     identity, mark the original, and return stored order.
  * (I) GUARD, derived from the tree (rule #34): no PHP file under
  *     appWeb/public_html/ contains a hand-written language-tag pattern of the
  *     shapes the five retired checkers used. Mutation-proven: re-adding one
@@ -332,6 +335,35 @@ mliCheck('the migration is registered, pending while the link OR its index exist
 $auditSrc = (string)file_get_contents($inc . '/language_tag_audit.php');
 mliCheck('the curator remap tool asks the live schema before insisting on the registry',
     str_contains($auditSrc, 'if (songTranslationsLanguageFkPresent($db)) {'));
+
+/* ---------------------------------------------------------------- (L) --- */
+echo "(L) stored order: original first, then the policy's fixed order (#2137)\n";
+$rows = array_map(static fn(array $r): array => ['id' => $r[0], 'tag' => $r[1], 'orig' => $r[2] ?? false], [
+    ['a', 'fr'], ['b', 'ja', true], ['c', 'en'], ['d', 'es-419'], ['e', 'es-MX'], ['f', 'es'],
+    ['g', 'zh-Hant'], ['h', 'zh'], ['i', 'und'], ['j', 'English'], ['k', 'en'], ['l', 'ja-Latn'],
+]);
+$ids = array_column(mediaLanguageSortStored($rows, 'tag', 'orig'), 'id');
+mliCheck('stored order: the original\'s whole group first (ja, then ja-Latn), then by code, general before specific, '
+    . 'countries before areas (es-MX before es-419), und after real languages, a malformed value last, ties kept',
+    $ids === ['b', 'l', 'c', 'k', 'f', 'e', 'd', 'a', 'h', 'g', 'i', 'j'], implode(',', $ids));
+$within = mediaLanguageSortStoredWithin([
+    ['lineId' => 7, 'targetLanguage' => 'fr'], ['lineId' => 7, 'targetLanguage' => 'de'],
+    ['lineId' => 3, 'targetLanguage' => 'es'], ['lineId' => 3, 'targetLanguage' => 'en'],
+], 'lineId', 'targetLanguage');
+mliCheck('under each line, translations are in stored order; the lines keep their own order',
+    array_map(static fn(array $r): string => $r['lineId'] . ':' . $r['targetLanguage'], $within) === ['7:de', '7:fr', '3:en', '3:es']);
+$songDataSrc = (string)file_get_contents($inc . '/SongData.php');
+$gstStart = strpos($songDataSrc, 'public function getSongTranslations(');
+$gstBody  = $gstStart === false ? '' : substr($songDataSrc, $gstStart, (int)strpos($songDataSrc, "\n    }\n", $gstStart) - $gstStart);
+mliCheck('the translation cluster never JOINs tblLanguages for identity (a pt-BR original used to vanish)',
+    $gstBody !== '' && !str_contains($gstBody, 'JOIN tblLanguages'));
+mliCheck('the translation cluster marks the source as the original and returns stored order',
+    str_contains($gstBody, '1 AS is_original') && str_contains($gstBody, "mediaLanguageSortStored(\$rows, 'target_language', 'is_original')"));
+mliCheck("a song's translation links are no longer ordered by plain text (ORDER BY TargetLanguage)",
+    preg_match('/ORDER BY TargetLanguage\\s*"/', $songDataSrc) !== 1 && str_contains($songDataSrc, "mediaLanguageSortStored(\$translations, 'language')"));
+mliCheck('line translations are put in stored order under each line (public read and editor load)',
+    str_contains($songDataSrc, "mediaLanguageSortStoredWithin(\$rows, 'lineId', 'targetLanguage')")
+    && str_contains((string)file_get_contents($inc . '/line_enrichment.php'), "mediaLanguageSortStoredWithin(\$out['translations'], 'lineId', 'targetLanguage')"));
 
 echo "\n  {$passed} passed, " . count($failures) . " failed\n";
 if ($failures !== []) {

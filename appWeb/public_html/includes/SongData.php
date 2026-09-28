@@ -497,8 +497,32 @@ class SongData
      * language picker AND the song page's hreflang alternates (#1206). Wrapped so
      * a missing table / DB hiccup yields an empty list, never a fatal.
      *
+     * #2137 — two faults fixed, both from the shared language policy
+     * (MWBM-MEDIA-LANG):
+     *
+     *  1. The language is IDENTITY, the registry is only for NAMES. Every branch
+     *     used to JOIN tblLanguages ON Code = the stored tag, and that table holds
+     *     bare codes only (`pt`, `zh`). So a source song tagged `pt-BR` or
+     *     `zh-Hans` — and, once #2131's migration allows them, any translation
+     *     tagged that way — silently vanished from the picker and from the
+     *     hreflang links. Now the stored tag is read as it is (tidied by the
+     *     shared rule), and names come from resolveLanguageMeta(), which uses the
+     *     registry for the base language's NAME only ("Portuguese (Brazil)").
+     *  2. The list had no ORDER BY at all, so its order was whatever the
+     *     database happened to return, and the original was not guaranteed
+     *     first. It is now returned in the policy's STORED order (Part A,
+     *     TEXT-010): the original's language group first, then the rest by
+     *     language code, general before specific. A menu that shows these to a
+     *     person re-sorts them for that person (Part B) — see
+     *     includes/pages/song.php and api.php song_translations.
+     *
+     * The `IsActive` filter on the registry row is gone with the JOIN: a curator
+     * switching a language off in the registry hides it from language PICKERS,
+     * it was never meant to hide songs that are already in that language.
+     *
      * @return array<int, array<string, mixed>> rows: song_id, target_language,
-     *         language_name, native_name, text_direction, translator, verified
+     *         language_name, native_name, text_direction, translator, verified,
+     *         is_original (true for the source song of the cluster)
      */
     public function getSongTranslations(string $songId): array
     {
@@ -517,33 +541,28 @@ class SongData
             $sql = '
                 /* Outward — this song has translations to other languages */
                 SELECT t.TranslatedSongId AS song_id, t.TargetLanguage AS target_language,
-                       l.Name AS language_name, l.NativeName AS native_name,
-                       l.TextDirection AS text_direction, t.Translator AS translator, t.Verified AS verified
+                       t.Translator AS translator, t.Verified AS verified, 0 AS is_original
                   FROM tblSongTranslations t
                   JOIN tblSongs tgt ON tgt.SongId = t.TranslatedSongId AND ' . $this->_visible('tgt') . '
-                  JOIN tblLanguages l ON l.Code = t.TargetLanguage
-                 WHERE t.SourceSongId = ? AND l.IsActive = 1
+                 WHERE t.SourceSongId = ?
                 UNION
-                /* Inward — this song IS a translation; surface the source. */
-                SELECT src.SongId AS song_id, srcLang.Code AS target_language,
-                       srcLang.Name AS language_name, srcLang.NativeName AS native_name,
-                       srcLang.TextDirection AS text_direction, "" AS translator, 1 AS verified
+                /* Inward — this song IS a translation; surface the source,
+                   which is the ORIGINAL of the cluster (#2137). */
+                SELECT src.SongId AS song_id, src.Language AS target_language,
+                       "" AS translator, 1 AS verified, 1 AS is_original
                   FROM tblSongTranslations selfT
                   JOIN tblSongs src ON src.SongId = selfT.SourceSongId AND ' . $this->_visible('src') . '
-                  JOIN tblLanguages srcLang ON srcLang.Code = src.Language
-                 WHERE selfT.TranslatedSongId = ? AND srcLang.IsActive = 1
+                 WHERE selfT.TranslatedSongId = ?
                 UNION
                 /* Siblings — the source\'s OTHER translations. */
                 SELECT sibling.TranslatedSongId AS song_id, sibling.TargetLanguage AS target_language,
-                       l2.Name AS language_name, l2.NativeName AS native_name,
-                       l2.TextDirection AS text_direction, sibling.Translator AS translator, sibling.Verified AS verified
+                       sibling.Translator AS translator, sibling.Verified AS verified, 0 AS is_original
                   FROM tblSongTranslations selfT2
                   JOIN tblSongTranslations sibling
                        ON sibling.SourceSongId = selfT2.SourceSongId
                       AND sibling.TranslatedSongId <> selfT2.TranslatedSongId
                   JOIN tblSongs sib ON sib.SongId = sibling.TranslatedSongId AND ' . $this->_visible('sib') . '
-                  JOIN tblLanguages l2 ON l2.Code = sibling.TargetLanguage
-                 WHERE selfT2.TranslatedSongId = ? AND l2.IsActive = 1
+                 WHERE selfT2.TranslatedSongId = ?
             ';
             /* prepare() throws under MYSQLI_REPORT_STRICT (includes/db_mysql.php),
                so it never returns false — a real failure propagates to the caller's
@@ -557,10 +576,33 @@ class SongData
                 $rows[] = $row;
             }
             $stmt->close();
-            return $rows;
         } catch (\Throwable $_e) {
             return [];   // missing table / DB hiccup → no alternates, never fatal
         }
+
+        /* #2137 — the tag is the identity (tidied by the shared rule when it
+           can be); the registry supplies the NAME only, via
+           resolveLanguageMeta() — "Portuguese (Brazil)", the language's own
+           name, and the text direction (from the script when the tag names
+           one). Then the policy's STORED order, original first. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'language_names.php';
+        foreach ($rows as &$row) {
+            $tag  = trim((string)($row['target_language'] ?? ''));
+            $tidy = mediaLanguageReady() ? mediaLanguageTagForStorage($tag) : $tag;
+            if (is_string($tidy)) {
+                $tag = $tidy;
+            }
+            $meta = resolveLanguageMeta($tag);
+            $row['target_language'] = $tag;
+            $row['language_name']   = $meta['name'];
+            $row['native_name']     = $meta['nativeName'];
+            $row['text_direction']  = $meta['dir'];
+            $row['is_original']     = !empty($row['is_original']);
+            $row['verified']        = (int)($row['verified'] ?? 0);
+        }
+        unset($row);
+        return mediaLanguageSortStored($rows, 'target_language', 'is_original');
     }
 
     /**
@@ -3221,6 +3263,12 @@ class SongData
                             );
                             foreach ($rows as &$r) { $r['isPrimary'] = (bool)$r['isPrimary']; }
                             unset($r);
+                            /* #2137 — under each line, the policy's STORED
+                               order by language (SortOrder is never sent by
+                               the editors, so it was really insertion
+                               order); the lines' own order is unchanged. */
+                            require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+                            $rows = mediaLanguageSortStoredWithin($rows, 'lineId', 'targetLanguage');
                             if ($rows) { $out['translations'] = $rows; }
                         }
                         break;
@@ -5662,6 +5710,12 @@ class SongData
     /**
      * Get translation links for a song (#352).
      *
+     * #2137 — returned in the shared language policy's STORED order (Part A:
+     * by language code, general before specific, `es-MX` before `es-419`)
+     * instead of `ORDER BY TargetLanguage`, which sorts letters and so put
+     * `es-419` before `es-AR`. The song itself is the original and is not in
+     * this list; every row here is a translation of it.
+     *
      * @param string $songId Song ID
      * @return array Array of {songId, language} objects
      */
@@ -5671,7 +5725,7 @@ class SongData
             "SELECT TranslatedSongId AS songId, TargetLanguage AS language
              FROM tblSongTranslations
              WHERE SourceSongId = ?
-             ORDER BY TargetLanguage"
+             ORDER BY Id"
         );
         $stmt->bind_param('s', $songId);
         $stmt->execute();
@@ -5681,7 +5735,8 @@ class SongData
             $translations[] = $row;
         }
         $stmt->close();
-        return $translations;
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+        return mediaLanguageSortStored($translations, 'language');
     }
 
     /**

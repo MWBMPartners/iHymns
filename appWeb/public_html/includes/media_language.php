@@ -436,6 +436,40 @@ function mediaLanguageSortStored(array $rows, string $tagKey, ?string $originalK
 }
 
 /**
+ * Stored order WITHIN groups of consecutive rows (#2137): rows arrive ordered
+ * by some outer key (a lyric line's Id, say), and inside each run of rows that
+ * share that key they are put into the policy's stored order by language
+ * (mediaLanguageSortStored()). The outer order is never changed.
+ *
+ * ELI5: every line keeps its place; the translations UNDER each line are put
+ * in the fixed language order (de, en, es … general before specific).
+ *
+ * @param list<array<string,mixed>> $rows     Already ordered by $groupKey.
+ * @param string                    $groupKey e.g. 'lineId' or 'LineId'.
+ * @param string                    $tagKey   e.g. 'targetLanguage'.
+ * @return list<array<string,mixed>>
+ */
+function mediaLanguageSortStoredWithin(array $rows, string $groupKey, string $tagKey): array
+{
+    $out = [];
+    $run = [];
+    $runKey = null;
+    foreach (array_values($rows) as $row) {
+        $key = (string)($row[$groupKey] ?? '');
+        if ($run !== [] && $key !== $runKey) {
+            array_push($out, ...mediaLanguageSortStored($run, $tagKey));
+            $run = [];
+        }
+        $runKey = $key;
+        $run[] = $row;
+    }
+    if ($run !== []) {
+        array_push($out, ...mediaLanguageSortStored($run, $tagKey));
+    }
+    return $out;
+}
+
+/**
  * Compare two language NAMES the way an English reader expects (UI-040 —
  * "compared with the interface language's sorting rules").
  *
