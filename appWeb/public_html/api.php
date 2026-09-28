@@ -11151,7 +11151,10 @@ if ($action !== null) {
          * (`pt-br` → `pt-BR`), repeats removed, and the ORDER IS KEPT — it is
          * the person's priority (#2137). It used to cut every entry to its
          * base code and sort the list, losing both. Empty array clears the
-         * filter. The response carries `languages` (as saved) and `subtags`
+         * filter. At most 32 are kept — the first 32, in order (#2137 review
+         * round 4: every preference adds to the filter's SQL, so a longer
+         * list is cut where it is parsed). The response carries `languages`
+         * (as saved — so a caller can see if a list was cut) and `subtags`
          * (the distinct base codes, sorted — the field's meaning is unchanged).
          * ----------------------------------------------------------------- */
         case 'user_preferred_languages_save':

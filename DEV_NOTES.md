@@ -759,16 +759,38 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   The same rule runs in SQL (`applyLanguageFilterSql()`), in PHP (`makeLanguageFilterPredicate()`, via the
   shared `Policy::matchTags()`) and in the browser (`preferenceMatchesTag()`);
   `tests/php/test-language-filter-scripts.php` checks the SQL and PHP agree row for row on a real database
-  (MariaDB and MySQL 8.4), including 55 stored values not in standard form. For that, the SQL also matches
+  (MariaDB and MySQL 8.4), including 59 stored values not in standard form and 47 that the column's collation used to bend. For that, the SQL also matches
   the old spellings the shared data file maps to the preferred language (`iw` for `he`, `in` for `id`,
   `zh-yue` for `yue`, `i-klingon` for `tlh`, `sgn-BR` for `bzs`), never treats a spelling that only starts
   like a language as that language (`zh-yue` is Cantonese, not `zh`), treats `und`/`mul`/`mis`/`zxx` as
-  preferences that match only themselves, and ignores letter case and surrounding spaces
-  (`languageFilterAliasIndex()`). What still differs, stated plainly: MySQL's `TRIM()` removes spaces only,
-  so a stored value with a surrounding TAB or line break is compared with it; a malformed stored value whose
-  first part is a real code is matched by that part in SQL but matches nothing in PHP; and the alias lists
-  need the shared rules installed. On 300,000 rows the SQL filter now takes about 60–170 ms against
-  40–110 ms before (measured on MariaDB 11 and MySQL 8.4); a song catalogue is far smaller.
+  preferences that match only themselves (`languageFilterAliasIndex()`), and — since round 4 of the review —
+  reads a stored value exactly as the shared rule does: it ignores ASCII letter case and the rule's four trim
+  characters (space, tab, carriage return, line feed) at either end, and nothing else. The column's collation
+  used to bend more than that: it ignores accents, letter width and some characters entirely, so `én`, full-width
+  `ｅｎ`, `ünd`, and `en` followed by a no-break or zero-width space all matched `en` or `und`, a value holding only
+  such a space counted as untagged, and MySQL's `TRIM()` left tabs and line breaks on. The SQL now compares BYTES
+  (`CAST … AS BINARY` — a binary *collation* is not enough, because `utf8mb4_bin` still ignores trailing spaces),
+  turns any non-ASCII character into `?` first (`LOWER()` maps `İ` to `i` on both servers, which would make `İW`
+  the Hebrew alias `iw`), and trims by turning tab, CR and LF into spaces and then using `TRIM()` — the same result
+  under byte comparisons, and it works on MySQL 5.7, which has no `REGEXP_REPLACE`. Because re-trimming for every
+  comparison made the filter 2–5 times slower, a value that is "clean" (only ASCII letters, digits and hyphens —
+  almost every stored value) is compared on a fast path that computes exactly the same bytes; only the rest take
+  the exact path. The in-memory
+  filter trims the same four characters (it used PHP's bare `trim()`, which also strips NUL and a vertical tab).
+  **What still differs, stated plainly:** a MALFORMED stored value that begins the way a matching value begins is
+  matched in SQL, where the shared rule matches nothing — SQL looks at the start of a value and does not check the
+  whole of it is a well-formed tag. For `en`: `en-`, `en--GB`, `en-toolongsubtag`, `en-é`; for `yue`: `zh-yue-` and
+  `zh-yue-%` (they start like the old form `zh-yue` followed by more parts); for `zh`/`zh-Hans`: `zh-hant` with a
+  line break inside. `tests/php/test-language-filter-scripts.php` pins exactly this list, so any other difference
+  turns it red. And the alias lists need the shared rules installed. **Speed** (MariaDB 11.8 and MySQL 8.4 in
+  throwaway containers on a development Mac, median of 5): on 300,000 rows a filter of 1–5 preferences takes about
+  230–430 ms, within about 30% of the code before round 4 (180–450 ms on the same machine); on the review's
+  20,000-row harness, 8 preferences take about 40 ms before and after. **At most 32 preferences are used** — the
+  first 32, in order (`IHYMNS_LANGUAGE_FILTER_MAX_PREFERENCES`, applied in `parsePreferredLanguageSubtags()` and
+  `languageFilterUsablePreferences()`): a 2,000-entry header used to build a 270 KB query taking 3–8 seconds, and
+  now costs what 32 do (about 0.1 s). The limit also applies to the saved account setting — saving a longer list
+  saves its first 32, and the save's answer shows what was kept. The settings page's picker has no such limit, so a
+  person who ticks more than 32 languages would find the rest ignored (not changed here; raised with the owner).
   A malformed preference matches nothing — not even the identical malformed value — and a list holding only
   malformed preferences counts as none, so nothing is filtered (policy MATCH-010 / AUTO-010, core
   `aaaa585`); the server judges that with the shared rules, the browser can only rule out values not

@@ -7668,7 +7668,10 @@ paths:
         `includes/language_filter.php`): invalid entries are dropped, each
         tag is tidied by the shared language rule (`pt-br` → `pt-BR`),
         repeats are removed, and the ORDER IS KEPT (it used to cut each
-        entry to its base code and sort the list). Filtering still matches
+        entry to its base code and sort the list). At most 32 are kept —
+        the first 32, in order; the response's `languages` is what was
+        saved. The same limit applies to the `X-Preferred-Languages` header
+        and `?lang=` on every filtered request. Filtering still matches
         by language group, so a `pt-BR` preference shows `pt` and `pt-PT`
         songs too. An empty array clears the
         filter — the column is set to `NULL` to distinguish "no

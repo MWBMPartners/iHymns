@@ -58,9 +58,27 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 /**
+ * The most preferences the filter uses: the first 32, in the person's order
+ * (#2137 review round 4). A list arrives from a request header, a query
+ * string or a saved account setting, and every preference adds to the SQL
+ * the filter runs; 2,000 entries built a query of about 270 KB with 6,000
+ * bound values that took several seconds on a 20,000-row table. No real
+ * reader ranks more than a handful of languages, so the rest are ignored —
+ * the first 32 are kept exactly, in order. Applied where a list is parsed
+ * (parsePreferredLanguageSubtags()) AND where the filter builders take it
+ * (languageFilterUsablePreferences()), so a caller that skips the parser
+ * is bounded too. It also bounds what the account setting stores: saving a
+ * longer list saves its first 32 (the save's answer shows what was kept).
+ */
+const IHYMNS_LANGUAGE_FILTER_MAX_PREFERENCES = 32;
+
+/**
  * Parse a comma-separated list of preferred languages into canonical tags,
  * keeping the order given (#2137). Invalid tokens are silently dropped — a
  * curator typing `en, es, garbage` gets `["en", "es"]` rather than a 400.
+ * At most IHYMNS_LANGUAGE_FILTER_MAX_PREFERENCES tags are returned: the
+ * first ones, in order (#2137 review round 4); parsing stops there, so a
+ * 2,000-entry header costs no more than a 32-entry one.
  *
  * ELI5: `"PT-br, en, pt-BR"` → `["pt-BR", "en"]`: tidied, first-come order
  * kept, repeats removed. It used to return `["en", "pt"]` — cut to the base
@@ -82,6 +100,9 @@ function parsePreferredLanguageSubtags(?string $rawCsv): array
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
     $out = [];
     foreach (explode(',', $rawCsv) as $tok) {
+        if (count($out) >= IHYMNS_LANGUAGE_FILTER_MAX_PREFERENCES) {
+            break;   /* the first 32 are kept; the rest are ignored */
+        }
         $tok = trim($tok);
         if ($tok === '') continue;
         if (!mediaLanguageReady()) {
@@ -303,6 +324,10 @@ function languageFilterPlan(array $preferences): array
  * any other caller, which before this change hid every song from a list
  * holding only malformed values.
  *
+ * Also keeps only the first IHYMNS_LANGUAGE_FILTER_MAX_PREFERENCES usable
+ * preferences, in order (#2137 review round 4), for a caller that did not
+ * go through parsePreferredLanguageSubtags().
+ *
  * @param list<string> $preferences
  * @return list<string>
  */
@@ -311,6 +336,9 @@ function languageFilterUsablePreferences(array $preferences): array
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
     $out = [];
     foreach ($preferences as $pref) {
+        if (count($out) >= IHYMNS_LANGUAGE_FILTER_MAX_PREFERENCES) {
+            break;
+        }
         $pref = trim((string)$pref);
         if ($pref === '') continue;
         if (mediaLanguageReady()) {
@@ -412,12 +440,47 @@ function languageFilterAliasIndex(): array
 }
 
 /**
+ * The four characters the shared rule trims from both ends of a stored value
+ * before reading it — space, tab, carriage return, line feed (LANG-001 step 1;
+ * `Policy::canonicalise()` calls `trim($raw, " \t\r\n")`). NOT PHP's bare
+ * trim(), which also strips a NUL byte and a vertical tab: the shared rule
+ * deliberately does not, and the filter must read a value the way the rule
+ * does (#2137 review round 4).
+ */
+const IHYMNS_LANGUAGE_FILTER_TRIM = " \t\r\n";
+
+/**
  * Build a SQL WHERE-clause fragment + bind-param pair to apply
  * the language filter at SELECT time.
  *
- * With T = LOWER(TRIM(col)) and P = T's first part, the fragment is:
+ * #2137 review round 4 — how the SQL reads a stored value, so it keeps
+ * exactly the rows the in-memory filter keeps:
+ *   R = the value with the four trim characters removed from both ends
+ *       (MySQL's TRIM() removes spaces only, so a value with a surrounding
+ *       tab or line break used to be compared with it; see $r below for how
+ *       this is done on every supported server, MySQL 5.7 included);
+ *   T = R with every non-ASCII character turned into `?` (CONVERT … USING
+ *       ascii), lower-cased, then compared BYTE FOR BYTE (CAST … AS BINARY).
+ * Why each step, since each one was a real disagreement:
+ *   - the column's collation (utf8mb4_unicode_ci) ignores accents, letter
+ *     width, and some characters entirely: `én`, full-width `ｅｎ`, `ünd`,
+ *     `en` + a no-break or zero-width space all compared equal to `en` or
+ *     `und`, and a value holding only a no-break or zero-width space counted
+ *     as empty. The shared rule reads every one as malformed.
+ *   - a binary COLLATION is not enough: utf8mb4_bin still ignores trailing
+ *     spaces (`'und '` = `'und'` — checked on MariaDB 11.8 and MySQL 8.4), so
+ *     the first part of `und -x` would count as `und`. CAST … AS BINARY
+ *     compares every byte.
+ *   - LOWER() maps some non-ASCII letters to ASCII ones (`İ` → `i`, the
+ *     Kelvin sign → `k`, on both servers), so `İW` would become the Hebrew
+ *     alias `iw`. The shared rule only ever reads ASCII, so non-ASCII is
+ *     turned into `?` first, which no language code contains.
+ *   - "untagged" is decided by CHAR_LENGTH(R) = 0, which no collation can
+ *     bend.
+ *
+ * With T and its first part P, the fragment is:
  *   AND (
- *       col IS NULL OR TRIM(col) = ''                        -- untagged: always shown
+ *       col IS NULL OR CHAR_LENGTH(R) = 0                    -- untagged: always shown
  *    OR P IN ('und', 'mul', 'zxx')                           -- always shown (#2132)
  *    OR T IN (?, …)                                          -- exact-match preferences
  *    OR ( (P IN (L, retired codes for L) OR T = / LIKE an extlang form of L
@@ -441,16 +504,23 @@ function languageFilterAliasIndex(): array
  *   - a private-use or grandfathered preference, and `und` / `mul` / `mis` /
  *     `zxx` as a preference, match exactly only;
  *   - `und`, `mul` and `zxx` rows, and untagged rows, always pass (#2132);
- *   - letter case and leading/trailing SPACES are ignored (TRIM).
+ *   - ASCII letter case, and the four trim characters at either end, are
+ *     ignored; nothing else is (see R and T above).
  * Every value is bound; the REGEXP patterns are built only from four-letter
- * scripts the shared rule has validated.
+ * scripts the shared rule has validated, and everything else in the SQL is
+ * a constant.
  *
  * What SQL still cannot match the way the shared rule does, stated plainly:
- * MySQL's TRIM() removes spaces only, so a stored value with a leading or
- * trailing TAB or line break is compared with it; a malformed stored value
- * whose first part happens to be a real code (`en-toolongsubtag`) is matched
- * by that first part, where the shared rule matches nothing; and without the
- * shared rules installed there are no alias lists at all.
+ * a MALFORMED stored value that begins the way a matching value begins is
+ * matched in SQL, where the shared rule matches nothing — SQL looks at the
+ * start of the value, it does not check the whole value is a well-formed tag.
+ * For `en`: `en-`, `en--GB`, `en-toolongsubtag`, `en-é` (its first part is
+ * `en`). For `yue`: `zh-yue-` and `zh-yue-%` (they start like the old form
+ * `zh-yue-…`, which the SQL matches as "that form followed by more parts").
+ * Checking well-formedness in SQL would take a full tag grammar per row;
+ * tests/php/test-language-filter-scripts.php pins exactly this list, so a
+ * new difference turns it red. And without the shared rules installed there
+ * are no alias lists at all.
  * Empty preferences return `[" AND 1=1", '', []]` so callers can concatenate
  * without checking.
  *
@@ -467,63 +537,107 @@ function applyLanguageFilterSql(string $colExpr, array $subtags): array
     }
     $plan  = languageFilterPlan($subtags);
     $index = languageFilterAliasIndex();
-    $t = "LOWER(TRIM($colExpr))";
-    $p = "LOWER(SUBSTRING_INDEX(TRIM($colExpr), '-', 1))";
     $in = static fn(int $n): string => implode(',', array_fill(0, $n, '?'));
 
-    $always = IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN;
-    $values = $always;
-    $where  = " AND ($colExpr IS NULL OR TRIM($colExpr) = '' OR $p IN (" . $in(count($always)) . ")";
-    if ($plan['whole'] !== []) {
-        $where .= " OR $t IN (" . $in(count($plan['whole'])) . ")";
-        $values = array_merge($values, $plan['whole']);
-    }
-    $languages = array_fill_keys($plan['any'], null) + $plan['byScript'];
-    foreach ($languages as $lang => $scripts) {
-        $lang    = (string)$lang;
-        $aliases = $index['aliases'][$lang] ?? ['primary' => [], 'prefix' => [], 'whole' => []];
-        $primary = array_values(array_unique(array_merge([$lang], $aliases['primary'])));
-        $match   = ["$p IN (" . $in(count($primary)) . ")"];
-        $vals    = $primary;
-        foreach ($aliases['prefix'] as $form) {
-            $match[] = "$t = ? OR $t LIKE ?";
-            array_push($vals, $form, $form . '-%');
+    /* The rule, written once over three expressions (#2137 review round 4):
+       $t the value as bytes, lower-cased, for = / IN / LIKE; $l the same as
+       ASCII text, for REGEXP; $empty "is it untagged". Called twice below. */
+    $build = static function (string $t, string $l, string $empty) use ($plan, $index, $in): array {
+        $p      = "SUBSTRING_INDEX($t, '-', 1)";
+        $always = IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN;
+        $values = $always;
+        $sql    = "($empty OR $p IN (" . $in(count($always)) . ")";
+        if ($plan['whole'] !== []) {
+            $sql   .= " OR $t IN (" . $in(count($plan['whole'])) . ")";
+            $values = array_merge($values, $plan['whole']);
         }
-        if ($aliases['whole'] !== []) {
-            $match[] = "$t IN (" . $in(count($aliases['whole'])) . ")";
-            $vals = array_merge($vals, $aliases['whole']);
-        }
-        $clause = '((' . implode(' OR ', $match) . ')';
-        /* Forms that start like L but mean another language. An extlang form
-           is always exactly "L-xxx", so its SECOND part is enough to spot it
-           (one IN list, not one LIKE per form — the first version of this ran
-           about 80 comparisons on every `zh` row and was 7 times slower). */
-        $extlangSeconds = [];
-        $wholeForms = [];
-        foreach ($index['startsLike'][$lang] ?? [] as [$form, $kind]) {
-            if ($kind === 'prefix') {
-                $extlangSeconds[] = explode('-', $form, 2)[1];
-            } else {
-                $wholeForms[] = $form;
+        $languages = array_fill_keys($plan['any'], null) + $plan['byScript'];
+        foreach ($languages as $lang => $scripts) {
+            $lang    = (string)$lang;
+            $aliases = $index['aliases'][$lang] ?? ['primary' => [], 'prefix' => [], 'whole' => []];
+            $primary = array_values(array_unique(array_merge([$lang], $aliases['primary'])));
+            $match   = ["$p IN (" . $in(count($primary)) . ")"];
+            $vals    = $primary;
+            foreach ($aliases['prefix'] as $form) {
+                $match[] = "$t = ? OR $t LIKE ?";
+                array_push($vals, $form, $form . '-%');
             }
+            if ($aliases['whole'] !== []) {
+                $match[] = "$t IN (" . $in(count($aliases['whole'])) . ")";
+                $vals = array_merge($vals, $aliases['whole']);
+            }
+            $clause = '((' . implode(' OR ', $match) . ')';
+            /* Forms that start like L but mean another language. An extlang form
+               is always exactly "L-xxx", so its SECOND part is enough to spot it
+               (one IN list, not one LIKE per form — the first version of this ran
+               about 80 comparisons on every `zh` row and was 7 times slower). */
+            $extlangSeconds = [];
+            $wholeForms = [];
+            foreach ($index['startsLike'][$lang] ?? [] as [$form, $kind]) {
+                if ($kind === 'prefix') {
+                    $extlangSeconds[] = explode('-', $form, 2)[1];
+                } else {
+                    $wholeForms[] = $form;
+                }
+            }
+            if ($extlangSeconds !== []) {
+                $clause .= " AND SUBSTRING_INDEX(SUBSTRING_INDEX($t, '-', 2), '-', -1) NOT IN (" . $in(count($extlangSeconds)) . ")";
+                $vals = array_merge($vals, $extlangSeconds);
+            }
+            if ($wholeForms !== []) {
+                $clause .= " AND $t NOT IN (" . $in(count($wholeForms)) . ")";
+                $vals = array_merge($vals, $wholeForms);
+            }
+            if ($scripts !== null) {
+                $clause .= " AND ($l NOT REGEXP ? OR $l REGEXP ?)";
+                $vals[] = '^[a-z]{2,8}(-[a-z]{3}){0,3}-[a-z]{4}(-|$)';
+                $vals[] = '^[a-z]{2,8}(-[a-z]{3}){0,3}-(' . implode('|', $scripts) . ')(-|$)';
+            }
+            $sql   .= ' OR ' . $clause . ')';
+            $values = array_merge($values, $vals);
         }
-        if ($extlangSeconds !== []) {
-            $clause .= " AND SUBSTRING_INDEX(SUBSTRING_INDEX($t, '-', 2), '-', -1) NOT IN (" . $in(count($extlangSeconds)) . ")";
-            $vals = array_merge($vals, $extlangSeconds);
-        }
-        if ($wholeForms !== []) {
-            $clause .= " AND $t NOT IN (" . $in(count($wholeForms)) . ")";
-            $vals = array_merge($vals, $wholeForms);
-        }
-        if ($scripts !== null) {
-            $clause .= " AND ($t NOT REGEXP ? OR $t REGEXP ?)";
-            $vals[] = '^[a-z]{2,8}(-[a-z]{3}){0,3}-[a-z]{4}(-|$)';
-            $vals[] = '^[a-z]{2,8}(-[a-z]{3}){0,3}-(' . implode('|', $scripts) . ')(-|$)';
-        }
-        $where .= ' OR ' . $clause . ')';
-        $values = array_merge($values, $vals);
-    }
-    $where .= ")";
+        return [$sql . ')', $values];
+    };
+
+    /* EXACT path — R, L and T as the docblock above describes.
+       R turns every tab, CR and LF into a space and then TRIM()s spaces.
+       That is the rule's trim at both ends; INSIDE the value it also turns
+       those three characters into spaces, which cannot change any result:
+       every comparison below is against letters, digits and hyphens only
+       (codes, tags, `form-%`, the script patterns), which neither a tab nor
+       a space can ever equal or match, and the value's ends — the only place
+       a regular expression's `$` could treat a line break specially — have
+       already been trimmed. (REGEXP_REPLACE would trim the same way, but
+       MySQL 5.7, which this project supports, does not have it: the whole
+       statement would fail and every filtered list with it. It was also no
+       faster.) The three characters are written into the SQL as themselves,
+       not as backslash escapes, so this reads the same whether or not the
+       server treats backslashes in a string as escapes
+       (NO_BACKSLASH_ESCAPES). */
+    $r = "TRIM(REPLACE(REPLACE(REPLACE($colExpr, '\t', ' '), '\r', ' '), '\n', ' '))";
+    $l = "LOWER(CONVERT($r USING ascii))";
+    [$exactSql, $exactValues] = $build("CAST($l AS BINARY)", $l, "CHAR_LENGTH($r) = 0");
+
+    /* FAST path, for a CLEAN value — only ASCII letters, digits and hyphens,
+       which is what almost every stored value is. For such a value there is
+       nothing to trim and nothing non-ASCII, so R is the value itself and
+       LOWER(CONVERT(R USING ascii)) is byte-for-byte LOWER(value): the fast
+       path computes exactly the bytes the exact path would, and so cannot
+       disagree with it. It exists because the exact path re-trims the value
+       for every comparison (MySQL cannot reuse an expression within a row):
+       measured, that made the filter 2–5 times slower on a 20,000-row table
+       with 8–32 preferences, where this keeps it close to what it was.
+       "Clean" is tested once per row, without anchors or escapes: after
+       CONVERT … USING ascii every non-ASCII character is `?`, so "contains
+       no character outside A–Z, a–z, 0–9 and -" is exact. (An anchored
+       `^…$` test would not be: `$` also matches just before a final line
+       break, so `en` + a line feed would pass as clean.) An empty value
+       counts as clean and is untagged on both paths. */
+    [$fastSql, $fastValues] = $build("CAST(LOWER($colExpr) AS BINARY)", "LOWER($colExpr)", "CHAR_LENGTH($colExpr) = 0");
+    $clean = "CONVERT($colExpr USING ascii) NOT REGEXP '[^A-Za-z0-9-]'";
+
+    $where  = " AND ($colExpr IS NULL OR IF($clean, $fastSql, $exactSql))";
+    $values = array_merge($fastValues, $exactValues);
     return [$where, str_repeat('s', count($values)), $values];
 }
 
@@ -552,7 +666,10 @@ function makeLanguageFilterPredicate(array $subtags): callable
     $prefs  = array_values($subtags);
     $plan   = languageFilterPlan($prefs);
     return static function (array $row) use ($always, $prefs, $plan): bool {
-        $tag = trim((string)($row['language'] ?? $row['Language'] ?? ''));
+        /* The shared rule's own four trim characters (round 4): PHP's bare
+           trim() also strips NUL and a vertical tab, so `en` + a vertical tab
+           used to match `en` here although the rule reads it as malformed. */
+        $tag = trim((string)($row['language'] ?? $row['Language'] ?? ''), IHYMNS_LANGUAGE_FILTER_TRIM);
         if ($tag === '') return true;                   // untagged → always show
         if (isset($always[strtolower(explode('-', $tag, 2)[0])])) return true;
         if (mediaLanguageReady()) {
