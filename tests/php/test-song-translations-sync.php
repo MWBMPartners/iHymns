@@ -250,7 +250,9 @@ $check('details after a language change: the same primary language under the sha
     && songTranslationsDetailsAfterChange('zh', 'zh-Hant') === 'keep' && songTranslationsDetailsAfterChange(" pt\t", 'pt-BR') === 'keep');
 $check('…a different language, or a value the rule cannot read, is no longer verified (fr → de, English → en)',
     songTranslationsDetailsAfterChange('fr', 'de') === 'unverify' && songTranslationsDetailsAfterChange('English', 'en') === 'unverify'
-    && songTranslationsDetailsAfterChange("pt\u{00A0}", 'pt-BR') === 'unverify');
+    && songTranslationsDetailsAfterChange("pt\u{00A0}", 'pt-BR') === 'unverify'
+    /* two values the rule cannot read are not "the same language" either, even spelled alike */
+    && songTranslationsDetailsAfterChange('English', 'English') === 'unverify');
 $plan = songTranslationsPlanSync(['de' => $want('T1', 'de')], [['id' => 1, 'songId' => 'T1', 'language' => 'fr']], [], $tidy);
 $check('(finding 3) fr → T1 sent back as de → T1: the same row, Translator kept, no longer verified',
     $plan['update'] === [['id' => 1, 'songId' => 'T1', 'language' => 'de', 'details' => 'unverify']] && $plan['delete'] === [] && $plan['insert'] === [],
