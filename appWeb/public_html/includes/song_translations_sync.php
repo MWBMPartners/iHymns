@@ -190,6 +190,26 @@ function songTranslationsGroupKey(string $language, callable $tidy): string
 }
 
 /**
+ * The key a link's SONG is compared and grouped by: the song id trimmed exactly
+ * as the save trims what the editor sends (IHYMNS_TRANSLATION_LINK_TRIM), then
+ * lower-cased, as the database ignores letter case (#2137 review round 7, the
+ * sixth independent review's decision 3).
+ *
+ * WHY: a stored song id can carry a stray space ('T1 '): the database accepts
+ * it as a link to T1, because its collation ignores trailing spaces when it
+ * checks that the song exists. The editor sends it back trimmed ('T1'). Until
+ * round 7 the stored id was compared untrimmed, so an UNCHANGED re-save read
+ * as a re-point to a different song, and the link lost its translator and its
+ * verified flag. Stored languages were already compared after the same trim
+ * (songTranslationsGroupKey()); now stored song ids are too. The stored value
+ * itself is not rewritten — the link is the same link.
+ */
+function songTranslationsSongKey(string $songId): string
+{
+    return mb_strtolower(trim($songId, IHYMNS_TRANSLATION_LINK_TRIM));
+}
+
+/**
  * Which stored rows must be left exactly as they are, because a link this
  * save could not write may belong with them (#2137 review round 4).
  *
@@ -215,7 +235,7 @@ function songTranslationsProtectedIds(array $failed, array $existing, callable $
     $protected = [];
     foreach ($existing as $row) {
         $rowKey = songTranslationsGroupKey((string)$row['language'], $tidy);
-        $rowTarget = mb_strtolower((string)$row['songId']);
+        $rowTarget = songTranslationsSongKey((string)$row['songId']);   /* trimmed, round 7 (decision 3) */
         foreach ($failed as $f) {
             if ($f['key'] === $rowKey || ($f['target'] !== '' && $f['target'] === $rowTarget)) {
                 $protected[(int)$row['id']] = true;
@@ -315,20 +335,46 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
                row is not made (round 4): it goes back to the caller as
                blocked, and nothing in this group is deleted on the strength
                of a choice that is not going to happen. */
-            if (strcasecmp((string)$chosen['songId'], $want['songId']) !== 0 && $isProtected($chosen)) {
+            /* The song the kept spelling is re-pointed to, if it is (null if
+               not); song ids compared trimmed (round 7, decision 3). */
+            $repointTo = songTranslationsSongKey((string)$chosen['songId']) !== songTranslationsSongKey($want['songId'])
+                ? songTranslationsSongKey($want['songId'])
+                : null;
+            if ($repointTo !== null && $isProtected($chosen)) {
                 $plan['blocked'][] = (string)$key;
                 continue;
             }
             foreach ($rows as $r) {
+                if ((int)$r['id'] === (int)$chosen['id']) {
+                    continue;
+                }
+                /* #2137 review round 7 (the sixth review's decision 2) — when the
+                   kept spelling is re-pointed to a song that ANOTHER spelling of
+                   the same language already links to, that row is that song's own
+                   row. Stored `iw → T1` (Ana, verified) and `he → T2` (Zed,
+                   verified), sent `he → T1`: the `iw` row is T1's. It is decided
+                   with the re-point below, like any stored row nobody sent back —
+                   so, when nothing else claims it, it is relabelled to the kept
+                   spelling and keeps its OWN details (Ana; verified too, because
+                   `iw` and `he` are one primary language), and the T2 row goes.
+                   Until round 7 it was deleted here first, and the re-pointed T2
+                   row reached T1 with no translator and not verified. If it is not
+                   paired (another claim on T1, or another stored row of T1's that
+                   nobody sent back, or it is protected), it ends up exactly as
+                   before: deleted below, unless protected. */
+                if ($repointTo !== null && songTranslationsSongKey((string)$r['songId']) === $repointTo) {
+                    $unmatchedStored[] = $r;
+                    continue;
+                }
                 /* #2137 review round 4 — a protected row is never deleted,
                    even when the curator chose another spelling: a link this
                    save could not write (`ro-MD → T3`, stored as `mo → T3`)
                    belongs with it. */
-                if ((int)$r['id'] !== (int)$chosen['id'] && !$isProtected($r)) {
+                if (!$isProtected($r)) {
                     $plan['delete'][] = (int)$r['id'];
                 }
             }
-            if (strcasecmp((string)$chosen['songId'], $want['songId']) !== 0) {
+            if ($repointTo !== null) {
                 /* A re-point (round 6): decided below, like any other. */
                 $repoints[] = ['row' => $chosen, 'songId' => $want['songId'], 'language' => (string)$chosen['language']];
             }
@@ -344,14 +390,16 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
             continue;
         }
         $want = $desired[$key];
-        if (strcasecmp((string)$stored['songId'], $want['songId']) !== 0
-            || (string)$stored['language'] !== $want['language']) {
+        /* Song ids compared trimmed (round 7, decision 3): a stored 'T1 ' is
+           the T1 the editor sends back, not a re-point. */
+        $sameSong = songTranslationsSongKey((string)$stored['songId']) === songTranslationsSongKey($want['songId']);
+        if (!$sameSong || (string)$stored['language'] !== $want['language']) {
             if ($isProtected($stored)) {
                 /* Round 4: a protected row is left exactly as it is. */
                 $plan['blocked'][] = (string)$key;
                 continue;
             }
-            if (strcasecmp((string)$stored['songId'], $want['songId']) !== 0) {
+            if (!$sameSong) {
                 /* A re-point to a different song (round 6): decided below. */
                 $repoints[] = ['row' => $stored, 'songId' => $want['songId'], 'language' => $want['language']];
                 continue;
@@ -409,7 +457,7 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
     }
     $storedBySong = [];
     foreach ($unmatchedStored as $r) {
-        $storedBySong[mb_strtolower((string)$r['songId'])][] = $r;
+        $storedBySong[songTranslationsSongKey((string)$r['songId'])][] = $r;   /* trimmed, round 7 (decision 3) */
     }
     $desiredBySong = [];
     foreach ($unmatchedDesired as $key => $want) {

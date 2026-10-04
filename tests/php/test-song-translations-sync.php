@@ -289,6 +289,52 @@ $plan = songTranslationsPlanSync(['ro' => $want('T5', 'mo')],
 $check('(finding 1) the same in the branch for two stored links of one language: the kept `mo` re-pointed to T5 → T5\'s own row takes `mo` (not the same primary as `de`, so no longer verified); `mo → T3` and `ro → T4` go',
     $plan['delete'] === [4, 3] && $plan['update'] === [['id' => 6, 'songId' => 'T5', 'language' => 'mo', 'details' => 'unverify']], json_encode($plan));
 
+/* #2137 review round 7 (the sixth independent review), decisions 2 and 3. */
+echo "\nPart A8 — two stored spellings and a re-point; stored song ids compared trimmed (#2137 review round 7)\n";
+/* Decision 2: stored `old → T1` and `new → T2` (one primary language, two
+   spellings), sent `new → T1`: the stored row on T1 is T1's own row — it takes
+   the spelling the curator kept and keeps its details; the T2 row goes. Both
+   directions (the retired spelling on T1, and on T2), for each retired code. */
+foreach ([['iw', 'he'], ['in', 'id'], ['ji', 'yi'], ['mo', 'ro']] as [$old, $new]) {
+    foreach ([[$old, $new], [$new, $old]] as [$onT1, $onT2]) {
+        $key = songTranslationsGroupKey($onT2, $tidy);
+        $rows = [['id' => 1, 'songId' => 'T1', 'language' => $onT1], ['id' => 2, 'songId' => 'T2', 'language' => $onT2]];
+        $plan = songTranslationsPlanSync([$key => $want('T1', $onT2)], $rows, [], $tidy);
+        $check("(decision 2) stored {$onT1} → T1 and {$onT2} → T2, sent {$onT2} → T1: T1's own row takes `{$onT2}` and keeps its details (one primary language); the T2 row goes",
+            $plan['delete'] === [2] && $plan['update'] === [['id' => 1, 'songId' => 'T1', 'language' => $onT2, 'details' => 'keep']]
+            && $plan['insert'] === [] && $plan['warnings'] === [] && $plan['blocked'] === [], json_encode($plan));
+    }
+}
+$heRows = [['id' => 1, 'songId' => 'T1', 'language' => 'iw'], ['id' => 2, 'songId' => 'T2', 'language' => 'he']];
+$plan = songTranslationsPlanSync(['he' => $want('T1', 'he')], [...$heRows, ['id' => 3, 'songId' => 'T1', 'language' => 'de']], [], $tidy);
+$check('(decision 2) …but with another stored row of T1\'s that nobody sent back (de → T1): T1 has two such rows, so neither takes the re-point — it keeps no details, iw and de go (before round 7 the de row took it over, because iw had already been deleted)',
+    $plan['delete'] === [1, 3] && $plan['update'] === [['id' => 2, 'songId' => 'T1', 'language' => 'he', 'details' => 'clear']], json_encode($plan));
+$plan = songTranslationsPlanSync(['he' => $want('T1', 'he')], $heRows, [1 => true], $tidy);
+$check('(decision 2) …and a PROTECTED iw → T1 is never relabelled or deleted: it stays, the re-point keeps no details',
+    $plan['delete'] === [] && $plan['update'] === [['id' => 2, 'songId' => 'T1', 'language' => 'he', 'details' => 'clear']], json_encode($plan));
+$plan = songTranslationsPlanSync(['he' => $want('T3', 'he')], $heRows, [], $tidy);
+$check('(decision 2) a re-point to a song NEITHER spelling links to (T3): as before — the kept row re-pointed with no details, the other spelling deleted',
+    $plan['delete'] === [1] && $plan['update'] === [['id' => 2, 'songId' => 'T3', 'language' => 'he', 'details' => 'clear']], json_encode($plan));
+/* Decision 3: a stored song id with characters the save trims is the same
+   song the editor sends back trimmed. */
+$noWrite = ['delete' => [], 'update' => [], 'insert' => [], 'warnings' => [], 'blocked' => []];
+foreach (['a trailing space' => 'T1 ', 'a tab' => "T1\t", 'a leading line feed' => "\nT1", 'a trailing NUL' => "T1\0",
+          'a trailing vertical tab' => "T1\x0B", 'spaces and lower case' => ' t1 '] as $what => $sid) {
+    $plan = songTranslationsPlanSync(['pt' => $want('T1', 'pt')], [['id' => 1, 'songId' => $sid, 'language' => 'pt']], [], $tidy);
+    $check("(decision 3) a stored song id with {$what}, re-saved unchanged as T1: no write at all (it used to be a re-point that cleared the translator and the verified flag)",
+        $plan === $noWrite, json_encode($plan));
+}
+$plan = songTranslationsPlanSync(['pt-br' => $want('T1', 'pt-BR')], [['id' => 1, 'songId' => 'T1 ', 'language' => 'pt']], [], $tidy);
+$check('(decision 3) …a language change of that link (pt → pt-BR on "T1 "): the same row, in place, all details kept',
+    $plan['update'] === [['id' => 1, 'songId' => 'T1', 'language' => 'pt-BR', 'details' => 'keep']] && $plan['delete'] === [], json_encode($plan));
+$check('(decision 3) …a failed pt-BR → T1 protects the row stored as pt → "T1 " (the song half)',
+    songTranslationsProtectedIds([$failedAt('pt-BR', 'T1')], [['id' => 8, 'songId' => 'T1 ', 'language' => 'pt']], $tidy) === [8 => true]);
+$plan = songTranslationsPlanSync(['he' => $want('T1', 'he')], [['id' => 1, 'songId' => "T1 ", 'language' => 'iw'], ['id' => 2, 'songId' => 'T2', 'language' => 'he']], [], $tidy);
+$check('(decisions 2 and 3) …and T1\'s own row in the two-spellings case is found with its stored id "T1 "',
+    $plan['delete'] === [2] && $plan['update'] === [['id' => 1, 'songId' => 'T1', 'language' => 'he', 'details' => 'keep']], json_encode($plan));
+$check('the song key: trimmed by the save\'s own set, then lower-cased',
+    songTranslationsSongKey(" T1\t\0") === 't1' && songTranslationsSongKey("T1\u{00A0}") !== 't1');
+
 echo "\nPart A5 — what counts as a link in the payload (#2137 review round 5, I6)\n";
 foreach ([
     'an object with a song and a language' => [['songId' => 'T1', 'language' => 'pt'], true],
@@ -629,6 +675,28 @@ if ($db === null) {
         $check('(finding 1) two links swap songs: each row is re-pointed, and neither takes the other song\'s translator or verified flag',
             array_column($a, 'TranslatedSongId') === ['T2', 'T1'] && array_column($a, 'Translator') === ['', '']
             && array_column($a, 'Verified') === ['0', '0'] && $w === [], json_encode([$a, $w]));
+
+        /* #2137 review round 7 (the sixth review's decision 2) — two stored
+           spellings of one language and a re-point onto the other spelling's
+           song. Before round 7 T1's own row was deleted and the re-pointed row
+           reached T1 with no translator and not verified (reproduced on
+           MariaDB 11.8 and MySQL 8.4 with the review's iw / he case). */
+        foreach ([['iw', 'he'], ['in', 'id'], ['ji', 'yi'], ['mo', 'ro']] as [$old, $new]) {
+            foreach ([[$old, $new], [$new, $old]] as [$onT1, $onT2]) {
+                [$b, $a, $w] = $scenario([['T1', $onT1, 'Ana', 1], ['T2', $onT2, 'Zed', 1]], [['T1', $onT2]]);
+                $bl = $byLang($b);
+                $check("(decision 2) stored {$onT1} → T1 (Ana, verified) and {$onT2} → T2 (Zed, verified), sent {$onT2} → T1: {$onT2} → T1, Ana, verified — T1's own row, its date — and the T2 row is gone",
+                    count($a) === 1 && $a[0]['Id'] === $bl[$onT1]['Id'] && $a[0]['TargetLanguage'] === $onT2 && $a[0]['TranslatedSongId'] === 'T1'
+                    && $a[0]['Translator'] === 'Ana' && (int)$a[0]['Verified'] === 1 && $a[0]['CreatedAt'] === $bl[$onT1]['CreatedAt'] && $w === [],
+                    json_encode([$a, $w]));
+            }
+        }
+        /* #2137 review round 7 (decision 3) — a stored song id with a stray
+           space: the database accepts 'T1 ' as a link to T1 (its collation
+           ignores trailing spaces), and the editor sends it back as T1. */
+        [$b, $a, $w] = $scenario([['T1 ', 'pt', 'Ana', 1]], [['T1', 'pt']]);
+        $check('(decision 3) stored pt → "T1 " (Ana, verified), re-saved unchanged: nothing changes — the translator and the verified flag stay',
+            $a === $b && $b[0]['TranslatedSongId'] === 'T1 ' && $w === [], json_encode([$a, $w]));
 
         [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1]], [['T2', 'pt-BR']]);
         $check('(L3) a change of language AND song is still a removal plus a new link (nothing ties them together)',

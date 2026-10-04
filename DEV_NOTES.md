@@ -927,7 +927,17 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   gone. A protected row is never relabelled (the re-point then keeps no details), and a song with two claims on
   its row (a re-point and a new link, or two re-points) is ambiguous, so nobody takes it. Two links that swap
   songs both keep no details — each row's language was sent back, so neither song has a row "no sent link
-  matches". **The date:** the table has no separate date for when a link was verified; its only date is
+  matches". **Round 7 (the sixth review's decisions 2 and 3).** Two stored spellings of one language and a
+  re-point onto the other spelling's song: stored `iw → T1` (Ana, verified) and `he → T2` (Zed, verified), sent
+  `he → T1`. The `iw` row is T1's own row, so it is relabelled `he` and keeps Ana and the verified flag (one primary
+  language), and the T2 row goes; it used to be deleted first, leaving `he → T1` with no translator and not
+  verified. The relabelled row takes the spelling the curator kept, as the clash rule always has (stored `he → T1`
+  and `iw → T2`, sent `iw → T1`, gives `iw → T1`, Ana, verified; the next save tidies it to `he`), and, as with any
+  re-point, only when T1 has exactly one stored row nobody sent back and nothing else claims it. Tested for
+  `iw`/`he`, `in`/`id`, `ji`/`yi` and `mo`/`ro`, both ways round, on both servers. Stored song ids are now compared
+  after the same trim as stored languages (`songTranslationsSongKey()`): a stored `'T1 '`, which the database
+  accepts as a link to T1 because its collation ignores trailing spaces, re-saved unchanged keeps its translator
+  and verified flag (it used to read as a re-point and lose both); the stored value is not rewritten. **The date:** the table has no separate date for when a link was verified; its only date is
   `CreatedAt`, when the row was written, which the round-5 notes called "the date". It goes with the Verified
   flag — kept when the flag is kept, set to the time of the save when the flag is cleared
   (`songTranslationsDetailsAfterChange()`; the planner's `details` on each update: `keep`, `unverify`, `clear`).
