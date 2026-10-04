@@ -109,6 +109,19 @@ declare(strict_types=1);
  * with a sent link to the SAME song whose language is new, and updates it in
  * place, as `iw → he` already was (unambiguous pairs only — see the planner).
  *
+ * THE FIFTH independent review (#2137 review round 6) found the opposite
+ * fault: details kept where they do not belong. A stored row's Translator,
+ * Verified flag and date belong to the song it links to, but a re-point
+ * (`pt-BR → T2`, Zed, verified, sent back as `pt-BR → T1`) updated the row in
+ * place and so credited Zed, verified, for T1. And round 5's same-song pairing
+ * kept the Verified flag for any language change (`fr → de`), not only a more
+ * precise one. The lead's decisions, now the planner's rules: a re-point to a
+ * song that has its own stored row nobody sent back relabels THAT row (its own
+ * details), and the old song's row goes; otherwise the re-pointed row keeps no
+ * Translator and is not verified. A language change of the same song keeps the
+ * Translator always and the Verified flag only when the primary language is
+ * the same under the shared rule (songTranslationsDetailsAfterChange()).
+ *
  * WHAT THIS CANNOT DO. A failed link is tied back to a stored row only by
  * its song or its language. If a curator changes BOTH at once (`pt → T1`
  * becomes `pt-BR → T2`) and that change cannot be written, nothing ties it
@@ -236,7 +249,7 @@ function songTranslationsProtectedIds(array $failed, array $existing, callable $
  *        The shared storage rule, mediaLanguageTagForStorage().
  * @return array{
  *     delete: list<int>,
- *     update: list<array{id:int, songId:string, language:string}>,
+ *     update: list<array{id:int, songId:string, language:string, details:string}>,
  *     insert: list<array{songId:string, language:string}>,
  *     warnings: list<string>,
  *     blocked: list<string>
@@ -245,12 +258,23 @@ function songTranslationsProtectedIds(array $failed, array $existing, callable $
  *        protected row, so it was NOT made. The caller treats each as a link
  *        that could not be written (it protects the rows sharing its song or
  *        language in turn) and plans again.
+ *        Each update's 'details' says what happens to the row's Translator,
+ *        Verified flag and date (CreatedAt) — #2137 review round 6, see
+ *        songTranslationsDetailsAfterChange(): 'keep' (all three stay),
+ *        'unverify' (the Translator stays; Verified is cleared and the date
+ *        becomes the time of this save) or 'clear' (no Translator, not
+ *        verified, the date becomes the time of this save).
  */
 function songTranslationsPlanSync(array $desired, array $existing, array $protected, callable $tidy): array
 {
     $plan = ['delete' => [], 'update' => [], 'insert' => [], 'warnings' => [], 'blocked' => []];
     $isProtected = static fn(array $r): bool => isset($protected[(int)$r['id']]);
     $unmatchedStored = [];   /* single stored rows whose language nobody sent back (round 5) */
+    /* Round 6 — links whose language matched a stored row but that now name a
+       DIFFERENT song (a re-point). Decided below, once every stored row the
+       editor did not send back is known: [row => the stored row, songId => the
+       song it now names, language => the language it keeps]. */
+    $repoints = [];
 
     /* Group the stored rows by the language they tidy to (the same key a
        failed link is matched by — songTranslationsGroupKey()). */
@@ -286,11 +310,11 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
                 continue;
             }
             /* The kept row keeps its language as stored; only a re-point the
-               curator made in the same save is applied (in place). The next
-               save tidies its language, once no clash is left. A re-point of
-               a PROTECTED row is not made (round 4): it goes back to the
-               caller as blocked, and nothing in this group is deleted on
-               the strength of a choice that is not going to happen. */
+               curator made in the same save is applied. The next save tidies
+               its language, once no clash is left. A re-point of a PROTECTED
+               row is not made (round 4): it goes back to the caller as
+               blocked, and nothing in this group is deleted on the strength
+               of a choice that is not going to happen. */
             if (strcasecmp((string)$chosen['songId'], $want['songId']) !== 0 && $isProtected($chosen)) {
                 $plan['blocked'][] = (string)$key;
                 continue;
@@ -305,7 +329,8 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
                 }
             }
             if (strcasecmp((string)$chosen['songId'], $want['songId']) !== 0) {
-                $plan['update'][] = ['id' => (int)$chosen['id'], 'songId' => $want['songId'], 'language' => (string)$chosen['language']];
+                /* A re-point (round 6): decided below, like any other. */
+                $repoints[] = ['row' => $chosen, 'songId' => $want['songId'], 'language' => (string)$chosen['language']];
             }
             continue;
         }
@@ -313,7 +338,8 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
         if (!isset($desired[$key])) {
             /* Nobody sent this language back. It is deleted below — unless
                it is protected, or it pairs with a sent link to the SAME
-               song whose language is new (round 5, L3). */
+               song whose language is new (round 5, L3), or a re-point to its
+               song takes it over (round 6). */
             $unmatchedStored[] = $stored;
             continue;
         }
@@ -325,26 +351,56 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
                 $plan['blocked'][] = (string)$key;
                 continue;
             }
-            /* In place: the row's Translator, Verified and CreatedAt survive. */
-            $plan['update'][] = ['id' => (int)$stored['id'], 'songId' => $want['songId'], 'language' => $want['language']];
+            if (strcasecmp((string)$stored['songId'], $want['songId']) !== 0) {
+                /* A re-point to a different song (round 6): decided below. */
+                $repoints[] = ['row' => $stored, 'songId' => $want['songId'], 'language' => $want['language']];
+                continue;
+            }
+            /* The same song, its language tidied (`iw` → `he`, `pt-br` →
+               `pt-BR`): the same link, so in place, and its Translator,
+               Verified flag and date all survive — the language key is the
+               same, so the primary language is too. */
+            $plan['update'][] = ['id' => (int)$stored['id'], 'songId' => $want['songId'], 'language' => $want['language'], 'details' => 'keep'];
         }
     }
 
-    /* #2137 review round 5 (L3) — a successful language change of the SAME
-       song keeps the link's details. A stored row whose language nobody sent
-       back, and a sent link whose language is not stored, that point at the
-       same song are one link whose language label became more precise
-       (`pt → T1` sent back as `pt-BR → T1`): the row is UPDATED in place, so
-       its translator, verified flag and creation date survive — exactly as
-       `iw → he` already is. It used to be deleted and a bare row inserted
-       (the fourth review reproduced Ana's verified `pt → T1` becoming an
-       unattributed, unverified `pt-BR → T1`).
-       Paired only when it is unambiguous: exactly ONE such stored row and
-       exactly ONE such sent link for that song, and the stored row is not
-       protected (a protected row is never changed; that case stays as round
-       4 left it — the row kept, the new link added). Anything else — two
-       stored rows or two new links for one song — cannot be told apart from
-       "removed one link, added another", so it is treated that way. */
+    /* #2137 review round 5 (L3), corrected in round 6 — a language change of
+       the SAME song keeps the link's row. A stored row whose language nobody
+       sent back, and a sent link whose language is not stored, that point at
+       the same song are one link whose language changed (`pt → T1` sent back
+       as `pt-BR → T1`): the row is UPDATED in place rather than deleted and a
+       bare row inserted. What survives (round 6, the lead's decision on the
+       fifth review's finding 3 — songTranslationsDetailsAfterChange()): the
+       Translator ALWAYS (it is the same song, so the same translation); the
+       Verified flag and its date only when the primary language is the same
+       under the shared rule (`pt` → `pt-BR`, `iw` → `he`). A change to a
+       different language (`fr` → `de` on T1) keeps the Translator but is no
+       longer verified — what was checked was a French link. Round 5 kept
+       everything for any language change; its notes said "more precise",
+       which `fr` → `de` is not.
+
+       #2137 review round 6 (the fifth review's finding 1) — a link's details
+       never move to a different song. A stored row's Translator, Verified
+       flag and date belong to the song it links to. When a sent link re-
+       points a stored language to a DIFFERENT song: if that song has its own
+       stored row that no sent link matches, THAT row is relabelled to the
+       sent language and keeps its OWN details (its Translator always; its
+       Verified flag and date by the same-primary-language rule above, since
+       a relabel is a language change of that song), and the displaced row
+       for the old song goes. Otherwise the re-pointed row is updated in
+       place with no Translator, not verified, and dated now. Until round 6
+       the re-pointed row kept its old song's details, so the fifth review's
+       stored `pt → T1` (Ana, verified) and `pt-BR → T2` (Zed, verified),
+       sent back as `pt-BR → T1`, became `pt-BR → T1` credited to Zed and
+       verified — Zed never translated T1, and nobody had checked that link.
+
+       Pairing (both kinds) is made only when it is unambiguous: for a song,
+       exactly ONE stored row nobody sent back, which is not protected (a
+       protected row is never changed, so never relabelled), and exactly ONE
+       claim on it — one new sent link to that song, or one re-point to it,
+       not both, not two. Anything else is treated as "removed one link,
+       added another": the new link is inserted bare, a re-point keeps no
+       details, and the stored row is deleted (unless protected). */
     $unmatchedDesired = [];
     foreach ($desired as $key => $want) {
         if (!isset($byKey[$key])) {
@@ -359,16 +415,46 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
     foreach ($unmatchedDesired as $key => $want) {
         $desiredBySong[mb_strtolower((string)$want['songId'])][] = $key;
     }
+    $repointsBySong = [];
+    foreach ($repoints as $i => $rp) {
+        $repointsBySong[mb_strtolower((string)$rp['songId'])][] = $i;
+    }
     $paired = [];
-    foreach ($desiredBySong as $song => $keys) {
-        $candidates = $storedBySong[$song] ?? [];
-        if (count($keys) !== 1 || count($candidates) !== 1 || $isProtected($candidates[0])) {
+    $repointDone = [];
+    foreach ($storedBySong as $song => $candidates) {
+        $keys = $desiredBySong[$song] ?? [];
+        $claims = count($keys) + count($repointsBySong[$song] ?? []);
+        if ($claims !== 1 || count($candidates) !== 1 || $isProtected($candidates[0])) {
             continue;
         }
-        $want = $unmatchedDesired[$keys[0]];
-        $plan['update'][] = ['id' => (int)$candidates[0]['id'], 'songId' => $want['songId'], 'language' => $want['language']];
-        $paired[(int)$candidates[0]['id']] = true;
-        unset($unmatchedDesired[$keys[0]]);
+        $mine = $candidates[0];
+        if (count($keys) === 1) {
+            /* A new language for this song (L3): the row is relabelled. */
+            $want = $unmatchedDesired[$keys[0]];
+            $plan['update'][] = ['id' => (int)$mine['id'], 'songId' => $want['songId'], 'language' => $want['language'],
+                'details' => songTranslationsDetailsAfterChange((string)$mine['language'], $want['language'])];
+            unset($unmatchedDesired[$keys[0]]);
+        } else {
+            /* A re-point to this song: this song's own row is relabelled to
+               the re-pointed language, keeping its own details, and the
+               re-pointed row (the old song's) is deleted. The delete is
+               written before the update (step 4 applies deletes first), so
+               the language is free when the relabel takes it. */
+            $i = $repointsBySong[$song][0];
+            $rp = $repoints[$i];
+            $plan['delete'][] = (int)$rp['row']['id'];
+            $plan['update'][] = ['id' => (int)$mine['id'], 'songId' => $rp['songId'], 'language' => $rp['language'],
+                'details' => songTranslationsDetailsAfterChange((string)$mine['language'], $rp['language'])];
+            $repointDone[$i] = true;
+        }
+        $paired[(int)$mine['id']] = true;
+    }
+    foreach ($repoints as $i => $rp) {
+        if (!isset($repointDone[$i])) {
+            /* No row of its own on the new song: the row is re-pointed in
+               place, and the old song's details do not come with it. */
+            $plan['update'][] = ['id' => (int)$rp['row']['id'], 'songId' => $rp['songId'], 'language' => $rp['language'], 'details' => 'clear'];
+        }
     }
     foreach ($unmatchedStored as $r) {
         if (!isset($paired[(int)$r['id']]) && !$isProtected($r)) {
@@ -379,6 +465,41 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
         $plan['insert'][] = $want;
     }
     return $plan;
+}
+
+/**
+ * What happens to a stored row's details when its LANGUAGE changes but it
+ * keeps (or takes over) its song (#2137 review round 6 — the lead's decision
+ * on the fifth independent review's finding 3).
+ *
+ *   - 'keep'     — the primary language is the same under the shared rule
+ *                  (`pt` → `pt-BR`, `iw` → `he`, `zh` → `zh-Hant`): the
+ *                  Translator, the Verified flag and the date all stay. The
+ *                  link is the same; only its label became more precise.
+ *   - 'unverify' — a different language (`fr` → `de`), or a side the shared
+ *                  rule cannot read (a name such as "English", a value with a
+ *                  no-break space): the Translator stays (it is the same song,
+ *                  so the same translation), but the link is no longer
+ *                  verified — what someone checked was a link in the OLD
+ *                  language — and its date becomes the time of this save.
+ *
+ * THE DATE. tblSongTranslations has no separate date for when a link was
+ * verified; its only date is CreatedAt, the time the link row was written,
+ * which the round-5 notes called "the date". It goes with the Verified flag:
+ * kept when the flag is kept, set to the time of this save when the flag is
+ * cleared. ('clear', for a link re-pointed to a song with no row of its own,
+ * is decided by the planner, not here: no Translator, not verified, dated now.)
+ *
+ * "Primary language" is mediaLanguageGroup() — the shared rule's own answer,
+ * the same one the language filter uses — after trimming exactly as the save
+ * trims (IHYMNS_TRANSLATION_LINK_TRIM). An empty answer (an unreadable value)
+ * never counts as "the same".
+ */
+function songTranslationsDetailsAfterChange(string $fromLanguage, string $toLanguage): string
+{
+    $from = mediaLanguageGroup(trim($fromLanguage, IHYMNS_TRANSLATION_LINK_TRIM));
+    $to   = mediaLanguageGroup(trim($toLanguage, IHYMNS_TRANSLATION_LINK_TRIM));
+    return ($from !== '' && $from === $to) ? 'keep' : 'unverify';
 }
 
 /**
@@ -667,8 +788,11 @@ function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): ar
        writes — the save path stays behaviourally identical to
        before #1626 for every song that has never used the panel.
        songTranslationsPlanSync() decides; this only writes.
-       UPDATEs are in place, so a row's Translator / Verified /
-       CreatedAt survive a re-point or a tidied language. */
+       UPDATEs are in place (the row keeps its Id). Its Translator /
+       Verified / CreatedAt survive a tidied language; for a language
+       change or a re-point to another song the planner says what
+       survives (round 6 — a link's details never move to a different
+       song). Deletes go first, so a language a relabel takes is free. */
     foreach ($plan['warnings'] as $w) { $warnings[] = $w; }
     foreach ($plan['delete'] as $delId) {
         $dStm = $db->prepare('DELETE FROM tblSongTranslations WHERE Id = ?');
@@ -677,9 +801,16 @@ function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): ar
         $dStm->close();
     }
     foreach ($plan['update'] as $u) {
-        $uStm = $db->prepare(
-            'UPDATE tblSongTranslations SET TranslatedSongId = ?, TargetLanguage = ? WHERE Id = ?'
-        );
+        /* #2137 review round 6 — what the row's Translator, Verified flag and
+           date (CreatedAt) become is the planner's decision, carried on each
+           update ('details'; see songTranslationsPlanSync() and
+           songTranslationsDetailsAfterChange()). A value the planner never
+           gives is an error (match has no default), never a silent "keep". */
+        $uStm = $db->prepare(match ($u['details']) {
+            'keep'     => 'UPDATE tblSongTranslations SET TranslatedSongId = ?, TargetLanguage = ? WHERE Id = ?',
+            'unverify' => 'UPDATE tblSongTranslations SET TranslatedSongId = ?, TargetLanguage = ?, Verified = 0, CreatedAt = CURRENT_TIMESTAMP WHERE Id = ?',
+            'clear'    => "UPDATE tblSongTranslations SET TranslatedSongId = ?, TargetLanguage = ?, Translator = '', Verified = 0, CreatedAt = CURRENT_TIMESTAMP WHERE Id = ?",
+        });
         $uStm->bind_param('ssi', $u['songId'], $u['language'], $u['id']);
         $uStm->execute();
         $uStm->close();

@@ -888,11 +888,30 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   save); (3) a payload entry that is not a link (not an object, a list such as `["T1", "pt"]`, a song or language
   that is not text) makes the whole translation save refuse, changing nothing — it used to be skipped and the
   stored links deleted as if removed; (4) a successful change of language on the SAME song (`pt → T1`, translator
-  Ana, verified, becomes `pt-BR → T1`) now updates the row in place, keeping the translator, the verified flag and
-  the date, as `iw → he` already did — it used to delete and insert a bare row. Only an unambiguous pair is
-  updated: one stored row whose language nobody sent back and one sent link with a new language, for the same
-  song, and the row not protected; two stored rows or two new links for one song are still read as "removed one,
-  added one". Proven against a real database on MariaDB 11 and MySQL 8.4
+  Ana, verified, becomes `pt-BR → T1`) now updates the row in place, as `iw → he` already did — it used to delete
+  and insert a bare row. Only an unambiguous pair is updated: one stored row whose language nobody sent back and
+  one sent link with a new language, for the same song, and the row not protected; two stored rows or two new
+  links for one song are still read as "removed one, added one". **What the row keeps (corrected in round 6, the
+  lead's decision on the fifth review's finding 3):** the Translator always — it is the same song, so the same
+  translation; the Verified flag and its date only when the primary language is the same under the shared rule
+  (`pt` → `pt-BR`, `iw` → `he`, `zh` → `zh-Hant` — `mediaLanguageGroup()`); otherwise (`fr` → `de` on T1) the
+  Translator stays and the link is no longer verified. Round 5 kept everything for any language change and called
+  it "more precise", which `fr` → `de` is not. **Round 6, the fifth review's finding 1 — a link's details never move
+  to a different song.** A stored row's Translator, Verified flag and date belong to the song it links to. When a
+  save re-points a language to a different song: if that song has its own stored row that no sent link matches,
+  that row is relabelled to the sent language and keeps its own details (its Translator always; its Verified flag
+  and date by the rule just above, since a relabel is a language change of that song), and the displaced row for
+  the old song is deleted; otherwise the re-pointed row is updated in place with no Translator, not verified.
+  The review's case: stored `pt → T1` (Ana, verified) and `pt-BR → T2` (Zed, verified), sent `pt-BR → T1`, used
+  to become `pt-BR → T1` credited to Zed and verified; it is now `pt-BR → T1`, Ana, verified, and the T2 row is
+  gone. A protected row is never relabelled (the re-point then keeps no details), and a song with two claims on
+  its row (a re-point and a new link, or two re-points) is ambiguous, so nobody takes it. Two links that swap
+  songs both keep no details — each row's language was sent back, so neither song has a row "no sent link
+  matches". **The date:** the table has no separate date for when a link was verified; its only date is
+  `CreatedAt`, when the row was written, which the round-5 notes called "the date". It goes with the Verified
+  flag — kept when the flag is kept, set to the time of the save when the flag is cleared
+  (`songTranslationsDetailsAfterChange()`; the planner's `details` on each update: `keep`, `unverify`, `clear`).
+  Proven against a real database on MariaDB 11 and MySQL 8.4
   (`tests/php/test-song-translations-sync.php` Parts B and C — C runs in its own PHP process against a database
   built the way the table looked BEFORE the card, because `songTranslationsLanguageFkPresent()`'s answer is cached
   for the life of a process). Every one of the fourth review's seventeen planted translation faults turns it red on
@@ -903,7 +922,9 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   report a language they cannot read as an `import.language_unrecognised` row on `/manage/activity-log`.
   Since the #2137 review fixes, a stored tag changes only when a person saves or confirms something: a song
   save tidies the tags it writes (a translation link stored as `iw` is updated in place to `he`, keeping its
-  translator and verified flag, and since round 5 so is `pt → T1` changed to `pt-BR → T1`; of two stored links
+  translator and verified flag, and since round 5 so is `pt → T1` changed to `pt-BR → T1` — since round 6 a change
+  to a different primary language keeps the translator but not the verified flag, and a link re-pointed to another
+  song never takes the old song's details; of two stored links
   that tidy to one language, the one the curator keeps in
   the editor survives and the other is deleted, and if the editor sends both or neither, both stay with a
   warning; two links sent for one language change nothing for it; a link that cannot be written — for any

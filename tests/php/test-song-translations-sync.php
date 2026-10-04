@@ -41,10 +41,20 @@ declare(strict_types=1);
  *     exactly as it was, says so, and keeps the rest of the song save
  *     (Part B, L2); a payload entry that is not a link changes nothing
  *     (Parts A5 and B, I6); a language change of the same song keeps the
- *     row's translator, verified flag and date (Parts A4 and B, L3); and a
+ *     row (Parts A4 and B, L3); and a
  *     failed link spelled with a retired code (`iw`) protects the row stored
  *     under the code it tidies to (`he`), for every link of a sent clash
- *     (Part B, T16 / T17).
+ *     (Part B, T16 / T17);
+ *   - round 6 (the fifth review): a link's details stay with its song. A
+ *     language change of the same song keeps the translator always, and the
+ *     verified flag and its date only for the same primary language
+ *     (`pt` → `pt-BR`: kept; `fr` → `de`: Ana kept, not verified); a link
+ *     re-pointed to a song that has its own stored row nobody sent back
+ *     relabels THAT row, keeping its own details, and the old song's row goes
+ *     (the review's `pt → T1` Ana + `pt-BR → T2` Zed, sent `pt-BR → T1` →
+ *     `pt-BR → T1`, Ana, verified); otherwise it keeps no translator and is not
+ *     verified (`de → T2` re-pointed to T3); a protected row is never
+ *     relabelled (Parts A6 and B).
  *
  * Part A runs the pure comparison, songTranslationsPlanSync(). Part B runs
  * the real save steps against a real database built the way schema.sql looks
@@ -121,7 +131,7 @@ $stored = [
 /* Row ids 3 and 4 (`mo`, `ro`) protected — as a sent clash protects them. */
 $plan = songTranslationsPlanSync(['pt' => $want('SDAH-PT', 'pt'), 'he' => $want('SDAH-HE', 'iw')], $stored, [3 => true, 4 => true], $tidy);
 $check('`iw` is updated IN PLACE to `he` (row 2 — its translator, verified flag and date survive)',
-    $plan['update'] === [['id' => 2, 'songId' => 'SDAH-HE', 'language' => 'he']], json_encode($plan['update']));
+    $plan['update'] === [['id' => 2, 'songId' => 'SDAH-HE', 'language' => 'he', 'details' => 'keep']], json_encode($plan['update']));
 $check('`pt` needs no write; nothing is inserted', $plan['insert'] === [] && !in_array(1, $plan['delete'], true));
 $check('`mo` and `ro` with neither chosen (a clash was sent): both kept, and the warning says what works',
     !in_array(3, $plan['delete'], true) && !in_array(4, $plan['delete'], true)
@@ -136,8 +146,8 @@ $plan = songTranslationsPlanSync(['ro' => $want('SDAH-MO', 'mo')], array_slice($
 $check('…or `mo` kept and `ro` deleted, the kept row keeping its stored spelling',
     $plan['delete'] === [4] && $plan['update'] === [], json_encode($plan));
 $plan = songTranslationsPlanSync(['ro' => $want('SDAH-X', 'mo')], array_slice($stored, 2), [], $tidy);
-$check('…and a re-point the curator made to the kept one in the same save is applied in place',
-    $plan['delete'] === [4] && $plan['update'] === [['id' => 3, 'songId' => 'SDAH-X', 'language' => 'mo']], json_encode($plan));
+$check('…and a re-point the curator made to the kept one in the same save is applied in place — without the old song\'s details (round 6)',
+    $plan['delete'] === [4] && $plan['update'] === [['id' => 3, 'songId' => 'SDAH-X', 'language' => 'mo', 'details' => 'clear']], json_encode($plan));
 $plan = songTranslationsPlanSync([], array_slice($stored, 2), [], $tidy);
 $check('neither sent back: both kept, with the warning', $plan['delete'] === [] && count($plan['warnings']) === 1);
 
@@ -146,8 +156,8 @@ $check('a link the curator removed (`iw`/`he`) is deleted', $plan['delete'] === 
 $plan = songTranslationsPlanSync([], [$stored[1]], [2 => true], $tidy);
 $check('a protected row (a link skipped for a reason that is not the curator\'s may belong with it) is NOT deleted', $plan['delete'] === []);
 $plan = songTranslationsPlanSync(['de' => $want('SDAH-DE', 'de'), 'pt' => $want('SDAH-PT2', 'pt')], [$stored[0]], [], $tidy);
-$check('a new language is inserted and a re-pointed link is updated in place',
-    array_column($plan['insert'], 'songId') === ['SDAH-DE'] && $plan['update'] === [['id' => 1, 'songId' => 'SDAH-PT2', 'language' => 'pt']]);
+$check('a new language is inserted and a re-pointed link is updated in place (with no translator and not verified: round 6)',
+    array_column($plan['insert'], 'songId') === ['SDAH-DE'] && $plan['update'] === [['id' => 1, 'songId' => 'SDAH-PT2', 'language' => 'pt', 'details' => 'clear']]);
 
 /* #2137 review round 4 — protection is by ROW ID, the union of "same song"
    and "same language key", honoured in every branch. */
@@ -212,12 +222,12 @@ $check('two stored links of one language, one stored as "mo ": the editor sends 
 echo "\nPart A4 — a language change of the same song keeps the row (#2137 review round 5, L3)\n";
 $pt1 = ['id' => 1, 'songId' => 'T1', 'language' => 'pt'];
 $plan = songTranslationsPlanSync(['pt-br' => $want('T1', 'pt-BR')], [$pt1], [], $tidy);
-$check('pt → T1 sent back as pt-BR → T1: row 1 updated in place to pt-BR (no delete, no insert)',
-    $plan['update'] === [['id' => 1, 'songId' => 'T1', 'language' => 'pt-BR']] && $plan['delete'] === [] && $plan['insert'] === [],
+$check('pt → T1 sent back as pt-BR → T1: row 1 updated in place to pt-BR, all its details kept (no delete, no insert)',
+    $plan['update'] === [['id' => 1, 'songId' => 'T1', 'language' => 'pt-BR', 'details' => 'keep']] && $plan['delete'] === [] && $plan['insert'] === [],
     json_encode($plan));
 $plan = songTranslationsPlanSync(['pt-br' => $want('t1', 'pt-BR')], [$pt1], [], $tidy);
 $check('…the song id is compared ignoring letter case, as the database does',
-    $plan['update'] === [['id' => 1, 'songId' => 't1', 'language' => 'pt-BR']] && $plan['delete'] === [], json_encode($plan));
+    $plan['update'] === [['id' => 1, 'songId' => 't1', 'language' => 'pt-BR', 'details' => 'keep']] && $plan['delete'] === [], json_encode($plan));
 $plan = songTranslationsPlanSync(['pt-br' => $want('T1', 'pt-BR')], [$pt1], [1 => true], $tidy);
 $check('a PROTECTED row is never changed: not paired — it is kept, and the new link added (as round 4 left it)',
     $plan['update'] === [] && $plan['delete'] === [] && array_column($plan['insert'], 'language') === ['pt-BR'], json_encode($plan));
@@ -230,6 +240,49 @@ $check('two new links for that song (pt-BR and es-MX → T1): ambiguous, so not 
 $plan = songTranslationsPlanSync(['pt-br' => $want('T2', 'pt-BR')], [$pt1], [], $tidy);
 $check('a different song: not paired (a change of language AND song is a removal plus a new link)',
     $plan['update'] === [] && $plan['delete'] === [1] && count($plan['insert']) === 1, json_encode($plan));
+
+/* #2137 review round 6 — what a changed row keeps (the lead's decisions on
+   the fifth review's findings 1 and 3). The Translator, Verified flag and
+   date belong to the song a row links to. */
+echo "\nPart A6 — a link's details stay with its song (#2137 review round 6)\n";
+$check('details after a language change: the same primary language under the shared rule keeps them (pt → pt-BR, iw → he, zh → zh-Hant)',
+    songTranslationsDetailsAfterChange('pt', 'pt-BR') === 'keep' && songTranslationsDetailsAfterChange('iw', 'he') === 'keep'
+    && songTranslationsDetailsAfterChange('zh', 'zh-Hant') === 'keep' && songTranslationsDetailsAfterChange(" pt\t", 'pt-BR') === 'keep');
+$check('…a different language, or a value the rule cannot read, is no longer verified (fr → de, English → en)',
+    songTranslationsDetailsAfterChange('fr', 'de') === 'unverify' && songTranslationsDetailsAfterChange('English', 'en') === 'unverify'
+    && songTranslationsDetailsAfterChange("pt\u{00A0}", 'pt-BR') === 'unverify');
+$plan = songTranslationsPlanSync(['de' => $want('T1', 'de')], [['id' => 1, 'songId' => 'T1', 'language' => 'fr']], [], $tidy);
+$check('(finding 3) fr → T1 sent back as de → T1: the same row, Translator kept, no longer verified',
+    $plan['update'] === [['id' => 1, 'songId' => 'T1', 'language' => 'de', 'details' => 'unverify']] && $plan['delete'] === [] && $plan['insert'] === [],
+    json_encode($plan));
+$ptT1 = ['id' => 1, 'songId' => 'T1', 'language' => 'pt'];
+$ptbrT2 = ['id' => 2, 'songId' => 'T2', 'language' => 'pt-BR'];
+$plan = songTranslationsPlanSync(['pt-br' => $want('T1', 'pt-BR')], [$ptT1, $ptbrT2], [], $tidy);
+$check('(finding 1, the review\'s case) stored pt → T1 and pt-BR → T2, sent pt-BR → T1: T1\'s OWN row is relabelled pt-BR (keeping its details), and the T2 row goes',
+    $plan['delete'] === [2] && $plan['update'] === [['id' => 1, 'songId' => 'T1', 'language' => 'pt-BR', 'details' => 'keep']] && $plan['insert'] === [],
+    json_encode($plan));
+$plan = songTranslationsPlanSync(['de' => $want('T3', 'de')], [['id' => 5, 'songId' => 'T2', 'language' => 'de']], [], $tidy);
+$check('(finding 1) de → T2 re-pointed to T3, which has no row: the row is re-pointed in place with no translator, not verified',
+    $plan['update'] === [['id' => 5, 'songId' => 'T3', 'language' => 'de', 'details' => 'clear']] && $plan['delete'] === [] && $plan['insert'] === [],
+    json_encode($plan));
+$plan = songTranslationsPlanSync(['pt-br' => $want('T1', 'pt-BR')], [$ptT1, $ptbrT2], [1 => true], $tidy);
+$check('(finding 1) a PROTECTED row on the target song is never relabelled: it stays, and the re-pointed row keeps no details',
+    $plan['delete'] === [] && $plan['update'] === [['id' => 2, 'songId' => 'T1', 'language' => 'pt-BR', 'details' => 'clear']], json_encode($plan));
+$plan = songTranslationsPlanSync(['pt-br' => $want('T1', 'pt-BR'), 'es' => $want('T1', 'es')], [$ptT1, $ptbrT2], [], $tidy);
+$check('(finding 1) a re-point AND a new link both claim T1\'s row: ambiguous, so neither takes it — the re-point keeps no details, the new link is added, T1\'s row goes',
+    $plan['delete'] === [1] && $plan['update'] === [['id' => 2, 'songId' => 'T1', 'language' => 'pt-BR', 'details' => 'clear']]
+    && array_column($plan['insert'], 'language') === ['es'], json_encode($plan));
+$plan = songTranslationsPlanSync(['pt' => $want('T2', 'pt'), 'es' => $want('T1', 'es')],
+    [['id' => 1, 'songId' => 'T1', 'language' => 'pt'], ['id' => 2, 'songId' => 'T2', 'language' => 'es']], [], $tidy);
+$check('(finding 1) two links swap songs (both languages sent back): each row is re-pointed with no details — neither takes the other\'s',
+    $plan['delete'] === [] && $plan['update'] === [
+        ['id' => 1, 'songId' => 'T2', 'language' => 'pt', 'details' => 'clear'],
+        ['id' => 2, 'songId' => 'T1', 'language' => 'es', 'details' => 'clear'],
+    ], json_encode($plan));
+$plan = songTranslationsPlanSync(['ro' => $want('T5', 'mo')],
+    [['id' => 3, 'songId' => 'T3', 'language' => 'mo'], ['id' => 4, 'songId' => 'T4', 'language' => 'ro'], ['id' => 6, 'songId' => 'T5', 'language' => 'de']], [], $tidy);
+$check('(finding 1) the same in the branch for two stored links of one language: the kept `mo` re-pointed to T5 → T5\'s own row takes `mo` (not the same primary as `de`, so no longer verified); `mo → T3` and `ro → T4` go',
+    $plan['delete'] === [4, 3] && $plan['update'] === [['id' => 6, 'songId' => 'T5', 'language' => 'mo', 'details' => 'unverify']], json_encode($plan));
 
 echo "\nPart A5 — what counts as a link in the payload (#2137 review round 5, I6)\n";
 foreach ([
@@ -385,9 +438,41 @@ if ($db === null) {
             && $a[0]['CreatedAt'] === $b[0]['CreatedAt'] && $w === [],
             json_encode([$a, $w]));
         [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'es', 'Luis', 1]], [['T1', 'pt-BR'], ['T2', 'es-MX']]);
-        $check('(L3) two language changes in one save (pt → pt-BR on T1, es → es-MX on T2): both rows kept in place with their translators',
+        $check('(L3) two language changes in one save (pt → pt-BR on T1, es → es-MX on T2): both rows kept in place with their translators and verified flags',
             array_column($a, 'TargetLanguage') === ['pt-BR', 'es-MX'] && array_column($a, 'Id') === array_column($b, 'Id')
-            && array_column($a, 'Translator') === ['Ana', 'Luis'] && $w === [], json_encode([$a, $w]));
+            && array_column($a, 'Translator') === ['Ana', 'Luis'] && array_column($a, 'Verified') === ['1', '1'] && $w === [], json_encode([$a, $w]));
+        /* #2137 review round 6 — a link's details stay with its song
+           (findings 1 and 3, the lead's decisions). Reproduced before this
+           round on MariaDB 11.8 and MySQL 8.4: the review's case gave Zed's
+           T2 details (translator, verified) to T1, and fr → de on T1 stayed
+           verified. */
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'pt-BR', 'Zed', 1]], [['T1', 'pt-BR']]);
+        $check('(finding 1, the review\'s case) stored pt → T1 (Ana, verified) and pt-BR → T2 (Zed, verified), sent pt-BR → T1: T1\'s own row becomes pt-BR — Ana, verified, its date — and the T2 row is gone',
+            count($a) === 1 && $a[0]['Id'] === $b[0]['Id'] && $a[0]['TargetLanguage'] === 'pt-BR' && $a[0]['TranslatedSongId'] === 'T1'
+            && $a[0]['Translator'] === 'Ana' && (int)$a[0]['Verified'] === 1 && $a[0]['CreatedAt'] === $b[0]['CreatedAt'] && $w === [],
+            json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T2', 'de', 'Zed', 1]], [['T3', 'de']]);
+        $check('(finding 1) stored de → T2 (Zed, verified) re-pointed to de → T3 (T3 has no row): de → T3 with no translator, not verified, dated now — the same row',
+            count($a) === 1 && $a[0]['Id'] === $b[0]['Id'] && $a[0]['TargetLanguage'] === 'de' && $a[0]['TranslatedSongId'] === 'T3'
+            && $a[0]['Translator'] === '' && (int)$a[0]['Verified'] === 0 && $a[0]['CreatedAt'] !== $b[0]['CreatedAt'] && $w === [],
+            json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'pt-BR', 'Zed', 1]], [['T1', 'pt-BR'], ['T1', 'English']]);
+        $bl = $byLang($b); $al = $byLang($a);
+        $check('(finding 1) a PROTECTED row is never relabelled: with a failed `English → T1` beside it, Ana\'s pt → T1 is untouched, and the re-pointed pt-BR row comes to T1 with no translator and not verified',
+            count($a) === 2 && isset($al['pt'], $al['pt-BR']) && $al['pt'] === $bl['pt']
+            && $al['pt-BR']['Id'] === $bl['pt-BR']['Id'] && $al['pt-BR']['TranslatedSongId'] === 'T1'
+            && $al['pt-BR']['Translator'] === '' && (int)$al['pt-BR']['Verified'] === 0
+            && str_contains(implode(' ', $w), '"English" is not a language code'), json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', 'fr', 'Ana', 1]], [['T1', 'de']]);
+        $check('(finding 3) fr → T1 (Ana, verified) changed to de → T1: the same row, Ana kept, NOT verified (a different language), dated now',
+            count($a) === 1 && $a[0]['Id'] === $b[0]['Id'] && $a[0]['TargetLanguage'] === 'de' && $a[0]['TranslatedSongId'] === 'T1'
+            && $a[0]['Translator'] === 'Ana' && (int)$a[0]['Verified'] === 0 && $a[0]['CreatedAt'] !== $b[0]['CreatedAt'] && $w === [],
+            json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'es', 'Luis', 1]], [['T2', 'pt'], ['T1', 'es']]);
+        $check('(finding 1) two links swap songs: each row is re-pointed, and neither takes the other song\'s translator or verified flag',
+            array_column($a, 'TranslatedSongId') === ['T2', 'T1'] && array_column($a, 'Translator') === ['', '']
+            && array_column($a, 'Verified') === ['0', '0'] && $w === [], json_encode([$a, $w]));
+
         [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1]], [['T2', 'pt-BR']]);
         $check('(L3) a change of language AND song is still a removal plus a new link (nothing ties them together)',
             count($a) === 1 && $a[0]['TargetLanguage'] === 'pt-BR' && $a[0]['TranslatedSongId'] === 'T2' && $a[0]['Translator'] === ''
