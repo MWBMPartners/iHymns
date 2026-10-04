@@ -13,16 +13,21 @@
 # changing a copy's bytes when it writes or reads the file —
 #   -text                    no line-ending conversion (for example on a
 #                            Windows checkout with core.autocrlf);
-#   -filter                  no clean/smudge filter, even one that a
-#                            lower-priority attributes file (a person's own
-#                            core.attributesFile, or a broader pattern) would
-#                            otherwise apply;
+#   -filter                  no clean/smudge filter;
 #   -working-tree-encoding   no conversion to another character encoding;
 #   -ident                   no expansion of a "$Id$" marker into a checksum.
-# What they CANNOT do: a higher-priority setting on someone's own machine —
-# their .git/info/attributes — still wins over this file. If that changes a
-# copy, the copy checker reports the copy as changed; that is the checker doing
-# its job, not a fault in the copy.
+# They win over a broader line EARLIER in this file and over a person's own
+# core.attributesFile.
+#
+# What they CANNOT stop — each of these wins over the lines below:
+#   - a broader line LATER in this same file (for example "* text=auto" or
+#     "*.md filter=…" added below these lines);
+#   - a .gitattributes file in a sub-folder that holds a copy (the nearer file
+#     wins over this one at the top of the repository);
+#   - .git/info/attributes on someone's own machine.
+# (Checked with "git check-attr" on git 2.55, #2137 review round 7.) If any of
+# these changes a copy's bytes, the copy checker reports the copy as changed:
+# that is the checker doing its job, not a fault in the copy.
 docs/standards/media-language-bcp47-policy.md -text -filter -working-tree-encoding -ident
 docs/standards/MWBM-MEDIA-LANG.lock -text -filter -working-tree-encoding -ident
 docs/standards/data/bcp47-language-data-v1.schema.json -text -filter -working-tree-encoding -ident
