@@ -316,7 +316,28 @@ mliCheck("JSON-LD inLanguage no longer falls back to the page's own interface la
    `?? ('en')`, PHP's `array('en')`, `['fr', 'en']`, `array('fr', 'en-GB')`. An
    opener (a round or square bracket, or `array(`) may be followed by up to
    eight other quoted items before English; openers may nest (`(['en'])`). */
-$EN = '(?:(?:array\s*\(|[\[(])\s*(?:[\'"][^\'"\n]{0,40}[\'"]\s*,\s*){0,8})*[\'"](?:en(?:[-_][A-Za-z0-9]{1,8})*|eng|english)[\'"]';
+/* #2137 review round 8 (the seventh review's L4, the lead's decision 5) — two
+   corrections. (1) An item before English in a list need not be quoted text:
+   `?? [$primary, 'en']`, `[null, 'en']`, `|| [...base, 'en']`, and English can
+   be a KEYED value, `?? ['default' => 'en']`, `array(0 => 'en')` — those were
+   missed. So a list item ($ENITEM) is a quoted text, a variable or name
+   (`$primary`, `null`, `base`, `song.lang`, `$x->y`), a number or a spread
+   (`...base`), each optionally with a key before `=>`. (2) English that is not
+   the value given at all was flagged: a list that is looked in or picked from
+   (`['fr', 'en'].includes(lang)`, `['en', 'en-GB'].indexOf(lang)`,
+   `['fr', 'en'][0]`) and English that is compared (`('en' === song.lang && x)`).
+   So English in a list counts only when what follows the list's closing bracket
+   is not `.`, `[`, `->`, `::`, a comparison or `&&`; and bare English counts
+   only when it is not compared. The rest of the list after English is read in
+   one go (an atomic group), so the check cannot be dodged by stopping early. */
+$ENWORD = '[\'"](?:en(?:[-_][A-Za-z0-9]{1,8})*|eng|english)[\'"]';
+$ENV = '(?:[\'"][^\'"\n]{0,40}[\'"]|\d+|(?:\.\.\.\s*)?\$?[A-Za-z_][\w$]*(?:(?:->|\.)[A-Za-z_]\w*)*)';
+$ENITEM = $ENV . '(?:\s*=>\s*' . $ENV . ')?';
+$EN = '(?:'
+    . '(?:(?:array\s*\(|[\[(])\s*(?:' . $ENITEM . '\s*,\s*){0,8})+(?:' . $ENV . '\s*=>\s*)?' . $ENWORD
+    . '(?>(?:\s*,\s*' . $ENITEM . '){0,8}\s*,?\s*[\])]+)(?!\s*(?:\.|\[|->|::|[=!]==?|<=?>?|>=?|&&))'
+    . '|' . $ENWORD . '(?!\s*(?:[=!]==?|<=?>?|>=?))'
+    . ')';
 /* …except inside a `match`: there an arm giving 'English' or 'eng' is
    normally a LOOKUP (`'en' => 'English'`, `'en' => 'eng'`), not a fallback,
    so the two `match` patterns keep to the tag itself (`'en'`, `'en-GB'`,
@@ -366,6 +387,8 @@ $fallbackPatterns = [
     /* #2137 review round 7 (the sixth review's decision 5): */
     '/\b(?:default|case\b[^:\n]{0,60})\s*:\s*' . $LANGWORD . '\s*=\s*' . $EN . '/i', // default:lang='en';  case '':lang='en';
     '/#' . $LANGWORD . '\s*=\s*' . $EN . '/i',                                   // a JavaScript private field: #lang='en', #language = 'en'
+    /* #2137 review round 8 (decision 5): a PHP constant for a language, set to English. */
+    '/\bdefine\s*\(\s*[\'"]' . $LANGWORD . '[\'"]\s*,\s*' . $EN . '/i',             // define('DEFAULT_LANGUAGE', 'en')
 ];
 /* A `match` spread over several lines — `$lang = match ($x) {` then `'' => 'en',`
    on a later line — cannot be seen one line at a time, so each file is also
@@ -382,9 +405,17 @@ $fallbackMatchWhole = '/(?:language|lang)\w*[\'"]?\]?\s*(?:=>|=)\s*match\s*\([^;
    #2137 review round 5 — the WHOLE trimmed line must be equal, not merely
    contain the listed text: with "contains", a real fallback appended to the
    end of this line (`…, iswc: '', lang: x.lang || 'en',`) was excused along
-   with it (the fourth review's planted fault G02). */
+   with it (the fourth review's planted fault G02).
+     - manage/songbooks.php: when tblLanguages cannot be read, the page used
+       to offer a single CHOICE, English, in the songbook editor's language
+       dropdown. It is a list of options (a code and two names), not a
+       language given to a song or a songbook; nothing on the page reads
+       $languages any more. Round 8's widened guard (a keyed English value in
+       a list) found it; it is excused, not changed — removing the unused
+       variable is a separate tidy-up. */
 $enExempt = [
     'appWeb/public_html/js/modules/print.js' => "language: 'en', copyright: 'Public Domain', ccli: '22025', iswc: '',",
+    'appWeb/public_html/manage/songbooks.php' => "\$languages = [['Code' => 'en', 'Name' => 'English', 'NativeName' => 'English']];",
 ];
 /* The code on one line, as the guard reads it — comment-stripped (like this
    repo's other source guards): a doc comment may SHOW an example shape such
@@ -409,6 +440,31 @@ $enCodeOf = static function (string $line, string $kind = 'php'): ?string {
     return (string)preg_replace('~\\s(?://|/\\*).*$~', '', $code);
 };
 $enIsExempt = static fn(string $rel, string $line): bool => isset($enExempt[$rel]) && trim($line) === $enExempt[$rel];
+/* One file, read as the tree scan reads it: JavaScript or PHP by its own
+   extension (which lines are comments differs — see $enCodeOf). Answers the
+   lines that fall back to English, as [line number, line]. #2137 review round
+   8 (decision 5) — a function of its own so a test can hand it a file: the
+   seventh review dropped the "which language" argument from the scan, so every
+   file was read as PHP (a JavaScript `#lang = 'en'` skipped as a comment), and
+   no test noticed. The tests below the scan now give it a JavaScript and a PHP
+   file of their own. */
+$enScanFile = static function (string $path) use ($enCodeOf, $fallbackPatterns): array {
+    $kind = strtolower(pathinfo($path, PATHINFO_EXTENSION)) === 'js' ? 'js' : 'php';
+    $hits = [];
+    foreach (file($path) ?: [] as $i => $line) {
+        $code = $enCodeOf($line, $kind);
+        if ($code === null) {
+            continue;
+        }
+        foreach ($fallbackPatterns as $re) {
+            if (preg_match($re, $code) === 1) {
+                $hits[] = [$i + 1, $line];
+                break;
+            }
+        }
+    }
+    return $hits;
+};
 $enExemptSeen = [];
 $enScanned = 0;
 $enOffenders = [];
@@ -420,46 +476,47 @@ foreach ($it as $file) {
         continue;
     }
     $enScanned++;
-    foreach (file($file->getPathname()) ?: [] as $i => $line) {
-        $code = $enCodeOf($line, $file->getExtension() === 'js' ? 'js' : 'php');
-        if ($code === null) {
-            continue;
-        }
-        foreach ($fallbackPatterns as $re) {
-            if (preg_match($re, $code) === 1) {
-                $rel = substr($path, strlen(str_replace('\\', '/', $repoRoot)) + 1);
-                $where = $rel . ':' . ($i + 1);
-                if ($enIsExempt($rel, $line)) {
-                    $enExemptSeen[$rel] = ($enExemptSeen[$rel] ?? 0) + 1;
-                } elseif (str_contains($line, '#2134')) {
-                    $enKnown[] = $where;
-                } else {
-                    $enOffenders[] = $where . ': ' . trim($line);
-                }
-                break;
-            }
+    foreach ($enScanFile($file->getPathname()) as [$lineNo, $line]) {
+        $rel = substr($path, strlen(str_replace('\\', '/', $repoRoot)) + 1);
+        $where = $rel . ':' . $lineNo;
+        if ($enIsExempt($rel, $line)) {
+            $enExemptSeen[$rel] = ($enExemptSeen[$rel] ?? 0) + 1;
+        } elseif (str_contains($line, '#2134')) {
+            $enKnown[] = $where;
+        } else {
+            $enOffenders[] = $where . ': ' . trim($line);
         }
     }
 }
 mliCheck("the 'en' guard actually scanned the site's PHP and JS (found {$enScanned} files)", $enScanned > 300);
-/* The multi-line `match` shape, file by file (whole-line comments removed
-   first, as above). */
+/* The multi-line `match` shape, one PHP file's text at a time: whole-line
+   comments are blanked first, and the line numbers where such a `match` starts
+   are answered. #2137 review round 8 (decision 5) — a `#[` line is an
+   attribute, which is code, so it is read here exactly as the line-by-line
+   scan reads it ($enCodeOf); this used to blank every line starting `#`. */
+$enMatchScanText = static function (string $src) use ($fallbackMatchWhole): array {
+    $lines = preg_split('/(?<=\n)/', $src) ?: [];
+    foreach ($lines as $k => $l) {
+        if (preg_match('~^\\s*(?:\\*|//|/\\*|#(?!\\[))~', $l) === 1) { $lines[$k] = "\n"; }
+    }
+    $text = implode('', $lines);
+    $at = [];
+    if (preg_match_all($fallbackMatchWhole, $text, $mm, PREG_OFFSET_CAPTURE) > 0) {
+        foreach ($mm[0] as [$_txt, $off]) {
+            $at[] = substr_count(substr($text, 0, $off), "\n") + 1;
+        }
+    }
+    return $at;
+};
 $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($repoRoot . '/appWeb/public_html', FilesystemIterator::SKIP_DOTS));
 foreach ($it as $file) {
     $path = str_replace('\\', '/', $file->getPathname());
     if ($file->getExtension() !== 'php' || str_contains($path, '/vendor/')) {
         continue;
     }
-    $lines = file($file->getPathname()) ?: [];
-    foreach ($lines as $k => $l) {
-        if (preg_match('~^\\s*(?:\\*|//|/\\*|#)~', $l) === 1) { $lines[$k] = "\n"; }
-    }
-    $src = implode('', $lines);
-    if (preg_match_all($fallbackMatchWhole, $src, $mm, PREG_OFFSET_CAPTURE) > 0) {
-        foreach ($mm[0] as [$_txt, $off]) {
-            $enOffenders[] = substr($path, strlen(str_replace('\\', '/', $repoRoot)) + 1) . ':'
-                . (substr_count(substr($src, 0, $off), "\n") + 1) . ': a language taken from a `match` with an arm giving \'en\'';
-        }
+    foreach ($enMatchScanText((string)file_get_contents($file->getPathname())) as $lineNo) {
+        $enOffenders[] = substr($path, strlen(str_replace('\\', '/', $repoRoot)) + 1) . ':'
+            . $lineNo . ': a language taken from a `match` with an arm giving \'en\'';
     }
 }
 foreach ($enExempt as $rel => $content) {
@@ -551,6 +608,23 @@ $enMustCatch = [
     "switch (x) { default: language = 'en'; }",
     "#lang = 'en';",
     "#language='en';",
+    /* the seventh review's shapes (round 8, decision 5): English after an item
+       that is not quoted text, as a keyed value, and a constant */
+    "\$langs = \$row['languages'] ?? [\$primary, 'en'];",
+    "\$langs = \$row['languages'] ?? [null, 'en'];",
+    "var langs = song.languages || [base, 'en'];",
+    "var langs = song.languages || [...base, 'en'];",
+    "var langs = song.languages || [song.lang, 'en'];",
+    "\$langs = \$row['languages'] ?? [\$x->primary, 'en-GB'];",
+    "\$langs = \$row['languages'] ?? ['default' => 'en'];",
+    "\$langs = \$row['languages'] ?? array(0 => 'en');",
+    "\$langs = \$row['languages'] ?? ['fr', 'first' => 'en', 'de'];",
+    "define('DEFAULT_LANGUAGE', 'en');",
+    "define(\"SONG_LANG\", 'en-GB');",
+    /* …and English that IS the value, next to the shapes now let through */
+    "var lang = (song.lang || 'en').toLowerCase();",
+    "\$langs = \$row['languages'] ?? ['fr', 'en'];  // then [0] on another line",
+    "var lang = song.lang || 'en' + suffix;",
 ];
 $enMustPass = ['<html lang="en">', "if (\$lang === 'en') {", "\$language = mediaLanguageOrUnknown(\$valid);", "\$locale = 'en';",
     "'lang'  => 'en',   /* a geocoder's result language, not a song's */", "\$isEnglish = \$lang === 'en' ? 1 : 0;",
@@ -565,7 +639,19 @@ $enMustPass = ['<html lang="en">', "if (\$lang === 'en') {", "\$language = media
     "\$title = \$song['title'] ?? 'English hymns';", "if (lang === 'eng') {",
     /* round 7 — a list that is only looked in, a label, an XML attribute */
     "if (in_array(\$lang, ['fr', 'en'], true)) {", "case 'en': label = 'English name'; break;",
-    "echo '<tt xml:lang=\"en\">';", "default: \$name = 'English';"];
+    "echo '<tt xml:lang=\"en\">';", "default: \$name = 'English';",
+    /* round 8 (decision 5) — a list that is looked in or picked from, and English that is compared */
+    "if (lang === 'de' || ['fr', 'en'].includes(lang)) {",
+    "if (song.lang === 'la' || ('en' === song.lang && legacy)) {",
+    "var isLatin = lang === 'la' || ['en', 'en-GB'].indexOf(lang) >= 0;",
+    "\$first = \$langs ?? ['fr', 'en'][0];",
+    "if (\$lang === 'cy' || ['fr', 'en']->contains(\$lang)) {",
+    "\$isEn = \$lang ?? ('en' == \$x);",
+    "var ok = song.lang || ['fr', 'en'].some(is);",
+    "define('DEFAULT_FONT', 'en-dash');",
+    /* English straight after the operator but compared (`lang || ('en' === other)` by precedence), and a
+       list inside brackets that is then looked in — the second is why the rest of the list is read in one go */
+    "var same = lang || 'en' === other;", "if (lang || (['fr', 'en']).includes(x)) {"];
 /* The multi-line `match` shape, on its own. */
 mliCheck("the 'en' guard catches a `match` over several lines giving 'en' for a language",
     preg_match($fallbackMatchWhole, "\$lang = match (\$raw) {\n    '' => 'en',\n    default => \$raw,\n};") === 1
@@ -599,6 +685,29 @@ foreach ([["  #[Pure] public function f(string \$lang = 'en') {}", 'php'], ["   
 }
 $code = $enCodeOf("    # lang = 'en' — an old note", 'php');
 mliCheck("…and still skips a real PHP `#` comment line", $code === null, (string)$code);
+/* #2137 review round 8 (decision 5) — the scan of a FILE reads it as its own
+   language. The seventh review's planted fault read every file as PHP (the
+   "which language" argument dropped from the scan), and every check above
+   stayed green, because they call $enCodeOf() directly. These hand the scan a
+   JavaScript file and a PHP file of their own. */
+$enTmp = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'ihymns-t2137-enguard-' . getmypid();
+@mkdir($enTmp, 0700, true);
+try {
+    file_put_contents($enTmp . '/sample.js', "class Song {\n    #lang = 'en';\n}\n");
+    file_put_contents($enTmp . '/sample.php', "<?php\n# lang = 'en' — an old note\n#[Pure] function f(string \$lang = 'en') {}\n");
+    $jsHits = array_column($enScanFile($enTmp . '/sample.js'), 0);
+    $phpHits = array_column($enScanFile($enTmp . '/sample.php'), 0);
+    mliCheck("the tree scan reads a .js file as JavaScript: its `#lang = 'en'` (a private field) is caught", $jsHits === [2], json_encode($jsHits));
+    mliCheck("the tree scan reads a .php file as PHP: its `#` comment is skipped and its `#[` attribute line is caught", $phpHits === [3], json_encode($phpHits));
+    mliCheck("the whole-file `match` scan reads a `#[` attribute line as code, like the line scan",
+        $enMatchScanText("<?php\n#[Pure] \$lang = match (\$raw) {\n    '' => 'en',\n};\n") === [2]);
+    mliCheck("…and still blanks a real `#` comment line",
+        $enMatchScanText("<?php\n# \$lang = match (\$raw) {\n#    '' => 'en',\n# };\n") === []);
+} finally {
+    @unlink($enTmp . '/sample.js');
+    @unlink($enTmp . '/sample.php');
+    @rmdir($enTmp);
+}
 
 /* The ONE unknown-language fallback (#2137 review): its behaviour, and the
    four paths that save a song's language all calling it. */

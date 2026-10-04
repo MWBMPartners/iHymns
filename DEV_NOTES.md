@@ -743,8 +743,35 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   (`#[Pure] public function f(string $lang = 'en')`), and in JavaScript `#` never starts a comment — so a `#` line
   is skipped only in PHP and only when it is not `#[`. Each shape was proven with the sixth review's own list
   (its `enguard.php`, re-pointed at the moved code: every shape the decision names is now caught) and by planting
-  it in the real tree; the whole tree still scans clean.
-  **What it still cannot see (its blind spots), so reviewers still look:** a PHP array key that is exactly
+  it in the real tree; the whole tree still scans clean. **Since round 8 (the seventh review's L4, the lead's
+  decision 5):** an item before English in a list need not be quoted text (`?? [$primary, 'en']`, `[null, 'en']`,
+  `|| [base, 'en']`, `|| [...base, 'en']`, `[song.lang, 'en']`, `[$x->primary, 'en-GB']`); English as a KEYED value
+  (`?? ['default' => 'en']`, `array(0 => 'en')`, `['fr', 'first' => 'en', 'de']`); and a constant for a language
+  (`define('DEFAULT_LANGUAGE', 'en')`). And round 7's list rule raised false alarms, now gone: a list that is
+  looked in or picked from (`['fr', 'en'].includes(lang)`, `['en', 'en-GB'].indexOf(lang)`, `['fr', 'en'][0]`,
+  `(['fr', 'en']).includes(x)`) and English that is compared (`|| ('en' === song.lang && x)`,
+  `lang || 'en' === other`) are not fallbacks: English in a list counts only when what follows the list's closing
+  bracket is not `.`, `[`, `->`, `::`, a comparison or `&&` (the rest of the list is read in one go, so the check
+  cannot be dodged by stopping at an inner bracket), and bare English counts only when it is not compared. The scan
+  of a FILE is now a function the test hands a JavaScript and a PHP file of its own: the seventh review's planted
+  fault read every file as PHP (the "which language" argument dropped) and no check noticed, because they all
+  called the line reader directly; and the whole-file `match` scan reads a `#[` attribute line as code, like the
+  line scan (it used to blank every line starting `#`). The widened guard found one line in the tree:
+  `manage/songbooks.php`'s fallback list of dropdown CHOICES when `tblLanguages` cannot be read
+  (`[['Code' => 'en', 'Name' => 'English', …]]`) — a list of options, not a language given to a song, and nothing on
+  the page reads that variable any more; it is a deliberate exception (whole line), not a change. Proven with the
+  seventh review's `enguard-rv7.php` (every shape the decision names now answers as it should; round 7's own probe
+  gives round 7's answers) and nine planted faults, each red on both servers (the file scan reading every file as
+  PHP, its language decided wrongly, the `match` scan blanking `#[` again, list items quoted-only again, no key
+  before English, no check after a list, bare English counted when compared, the rest of a list read without the
+  atomic group, the `define()` pattern removed); the whole tree still scans clean.
+  **What it still cannot see (its blind spots), so reviewers still look:** English passed through a call or a cast
+  (`?? strtolower('EN')`, `?? mediaLanguageTagForStorage('en')`, `|| String('en')`, `?? (string) 'en'`,
+  `?? \trim('en')` — round 8, listed by the lead); a list with more than eight items before English, at any one
+  level (`['a', …, 'i', 'en']`); an item before English that is itself a call, an index or an expression
+  (`[f(x), 'en']`, `[$row['x'], 'en']`); English picked out of a list by its index (`['en', 'fr'][0]` is
+  English, but every index on a list is let through); a destructuring default under a new name
+  (`const {lang: songLang = 'en'} = song`); a PHP array key that is exactly
   `'lang' => 'en'` (left out on purpose — see below); a template literal
   (`` language: `en` ``); a value built by joining strings (`'e' + 'n'`); a fallback through a variable or constant
   (`$raw : DEFAULT_LANG`, `const EN = 'en'; … || EN`); a fallback spread over two lines in any shape except the PHP
