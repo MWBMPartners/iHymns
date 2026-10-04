@@ -953,7 +953,18 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   `innodb_rollback_on_timeout` OFF — rolls back only the failed STATEMENT, not the transaction; the wrapper's
   comment said otherwise. The whole save still stops, because the wrapper re-throws and the caller's outer
   handler rolls the transaction back.) `tests/php/test-song-translations-sync.php` reproduces the 1020 on MariaDB
-  (and checks that MySQL simply saves); `tests/php/test-transaction-fatal.php` checks the list.
+  (and checks that MySQL simply saves); `tests/php/test-transaction-fatal.php` checks the list. **The song save's
+  all-or-nothing call is guarded two ways (#2137 review round 7, the sixth review's decision 4).** Part A7 of
+  `test-song-translations-sync.php` reads `save_song_core.php` with PHP's tokenizer: no `try` of its own around
+  `songTranslationsSaveLinksAllOrNothing()`, and the transaction's catch rolls back as its FIRST statement (on its
+  own, in its own try, or inside an `if` that only checks the connection exists) — so it rolls back on every path,
+  not merely somewhere. But a helper function that swallows errors somewhere else cannot be seen by reading one
+  file (the review planted `rv6BestEffort()`, and the tokenizer check stayed green). So
+  `tests/php/test-song-save-whole-rollback.php` runs the REAL save, `editorSaveSongCore()`, against a database built
+  from schema.sql: a 1020 during the link writes (B2; a real one on MariaDB, a stand-in on MySQL) and a failed undo
+  (B3) must each answer 500, change no table but the activity log, and leave no transaction open on the save's
+  connection. With `rv6BestEffort()` planted, B2 and B3 go red on both servers; so do a catch with no rollback, a
+  rollback only for mysqli errors, and an early return before the rollback.
   **Every catch a save can reach from inside its transaction (#2137 review round 7, the sixth review's
   decision 1).** Round 6 looked only at the catches that already called the list (34 of them) and said each now
   passes a 1020 back. That was not enough, and this paragraph replaces round 6's list: a catch that does not call

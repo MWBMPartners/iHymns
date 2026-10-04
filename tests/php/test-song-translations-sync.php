@@ -366,19 +366,67 @@ $checkSaveCallsLinksOutsideTry = static function (string $src) use ($tryMap, $ca
     if ($around[$calls[0]] !== $txTries) {
         return 'the call is inside ' . count($around[$calls[0]]) . ' try block(s); only the transaction\'s (' . count($txTries) . ') is allowed';
     }
-    /* The transaction's try: its catch must roll back. */
+    /* The transaction's try: its catch must roll back — on EVERY path, not
+       merely somewhere (#2137 review round 7, decision 4). So the rollback
+       must be the catch's FIRST statement: on its own, inside its own
+       try/catch, or inside an `if` that only checks the connection exists
+       (`isset($db) && $db instanceof mysqli`). Nothing may come before it
+       that can leave the catch (a return, a throw, an exit) or skip it (an
+       `if` on the kind of error). The song save's own test,
+       tests/php/test-song-save-whole-rollback.php, checks the same thing by
+       running the save and looking for a transaction left open. */
     $outer = end($txTries);
     $j = $tryEnd[$outer] + 1;
-    while (isset($toks[$j]) && is_array($toks[$j]) && in_array($toks[$j][0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) { $j++; }
+    $sig = static function (int $k, int $dir = 1) use ($toks): int {
+        for ($k += $dir; isset($toks[$k]); $k += $dir) {
+            if (!(is_array($toks[$k]) && in_array($toks[$k][0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true))) { return $k; }
+        }
+        return -1;
+    };
+    $j = $sig($j - 1);
     if (!(is_array($toks[$j] ?? null) && $toks[$j][0] === T_CATCH)) { return 'the transaction\'s try has no catch'; }
-    $depth = 0; $sawRollback = false;
-    for ($k = $j; isset($toks[$k]); $k++) {
+    $open = $j; while (($toks[$open] ?? null) !== '{') { $open++; }
+    /* The first statement: up to the first `;` at its own level, or to the
+       end of its first { } block (and any `catch` / `else` that follows). */
+    $first = $sig($open);
+    $depth = 0; $end = $first;
+    for ($k = $first; isset($toks[$k]); $k++) {
         $text = is_array($toks[$k]) ? $toks[$k][1] : $toks[$k];
-        if ($text === '{') { $depth++; }
-        elseif ($text === '}') { $depth--; if ($depth === 0) { break; } }
-        elseif (is_array($toks[$k]) && $toks[$k][0] === T_STRING && $toks[$k][1] === 'rollback') { $sawRollback = true; }
+        if ($text === '{' || $text === '(') { $depth++; }
+        elseif ($text === '}' || $text === ')') {
+            $depth--;
+            if ($depth === 0 && $text === '}') {
+                $nx = $sig($k);
+                if ($nx >= 0 && is_array($toks[$nx]) && in_array($toks[$nx][0], [T_CATCH, T_ELSE, T_ELSEIF, T_FINALLY], true)) { continue; }
+                $end = $k; break;
+            }
+        } elseif ($depth === 0 && $text === ';') { $end = $k; break; }
     }
-    return $sawRollback ? '' : 'the transaction\'s catch does not roll back';
+    $sawRollback = false;
+    for ($k = $first; $k <= $end; $k++) {
+        if (!is_array($toks[$k])) { continue; }
+        if (in_array($toks[$k][0], [T_RETURN, T_THROW, T_EXIT, T_GOTO, T_ELSE, T_ELSEIF], true)) {
+            return 'the transaction\'s catch can leave or branch before it rolls back (' . $toks[$k][1] . ' in its first statement)';
+        }
+        if ($toks[$k][0] === T_STRING && $toks[$k][1] === 'rollback') { $sawRollback = true; }
+    }
+    if (!$sawRollback) { return 'the transaction\'s catch does not roll back as its first statement'; }
+    if (is_array($toks[$first]) && $toks[$first][0] === T_IF) {
+        /* the only condition allowed: the connection exists */
+        $cond = '';
+        $d = 0;
+        for ($k = $sig($first); isset($toks[$k]); $k++) {
+            $text = is_array($toks[$k]) ? $toks[$k][1] : $toks[$k];
+            if (is_array($toks[$k]) && in_array($toks[$k][0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) { continue; }
+            if ($text === '(') { $d++; } elseif ($text === ')') { $d--; }
+            $cond .= $text;
+            if ($d === 0) { break; }
+        }
+        if (!in_array($cond, ['(isset($db))', '($dbinstanceofmysqli)', '($dbinstanceof\\mysqli)', '(isset($db)&&$dbinstanceofmysqli)', '(isset($db)&&$dbinstanceof\\mysqli)'], true)) {
+            return 'the transaction\'s catch rolls back only when ' . $cond . ' — it must roll back on every path';
+        }
+    }
+    return '';
 };
 $saveCoreSrc = (string)file_get_contents($repoRoot . '/appWeb/public_html/manage/editor/save_song_core.php');
 $why = $checkSaveCallsLinksOutsideTry($saveCoreSrc);
@@ -397,6 +445,16 @@ $check('…a try inside a closure that is called at once',
     $checkSaveCallsLinksOutsideTry($frame('(function () use ($db, $songId, $song, &$translationWarnings) { try { ' . $callLine . ' } catch (\\Throwable $_x) {} })();')) !== '');
 $check('…a transaction whose catch does not roll back',
     $checkSaveCallsLinksOutsideTry(str_replace('try { $db->rollback(); } catch (\\Throwable $_) {}', '', $frame($callLine))) !== '');
+/* #2137 review round 7 (decision 4) — "rolls back" means on every path. */
+$rollbackLine = 'try { $db->rollback(); } catch (\\Throwable $_) {}';
+$check('…accepts a catch whose first statement rolls back inside `if (isset($db) && $db instanceof mysqli)`, as the song save writes it',
+    $checkSaveCallsLinksOutsideTry(str_replace($rollbackLine, 'if (isset($db) && $db instanceof mysqli) { ' . $rollbackLine . ' } error_log("x");', $frame($callLine))) === '');
+$check('…refuses a catch that returns before it rolls back',
+    $checkSaveCallsLinksOutsideTry(str_replace($rollbackLine, 'if ($e instanceof \\RuntimeException) { return []; } ' . $rollbackLine, $frame($callLine))) !== '');
+$check('…refuses a catch that rolls back only for one kind of error',
+    $checkSaveCallsLinksOutsideTry(str_replace($rollbackLine, 'if ($e instanceof \\mysqli_sql_exception) { ' . $rollbackLine . ' }', $frame($callLine))) !== '');
+$check('…refuses a catch whose rollback comes after other work',
+    $checkSaveCallsLinksOutsideTry(str_replace($rollbackLine, 'error_log("x"); ' . $rollbackLine, $frame($callLine))) !== '');
 $check('…and a second call of it',
     $checkSaveCallsLinksOutsideTry($frame($callLine . ' ' . $callLine)) !== '');
 

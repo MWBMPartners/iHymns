@@ -468,6 +468,54 @@ try {
                 $made === 0 && $seq === $seqBefore + ($isMaria ? 1 : 0), json_encode([$made, $seqBefore, $seq]));
         });
 
+    /* B2 — a 1020 during the translation-link writes (decision 4). The save
+       sends `pt` only, so its first link write is the DELETE of `es`. On
+       MariaDB another curator changes that `es` row (and commits) just before
+       the save prepares that DELETE, so the DELETE meets a real 1020. This
+       is the case a helper that swallows errors around the link call (the
+       review's planted rv6BestEffort()) turns into a "saved" answer. */
+    $makeSource('MISC-0102', 102);
+    $conn->hooks[] = ['/^\s*(DELETE\s+FROM|UPDATE|INSERT\s+INTO)\s+tblSongTranslations\b/i', $isMaria
+        ? static function () use ($other): void { $other->query("UPDATE tblSongTranslations SET Translator = 'Bea' WHERE SourceSongId = 'MISC-0102' AND TargetLanguage = 'es'"); }
+        : $standIn1020];
+    $failingCase('B2 (decision 4): a 1020 during the translation-link writes', 'MISC-0102',
+        $payload('MISC-0102', '', [['songId' => 'MISC-0901', 'language' => 'pt']]),
+        $isMaria ? ['tblSongTranslations'] : [], 'the planted 1020', $is1020,
+        static function () use ($check, $links, $isMaria): void {
+            $check('…the links are exactly as they were (`es` is still there' . ($isMaria ? ', with the other curator\'s change' : '') . ')',
+                $links('MISC-0102') === [
+                    ['TranslatedSongId' => 'MISC-0902', 'TargetLanguage' => 'es', 'Translator' => $isMaria ? 'Bea' : 'Luis', 'Verified' => '1'],
+                    ['TranslatedSongId' => 'MISC-0901', 'TargetLanguage' => 'pt', 'Translator' => 'Ana', 'Verified' => '1'],
+                ], json_encode($links('MISC-0102')));
+        });
+
+    /* B3 — a translation-link write fails AND undoing the link writes fails
+       (decision 4). A trigger refuses the new `de` link (an ordinary error,
+       1644), and this connection's ROLLBACK TO SAVEPOINT throws, as in
+       test-song-translations-sync.php. The links are then half-written (`es`
+       already deleted), so the whole save must stop and roll back. */
+    $makeSource('MISC-0103', 103);
+    $admin->query("CREATE TRIGGER t2137_save_no_de BEFORE INSERT ON tblSongTranslations FOR EACH ROW BEGIN IF NEW.TargetLanguage = 'de' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'refused by test'; END IF; END");
+    try {
+        $conn->hooks[] = ['/^\s*ROLLBACK\s+TO\s+SAVEPOINT\b/i', static function (): never {
+            throw new \mysqli_sql_exception('simulated: the undo failed', 1305);
+        }];
+        $failingCase('B3 (decision 4): a link write fails and undoing the link writes fails too', 'MISC-0103',
+            $payload('MISC-0103', '', [['songId' => 'MISC-0901', 'language' => 'pt'], ['songId' => 'MISC-0903', 'language' => 'de']]),
+            [], 'the failed undo, carrying the refused write',
+            static fn(array $d): bool => str_contains((string)($d['error'] ?? ''), 'Undoing the translation links failed')
+                && str_contains((string)($d['error'] ?? ''), 'refused by test'),
+            static function () use ($check, $links): void {
+                $check('…the links are exactly as they were (the deleted `es` is back, no `de`)',
+                    $links('MISC-0103') === [
+                        ['TranslatedSongId' => 'MISC-0902', 'TargetLanguage' => 'es', 'Translator' => 'Luis', 'Verified' => '1'],
+                        ['TranslatedSongId' => 'MISC-0901', 'TargetLanguage' => 'pt', 'Translator' => 'Ana', 'Verified' => '1'],
+                    ], json_encode($links('MISC-0103')));
+            });
+    } finally {
+        $admin->query('DROP TRIGGER IF EXISTS t2137_save_no_de');
+    }
+
     /* B4 — a deadlock while the save writes its activity-log row (#2137 review
        round 7, decision 1's audit). logActivity() runs INSIDE the save's
        transaction (the song.edit row) and caught every error so that logging
