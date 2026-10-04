@@ -717,21 +717,39 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   `{'language': 'en'}`, `"language": "en"`), a declaration (`var`/`let`/`const language = 'en'`, any name containing
   `language` or `lang`), and a PHP `match` giving `'en'` to a language variable or key — on one line, or spread over
   several (each PHP file is also read whole for that one shape). Since round 5: "English" is any quoted `en` tag, so
-  a regional fallback (`|| 'en-GB'`, `?? 'en-US'`) is caught in every shape; "a language name" is any name
-  CONTAINING `language` or `lang` in every shape (`languageCode: 'en'`, `targetLang: 'en'`,
-  `'languageCode' => 'en'`, `$x['languageCode'] = 'en'` — and JSON-LD's `inLanguage: 'en'`, which round 4 had left
-  out and which IS a song's language); an assignment with no spaces where a statement or an argument starts
+  a regional fallback (`|| 'en-GB'`, `?? 'en-US'`) is caught in each shape listed here; an assignment with no spaces
+  where a statement or an argument starts
   (`language='en'`, `if(!lang)lang='en'`, `{ id, language = 'en' }`, `function f(lang = 'en')`); a logical
   assignment (`lang||='en'`, `language??='en'`); and a setter call (`setLanguage('en')`, `setSongLang('en-GB')`).
-  **What it still cannot see (its blind spots), so reviewers still look:** a template literal
+  Round 5 also said "a language name" is any name CONTAINING `language` or `lang` "in every shape"; **that was not
+  true** (the fifth review, finding 4): the `??`/`||`/`?:` pattern and both ternary patterns still needed the word to
+  END there, so `song.languageCode || 'en'`, `$row['langCode'] ?? 'en'`, `$row['language_code'] ?? 'en'` and
+  `$song->languageCode ?: 'en'` got through. **Since round 6** every pattern takes any name containing `language`
+  or `lang` (`languageCode: 'en'`, `targetLang: 'en'`, `'languageCode' => 'en'`, `$x['languageCode'] = 'en'`,
+  JSON-LD's `inLanguage: 'en'`, and the three shapes just named); an assignment after `else` is caught
+  (`else lang='en';`); a comment opened and closed on the line no longer hides the code after it
+  (`lang = /* default */ x.language || 'en'`, `x.language || /* fallback */ 'en'` — the scan used to cut the line
+  at the comment); and "English" also means `'en_GB'` (an underscore), `'eng'`, the name `'English'`, and a list
+  holding it (`['en']`, `[ 'en-GB', 'fr' ]`) — except inside a `match`, where an arm giving `'English'` or `'eng'`
+  is normally a lookup (`'en' => 'English'`), so the two `match` patterns keep to the tag. Each new shape was proven
+  by planting it in the real tree (the guard goes red) and by removing each new pattern piece (its own checks go
+  red); the whole tree still scans clean. Because `'English'` now counts, a language NAME written as data under a
+  language key (`['code' => 'en', 'language' => 'English']`) would be flagged; none exists today, and one that
+  appears needs a decision, not a quiet exception.
+  **What it still cannot see (its blind spots), so reviewers still look:** a PHP array key that is exactly
+  `'lang' => 'en'` (left out on purpose — see below); a template literal
   (`` language: `en` ``); a value built by joining strings (`'e' + 'n'`); a fallback through a variable or constant
   (`$raw : DEFAULT_LANG`, `const EN = 'en'; … || EN`); a fallback spread over two lines in any shape except the PHP
   `match`; a `match` or ternary whose result is returned or passed on rather than assigned to a language name;
   any call other than a `set…Language(…)` setter (`Object.assign(song, { lang: x })` with `x` holding `'en'`,
   `$map->set('language', 'en')`, `new Map([['language', 'en']])`); a bare `lang: 'en'`-style assignment in the
   middle of a longer expression (`x = (lang='en')` is caught only because of the bracket before it; `a && lang='en'`
-  is not); a name that does not contain `language` or `lang` (`$code = 'en'` then stored as the language); and
-  anything outside the site's own PHP and JS (vendor folders, JSON files, the Apple and Android apps, `tools/`).
+  is not); a name that does not contain `language` or `lang` (`$code = 'en'` then stored as the language); English
+  spelled any other way (`'en-gb'` is caught, `'English (UK)'`, `'anglais'` or `"\x65n"` are not); code on the same
+  line after the END of a comment that spans lines (` */ lang = 'en';` — only a comment opened and closed on ONE line
+  is removed, and a line starting with `*` is skipped whole; the opposite case, a line inside a longer comment that
+  does not start with `*`, is read as code, which can only flag too much, never too little);
+  and anything outside the site's own PHP and JS (vendor folders, JSON files, the Apple and Android apps, `tools/`).
   Deliberate exceptions are listed in the test by file and the WHOLE line (trimmed) — since round 5 the whole line
   must be equal, because "contains the listed text" also excused a real fallback appended to that line (the fourth
   review's planted fault) — and each must still be found: today only `js/modules/print.js`'s sample song for the

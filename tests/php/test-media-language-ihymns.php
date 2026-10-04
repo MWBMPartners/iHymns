@@ -305,39 +305,57 @@ mliCheck("JSON-LD inLanguage no longer falls back to the page's own interface la
    REGIONAL English fallback (`|| 'en-GB'`, `'en-US'`, `'en-x-…'`) is the same
    fault, and the fourth review's planted `|| 'en-GB'` went unnoticed. Every
    pattern below is built on this one piece. */
-$EN = '[\'"]en(?:-[A-Za-z0-9]{1,8})*[\'"]';
+/* #2137 review round 6 (the fifth review's finding 4) — and English spelled
+   other ways: a tag written with an underscore (`'en_GB'`, the way some
+   systems write locales), the three-letter code (`'eng'`), the NAME
+   (`'English'`), and a list holding it (`['en']`, `[ 'en-GB', … ]`). None of
+   these is a song's language when the language is not known, any more than
+   `'en'` is. */
+$EN = '(?:\[\s*)?[\'"](?:en(?:[-_][A-Za-z0-9]{1,8})*|eng|english)[\'"]';
+/* …except inside a `match`: there an arm giving 'English' or 'eng' is
+   normally a LOOKUP (`'en' => 'English'`, `'en' => 'eng'`), not a fallback,
+   so the two `match` patterns keep to the tag itself (`'en'`, `'en-GB'`,
+   `'en_GB'`). */
+$ENTAG = '[\'"]en(?:[-_][A-Za-z0-9]{1,8})*[\'"]';
 /* …and "a language name" is any identifier CONTAINING language or lang
    (`languageCode`, `targetLang`, `songLanguage`), not only the bare words —
    the fourth review's `languageCode: 'en'` went unnoticed. */
 $LANGWORD = '\w*(?:language|lang)\w*';
 $fallbackPatterns = [
-    '/(?:language|lang)\b[^\n]{0,60}(?:\?\?|\|\||\?:)\s*' . $EN . '/i',     // x.language ?? 'en', lang || 'en', targetLang || 'en-GB'
+    /* #2137 review round 6 (finding 4) — this pattern and the two ternary
+       ones below take any NAME containing lang/language ($LANGWORD), as the
+       others already did: they used to require the word to END there
+       (`(?:language|lang)\b`), so `song.languageCode || 'en'`,
+       `$row['langCode'] ?? 'en'`, `$row['language_code'] ?? 'en'` and
+       `$song->languageCode ?: 'en'` all got through. */
+    '/' . $LANGWORD . '[^\n]{0,60}(?:\?\?|\|\||\?:)\s*' . $EN . '/i',       // x.language ?? 'en', lang || 'en', languageCode ?: 'en'
     /* PHP array keys containing language (any), or lang with more letters
        (`'songLang'`, `'langCode'`). A key that is exactly 'lang' is left out
        on purpose: the geocoder in manage/places-api.php asks for English place
        names with `'lang' => 'en'`, which is not a song's language. */
     '/[\'"](?:\w*language\w*|\w+lang\w*|lang\w+)[\'"]\s*=>\s*' . $EN . '/i', // 'language' => 'en', 'languageCode' => 'en'
     /* #2137 review — the two shapes the first version missed: */
-    '/(?:language|lang)\b[^\n]{0,80}\?[^\n]{0,80}:\s*' . $EN . '/i',         // $x !== '' ? $x : 'en'  (a ternary's "else")
+    '/' . $LANGWORD . '[^\n]{0,80}\?[^\n]{0,80}:\s*' . $EN . '/i',           // $x !== '' ? $x : 'en'  (a ternary's "else")
     '/\$' . $LANGWORD . '\s*(?:\?\?|\|\||&&)?=\s*' . $EN . '/i',              // $language = 'en', $lang ??= 'en'
     '/(?:language|lang)\w*\s+(?:\?\?|\|\||&&)?=\s*' . $EN . '/i',           // song.language = 'en' (JS; a space before "=",
                                                                                    // so the HTML attribute lang="en" is not matched)
     /* #2137 second review — shapes that still got through: */
-    '/(?:language|lang)\b[^\n]{0,80}\?\s*' . $EN . '\s*:/i',                 // $lang === '' ? 'en' : $lang  (the ternary's THEN)
+    '/' . $LANGWORD . '[^\n]{0,80}\?\s*' . $EN . '\s*:/i',                   // $lang === '' ? 'en' : $lang  (the ternary's THEN)
     '/\[[\'"]' . $LANGWORD . '[\'"]\]\s*(?:\?\?|\|\||&&)?=\s*' . $EN . '/i',   // $song['language'] = 'en', $row['languageCode'] = 'en'
     '/->\s*' . $LANGWORD . '\s*(?:\?\?|\|\||&&)?=\s*' . $EN . '/i',            // $song->language = 'en'
     '/\.' . $LANGWORD . '\s*(?:\?\?|\|\||&&)?=\s*' . $EN . '/i',               // song.language='en' (JS, no space; a dot, so not lang="en")
     /* #2137 review round 4 — shapes the third review showed still got through: */
     '/(?<![\w$.])[\'"]?' . $LANGWORD . '[\'"]?\s*:\s*' . $EN . '/i',          // { language: 'en' }, {'languageCode': 'en'}, "targetLang": "en"
     '/\b(?:var|let|const)\s+' . $LANGWORD . '\s*=\s*' . $EN . '/i',           // var language='en', let lang = "en", const songLang = 'en'
-    '/(?:language|lang)\w*[\'"]?\]?\s*(?:=>|=)\s*match\s*\([^;]*?=>\s*' . $EN . '/i', // $lang = match ($x) { '' => 'en', … } on ONE line
+    '/(?:language|lang)\w*[\'"]?\]?\s*(?:=>|=)\s*match\s*\([^;]*?=>\s*' . $ENTAG . '/i', // $lang = match ($x) { '' => 'en', … } on ONE line
     /* #2137 review round 5 — shapes the fourth review showed still got through: */
     /* an assignment with no spaces where a statement or an argument starts
        (line start, after ; { } ( ) or ,): `language='en'`,
        `if(!lang)lang='en'`, `{ id, language = 'en' }`, `f(lang = 'en')`. The
        HTML attribute `<html lang="en">` follows a tag name and a space, so
-       it is not matched; `==` / `===` are comparisons and are not matched. */
-    '/(?:^|[;{}(),])\s*' . $LANGWORD . '\s*=\s*' . $EN . '/i',
+       it is not matched; `==` / `===` are comparisons and are not matched.
+       Round 6 (finding 4): also after `else` — `else lang='en';`. */
+    '/(?:^|[;{}(),]|\belse\b)\s*' . $LANGWORD . '\s*=\s*' . $EN . '/i',
     '/' . $LANGWORD . '\s*(?:\?\?|\|\||&&)=\s*' . $EN . '/i',                // lang||='en', language??='en' (logical assignment, any spacing)
     '/\bset' . $LANGWORD . '\s*\(\s*' . $EN . '\s*[,)]/i',                    // setLanguage('en'), setSongLang('en-GB', …)
 ];
@@ -345,7 +363,7 @@ $fallbackPatterns = [
    on a later line — cannot be seen one line at a time, so each file is also
    read whole for it: a language variable or key assigned a `match` with an arm
    giving 'en', anywhere before the statement's closing `;`. */
-$fallbackMatchWhole = '/(?:language|lang)\w*[\'"]?\]?\s*(?:=>|=)\s*match\s*\([^;]*?=>\s*' . $EN . '/is';
+$fallbackMatchWhole = '/(?:language|lang)\w*[\'"]?\]?\s*(?:=>|=)\s*match\s*\([^;]*?=>\s*' . $ENTAG . '/is';
 /* Deliberate exceptions, each by PATH and the WHOLE LINE (trimmed), so it
    neither follows the line to a new meaning nor breaks when lines above it
    move, and each must still be found — a stale exception fails the check
@@ -360,6 +378,21 @@ $fallbackMatchWhole = '/(?:language|lang)\w*[\'"]?\]?\s*(?:=>|=)\s*match\s*\([^;
 $enExempt = [
     'appWeb/public_html/js/modules/print.js' => "language: 'en', copyright: 'Public Domain', ccli: '22025', iswc: '',",
 ];
+/* The code on one line, as the guard reads it — comment-stripped (like this
+   repo's other source guards): a doc comment may SHOW an example shape such
+   as 'language' => 'en' without it being code. A comment opened and closed on
+   the line (`/* … *\/`) is removed first, so code AFTER it is still read —
+   round 6 (finding 4): `lang = /* default *\/ x.language || 'en'` and
+   `x.language || /* fallback *\/ 'en'` used to be cut off at the comment and
+   got through. Then a line that starts as a comment is skipped (null), and a
+   trailing block or line comment is cut off. */
+$enCodeOf = static function (string $line): ?string {
+    $code = (string)preg_replace('~/\\*.*?\\*/~', ' ', $line);
+    if (preg_match('~^\\s*(?:\\*|//|/\\*|#)~', $code) === 1) {
+        return null;
+    }
+    return (string)preg_replace('~\\s(?://|/\\*).*$~', '', $code);
+};
 $enIsExempt = static fn(string $rel, string $line): bool => isset($enExempt[$rel]) && trim($line) === $enExempt[$rel];
 $enExemptSeen = [];
 $enScanned = 0;
@@ -373,14 +406,10 @@ foreach ($it as $file) {
     }
     $enScanned++;
     foreach (file($file->getPathname()) ?: [] as $i => $line) {
-        /* Comment-stripped (like this repo's other source guards): a doc
-           comment may SHOW an example shape such as 'language' => 'en'
-           without it being code. Whole-line comments are skipped; a trailing
-           block or line comment is cut off before matching. */
-        if (preg_match('~^\\s*(?:\\*|//|/\\*|#)~', $line) === 1) {
+        $code = $enCodeOf($line);
+        if ($code === null) {
             continue;
         }
-        $code = (string)preg_replace('~\\s(?://|/\\*).*$~', '', $line);
         foreach ($fallbackPatterns as $re) {
             if (preg_match($re, $code) === 1) {
                 $rel = substr($path, strlen(str_replace('\\', '/', $repoRoot)) + 1);
@@ -480,6 +509,21 @@ $enMustCatch = [
        lang/language, and a song whose inLanguage falls back to 'en' is
        exactly the #2132 fault, so it is caught now. */
     "'inLanguage': 'en',",
+    /* the fifth review's shapes (round 6, finding 4): longer names in every
+       fallback shape, `else`, and English spelled other ways */
+    "const tag = song.languageCode || 'en';",
+    "\$tag = \$row['langCode'] ?? 'en';",
+    "\$tag = \$row['language_code'] ?? 'en';",
+    "\$code = \$song->languageCode ?: 'en';",
+    "\$x = \$songLangCode !== '' ? \$songLangCode : 'en';",
+    "var t = targetLangCode === '' ? 'en' : targetLangCode;",
+    "if (x) lang = y; else lang='en';",
+    "else language='en';",
+    "var lang = song.language || 'eng';",
+    "var language = song.language || 'English';",
+    "var lang = song.language || 'en_GB';",
+    "song.languages = song.languages || ['en'];",
+    "\$langs = \$row['languages'] ?? [ 'en-GB', 'fr' ];",
 ];
 $enMustPass = ['<html lang="en">', "if (\$lang === 'en') {", "\$language = mediaLanguageOrUnknown(\$valid);", "\$locale = 'en';",
     "'lang'  => 'en',   /* a geocoder's result language, not a song's */", "\$isEnglish = \$lang === 'en' ? 1 : 0;",
@@ -488,7 +532,10 @@ $enMustPass = ['<html lang="en">', "if (\$lang === 'en') {", "\$language = media
     "\$label = match (\$lang) { 'en' => 'English', default => \$lang };",
     /* round 5 — comparisons, a lookup and HTML are not fallbacks */
     "if(lang==='en'){", "if (language == 'en-GB') {", "if(lang!=='en')", "\$name = getLanguageName('en');",
-    "echo '<html lang=\"en-GB\">';", "var english = 'en';", "\$locale = 'en-GB';"];
+    "echo '<html lang=\"en-GB\">';", "var english = 'en';", "\$locale = 'en-GB';",
+    /* round 6 — a lookup inside a match, and English as a value of something that is not a language */
+    "\$name = match (\$lang) { 'en' => 'English', default => \$lang };", "\$iso3 = match (\$lang) { 'en' => 'eng', default => '' };",
+    "\$title = \$song['title'] ?? 'English hymns';", "if (lang === 'eng') {"];
 /* The multi-line `match` shape, on its own. */
 mliCheck("the 'en' guard catches a `match` over several lines giving 'en' for a language",
     preg_match($fallbackMatchWhole, "\$lang = match (\$raw) {\n    '' => 'en',\n    default => \$raw,\n};") === 1
@@ -499,6 +546,19 @@ $enMatches = static function (string $code) use ($fallbackPatterns): bool {
 };
 foreach ($enMustCatch as $code) { mliCheck("the 'en' guard catches: {$code}", $enMatches($code)); }
 foreach ($enMustPass as $code) { mliCheck("the 'en' guard does not flag: {$code}", !$enMatches($code)); }
+/* …and through $enCodeOf(), as the tree scan reads a line (round 6, finding 4):
+   a comment opened and closed on the line no longer hides the code after it;
+   a comment still is not code. */
+foreach (["var lang = /* default */ song.language || 'en';", "var lang = song.language || /* fallback */ 'en';",
+          "/* note */ lang = 'en';"] as $line) {
+    $code = $enCodeOf($line);
+    mliCheck("the 'en' guard, reading the line as the scan does, catches: {$line}", $code !== null && $enMatches($code), (string)$code);
+}
+foreach (["/* a doc comment showing lang || 'en' */", " * lang || 'en' inside a block comment", "// lang || 'en'",
+          "var lang = song.language || ''; // never lang || 'en'"] as $line) {
+    $code = $enCodeOf($line);
+    mliCheck("the 'en' guard, reading the line as the scan does, does not flag: {$line}", $code === null || !$enMatches($code), (string)$code);
+}
 
 /* The ONE unknown-language fallback (#2137 review): its behaviour, and the
    four paths that save a song's language all calling it. */
