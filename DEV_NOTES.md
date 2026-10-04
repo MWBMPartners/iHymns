@@ -913,14 +913,16 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   one sent link with a new language, for the same song, and the row not protected; two stored rows or two new
   links for one song are still read as "removed one, added one". **What the row keeps (corrected in round 6, the
   lead's decision on the fifth review's finding 3):** the Translator always — it is the same song, so the same
-  translation; the Verified flag and its date only when the primary language is the same under the shared rule
+  translation; the Verified flag only when the primary language is the same under the shared rule
   (`pt` → `pt-BR`, `iw` → `he`, `zh` → `zh-Hant` — `mediaLanguageGroup()`); otherwise (`fr` → `de` on T1) the
-  Translator stays and the link is no longer verified. Round 5 kept everything for any language change and called
+  Translator stays and the link is no longer verified. (Round 6 said "the Verified flag and its date"; since round
+  7 the date stays whenever the row stays with its own song — see "The date" below.) Round 5 kept everything for any language change and called
   it "more precise", which `fr` → `de` is not. **Round 6, the fifth review's finding 1 — a link's details never move
   to a different song.** A stored row's Translator, Verified flag and date belong to the song it links to. When a
   save re-points a language to a different song: if that song has its own stored row that no sent link matches,
-  that row is relabelled to the sent language and keeps its own details (its Translator always; its Verified flag
-  and date by the rule just above, since a relabel is a language change of that song), and the displaced row for
+  that row is relabelled to the sent language and keeps its own details (its Translator and, since round 7, its
+  date always; its Verified flag by the rule just above, since a relabel is a language change of that song), and
+  the displaced row for
   the old song is deleted; otherwise the re-pointed row is updated in place with no Translator, not verified.
   The review's case: stored `pt → T1` (Ana, verified) and `pt-BR → T2` (Zed, verified), sent `pt-BR → T1`, used
   to become `pt-BR → T1` credited to Zed and verified; it is now `pt-BR → T1`, Ana, verified, and the T2 row is
@@ -937,10 +939,14 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   `iw`/`he`, `in`/`id`, `ji`/`yi` and `mo`/`ro`, both ways round, on both servers. Stored song ids are now compared
   after the same trim as stored languages (`songTranslationsSongKey()`): a stored `'T1 '`, which the database
   accepts as a link to T1 because its collation ignores trailing spaces, re-saved unchanged keeps its translator
-  and verified flag (it used to read as a re-point and lose both); the stored value is not rewritten. **The date:** the table has no separate date for when a link was verified; its only date is
-  `CreatedAt`, when the row was written, which the round-5 notes called "the date". It goes with the Verified
-  flag — kept when the flag is kept, set to the time of the save when the flag is cleared
-  (`songTranslationsDetailsAfterChange()`; the planner's `details` on each update: `keep`, `unverify`, `clear`).
+  and verified flag (it used to read as a re-point and lose both); the stored value is not rewritten. **The date (changed in round 7, the lead's decision):** the table has no separate date for when a
+  link was verified; its only date is `CreatedAt`, when the row was written, which the round-5 notes called "the
+  date". It is set to the time of the save only when a row comes to link to a DIFFERENT song — it is then a new
+  link in all but its row id (the planner's `clear`). Whenever a row stays with its own song — a same-song language
+  change, or the target song's own row relabelled by a re-point — its date is left exactly as it was, whatever
+  happens to the Verified flag (`keep` and `unverify` leave it; `songTranslationsDetailsAfterChange()`). Round 6
+  made the date follow the flag (reset whenever the flag was cleared), which treated a changed language label as
+  a new link.
   Proven against a real database on MariaDB 11 and MySQL 8.4
   (`tests/php/test-song-translations-sync.php` Parts B and C — C runs in its own PHP process against a database
   built the way the table looked BEFORE the card, because `songTranslationsLanguageFkPresent()`'s answer is cached

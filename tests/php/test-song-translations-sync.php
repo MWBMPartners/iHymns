@@ -47,7 +47,8 @@ declare(strict_types=1);
  *     (Part B, T16 / T17);
  *   - round 6 (the fifth review): a link's details stay with its song. A
  *     language change of the same song keeps the translator always, and the
- *     verified flag and its date only for the same primary language
+ *     verified flag only for the same primary language (round 7: its date
+ *     stays either way — it changes only when a row moves to another song)
  *     (`pt` → `pt-BR`: kept; `fr` → `de`: Ana kept, not verified); a link
  *     re-pointed to a song that has its own stored row nobody sent back
  *     relabels THAT row, keeping its own details, and the old song's row goes
@@ -691,9 +692,18 @@ if ($db === null) {
             && $al['pt-BR']['Translator'] === '' && (int)$al['pt-BR']['Verified'] === 0
             && str_contains(implode(' ', $w), '"English" is not a language code'), json_encode([$a, $w]));
         [$b, $a, $w] = $scenario([['T1', 'fr', 'Ana', 1]], [['T1', 'de']]);
-        $check('(finding 3) fr → T1 (Ana, verified) changed to de → T1: the same row, Ana kept, NOT verified (a different language), dated now',
+        /* #2137 review round 7 (CreatedAt, the lead's decision): the date
+           changes only when a row comes to link to a different song. Round 6
+           set it to the save's time here, with the verified flag. */
+        $check('(finding 3) fr → T1 (Ana, verified) changed to de → T1: the same row, Ana kept, NOT verified (a different language), its date KEPT (the same song; round 7)',
             count($a) === 1 && $a[0]['Id'] === $b[0]['Id'] && $a[0]['TargetLanguage'] === 'de' && $a[0]['TranslatedSongId'] === 'T1'
-            && $a[0]['Translator'] === 'Ana' && (int)$a[0]['Verified'] === 0 && $a[0]['CreatedAt'] !== $b[0]['CreatedAt'] && $w === [],
+            && $a[0]['Translator'] === 'Ana' && (int)$a[0]['Verified'] === 0 && $a[0]['CreatedAt'] === $b[0]['CreatedAt'] && $w === [],
+            json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', 'fr', 'Ana', 1], ['T2', 'de', 'Zed', 1]], [['T1', 'de']]);
+        $bl = $byLang($b);
+        $check('(CreatedAt, round 7) stored fr → T1 (Ana, verified) and de → T2 (Zed), sent de → T1: T1\'s own row is relabelled de — Ana, not verified (another language), and its date KEPT (it stays with T1); the T2 row goes',
+            count($a) === 1 && $a[0]['Id'] === $bl['fr']['Id'] && $a[0]['TargetLanguage'] === 'de' && $a[0]['TranslatedSongId'] === 'T1'
+            && $a[0]['Translator'] === 'Ana' && (int)$a[0]['Verified'] === 0 && $a[0]['CreatedAt'] === $bl['fr']['CreatedAt'] && $w === [],
             json_encode([$a, $w]));
         [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'es', 'Luis', 1]], [['T2', 'pt'], ['T1', 'es']]);
         $check('(finding 1) two links swap songs: each row is re-pointed, and neither takes the other song\'s translator or verified flag',

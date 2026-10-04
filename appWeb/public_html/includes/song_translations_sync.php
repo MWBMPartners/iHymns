@@ -281,9 +281,11 @@ function songTranslationsProtectedIds(array $failed, array $existing, callable $
  *        Each update's 'details' says what happens to the row's Translator,
  *        Verified flag and date (CreatedAt) — #2137 review round 6, see
  *        songTranslationsDetailsAfterChange(): 'keep' (all three stay),
- *        'unverify' (the Translator stays; Verified is cleared and the date
- *        becomes the time of this save) or 'clear' (no Translator, not
- *        verified, the date becomes the time of this save).
+ *        'unverify' (the Translator and the date stay; Verified is cleared)
+ *        or 'clear' (no Translator, not verified, and the date becomes the
+ *        time of this save — the row now links to a different song, so it is
+ *        a new link in all but its row id). The date rule is round 7's (the
+ *        lead's decision): it changes only for 'clear'.
  */
 function songTranslationsPlanSync(array $desired, array $existing, array $protected, callable $tidy): array
 {
@@ -420,8 +422,9 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
        bare row inserted. What survives (round 6, the lead's decision on the
        fifth review's finding 3 — songTranslationsDetailsAfterChange()): the
        Translator ALWAYS (it is the same song, so the same translation); the
-       Verified flag and its date only when the primary language is the same
-       under the shared rule (`pt` → `pt-BR`, `iw` → `he`). A change to a
+       Verified flag only when the primary language is the same under the
+       shared rule (`pt` → `pt-BR`, `iw` → `he`); the date ALWAYS (round 7:
+       the row still links to the same song). A change to a
        different language (`fr` → `de` on T1) keeps the Translator but is no
        longer verified — what was checked was a French link. Round 5 kept
        everything for any language change; its notes said "more precise",
@@ -432,11 +435,13 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
        flag and date belong to the song it links to. When a sent link re-
        points a stored language to a DIFFERENT song: if that song has its own
        stored row that no sent link matches, THAT row is relabelled to the
-       sent language and keeps its OWN details (its Translator always; its
-       Verified flag and date by the same-primary-language rule above, since
-       a relabel is a language change of that song), and the displaced row
+       sent language and keeps its OWN details (its Translator and, since
+       round 7, its date always; its Verified flag by the same-primary-
+       language rule above, since a relabel is a language change of that
+       song), and the displaced row
        for the old song goes. Otherwise the re-pointed row is updated in
-       place with no Translator, not verified, and dated now. Until round 6
+       place with no Translator, not verified, and dated now (a new link in
+       all but its row id; round 7: the date changes ONLY in this case). Until round 6
        the re-pointed row kept its old song's details, so the fifth review's
        stored `pt → T1` (Ana, verified) and `pt-BR → T2` (Zed, verified),
        sent back as `pt-BR → T1`, became `pt-BR → T1` credited to Zed and
@@ -529,14 +534,20 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
  *                  no-break space): the Translator stays (it is the same song,
  *                  so the same translation), but the link is no longer
  *                  verified — what someone checked was a link in the OLD
- *                  language — and its date becomes the time of this save.
+ *                  language. Its date stays (see THE DATE).
  *
  * THE DATE. tblSongTranslations has no separate date for when a link was
  * verified; its only date is CreatedAt, the time the link row was written,
- * which the round-5 notes called "the date". It goes with the Verified flag:
- * kept when the flag is kept, set to the time of this save when the flag is
- * cleared. ('clear', for a link re-pointed to a song with no row of its own,
- * is decided by the planner, not here: no Translator, not verified, dated now.)
+ * which the round-5 notes called "the date". #2137 review round 7 (the lead's
+ * decision, carried over from round 6's report): it is set to the time of the
+ * save ONLY when a row comes to link to a DIFFERENT song — it is then a new
+ * link in all but its row id ('clear', decided by the planner, not here: no
+ * Translator, not verified, dated now). Whenever a row stays with its own song
+ * — a same-song language change, or the target song's own row relabelled by a
+ * re-point — its date is left exactly as it was, whatever happens to the
+ * Verified flag. (Round 6 made the date follow the flag: cleared with it on
+ * 'unverify'. That treated "the language label changed" as "a new link",
+ * which it is not.)
  *
  * "Primary language" is mediaLanguageGroup() — the shared rule's own answer,
  * the same one the language filter uses — after trimming exactly as the save
@@ -861,7 +872,7 @@ function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): ar
            gives is an error (match has no default), never a silent "keep". */
         $uStm = $db->prepare(match ($u['details']) {
             'keep'     => 'UPDATE tblSongTranslations SET TranslatedSongId = ?, TargetLanguage = ? WHERE Id = ?',
-            'unverify' => 'UPDATE tblSongTranslations SET TranslatedSongId = ?, TargetLanguage = ?, Verified = 0, CreatedAt = CURRENT_TIMESTAMP WHERE Id = ?',
+            'unverify' => 'UPDATE tblSongTranslations SET TranslatedSongId = ?, TargetLanguage = ?, Verified = 0 WHERE Id = ?',   /* the date stays: same song (round 7) */
             'clear'    => "UPDATE tblSongTranslations SET TranslatedSongId = ?, TargetLanguage = ?, Translator = '', Verified = 0, CreatedAt = CURRENT_TIMESTAMP WHERE Id = ?",
         });
         $uStm->bind_param('ssi', $u['songId'], $u['language'], $u['id']);
