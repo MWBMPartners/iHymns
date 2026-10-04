@@ -54,7 +54,10 @@ declare(strict_types=1);
  *     (the review's `pt → T1` Ana + `pt-BR → T2` Zed, sent `pt-BR → T1` →
  *     `pt-BR → T1`, Ana, verified); otherwise it keeps no translator and is not
  *     verified (`de → T2` re-pointed to T3); a protected row is never
- *     relabelled (Parts A6 and B).
+ *     relabelled (Parts A6 and B); an object with neither a songId nor a
+ *     language key changes nothing (Parts A5 and B); MariaDB's 1020 stops the
+ *     save as itself, and a failed undo carries the original error (Part B);
+ *     and the song save calls the links outside any try of its own (A7).
  *
  * Part A runs the pure comparison, songTranslationsPlanSync(). Part B runs
  * the real save steps against a real database built the way schema.sql looks
@@ -306,6 +309,96 @@ foreach ([
 ] as $what => [$entry, $want]) {
     $check("{$what} " . ($want ? 'is' : 'is NOT') . ' a link', songTranslationsIsLinkShaped($entry) === $want);
 }
+
+/* #2137 review round 6 (the fifth review's finding 7) — the song save must
+   call songTranslationsSaveLinksAllOrNothing() OUTSIDE any try of its own:
+   the only try around the call may be the one that holds the whole
+   transaction (begin_transaction() … commit()), whose catch rolls it back.
+   The wrapper lets through exactly two things — an error that has already
+   ended the transaction, and a failed undo — and both must stop the save; a
+   `try { … } catch (\Throwable) {}` around the call would swallow them and
+   commit half-written links (the review planted exactly that, and every
+   check stayed green). Read with PHP's own tokenizer, so comments and
+   strings cannot confuse it. */
+echo "\nPart A7 — the song save calls the translation links outside any try of its own (#2137 review round 6)\n";
+/**
+ * The `try` blocks enclosing each token, by the token index of each `try`.
+ * @return array{0: array<int, list<int>>, 1: array<int, int>} [enclosing tries per token index, end token index per try]
+ */
+$tryMap = static function (array $toks): array {
+    $stack = []; $around = []; $pendingTry = null; $tryEnd = [];
+    foreach ($toks as $i => $t) {
+        $id = is_array($t) ? $t[0] : null;
+        $text = is_array($t) ? $t[1] : $t;
+        if ($id === T_WHITESPACE || $id === T_COMMENT || $id === T_DOC_COMMENT) { $around[$i] = array_values(array_filter(array_column($stack, 'try'), static fn($x) => $x !== null)); continue; }
+        if ($id === T_TRY) { $pendingTry = $i; }
+        elseif ($text === '{' || $id === T_CURLY_OPEN || $id === T_DOLLAR_OPEN_CURLY_BRACES) { $stack[] = ['try' => $pendingTry]; $pendingTry = null; }
+        elseif ($text === '}') { $top = array_pop($stack); if (($top['try'] ?? null) !== null) { $tryEnd[$top['try']] = $i; } }
+        else { $pendingTry = null; }
+        $around[$i] = array_values(array_filter(array_column($stack, 'try'), static fn($x) => $x !== null));
+    }
+    return [$around, $tryEnd];
+};
+/** Token indexes of `name(` calls (not definitions). */
+$callsOf = static function (array $toks, string $name): array {
+    $out = [];
+    foreach ($toks as $i => $t) {
+        if (!is_array($t) || $t[0] !== T_STRING || $t[1] !== $name) { continue; }
+        $j = $i + 1; while (isset($toks[$j]) && is_array($toks[$j]) && $toks[$j][0] === T_WHITESPACE) { $j++; }
+        $k = $i - 1; while ($k >= 0 && is_array($toks[$k]) && $toks[$k][0] === T_WHITESPACE) { $k--; }
+        if (($toks[$j] ?? null) === '(' && !(is_array($toks[$k] ?? null) && $toks[$k][0] === T_FUNCTION)) { $out[] = $i; }
+    }
+    return $out;
+};
+/**
+ * Is `songTranslationsSaveLinksAllOrNothing()` called, once, inside no try
+ * but the transaction's, whose catch rolls back? Returns '' when so, else why not.
+ */
+$checkSaveCallsLinksOutsideTry = static function (string $src) use ($tryMap, $callsOf): string {
+    $toks = token_get_all($src);
+    [$around, $tryEnd] = $tryMap($toks);
+    $calls = $callsOf($toks, 'songTranslationsSaveLinksAllOrNothing');
+    $begins = $callsOf($toks, 'begin_transaction');
+    if (count($calls) !== 1) { return 'expected one call of songTranslationsSaveLinksAllOrNothing(), found ' . count($calls); }
+    if (count($begins) !== 1) { return 'expected one begin_transaction(), found ' . count($begins); }
+    $txTries = $around[$begins[0]];
+    if ($txTries === []) { return 'begin_transaction() is not inside a try'; }
+    if ($around[$calls[0]] !== $txTries) {
+        return 'the call is inside ' . count($around[$calls[0]]) . ' try block(s); only the transaction\'s (' . count($txTries) . ') is allowed';
+    }
+    /* The transaction's try: its catch must roll back. */
+    $outer = end($txTries);
+    $j = $tryEnd[$outer] + 1;
+    while (isset($toks[$j]) && is_array($toks[$j]) && in_array($toks[$j][0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) { $j++; }
+    if (!(is_array($toks[$j] ?? null) && $toks[$j][0] === T_CATCH)) { return 'the transaction\'s try has no catch'; }
+    $depth = 0; $sawRollback = false;
+    for ($k = $j; isset($toks[$k]); $k++) {
+        $text = is_array($toks[$k]) ? $toks[$k][1] : $toks[$k];
+        if ($text === '{') { $depth++; }
+        elseif ($text === '}') { $depth--; if ($depth === 0) { break; } }
+        elseif (is_array($toks[$k]) && $toks[$k][0] === T_STRING && $toks[$k][1] === 'rollback') { $sawRollback = true; }
+    }
+    return $sawRollback ? '' : 'the transaction\'s catch does not roll back';
+};
+$saveCoreSrc = (string)file_get_contents($repoRoot . '/appWeb/public_html/manage/editor/save_song_core.php');
+$why = $checkSaveCallsLinksOutsideTry($saveCoreSrc);
+$check('save_song_core.php calls songTranslationsSaveLinksAllOrNothing() once, in no try but the transaction\'s (whose catch rolls back)',
+    $why === '', $why);
+/* The check itself, on the shapes it must refuse and the one it must accept. */
+$callLine = "foreach (songTranslationsSaveLinksAllOrNothing(\$db, \$songId, \$song['translations']) as \$w) { \$translationWarnings[] = \$w; }";
+$frame = static fn(string $body): string => "<?php\nfunction f() {\n    try {\n        \$db->begin_transaction();\n        if (\$x) {\n            {$body}\n        }\n        \$db->commit();\n    } catch (\\Throwable \$e) {\n        try { \$db->rollback(); } catch (\\Throwable \$_) {}\n    }\n}\n";
+$check('…the check accepts the call directly inside the transaction\'s try (with a try in a comment and a string beside it)',
+    $checkSaveCallsLinksOutsideTry($frame("/* try { */ \$s = 'try {'; " . $callLine)) === '');
+$check('…and refuses the review\'s planted fault: the call wrapped in try { … } catch (\\Throwable) {}',
+    $checkSaveCallsLinksOutsideTry($frame('try { ' . $callLine . ' } catch (\\Throwable $_x) { $translationWarnings[] = \'x\'; }')) !== '');
+$check('…a try … finally around it',
+    $checkSaveCallsLinksOutsideTry($frame('try { ' . $callLine . ' } finally { }')) !== '');
+$check('…a try inside a closure that is called at once',
+    $checkSaveCallsLinksOutsideTry($frame('(function () use ($db, $songId, $song, &$translationWarnings) { try { ' . $callLine . ' } catch (\\Throwable $_x) {} })();')) !== '');
+$check('…a transaction whose catch does not roll back',
+    $checkSaveCallsLinksOutsideTry(str_replace('try { $db->rollback(); } catch (\\Throwable $_) {}', '', $frame($callLine))) !== '');
+$check('…and a second call of it',
+    $checkSaveCallsLinksOutsideTry($frame($callLine . ' ' . $callLine)) !== '');
 
 /* ---------------------------------------------------------------- Part B */
 echo "\nPart B — the real save steps (songTranslationsSaveLinks) against a real database\n";

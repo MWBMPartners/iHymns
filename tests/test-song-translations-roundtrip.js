@@ -110,6 +110,102 @@ check('the save core hands the links to songTranslationsSaveLinksAllOrNothing() 
     /songTranslationsSaveLinksAllOrNothing\(\$db, \$songId, \$song\['translations'\]\)/.test(saveSrc)
     && !/songTranslationsSaveLinks\(\$db/.test(saveSrc));
 
+/* #2137 review round 6 (the fifth review's finding 7) — and the call sits in
+   NO try of its own: the only try around it may be the one holding the whole
+   transaction (begin_transaction() … commit()), whose catch rolls back. The
+   wrapper lets through only an error that has already ended the transaction
+   and a failed undo; both must stop the save. The review planted
+   `try { … } catch (\Throwable $_x) { … }` around the call and every check
+   stayed green. Comments and strings are blanked first, so a "try {" in either
+   cannot confuse the count. (tests/php/test-song-translations-sync.php, Part
+   A7, checks the same with PHP's own tokenizer.) */
+function blankPhpCommentsAndStrings(src) {
+    let out = '';
+    let i = 0;
+    while (i < src.length) {
+        const c = src[i];
+        const two = src.slice(i, i + 2);
+        if (two === '/*') {
+            const end = src.indexOf('*/', i + 2);
+            const stop = end === -1 ? src.length : end + 2;
+            out += src.slice(i, stop).replace(/[^\n]/g, ' ');
+            i = stop;
+        } else if (two === '//' || (c === '#' && src[i + 1] !== '[')) {
+            let stop = src.indexOf('\n', i);
+            if (stop === -1) stop = src.length;
+            out += ' '.repeat(stop - i);
+            i = stop;
+        } else if (c === '\'' || c === '"') {
+            let j = i + 1;
+            while (j < src.length && src[j] !== c) { j += src[j] === '\\' ? 2 : 1; }
+            out += c + src.slice(i + 1, j).replace(/[^\n]/g, ' ') + c;
+            i = j + 1;
+        } else if (two === '<<' && src[i + 2] === '<') {
+            throw new Error('a heredoc in the song save: this check cannot read it — teach blankPhpCommentsAndStrings() first');
+        } else {
+            out += c;
+            i++;
+        }
+    }
+    return out;
+}
+function tryBlocks(code) {
+    /* every `try {` with the index of its matching `}` */
+    const blocks = [];
+    const re = /\btry\s*\{/g;
+    let m;
+    while ((m = re.exec(code)) !== null) {
+        const open = m.index + m[0].length - 1;
+        let depth = 0;
+        let close = -1;
+        for (let k = open; k < code.length; k++) {
+            if (code[k] === '{') depth++;
+            else if (code[k] === '}') { depth--; if (depth === 0) { close = k; break; } }
+        }
+        blocks.push({ start: m.index, open, close });
+    }
+    return blocks;
+}
+function linksCallOutsideOwnTry(phpSrc) {
+    const code = blankPhpCommentsAndStrings(phpSrc);
+    const calls = [...code.matchAll(/\bsongTranslationsSaveLinksAllOrNothing\s*\(/g)].map((m) => m.index);
+    const begins = [...code.matchAll(/->\s*begin_transaction\s*\(/g)].map((m) => m.index);
+    if (calls.length !== 1) return `expected one call, found ${calls.length}`;
+    if (begins.length !== 1) return `expected one begin_transaction(), found ${begins.length}`;
+    const blocks = tryBlocks(code);
+    const around = (at) => blocks.filter((b) => b.open < at && at < b.close);
+    const tx = around(begins[0]);
+    const mine = around(calls[0]);
+    if (tx.length === 0) return 'begin_transaction() is not inside a try';
+    if (mine.length !== tx.length || mine.some((b, n) => b !== tx[n])) {
+        return `the call is inside ${mine.length} try block(s); only the transaction's (${tx.length}) is allowed`;
+    }
+    const outer = tx[tx.length - 1];
+    const after = code.slice(outer.close + 1);
+    const catchMatch = /^\s*catch\s*\([^)]*\)\s*\{/.exec(after);
+    if (!catchMatch) return 'the transaction\'s try has no catch';
+    let depth = 0;
+    let body = '';
+    for (let k = catchMatch[0].length - 1; k < after.length; k++) {
+        if (after[k] === '{') depth++;
+        else if (after[k] === '}') { depth--; if (depth === 0) { body = after.slice(catchMatch[0].length, k); break; } }
+    }
+    return /->\s*rollback\s*\(/.test(body) ? '' : 'the transaction\'s catch does not roll back';
+}
+{
+    const why = linksCallOutsideOwnTry(saveSrc);
+    check('the links are saved in no try of the save\'s own — only the transaction\'s, whose catch rolls back', why === '', why);
+    const callLine = "foreach (songTranslationsSaveLinksAllOrNothing($db, $songId, $song['translations']) as $w) { $translationWarnings[] = $w; }";
+    const frame = (body) => `<?php\nfunction f() {\n    try {\n        $db->begin_transaction();\n        if ($x) {\n            ${body}\n        }\n        $db->commit();\n    } catch (\\Throwable $e) {\n        try { $db->rollback(); } catch (\\Throwable $_) {}\n    }\n}\n`;
+    check('…the check accepts the call in the transaction\'s try, with "try {" in a comment and a string beside it',
+        linksCallOutsideOwnTry(frame(`/* try { */ $s = 'try {'; // try {\n ${callLine}`)) === '');
+    check('…and refuses the review\'s planted try { … } catch (\\Throwable) {} around the call',
+        linksCallOutsideOwnTry(frame(`try { ${callLine} } catch (\\Throwable $_x) { $translationWarnings[] = 'x'; }`)) !== '');
+    check('…a try … finally around it, and a try inside a closure called at once',
+        linksCallOutsideOwnTry(frame(`try { ${callLine} } finally { }`)) !== ''
+        && linksCallOutsideOwnTry(frame(`(function () { try { ${callLine} } catch (\\Throwable $_x) {} })();`)) !== '');
+}
+
 check('the write is gated on the table existing (un-migrated env degrades)',
     /_songTranslationsTableExists\(\$db\)/.test(transBlock)
     && /function _songTranslationsTableExists/.test(saveSrc));
