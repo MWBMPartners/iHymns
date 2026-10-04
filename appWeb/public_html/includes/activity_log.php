@@ -138,6 +138,7 @@ function activityLogRequestId(): string
         try {
             $rid = bin2hex(random_bytes(8));
         } catch (\Throwable $_e) {
+            if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 8: the guard here too, although nothing in this try touches the database today — so a later change to it cannot make this catch swallow an error that has ended the transaction */
             /* random_bytes() should not fail on a working PHP; fall
                back to a less-strong but always-available source. */
             $rid = substr(hash('sha256', uniqid('', true) . microtime(true)), 0, 16);

@@ -1008,12 +1008,33 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   the importers (`includes/song_importers.php` — the bulk saver and the ProPresenter media step — and
   `includes/lyrics_ingest.php`, 2 each), and the transactions those open themselves through the functions they
   call (`workAutolinkSafe()` in its own-transaction mode, `songSoftDelete()`, `songCopyrightHoldersReplace()`,
-  `musicianReapOrphanedAutoRow()`, `songIdPrefixProbeAndFixup()`): 72 transactions, 95 catch blocks. **How
-  "reachable" was worked out, and what that cannot see:** functions were followed by name, and a method by its
-  method name (which over-counts rather than under-counts); a transaction runs from `begin_transaction()` to the
-  last `commit()` in the same block; one closure called through a variable but defined outside the transaction
-  was followed by hand (`$persistWorkExtraFields` in works.php, which only calls `workPersistExtraFields()`). A
-  function named in a string, and the top-level code of an included file, were not followed. **The rule now:**
+  `musicianReapOrphanedAutoRow()`, `songIdPrefixProbeAndFixup()`): 67 transactions. (Round 7's notes said 72:
+  its audit tool counted each of the five transactions written inside a FUNCTION of those files — the save's
+  one, and two each in the importers — twice, once for the file and once for the function. The count is 67.)
+  **Since round 8 this audit is a test that runs with the rest:** `tests/php/test-transaction-catch-audit.php`
+  (the seventh review's L1, the lead's decision). It reads every PHP file under `appWeb/` with PHP's tokenizer,
+  finds those 67 transactions again, works out every catch block that can run inside them, and FAILS if one does
+  not start with the guard and is not on its short allow-list, each entry with its reason; an allow-list entry
+  that no longer matches such a catch fails it too. **How "can run inside" is worked out:** a transaction runs
+  from `begin_transaction()` to the last `commit()` after it in the same block (stopping at the next
+  `begin_transaction()` there), or to the end of the block if there is none. Every catch written in that stretch
+  counts, and so does every catch in anything it can call: a function by its name; a method by its method name in
+  EVERY class that has one (over-counting rather than missing); `new X` (that class's constructor); a function or
+  method named in a string (`call_user_func('x')`, `[$this, 'save']` — but not a name handed to
+  `function_exists()` and the like, which calls nothing); a closure or arrow function written there; `$name(...)`
+  (every closure or arrow function assigned to `$name` in the same file — this is what replaced round 7's
+  hand-placed `$persistWorkExtraFields`); and `require`/`include` (the included file's top-level code, found by
+  its path). Those last four are the widenings the seventh review's own audit made over round 7's tool. **What
+  it cannot see:** a function name built at run time, a callable kept in an array or object property, a closure
+  handed in from another file, a transaction in a file none of the audited ones can reach, and code that runs
+  after the last `commit()` in a block on a path that skipped that commit. It proves the shape of the code; the
+  all-or-nothing behaviour is proven by running the save (`test-song-save-whole-rollback.php`). **Proven:** each
+  of the eight guards the seventh review removed without any test noticing (`slideAuthTokenExpiry()`,
+  `publisherResolvePickedOrCreate()`, `ed2_touchRevision()`, `workMedleyReplace()`, `songRedirectsTableReady()`,
+  `generateUniqueMusicianSlug()`, `adoptApiTokenSession()`'s sliding expiry, `pickAutoSongbookColour()`) turns it
+  red; so do a new unguarded catch inside a helper the save calls, a new helper with one called inside the save,
+  and one catch reached only through each of the widenings (a `$var()` closure, a function named in a string,
+  `new X`, an include); an unguarded catch in a helper nothing calls does not (no false alarm). **The rule now:**
   such a catch starts with `if (songRelocateIsTransactionFatal($e)) { throw $e; }`, and every file holding one
   loads the check's file at its top, so the check is always there and always first (the `function_exists()`
   forms in `lyric_lines_read.php`, `lyric_rounds.php` and `vocal_parts.php`, and the `require_once` inside the
@@ -1021,9 +1042,10 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   its own file, `includes/transaction_fatal.php`, which loads nothing else: `song_relocate.php` also loads the
   database layer, and loading it in some two dozen more files broke a test that stands in its own
   `getDbMysqli()` (`test-songbook-render-parity.php`). Its name is unchanged and `song_relocate.php` loads the new
-  file, so every existing caller works as before. The 95, by what each does now (line numbers
+  file, so every existing caller works as before. The 99 catch blocks the test finds today (round 7's 95, plus
+  the four activity-log handlers below that its tool could not see), by what each does now (line numbers
   approximate):
-  - **Start by passing the error back to the caller (84).** `api.php`: `slideAuthTokenExpiry()` ~28140.
+  - **Start by passing the error back to the caller (89).** `api.php`: `slideAuthTokenExpiry()` ~28140.
     `includes/activity_log.php`: `activityLogResolveUserId()` ~185; `logActivity()` ~298, ~319, ~393;
     `activityLogIpReputation()` ~674. `includes/api_tokens.php`: `apiTokensDeviceMetaColumnsExist()` ~102.
     `includes/arrangement.php`: `arrangementColumnExists()` ~207. `includes/external_link_helpers.php`:
@@ -1068,6 +1090,14 @@ any other `run-conformance.php`. Never edit them: change the master, then run
     but a deadlock or lock wait timeout can arrive anywhere. `tests/php/test-song-save-whole-rollback.php` runs the
     real save and proves two of them end to end: B1 (the tune funnel, a real 1020 on MariaDB) and B4
     (`logActivity()`, a deadlock while the save writes its own activity-log row); the rest rest on this audit.
+    **Round 8 added the guard to five more** that round 7 had listed by hand as safe, so that they need no
+    allow-list entry: `activityLogRequestId()` ~141 (makes a random id), `getDbMysqli()` (`db_mysql.php` ~107;
+    checks whether its saved connection is still open, no query), `ihymnsGeoViaMaxmind()` ~216 (reads a local
+    file), `mediaLanguageReady()` (`media_language.php` ~156; loads the shared language rules) and the
+    `\InvalidArgumentException` around a malformed alternative title in `_bulkImport_saveSong()`
+    (`song_importers.php` ~1078). None of their tries touches the database today, so nothing changes; but "cannot
+    meet a database error" is a claim a later edit to the try can quietly make false, and the guard cannot be.
+    `db_mysql.php` and `media_language.php` now load `transaction_fatal.php` at their top for it.
   - **Pass it back already, in their own way (3).** `workFindOrLinkByIdentifier()` (`work_admin.php` ~974)
     re-throws every database error except a duplicate (1062); `musicianReapOrphanedAutoRow()`
     (`musician_helpers.php` ~1886) re-throws every error except a missing table (1146);
@@ -1078,11 +1108,15 @@ any other `run-conformance.php`. Never edit them: change the master, then run
     transaction (`song_copyright_holders.php` ~509) roll back their OWN transaction and answer null /
     `write_failed`; that mode is used only after the caller's own write has committed. When
     `songCopyrightHoldersReplace()` is running inside the caller's transaction it re-throws everything.
-  - **Cannot meet a database error (4).** `activityLogRequestId()` (makes a random id), `getDbMysqli()` (checks
-    whether its saved connection is still open; no query), `ihymnsGeoViaMaxMind()` (reads a local file) and
-    `mediaLanguageReady()` (loads the shared language rules).
-  - **Catch a narrower kind of error only (1).** The `\InvalidArgumentException` around a malformed alternative
-    title in `_bulkImport_saveSong()` (`song_importers.php` ~1078).
+  - **Run by PHP at the end of the request, or as it dies (4)** — new in round 8, because the test follows an
+    include: the save's transaction loads `manage/includes/auth.php`, whose top level installs the activity log's
+    handlers. The end-of-request "request.*" row (a shutdown function, `activity_log.php` ~864), the uncaught-
+    exception handler's log row and its hand-over to the handler before it (~934, ~944), and the
+    "fatal.php_error" row (a shutdown function, ~985). PHP calls these only after the request's own code has
+    finished or an exception has escaped everything, so no save code runs after them; the guard there would only
+    turn a failed end-of-request log row into an error after the response.
+  The ten not passing the error back with the guard (the last three groups) are the test's allow-list, each with
+  its reason in the test.
 
   **What this changes outside a transaction.** Most of these helpers are also called where no transaction is
   open. There too, a deadlock, a lock wait timeout or a 1020 is now passed back instead of being logged and

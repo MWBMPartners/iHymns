@@ -213,6 +213,7 @@ function ihymnsGeoViaMaxmind(string $ip): ?array
             $name = is_array($rec) ? (string)($rec['country']['names']['en'] ?? $code) : $code;
             return ['code' => strtoupper($code), 'name' => $name, 'source' => 'maxmind'];
         } catch (\Throwable $_e) {
+            if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 8: the guard here too, although nothing in this try touches the database today — so a later change to it cannot make this catch swallow an error that has ended the transaction */
             return null;
         }
     }

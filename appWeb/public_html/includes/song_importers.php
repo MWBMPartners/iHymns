@@ -1075,7 +1075,14 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
                     $altNote = ($alt['note'] ?? '') !== '' ? (string)$alt['note'] : null;
                     try {
                         songAltTitleAdd($db, $songId, $altTitle, $altLang, $altNote);
-                    } catch (\InvalidArgumentException $_e) { /* skip a malformed alt, keep the import */ }
+                    } catch (\InvalidArgumentException $_e) {
+                        /* #2137 review round 8: the guard here too. This catches only an InvalidArgumentException,
+                           which a database error never is — but one could carry a database error as its cause,
+                           and the shared check looks down the whole chain, so a later change cannot make this
+                           catch swallow an error that has ended the transaction. */
+                        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
+                        /* skip a malformed alt, keep the import */
+                    }
                 }
             }
         }

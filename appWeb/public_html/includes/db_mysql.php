@@ -49,6 +49,14 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* #2137 review round 8 — songRelocateIsTransactionFatal(), the ONE list of
+   database errors that have already ended the caller's whole transaction.
+   getDbMysqli() is called from inside every save's transaction, so its one
+   catch starts by passing those errors back, like every catch a transaction
+   can reach (tests/php/test-transaction-catch-audit.php checks that).
+   transaction_fatal.php loads nothing else. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 /* =========================================================================
  * LOAD CREDENTIALS
  * ========================================================================= */
@@ -97,6 +105,7 @@ function getDbMysqli(): mysqli
             $_ = $_mysqliConnection->thread_id;
             return $_mysqliConnection;
         } catch (\Throwable $_e) {
+            if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 8: the guard here too, although nothing in this try touches the database today — so a later change to it cannot make this catch swallow an error that has ended the transaction */
             $_mysqliConnection = null;
         }
     }

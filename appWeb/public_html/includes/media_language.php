@@ -81,6 +81,14 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* #2137 review round 8 — songRelocateIsTransactionFatal(), the ONE list of
+   database errors that have already ended the caller's whole transaction.
+   mediaLanguageReady()'s catch below can run inside a save's transaction (a
+   save tidies the language tags it writes), so, like every such catch, it
+   starts by passing those errors back; tests/php/test-transaction-catch-audit.php
+   checks that. transaction_fatal.php loads nothing else. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 use Mwbm\MediaLanguage\LanguageTag;
 use Mwbm\MediaLanguage\Policy;
 use Mwbm\MediaLanguage\TagKind;
@@ -145,6 +153,7 @@ function mediaLanguageReady(): bool
         Policy::loadData($dir . DIRECTORY_SEPARATOR . 'bcp47-language-data-v1.json');
         $ready = true;
     } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 8: the guard here too, although nothing in this try touches the database today — so a later change to it cannot make this catch swallow an error that has ended the transaction */
         error_log('[media_language] the shared language rules could not be loaded: ' . $e->getMessage());
         $ready = false;
     }
