@@ -1754,17 +1754,28 @@ function editorSaveSongCore(): array
                compound the original error. */
             if (function_exists('logActivityError')) {
                 $mysqliCode = ($e instanceof \mysqli_sql_exception) ? $e->getCode() : null;
-                logActivityError(
-                    'song.save_failed',
-                    'song',
-                    $songId,
-                    $e,
-                    [
-                        'action'        => $action,
-                        'songbook'      => $songbookAbbr,
-                        'mysqli_code'   => $mysqliCode,
-                    ]
-                );
+                /* #2137 review round 7 — wrapped, because since round 7 the
+                   logging helpers no longer swallow a deadlock, a lock wait
+                   timeout or MariaDB's 1020: they pass it back, which is right
+                   INSIDE a transaction. Here the whole save has already been
+                   rolled back (first thing in this catch), so nothing can be
+                   half-saved any more, and such an error from the failure
+                   record must not replace the save's own error answer below. */
+                try {
+                    logActivityError(
+                        'song.save_failed',
+                        'song',
+                        $songId,
+                        $e,
+                        [
+                            'action'        => $action,
+                            'songbook'      => $songbookAbbr,
+                            'mysqli_code'   => $mysqliCode,
+                        ]
+                    );
+                } catch (\Throwable $_logErr) {
+                    error_log('[editor save_song] could not record the failed save in the activity log: ' . $_logErr->getMessage());
+                }
             }
 
             /* Surface the underlying error to admin / global_admin
@@ -1792,7 +1803,17 @@ function editorSaveSongCore(): array
                that variable is out of scope, so re-resolve the SAME value via
                getCurrentUser() — the identical call both api.php and api2.php
                use to populate their own $currentUser. Behaviour-preserving. */
-            $currentUser = getCurrentUser();
+            /* #2137 review round 7 — wrapped for the same reason as the
+               failure record above: the save is already rolled back, and a
+               failed "who is this?" lookup must not replace the save's answer.
+               If it fails, the caller simply gets the answer every non-admin
+               gets. */
+            try {
+                $currentUser = getCurrentUser();
+            } catch (\Throwable $_userErr) {
+                error_log('[editor save_song] could not look up the current user after a failed save: ' . $_userErr->getMessage());
+                $currentUser = null;
+            }
             $role    = is_array($currentUser) ? ($currentUser['role'] ?? null) : null;
             if (in_array($role, ['admin', 'global_admin'], true)) {
                 $payload['error_detail'] = $e->getMessage();

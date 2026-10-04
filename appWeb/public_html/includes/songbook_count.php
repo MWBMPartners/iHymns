@@ -122,8 +122,8 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* songVi
  * only it knows whether it is still inside a transaction that a MySQL error
  * may have already rolled back out from under it.
  *
- * Detail: `songRelocateIsTransactionFatal()` (`includes/song_relocate.php`,
- * #1679 A1) classifies MySQL errors into two kinds — ones that already rolled
+ * Detail: `songRelocateIsTransactionFatal()` (`includes/transaction_fatal.php`
+ * since #2137 review round 7, `song_relocate.php` before; #1679 A1) classifies MySQL errors into two kinds — ones that already rolled
  * back the WHOLE InnoDB transaction (which MUST be re-thrown, or the caller's
  * eventual `$db->commit()` commits nothing while the code path still answers
  * `ok=true`) and cosmetic ones (log and let the surrounding write stand). That

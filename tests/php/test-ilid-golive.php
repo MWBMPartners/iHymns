@@ -42,7 +42,7 @@ declare(strict_types=1);
  * @see .claude/ilyrics-internal-ids-work-model-plan.md  the design this increment implements
  * @see appWeb/public_html/includes/ilyrics_id.php         ilidStampNewRow() / ilidColumnReady() under test
  * @see appWeb/public_html/includes/work_admin.php          workAutolinkSafe() under test
- * @see appWeb/public_html/includes/song_relocate.php       songRelocateIsTransactionFatal() under test
+ * @see appWeb/public_html/includes/transaction_fatal.php   songRelocateIsTransactionFatal() under test (song_relocate.php loads it)
  * @see tests/php/test-ilyrics-ids.php                      the Phase-1 sibling guard
  * @see tests/php/test-work-link-plan.php                   the Phase-3 sibling guard
  * @see #1860

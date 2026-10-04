@@ -48,6 +48,17 @@ declare(strict_types=1);
  *      the memoised-probe / dormancy conventions of
  */
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that a song save, the v2 editor, the works or songbooks admin page
+   or an importer can reach from inside its transaction starts by passing those
+   back to its caller (the full list is in DEV_NOTES.md). Loaded here, at the
+   top, so that check can always be a catch's first line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 /** How many leading hex chars of a token's sha256 identify it to the
  *  client — see the file header for the collision-safety reasoning. Chosen
  *  slightly above the existing `token_prefix` AUDIT-LOG convention (12
@@ -89,6 +100,7 @@ function apiTokensDeviceMetaColumnsExist(\mysqli $db): bool
         $st->close();
         $exists = ($count === 4);
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $exists = false; /* un-migrated install → treat as absent → callers degrade */
     }
     return $exists;

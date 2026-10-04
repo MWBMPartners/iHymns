@@ -116,6 +116,17 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that a song save, the v2 editor, the works or songbooks admin page
+   or an importer can reach from inside its transaction starts by passing those
+   back to its caller (the full list is in DEV_NOTES.md). Loaded here, at the
+   top, so that check can always be a catch's first line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'identifier_normalize.php';   // ihymns_canonical_iswc() / ihymns_canonical_ccli() — rule #22, never re-fork
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'ilyrics_id.php';            // ilidAllocate() / ilidSequenceReady() — rule #22, never re-fork
 /* #1988 (API-coverage — Works "extras") — the four side-effect-free libs
@@ -168,6 +179,7 @@ function workAdminReady(\mysqli $db): bool
             && (int)$row['HasCcli'] > 0
             && (int)$row['HasWorkSongs'] > 0;
     } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $cached = false;
     }
     return $cached;
@@ -198,6 +210,7 @@ function _workAdminIlIdColumnExists(\mysqli $db): bool
         $cached = $stmt->get_result()->fetch_row() !== null;
         $stmt->close();
     } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $cached = false;
     }
     return $cached;
@@ -1004,8 +1017,8 @@ function workFindOrLinkByIdentifier(\mysqli $db, string $songId, string $ccliRaw
  *      funnel's ALREADY-OPEN transaction, e.g. `editorSaveSongCore()`):
  *      calls `workFindOrLinkByIdentifier()` directly, no txn of its own.
  *      `catch (\Throwable $e)` -> `songRelocateIsTransactionFatal($e)`
- *      (`includes/song_relocate.php`) decides: a transaction-fatal
- *      deadlock/lock-wait-timeout (1213/1205, cause-chain-walking) means the
+ *      (`includes/transaction_fatal.php`) decides: a transaction-fatal
+ *      deadlock/lock-wait-timeout/MariaDB 1020 (1213/1205/1020, cause-chain-walking) means the
  *      CALLER's transaction is already rolled back by MySQL, so this
  *      RE-THROWS — swallowing it here would let the caller's `commit()`
  *      succeed trivially and report `ok:true` for a save that wrote
@@ -1062,7 +1075,9 @@ function workAutolinkSafe(\mysqli $db, string $songId, string $ccliRaw, string $
     try {
         return workFindOrLinkByIdentifier($db, $songId, $ccliRaw, $iswcRaw);
     } catch (\Throwable $e) {
-        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';
+        /* First line of the catch (#2137 review round 7 — the check's file,
+           transaction_fatal.php, is now loaded at the top of this file rather
+           than song_relocate.php being loaded here). */
         if (songRelocateIsTransactionFatal($e)) {
             throw $e; // caller's transaction is already dead — must propagate, never swallow
         }
@@ -1186,6 +1201,7 @@ function workMedleyReady(\mysqli $db): bool
         $stmt->close();
         $cached = $row !== null && (int)$row['n'] > 0;
     } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $cached = false;
     }
     return $cached;
@@ -1497,6 +1513,7 @@ function workMedleyReplace(\mysqli $db, int $medleyId, array $rows): int
                 error_log('[work medley] workMedleyReplace: attach refused for medley ' . $medleyId . ' -> ' . $workId);
             }
         } catch (\Throwable $e) {
+            if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
             error_log('[work medley] workMedleyReplace: ' . $e->getMessage());
         }
     }

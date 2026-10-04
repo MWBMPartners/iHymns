@@ -2,6 +2,17 @@
 
 declare(strict_types=1);
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that a song save, the v2 editor, the works or songbooks admin page
+   or an importer can reach from inside its transaction starts by passing those
+   back to its caller (the full list is in DEV_NOTES.md). Loaded here, at the
+   top, so that check can always be a catch's first line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 /* #1694 — songVisibleSql() for the SongCount recomputes below (degrades to
    '1=1' on an un-migrated install, so every funnel stays byte-identical). */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
@@ -827,7 +838,7 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             $arrProbe->execute();
             $hasArrangementCol = $arrProbe->get_result()->fetch_row() !== null;
             $arrProbe->close();
-        } catch (\Throwable $_e) { /* default false */ }
+        } catch (\Throwable $_e) { if (songRelocateIsTransactionFatal($_e)) { throw $_e; } /* #2137 review round 7: never swallow an error that has ended the transaction */ /* default false */ }
 
         /* #892 + #1343-B — ONE dynamic-column INSERT. ArrangementJson and
            PublicId are each appended to the column / type / value lists only
@@ -1083,7 +1094,7 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             $rev->bind_param('sisss', $songId, $userIdParam, $action, $previousData, $newData);
             $rev->execute();
             $rev->close();
-        } catch (\Throwable $_e) { /* revisions are best-effort */ }
+        } catch (\Throwable $_e) { if (songRelocateIsTransactionFatal($_e)) { throw $_e; } /* #2137 review round 7: never swallow an error that has ended the transaction */ /* revisions are best-effort */ }
 
         $db->commit();
 
@@ -2661,6 +2672,7 @@ function _bulkImport_nextSongNumberFor(\mysqli $db, string $abbr): int
         $stmt->close();
         return (int)($row[0] ?? 1);
     } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         error_log('[_bulkImport_nextSongNumberFor] ' . $e->getMessage());
         return 1;
     }

@@ -68,6 +68,17 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that a song save, the v2 editor, the works or songbooks admin page
+   or an importer can reach from inside its transaction starts by passing those
+   back to its caller (the full list is in DEV_NOTES.md). Loaded here, at the
+   top, so that check can always be a catch's first line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 /**
  * THE ONE prefix -> table registry (rule #20/#22). A ninth entity later is
  * one line here plus one seed row (re-run the migration card) — no
@@ -255,6 +266,7 @@ function ilidSequenceReady(\mysqli $db): bool
         $cached = ($stmt->get_result()->fetch_row() !== null);
         $stmt->close();
     } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $cached = false;
     }
     return $cached;
@@ -391,6 +403,7 @@ function ilidColumnReady(\mysqli $db, string $entityType): bool
         $ready = $stmt->get_result()->fetch_row() !== null;
         $stmt->close();
     } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $ready = false;
     }
     $cached[$entityType] = $ready;
@@ -431,13 +444,20 @@ function ilidColumnReady(\mysqli $db, string $entityType): bool
  *      already stamped it" as a failure mode at all.
  *   4. FAIL-SAFE: everything after the gate runs inside a `try/catch
  *      (\Throwable $e)`. `songRelocateIsTransactionFatal($e)` — the ONE
- *      predicate (`includes/song_relocate.php:249-274`) — decides the
- *      outcome: a caught 1213/1205 (deadlock / lock-wait-timeout) means the
- *      CALLER's transaction has already been rolled back by MySQL, so this
+ *      predicate (in `includes/transaction_fatal.php`; it lived in
+ *      song_relocate.php until #2137 review round 7) — decides the outcome,
+ *      and is the catch's first line: a caught deadlock (1213), lock wait
+ *      timeout (1205) or MariaDB "Record has changed since last read"
+ *      (1020) means the CALLER's transaction is dead or cannot be trusted
+ *      (that predicate's doc-block says exactly what each does), so this
  *      function RE-THROWS rather than returning null — swallowing it here
  *      would let the caller's `commit()` succeed trivially and report
  *      `ok:true` for a save that wrote nothing (the exact false-success
- *      class that predicate's own doc-block names). Every OTHER throwable
+ *      class that predicate's own doc-block names). Every caller's own
+ *      catch must pass it on in turn: #2137 review round 7 found
+ *      `tuneFindOrCreateByName()` and `publisherFindOrCreateByName()`
+ *      catching it again and returning null, which undid this point
+ *      entirely. Every OTHER throwable
  *      (a missing sequence row, a transient hiccup, a 1062 the concurrent-
  *      create race above didn't quite dodge) is logged and swallowed — a
  *      missing IL id must NEVER fail an entity's create or save; the #1872
@@ -514,7 +534,9 @@ function ilidStampNewRow(\mysqli $db, string $entityType, int|string $pk, string
 
         return $ilId;
     } catch (\Throwable $e) {
-        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';
+        /* First line of the catch (#2137 review round 7 — the check's file,
+           transaction_fatal.php, is now loaded at the top of this file rather
+           than song_relocate.php being loaded here). */
         if (songRelocateIsTransactionFatal($e)) {
             throw $e; // caller's transaction is already dead — must propagate, never swallow
         }

@@ -943,7 +943,8 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   read"), and MariaDB has then rolled back the WHOLE transaction: checked on MariaDB 11.8.9, `@@in_transaction` is
   0 afterwards, the transaction's own earlier write is gone, and `ROLLBACK TO SAVEPOINT` answers "SAVEPOINT … does
   not exist". MySQL 8.4 does not raise it (its writes read the latest row). Until round 6, 1020 was not on the
-  shared list (`songRelocateIsTransactionFatal()` in `includes/song_relocate.php`, which had 1213 and 1205), so
+  shared list (`songRelocateIsTransactionFatal()`, then in `includes/song_relocate.php` — since round 7 in
+  `includes/transaction_fatal.php` — which had 1213 and 1205), so
   the translation links' all-or-nothing wrapper tried its undo, the undo failed, and that "SAVEPOINT … does not
   exist" replaced the 1020 — the error that actually broke the save was never logged (the save did still stop).
   Now 1020 is on the list; the wrapper re-throws it as itself, and when an ordinary write fails it logs the
@@ -953,33 +954,107 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   comment said otherwise. The whole save still stops, because the wrapper re-throws and the caller's outer
   handler rolls the transaction back.) `tests/php/test-song-translations-sync.php` reproduces the 1020 on MariaDB
   (and checks that MySQL simply saves); `tests/php/test-transaction-fatal.php` checks the list.
-  **What every other catch that uses the list now does with a 1020** — 34 calls in all, every one of the form
-  "if the list says so, re-throw; otherwise log and carry on". Each now re-throws a 1020 to its caller instead of
-  logging it and carrying on. Carrying on was the fault: after a 1020 there is no transaction any more, so each
-  later statement saved on its own and the final `commit()` reported success over a half-saved edit.
-  - `manage/editor/save_song_core.php`, all inside `editorSaveSongCore()`'s one transaction — the
-    ArrangementJson, Note, component-Language and ChordsJson column checks (~582, ~905, ~1194, ~1214), the
-    revision record (~1406), the songbook SongCount recompute (~1442), the external links (~1496) and the
-    translations-table check (~1621): the 1020 reaches the function's outer handler, which rolls the whole save
-    back, logs it, writes the `song.save_failed` activity row and answers 500 "Failed to save song". The column
-    and table checks only read `INFORMATION_SCHEMA`, so in practice a 1020 does not start there; the writes can.
-  - `includes/song_translations_sync.php`, `songTranslationsSaveLinksAllOrNothing()` (2): re-thrown as itself, no
-    undo attempted; the song save's outer handler then rolls everything back.
-  - `manage/editor/api2.php`: `ed2_touchRevision()` (the v2 editor's revision record, written just before each
-    endpoint's commit), the duplicate-song enrichment and scripture copy, and the work-medley lockstep in the
-    section save: re-thrown, so that endpoint's own transaction handler rolls the whole edit back and reports the
-    failure instead of committing what was left.
-  - `includes/song_relocate.php` (the move's SongCount recompute, and the cascade check's probe),
-    `includes/work_admin.php` (`workAutolinkSafe()` when it runs inside the caller's transaction),
-    `includes/ilyrics_id.php` (`ilidStampNewRow()`), `includes/song_soft_delete.php` (the soft delete's SongCount
-    recompute), and the write steps of `includes/lyric_lines_sync.php` (`lyricLinesWriteComponents()`,
-    `lyricLinesSnapshotDeletedEnrichment()`, `lyricLinesFlagRoundsAfterLineDelete()`): re-thrown to the save or
-    delete that called them, which rolls back as a whole.
-  - the readiness checks in `lyric_lines_sync.php`, `lyric_lines_read.php`, `lyric_rounds.php`, `vocal_parts.php`
-    and `vocal_part_review.php`: re-thrown likewise; they only read `INFORMATION_SCHEMA`, so in practice they do
-    not meet one.
-  - `.sql/migrate-backfill-vocal-part-suggestions.php`: a 1020 now stops the batch, as a deadlock already did,
-    instead of counting that song as "errored" and continuing.
+  **Every catch a save can reach from inside its transaction (#2137 review round 7, the sixth review's
+  decision 1).** Round 6 looked only at the catches that already called the list (34 of them) and said each now
+  passes a 1020 back. That was not enough, and this paragraph replaces round 6's list: a catch that does not call
+  the list at all swallows a 1020 just the same. The sixth review proved it with `tuneFindOrCreateByName()`: the
+  IL-id step re-throws a 1020 on purpose, the tune funnel caught it again and returned "no tune", and the song
+  save carried on with no transaction at all. On MariaDB the save then answered 500 but had already saved the
+  song's sections, revision and translation links without its title change; on MySQL (with a stand-in 1020) it
+  answered 200 and saved everything (`tests/php/test-song-save-whole-rollback.php`, case B1, failed both ways
+  before the fix). Round 7 audited EVERY catch block reachable, directly or through called functions, from inside
+  a transaction opened by the song save (`editorSaveSongCore()`), the v2 editor (`manage/editor/api2.php`, 51
+  transactions), the works admin page (`manage/works.php`), the songbooks admin page (`manage/songbooks.php`, 5),
+  the importers (`includes/song_importers.php` — the bulk saver and the ProPresenter media step — and
+  `includes/lyrics_ingest.php`, 2 each), and the transactions those open themselves through the functions they
+  call (`workAutolinkSafe()` in its own-transaction mode, `songSoftDelete()`, `songCopyrightHoldersReplace()`,
+  `musicianReapOrphanedAutoRow()`, `songIdPrefixProbeAndFixup()`): 72 transactions, 95 catch blocks. **How
+  "reachable" was worked out, and what that cannot see:** functions were followed by name, and a method by its
+  method name (which over-counts rather than under-counts); a transaction runs from `begin_transaction()` to the
+  last `commit()` in the same block; one closure called through a variable but defined outside the transaction
+  was followed by hand (`$persistWorkExtraFields` in works.php, which only calls `workPersistExtraFields()`). A
+  function named in a string, and the top-level code of an included file, were not followed. **The rule now:**
+  such a catch starts with `if (songRelocateIsTransactionFatal($e)) { throw $e; }`, and every file holding one
+  loads the check's file at its top, so the check is always there and always first (the `function_exists()`
+  forms in `lyric_lines_read.php`, `lyric_rounds.php` and `vocal_parts.php`, and the `require_once` inside the
+  catch in `ilidStampNewRow()` and `workAutolinkSafe()`, are gone). The check moved from `song_relocate.php` to
+  its own file, `includes/transaction_fatal.php`, which loads nothing else: `song_relocate.php` also loads the
+  database layer, and loading it in some two dozen more files broke a test that stands in its own
+  `getDbMysqli()` (`test-songbook-render-parity.php`). Its name is unchanged and `song_relocate.php` loads the new
+  file, so every existing caller works as before. The 95, by what each does now (line numbers
+  approximate):
+  - **Start by passing the error back to the caller (84).** `api.php`: `slideAuthTokenExpiry()` ~28140.
+    `includes/activity_log.php`: `activityLogResolveUserId()` ~185; `logActivity()` ~298, ~319, ~393;
+    `activityLogIpReputation()` ~674. `includes/api_tokens.php`: `apiTokensDeviceMetaColumnsExist()` ~102.
+    `includes/arrangement.php`: `arrangementColumnExists()` ~207. `includes/external_link_helpers.php`:
+    `loadExternalLinksForRow()` ~365. `includes/ilyrics_id.php`: `ilidSequenceReady()` ~268, `ilidColumnReady()`
+    ~405, `ilidStampNewRow()` ~535. `includes/ip_geolocation.php`: `ihymnsGeoCacheGet()` ~155,
+    `ihymnsGeoCachePut()` ~182. `includes/lyric_lines_read.php`: `lyricLinesMirrorPresent()` ~105,
+    `lyricLinesComponentExtrasPresent()` ~172. `includes/lyric_lines_sync.php`: `lyricLinesSyncReady()` ~84,
+    `lyricLinesComponentsLangReady()` ~121, `lyricLinesPartTypeSlug()` ~439, `lyricLinesShadowColumnsPresent()`
+    ~576, `lyricLinesWriteComponents()` ~817 and ~837, `lyricLinesEnrichmentTablesPresent()` ~1588,
+    `lyricLinesVocalTablesPresent()` ~1651, `lyricLinesSnapshotDeletedEnrichment()` ~1927,
+    `lyricLinesFlagRoundsAfterLineDelete()` ~1974. `includes/lyric_rounds.php`: `lyricRoundsReady()` ~152.
+    `includes/musician_helpers.php`: `musicianNamePartsColumnsExist()` ~666, `musicianMaidenSurnameColumnExists()`
+    ~696, `musicianMbidColumnExists()` ~757, `generateUniqueMusicianSlug()` ~1329, `musicianProfileColumnsExist()`
+    ~3160. `includes/publisher_helpers.php`: `publisherTableExists()` ~120, `publisherFindOrCreateByName()` ~206,
+    `publisherResolvePickedOrCreate()` ~357. `includes/search_fold.php`: `searchFoldReady()` ~111.
+    `includes/song_alt_titles.php`: `songAltTitlesTableExists()` ~107. `includes/song_copyright_holders.php`:
+    `songCopyrightHoldersTableExists()` ~116, `_songCopyHolders_holderIdColPresent()` ~146,
+    `_songCopyHolders_publisherIdExists()` ~180, `songCopyrightHoldersList()` ~229. `includes/song_external_ids.php`:
+    `songExternalIdsTableExists()` ~144. `includes/song_importers.php`: `_bulkImport_saveSong()`'s ArrangementJson
+    check ~841 and revision record ~1097, `_bulkImport_nextSongNumberFor()` ~2674. `includes/song_public_id.php`:
+    `songPublicId_columnReady()` ~79. `includes/song_redirects.php`: `songRedirectsTableReady()` ~80.
+    `includes/song_relocate.php`: `songRelocateFkCatalogue()` ~712, `songRelocateCascadeVerdict()` ~856, the move's
+    SongCount recompute in `songRelocate()` ~1398. `includes/song_soft_delete.php`:
+    `_songSoftDeleteRecountSongbook()` ~441. `includes/song_translations_schema.php`:
+    `songTranslationsLanguageFkPresent()` ~74. `includes/song_translations_sync.php`:
+    `songTranslationsSaveLinksAllOrNothing()` ~955 and ~967. `includes/tune_helpers.php`: `tuneTunesTableExists()`
+    ~148, `tuneFindOrCreateByName()` ~254. `includes/vocal_parts.php`: `vocalPartsTablesReady()` ~911,
+    `vocalPartsSpansReady()` ~943. `includes/work_admin.php`: `workAdminReady()` ~181, `_workAdminIlIdColumnExists()`
+    ~212, `workAutolinkSafe()` inside the caller's transaction ~1077, `workMedleyReady()` ~1202,
+    `workMedleyReplace()` ~1514. `manage/editor/api2.php`: `ed2_songIdentityColsPresent()` ~919,
+    `ed2_rightsColsPresent()` ~951, `ed2_tuneIdColumnExists()` ~1033, `ed2_worksTableExists()` ~1082,
+    `ed2_copyrightHolderIdColPresent()` ~1198, `ed2_touchRevision()` ~2220 (the v2 editor's revision record), and
+    in the page code the duplicate-song optional copies ~2446 and ~2460, its enrichment and scripture copy ~2606,
+    and the work-medley lockstep in the section save ~3619. `manage/editor/save_song_core.php`, all in
+    `editorSaveSongCore()`: the ArrangementJson column check ~570, a ChordsJson column check on the older write
+    path ~915 (round 6's notes called this one a "Note" column check; it checks ChordsJson), the component
+    Language and ChordsJson column checks ~1204 and ~1224, the revision record ~1416, the songbook SongCount
+    recompute ~1452, the external links ~1506 and the translations-table check ~1631.
+    `manage/includes/auth.php`: `adoptApiTokenSession()` ~258 and ~310. `manage/includes/songbook-palette.php`:
+    `pickAutoSongbookColour()` ~102. Of these, the 52 that did not check the list at all before round 7 were the
+    fault; the column and table checks only read `INFORMATION_SCHEMA`, so in practice a 1020 starts in the writes,
+    but a deadlock or lock wait timeout can arrive anywhere. `tests/php/test-song-save-whole-rollback.php` runs the
+    real save and proves two of them end to end: B1 (the tune funnel, a real 1020 on MariaDB) and B4
+    (`logActivity()`, a deadlock while the save writes its own activity-log row); the rest rest on this audit.
+  - **Pass it back already, in their own way (3).** `workFindOrLinkByIdentifier()` (`work_admin.php` ~974)
+    re-throws every database error except a duplicate (1062); `musicianReapOrphanedAutoRow()`
+    (`musician_helpers.php` ~1886) re-throws every error except a missing table (1146);
+    `songTranslationsSaveLinksAllOrNothing()`'s catch around a failed undo (`song_translations_sync.php` ~981)
+    always throws, carrying the original error.
+  - **Handle a transaction of their own (3).** `workAutolinkSafe()` in its own-transaction mode (`work_admin.php`
+    ~1064, and ~1067, the catch around its own rollback) and `songCopyrightHoldersReplace()` when it owns the
+    transaction (`song_copyright_holders.php` ~509) roll back their OWN transaction and answer null /
+    `write_failed`; that mode is used only after the caller's own write has committed. When
+    `songCopyrightHoldersReplace()` is running inside the caller's transaction it re-throws everything.
+  - **Cannot meet a database error (4).** `activityLogRequestId()` (makes a random id), `getDbMysqli()` (checks
+    whether its saved connection is still open; no query), `ihymnsGeoViaMaxMind()` (reads a local file) and
+    `mediaLanguageReady()` (loads the shared language rules).
+  - **Catch a narrower kind of error only (1).** The `\InvalidArgumentException` around a malformed alternative
+    title in `_bulkImport_saveSong()` (`song_importers.php` ~1078).
+
+  **What this changes outside a transaction.** Most of these helpers are also called where no transaction is
+  open. There too, a deadlock, a lock wait timeout or a 1020 is now passed back instead of being logged and
+  ignored, so a request that meets one in a best-effort step (an activity-log row, the geo cache, a sign-in
+  token's sliding expiry) now fails instead of quietly carrying on. These are rare outside a transaction, but
+  they are a change. The song save's own error handler, which runs after its rollback, wraps the two calls in it
+  that could now meet one (the failure's activity-log row and the "who is signed in" lookup), so the save's own
+  error answer is never replaced; other error handlers were not changed this round.
+  **Still true from round 6, outside this round's scope:** `.sql/migrate-backfill-vocal-part-suggestions.php`
+  stops the batch on a 1020, as it already did on a deadlock, instead of counting that song as "errored" and
+  continuing; `includes/vocal_part_review.php` still checks the list through `function_exists()` (it is not
+  reachable from the transactions above).
 - **Reporting, not rewriting.** The curator audit on `/manage/languages` lists stored tags that are
   malformed, unregistered, retired, or not in standard form (e.g. `en-gb`), and offers a remap. Importers
   report a language they cannot read as an `import.language_unrecognised` row on `/manage/activity-log`.

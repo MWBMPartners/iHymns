@@ -46,6 +46,9 @@ declare(strict_types=1);
  *            passing just because nothing ever gets saved).
  *   B1     — a 1020 while the save creates a new tune: the save answers 500
  *            and nothing is saved.
+ *   B4     — a deadlock (1213) while the save writes its own activity-log
+ *            row (logActivity(), one of the catches decision 1's audit found
+ *            swallowing such errors): the same.
  *   B2     — a 1020 during the translation-link writes: the same.
  *   B3     — a translation-link write fails AND undoing the link writes fails:
  *            the same.
@@ -82,7 +85,7 @@ declare(strict_types=1);
  *   php tests/php/test-song-save-whole-rollback.php
  *
  * @see appWeb/public_html/manage/editor/save_song_core.php
- * @see appWeb/public_html/includes/song_relocate.php  songRelocateIsTransactionFatal()
+ * @see appWeb/public_html/includes/transaction_fatal.php  songRelocateIsTransactionFatal()
  * @see https://mariadb.com/kb/en/innodb-system-variables/#innodb_snapshot_isolation
  */
 
@@ -420,9 +423,10 @@ try {
      * changes must be the failure's own activity-log row (written after the
      * rollback) and whatever "another curator" committed, the save's
      * connection must hold no transaction, and the error that reached the
-     * save's handler must be the one planted.
+     * save's handler must be the one planted ($errorOk is given the
+     * song.save_failed row's details).
      */
-    $failingCase = static function (string $label, string $id, array $song, array $othersTables, int $wantCode, ?callable $othersCheck = null)
+    $failingCase = static function (string $label, string $id, array $song, array $othersTables, string $errorWhat, callable $errorOk, ?callable $othersCheck = null)
         use ($check, $runSave, $fingerprint, $changedTables, $openTransactions, $songRow, $activity, $conn): void {
         $before = $fingerprint();
         $r = $runSave($song);
@@ -442,9 +446,10 @@ try {
             $open === 0, "{$open} open");
         $logged = $activity($id, 'song.save_failed');
         $details = json_decode((string)($logged['Details'] ?? ''), true);
-        $check("…and the error that reached the save's handler is the one planted (MySQL error {$wantCode}), recorded as song.save_failed",
-            is_array($details) && (int)($details['mysqli_code'] ?? 0) === $wantCode, json_encode($logged));
+        $check("…and the error that reached the save's handler is {$errorWhat}, recorded as song.save_failed",
+            is_array($details) && $errorOk($details), json_encode($logged));
     };
+    $is1020 = static fn(array $d): bool => (int)($d['mysqli_code'] ?? 0) === 1020;
 
     /* B1 — a 1020 while the save creates a new tune (the review's tune1020.php
        case, through the real save). */
@@ -455,13 +460,29 @@ try {
     $seqBefore = (int)$look->query("SELECT NextValue FROM tblIlyricsIdSequence WHERE EntityType = 'tune'")->fetch_row()[0];
     $failingCase('B1 (decision 1): a 1020 while the save creates a new tune', 'MISC-0101',
         $payload('MISC-0101', 'A tune that must not be saved', [['songId' => 'MISC-0901', 'language' => 'pt']]),
-        $isMaria ? ['tblIlyricsIdSequence'] : [], 1020,
+        $isMaria ? ['tblIlyricsIdSequence'] : [], 'the planted 1020', $is1020,
         static function () use ($check, $look, $seqBefore, $isMaria): void {
             $made = (int)$look->query("SELECT COUNT(*) FROM tblTunes WHERE Name = 'A tune that must not be saved'")->fetch_row()[0];
             $seq = (int)$look->query("SELECT NextValue FROM tblIlyricsIdSequence WHERE EntityType = 'tune'")->fetch_row()[0];
             $check('…the new tune does not exist, and the tune counter moved only by the other curator\'s one',
                 $made === 0 && $seq === $seqBefore + ($isMaria ? 1 : 0), json_encode([$made, $seqBefore, $seq]));
         });
+
+    /* B4 — a deadlock while the save writes its activity-log row (#2137 review
+       round 7, decision 1's audit). logActivity() runs INSIDE the save's
+       transaction (the song.edit row) and caught every error so that logging
+       could never break a request — which, inside a transaction, let a
+       deadlock (the database has already rolled everything back) be logged
+       and walked past, so the save carried on with no transaction. Neither
+       server will deadlock an insert on demand, so both get a stand-in 1213
+       just before that row is written. */
+    $makeSource('MISC-0104', 104);
+    $conn->hooks[] = ['/^\s*INSERT\s+INTO\s+tblActivityLog\b/i', static function (): never {
+        throw new \mysqli_sql_exception('Deadlock found when trying to get lock (a stand-in)', 1213);
+    }];
+    $failingCase('B4 (decision 1): a deadlock while the save writes its activity-log row', 'MISC-0104',
+        $payload('MISC-0104', '', [['songId' => 'MISC-0901', 'language' => 'pt']]),
+        [], 'the planted deadlock (1213)', static fn(array $d): bool => (int)($d['mysqli_code'] ?? 0) === 1213);
 } finally {
     try { $admin->query("DROP DATABASE IF EXISTS `{$name}`"); } catch (\Throwable $_) {}
     @unlink($logFile);

@@ -66,6 +66,17 @@ ihymns_emit_powered_by_header($app);
    (tests/php/test-api-envelope.php) without running the dispatcher. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_envelope.php';
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that a song save, the v2 editor, the works or songbooks admin page
+   or an importer can reach from inside its transaction starts by passing those
+   back to its caller (the full list is in DEV_NOTES.md). Loaded here, at the
+   top, so that check can always be a catch's first line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 /* =========================================================================
  * GLOBAL JSON ERROR HANDLER (#803)
  *
@@ -28127,6 +28138,7 @@ function slideAuthTokenExpiry(string $rawToken): void
             setAuthTokenCookie($rawToken, $newExpiresTs);
         }
     } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         /* Non-fatal: sliding expiry is best-effort. Logged so admins
            notice if the UPDATE is failing systematically (e.g.,
            tblApiTokens DDL drift). */

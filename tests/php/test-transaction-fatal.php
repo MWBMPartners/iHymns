@@ -56,12 +56,12 @@ declare(strict_types=1);
  *
  * Exit status 0 = all pass, 1 = a failure.
  *
- * @see appWeb/public_html/includes/song_relocate.php
+ * @see appWeb/public_html/includes/transaction_fatal.php  (the predicate's home since #2137 review round 7; song_relocate.php loads it)
  * @see https://www.php.net/manual/en/exception.getprevious.php
  * @see https://dev.mysql.com/doc/mysql-errors/8.0/en/server-error-reference.html
  */
 
-require_once dirname(__DIR__, 2) . '/appWeb/public_html/includes/song_relocate.php';
+require_once dirname(__DIR__, 2) . '/appWeb/public_html/includes/transaction_fatal.php';
 
 $fail = 0;
 function ok(string $label, bool $cond, string $detail = ''): void

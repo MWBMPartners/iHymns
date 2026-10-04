@@ -44,9 +44,10 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
    transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
    this file that can see a database error starts by passing those back to its
    caller. Loaded here, at the top, so that check can always be a catch's first
-   line. No cycle: song_relocate.php itself loads only db_mysql.php,
-   song_redirects.php and sql_identifier.php. */
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';
+   line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
 
 /**
  * Publisher entity kinds (tblPublishers.Kind). App-validated vocabulary — add a
@@ -118,6 +119,7 @@ function publisherTableExists(\mysqli $db): bool
         $r = $db->query("SHOW TABLES LIKE 'tblPublishers'");
         return (bool)($r && $r->num_rows > 0);
     } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         return false;
     }
 }
@@ -354,6 +356,7 @@ function publisherResolvePickedOrCreate(\mysqli $db, string $name, ?int $claimed
                 }
             }
         } catch (\Throwable $e) {
+            if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
             error_log('[publisherResolvePickedOrCreate] verify failed: ' . $e->getMessage());
             /* Fall through to the name funnel below — a verify failure must
                never block the save, only fall back to the safe path. */

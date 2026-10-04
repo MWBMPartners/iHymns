@@ -61,6 +61,17 @@ declare(strict_types=1);
  * @requires PHP 8.1+ with mysqli
  */
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that a song save, the v2 editor, the works or songbooks admin page
+   or an importer can reach from inside its transaction starts by passing those
+   back to its caller (the full list is in DEV_NOTES.md). Loaded here, at the
+   top, so that check can always be a catch's first line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'environment.php'; // canonical ihymns_environment()
 
@@ -172,6 +183,7 @@ function activityLogResolveUserId(?int $userId): ?int
                 return (int)$u['Id'];
             }
         } catch (\Throwable $_e) {
+            if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
             /* Best-effort — ignore and fall through. */
         }
     }
@@ -284,6 +296,7 @@ function logActivity(
                 $hasProxyCols = (bool)$probe->get_result()->fetch_row();
                 $probe->close();
             } catch (\Throwable $_e) {
+                if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
                 $hasProxyCols = false;
             }
         }
@@ -304,6 +317,7 @@ function logActivity(
                 $hasObsCols = (bool)$obsProbe->get_result()->fetch_row();
                 $obsProbe->close();
             } catch (\Throwable $_e) {
+                if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
                 $hasObsCols = false;
             }
         }
@@ -377,6 +391,7 @@ function logActivity(
         $stmt->close();
         activityLogWriteCount($count + 1);
     } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         /* Logging is best-effort. A failure here must not propagate.
            One error_log so admins can spot a sustained outage. */
         error_log('[activity_log] write failed for "' . $action . '": ' . $e->getMessage());
@@ -657,6 +672,7 @@ function activityLogIpReputation(string $ip): ?array
             ];
         }
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         /* Pre-migration deploy or DB unreachable — fall through to
            the external-lookup attempt and ultimately to null. */
     }

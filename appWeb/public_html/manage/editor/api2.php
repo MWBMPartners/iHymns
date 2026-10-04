@@ -917,6 +917,7 @@ function ed2_songIdentityColsPresent(\mysqli $db): array {
             $r->close();
         }
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         /* Degrade to "not migrated" (all false) on any probe failure — the
            safe direction, matching every other existence probe in this file. */
     }
@@ -948,6 +949,7 @@ function ed2_rightsColsPresent(\mysqli $db): array {
             $r->close();
         }
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         /* Degrade to "not migrated" — the safe direction (rule #9). */
     }
     return $presence;
@@ -1029,6 +1031,7 @@ function ed2_tuneIdColumnExists(\mysqli $db): bool {
         $exists = $r && $r->fetch_row() !== null;
         if ($r) { $r->close(); }
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $exists = false;
     }
     return $exists;
@@ -1077,6 +1080,7 @@ function ed2_worksTableExists(\mysqli $db): bool {
         $exists = $r && $r->fetch_row() !== null;
         if ($r) { $r->close(); }
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $exists = false;
     }
     return $exists;
@@ -1192,6 +1196,7 @@ function ed2_copyrightHolderIdColPresent(\mysqli $db): bool {
         $exists = $r && $r->fetch_row() !== null;
         if ($r) { $r->close(); }
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $exists = false;
     }
     return $exists;
@@ -2439,6 +2444,7 @@ try {
                     $cp->execute();
                     $cp->close();
                 } catch (\Throwable $_ce) {
+                    if (songRelocateIsTransactionFatal($_ce)) { throw $_ce; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
                     error_log('[editor duplicate_song] optional copy skipped: ' . $_ce->getMessage());
                 }
             }
@@ -2452,6 +2458,7 @@ try {
                 $g->execute();
                 $g->close();
             } catch (\Throwable $_ge) {
+                if (songRelocateIsTransactionFatal($_ge)) { throw $_ge; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
                 error_log('[editor duplicate_song] Genre/Explicit/Availability copy skipped: ' . $_ge->getMessage());
             }
 
