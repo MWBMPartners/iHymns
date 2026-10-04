@@ -332,6 +332,27 @@ $check('(decision 3) …a failed pt-BR → T1 protects the row stored as pt → 
 $plan = songTranslationsPlanSync(['he' => $want('T1', 'he')], [['id' => 1, 'songId' => "T1 ", 'language' => 'iw'], ['id' => 2, 'songId' => 'T2', 'language' => 'he']], [], $tidy);
 $check('(decisions 2 and 3) …and T1\'s own row in the two-spellings case is found with its stored id "T1 "',
     $plan['delete'] === [2] && $plan['update'] === [['id' => 1, 'songId' => 'T1', 'language' => 'he', 'details' => 'keep']], json_encode($plan));
+/* #2137 review round 7, decision 8 — three gaps the sixth review's planted
+   faults showed (each check below turns red with the fault named). */
+foreach (["pt\0" => 'a trailing NUL', "pt\x0B" => 'a trailing vertical tab'] as $value => $what) {
+    /* M2: the details rule must trim exactly as the save does. The shared
+       language rule trims only space, tab, CR and LF itself, so a NUL or a
+       vertical tab is the case that shows whether this rule trims at all. */
+    $check("(decision 8, M2) details after a language change from a stored `pt` with {$what} to pt-BR: kept (one primary language)",
+        songTranslationsDetailsAfterChange($value, 'pt-BR') === 'keep');
+    $plan = songTranslationsPlanSync(['pt-br' => $want('T1', 'pt-BR')], [['id' => 1, 'songId' => 'T1', 'language' => $value]], [], $tidy);
+    $check("(decision 8, M2) …so stored pt with {$what} → T1, sent pt-BR → T1: the same row, in place, verified flag kept",
+        $plan['update'] === [['id' => 1, 'songId' => 'T1', 'language' => 'pt-BR', 'details' => 'keep']], json_encode($plan));
+}
+/* M3: a re-point takes the target song's own row only when that song has
+   EXACTLY ONE stored row nobody sent back. */
+$plan = songTranslationsPlanSync(['es' => $want('T1', 'es')], [
+    ['id' => 1, 'songId' => 'T1', 'language' => 'fr'], ['id' => 2, 'songId' => 'T1', 'language' => 'de'],
+    ['id' => 3, 'songId' => 'T2', 'language' => 'es'],
+], [], $tidy);
+$check('(decision 8, M3) es → T2 re-pointed to T1, where TWO stored rows (fr, de) nobody sent back: ambiguous — neither is taken; the re-point keeps no details, fr and de go',
+    $plan['update'] === [['id' => 3, 'songId' => 'T1', 'language' => 'es', 'details' => 'clear']] && $plan['delete'] === [1, 2] && $plan['insert'] === [],
+    json_encode($plan));
 $check('the song key: trimmed by the save\'s own set, then lower-cased',
     songTranslationsSongKey(" T1\t\0") === 't1' && songTranslationsSongKey("T1\u{00A0}") !== 't1');
 
@@ -340,6 +361,9 @@ foreach ([
     'an object with a song and a language' => [['songId' => 'T1', 'language' => 'pt'], true],
     'an empty object (names nothing)'      => [[], true],
     'a JSON null language'                 => [['songId' => 'T1', 'language' => null], true],
+    /* #2137 review round 7 (decision 8, M4) — I6-c pinned: both keys present
+       but null names nothing; it is skipped, not refused. */
+    'both keys present, both null ({"songId": null, "language": null})' => [['songId' => null, 'language' => null], true],
     'a numeric song id'                    => [['songId' => 123, 'language' => 'pt'], true],
     'a string'                             => ['junk', false],
     'a number'                             => [42, false],
@@ -697,6 +721,22 @@ if ($db === null) {
         [$b, $a, $w] = $scenario([['T1 ', 'pt', 'Ana', 1]], [['T1', 'pt']]);
         $check('(decision 3) stored pt → "T1 " (Ana, verified), re-saved unchanged: nothing changes — the translator and the verified flag stay',
             $a === $b && $b[0]['TranslatedSongId'] === 'T1 ' && $w === [], json_encode([$a, $w]));
+        /* #2137 review round 7 (decision 8) — the three gaps, against the
+           database too. */
+        foreach (["pt\0" => 'a trailing NUL', "pt\x0B" => 'a trailing vertical tab'] as $value => $what) {
+            [$b, $a, $w] = $scenario([['T1', $value, 'Ana', 1]], [['T1', 'pt-BR']]);
+            $check("(decision 8, M2) stored pt with {$what} → T1 (Ana, verified), sent pt-BR → T1: the same row, pt-BR, Ana, still verified, its date",
+                count($a) === 1 && $a[0]['Id'] === $b[0]['Id'] && $a[0]['TargetLanguage'] === 'pt-BR' && $a[0]['Translator'] === 'Ana'
+                && (int)$a[0]['Verified'] === 1 && $a[0]['CreatedAt'] === $b[0]['CreatedAt'] && $w === [], json_encode([$a, $w]));
+        }
+        [$b, $a, $w] = $scenario([['T1', 'fr', 'Ana', 1], ['T1', 'de', 'Eva', 1], ['T2', 'es', 'Zed', 1]], [['T1', 'es']]);
+        $bl = $byLang($b);
+        $check('(decision 8, M3) stored fr → T1 (Ana) and de → T1 (Eva) and es → T2 (Zed), sent es → T1: two candidates on T1, so neither is taken — es → T1 with no translator, not verified; fr and de go',
+            count($a) === 1 && $a[0]['Id'] === $bl['es']['Id'] && $a[0]['TranslatedSongId'] === 'T1' && $a[0]['Translator'] === ''
+            && (int)$a[0]['Verified'] === 0 && $w === [], json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'es', 'Luis', 1]], [['songId' => 'T1', 'language' => 'pt'], ['songId' => null, 'language' => null]], true);
+        $check('(decision 8, M4, I6-c) {"songId": null, "language": null} beside a good link names nothing and is skipped: pt kept as it is, es (not sent) removed, no warning',
+            count($a) === 1 && $a[0] === $b[0] && $w === [], json_encode([$a, $w]));
 
         [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1]], [['T2', 'pt-BR']]);
         $check('(L3) a change of language AND song is still a removal plus a new link (nothing ties them together)',
