@@ -307,9 +307,27 @@ foreach ([['iw', 'he'], ['in', 'id'], ['ji', 'yi'], ['mo', 'ro']] as [$old, $new
     }
 }
 $heRows = [['id' => 1, 'songId' => 'T1', 'language' => 'iw'], ['id' => 2, 'songId' => 'T2', 'language' => 'he']];
+/* #2137 review round 8 (the seventh review's L3, the lead's decision 4) —
+   with another stored row of T1's that nobody sent back (de → T1), the iw row
+   is still T1's own row in the re-point's primary language, so it takes the
+   re-point and keeps its details; the de row, which the curator did not send
+   back, goes. Round 7 called this ambiguous (two unsent rows on T1), and the
+   re-point reached T1 with no details. */
 $plan = songTranslationsPlanSync(['he' => $want('T1', 'he')], [...$heRows, ['id' => 3, 'songId' => 'T1', 'language' => 'de']], [], $tidy);
-$check('(decision 2) …but with another stored row of T1\'s that nobody sent back (de → T1): T1 has two such rows, so neither takes the re-point — it keeps no details, iw and de go (before round 7 the de row took it over, because iw had already been deleted)',
-    $plan['delete'] === [1, 3] && $plan['update'] === [['id' => 2, 'songId' => 'T1', 'language' => 'he', 'details' => 'clear']], json_encode($plan));
+$check('(round 8, decision 4) …and with another stored row of T1\'s that nobody sent back (de → T1): the iw row is T1\'s own row in that primary language, so it takes `he` and keeps its details; the T2 row and the de row go (round 7: neither took it, and the re-point kept no details)',
+    $plan['delete'] === [2, 3] && $plan['update'] === [['id' => 1, 'songId' => 'T1', 'language' => 'he', 'details' => 'keep']]
+    && $plan['insert'] === [] && $plan['warnings'] === [] && $plan['blocked'] === [], json_encode($plan));
+$plan = songTranslationsPlanSync(['he' => $want('T1', 'he')],
+    [...$heRows, ['id' => 3, 'songId' => 'T1', 'language' => 'he-IL'], ['id' => 4, 'songId' => 'T1', 'language' => 'de']], [], $tidy);
+$check('(round 8, decision 4) …but TWO rows of T1\'s in the re-point\'s primary language (iw and he-IL) are still ambiguous: the re-point keeps no details, the three T1 rows go',
+    $plan['delete'] === [1, 3, 4] && $plan['update'] === [['id' => 2, 'songId' => 'T1', 'language' => 'he', 'details' => 'clear']], json_encode($plan));
+$plan = songTranslationsPlanSync(['de' => $want('T1', 'de')],
+    [['id' => 1, 'songId' => 'T2', 'language' => 'de'], ['id' => 2, 'songId' => 'T1', 'language' => 'de-AT'], ['id' => 3, 'songId' => 'T1', 'language' => 'fr']], [], $tidy);
+$check('(round 8, decision 4) a single-row re-point the same way: stored de → T2, de-AT → T1 and fr → T1, sent de → T1 — the de-AT row takes de and keeps its details; the T2 row and fr → T1 go',
+    $plan['delete'] === [1, 3] && $plan['update'] === [['id' => 2, 'songId' => 'T1', 'language' => 'de', 'details' => 'keep']], json_encode($plan));
+$plan = songTranslationsPlanSync(['he' => $want('T1', 'he')], [...$heRows, ['id' => 3, 'songId' => 'T1', 'language' => 'de']], [1 => true], $tidy);
+$check('(round 8, decision 4) …and a PROTECTED iw → T1 is never relabelled or deleted, even as the one row in that language: it stays, the re-point keeps no details, the de row goes',
+    $plan['delete'] === [3] && $plan['update'] === [['id' => 2, 'songId' => 'T1', 'language' => 'he', 'details' => 'clear']], json_encode($plan));
 $plan = songTranslationsPlanSync(['he' => $want('T1', 'he')], $heRows, [1 => true], $tidy);
 $check('(decision 2) …and a PROTECTED iw → T1 is never relabelled or deleted: it stays, the re-point keeps no details',
     $plan['delete'] === [] && $plan['update'] === [['id' => 2, 'songId' => 'T1', 'language' => 'he', 'details' => 'clear']], json_encode($plan));
@@ -739,9 +757,31 @@ if ($db === null) {
                 count($a) === 1 && $a[0]['Id'] === $b[0]['Id'] && $a[0]['TargetLanguage'] === 'pt-BR' && $a[0]['Translator'] === 'Ana'
                 && (int)$a[0]['Verified'] === 1 && $a[0]['CreatedAt'] === $b[0]['CreatedAt'] && $w === [], json_encode([$a, $w]));
         }
+        /* #2137 review round 8 (the seventh review's L3, the lead's decision
+           4) — the target song's one row in the re-point's primary language
+           is its own row, even beside another row of its that nobody sent
+           back. Reproduced on round 7's code on MariaDB 11.8 and MySQL 8.4:
+           he → T1 arrived with no translator, not verified, dated now. */
+        [$b, $a, $w] = $scenario([['T1', 'iw', 'Ana', 1], ['T2', 'he', 'Zed', 1], ['T1', 'de', 'Bob', 1]], [['T1', 'he']]);
+        $bl = $byLang($b);
+        $check('(round 8, decision 4) stored iw → T1 (Ana, verified), he → T2 (Zed, verified) and de → T1 (Bob), sent he → T1: he → T1, Ana, verified — T1\'s own row, its date — and Bob\'s de → T1 (not sent back) and the T2 row are gone',
+            count($a) === 1 && $a[0]['Id'] === $bl['iw']['Id'] && $a[0]['TargetLanguage'] === 'he' && $a[0]['TranslatedSongId'] === 'T1'
+            && $a[0]['Translator'] === 'Ana' && (int)$a[0]['Verified'] === 1 && $a[0]['CreatedAt'] === $bl['iw']['CreatedAt'] && $w === [],
+            json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T2', 'de', 'Zed', 1], ['T1', 'de-AT', 'Ana', 1], ['T1', 'fr', 'Bob', 1]], [['T1', 'de']]);
+        $bl = $byLang($b);
+        $check('(round 8, decision 4) a single-row re-point: stored de → T2 (Zed), de-AT → T1 (Ana, verified) and fr → T1 (Bob), sent de → T1: the de-AT row becomes de — Ana, verified, its date — and fr → T1 and the T2 row are gone',
+            count($a) === 1 && $a[0]['Id'] === $bl['de-AT']['Id'] && $a[0]['TargetLanguage'] === 'de' && $a[0]['TranslatedSongId'] === 'T1'
+            && $a[0]['Translator'] === 'Ana' && (int)$a[0]['Verified'] === 1 && $a[0]['CreatedAt'] === $bl['de-AT']['CreatedAt'] && $w === [],
+            json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T1', 'iw', 'Ana', 1], ['T2', 'he', 'Zed', 1], ['T1', 'he-IL', 'Eva', 1], ['T1', 'de', 'Bob', 1]], [['T1', 'he']]);
+        $bl = $byLang($b);
+        $check('(round 8, decision 4) …two rows of T1\'s in the re-point\'s primary language (iw and he-IL): still ambiguous — he → T1 with no translator, not verified, dated now; the three T1 rows go',
+            count($a) === 1 && $a[0]['Id'] === $bl['he']['Id'] && $a[0]['TranslatedSongId'] === 'T1' && $a[0]['Translator'] === ''
+            && (int)$a[0]['Verified'] === 0 && $a[0]['CreatedAt'] !== $bl['he']['CreatedAt'] && $w === [], json_encode([$a, $w]));
         [$b, $a, $w] = $scenario([['T1', 'fr', 'Ana', 1], ['T1', 'de', 'Eva', 1], ['T2', 'es', 'Zed', 1]], [['T1', 'es']]);
         $bl = $byLang($b);
-        $check('(decision 8, M3) stored fr → T1 (Ana) and de → T1 (Eva) and es → T2 (Zed), sent es → T1: two candidates on T1, so neither is taken — es → T1 with no translator, not verified; fr and de go',
+        $check('(decision 8, M3) stored fr → T1 (Ana) and de → T1 (Eva) and es → T2 (Zed), sent es → T1: two candidates on T1, neither in es\'s primary language, so neither is taken — es → T1 with no translator, not verified; fr and de go',
             count($a) === 1 && $a[0]['Id'] === $bl['es']['Id'] && $a[0]['TranslatedSongId'] === 'T1' && $a[0]['Translator'] === ''
             && (int)$a[0]['Verified'] === 0 && $w === [], json_encode([$a, $w]));
         [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'es', 'Luis', 1]], [['songId' => 'T1', 'language' => 'pt'], ['songId' => null, 'language' => null]], true);

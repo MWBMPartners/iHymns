@@ -948,7 +948,18 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   language), and the T2 row goes; it used to be deleted first, leaving `he → T1` with no translator and not
   verified. The relabelled row takes the spelling the curator kept, as the clash rule always has (stored `he → T1`
   and `iw → T2`, sent `iw → T1`, gives `iw → T1`, Ana, verified; the next save tidies it to `he`), and, as with any
-  re-point, only when T1 has exactly one stored row nobody sent back and nothing else claims it. Tested for
+  re-point, only when nothing else claims T1 and T1 has exactly one stored row nobody sent back — or, **since
+  round 8** (the seventh review's L3, the lead's decision), exactly one such row in the re-point's primary
+  language. Stored `iw → T1` (Ana, verified), `he → T2` (Zed, verified) and `de → T1` (Bob), sent `he → T1`: the
+  `iw` row is still T1's own row in that language, so it becomes `he → T1`, Ana, verified, its date; Bob's
+  `de → T1`, which the curator did not send back, is removed like any other removed link, and so is the T2 row.
+  Round 7 read T1's second row as ambiguous and the re-point reached T1 with no translator and not verified
+  (reproduced on both servers). The same holds for a single-row re-point (`de → T2`, with `de-AT → T1` and
+  `fr → T1` stored, sent `de → T1`: the `de-AT` row takes it). Two of T1's rows in that primary language (`iw` and
+  `he-IL`) are still ambiguous, and a protected one is still never relabelled. This is for a re-point only: a NEW
+  language for a song with two unsent rows (stored `pt → T1` and `es → T1`, sent `pt-BR → T1`) is still read as
+  "removed two, added one", as round 5 decided — the lead's decision named the re-point case, so that one was
+  left as it was. Tested for
   `iw`/`he`, `in`/`id`, `ji`/`yi` and `mo`/`ro`, both ways round, on both servers. Stored song ids are now compared
   after the same trim as stored languages (`songTranslationsSongKey()`): a stored `'T1 '`, which the database
   accepts as a link to T1 because its collation ignores trailing spaces, re-saved unchanged keeps its translator

@@ -361,9 +361,10 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
                    `iw` and `he` are one primary language), and the T2 row goes.
                    Until round 7 it was deleted here first, and the re-pointed T2
                    row reached T1 with no translator and not verified. If it is not
-                   paired (another claim on T1, or another stored row of T1's that
-                   nobody sent back, or it is protected), it ends up exactly as
-                   before: deleted below, unless protected. */
+                   paired (another claim on T1, or another stored row of T1's in
+                   the same primary language that nobody sent back — round 8 — or
+                   it is protected), it ends up exactly as before: deleted below,
+                   unless protected. */
                 if ($repointTo !== null && songTranslationsSongKey((string)$r['songId']) === $repointTo) {
                     $unmatchedStored[] = $r;
                     continue;
@@ -447,13 +448,29 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
        sent back as `pt-BR → T1`, became `pt-BR → T1` credited to Zed and
        verified — Zed never translated T1, and nobody had checked that link.
 
-       Pairing (both kinds) is made only when it is unambiguous: for a song,
-       exactly ONE stored row nobody sent back, which is not protected (a
-       protected row is never changed, so never relabelled), and exactly ONE
-       claim on it — one new sent link to that song, or one re-point to it,
-       not both, not two. Anything else is treated as "removed one link,
-       added another": the new link is inserted bare, a re-point keeps no
-       details, and the stored row is deleted (unless protected). */
+       Pairing (both kinds) is made only when it is unambiguous: exactly ONE
+       claim on the song — one new sent link to that song, or one re-point to
+       it, not both, not two — and ONE stored row of that song's that nobody
+       sent back to take it, which is not protected (a protected row is never
+       changed, so never relabelled). That row is the song's only such row,
+       or — #2137 review round 8 (the seventh review's L3, the lead's
+       decision), for a RE-POINT only — when the song has several, the ONE
+       of them whose primary language is the re-point's
+       (songTranslationsDetailsAfterChange() says 'keep'). Stored `iw → T1`
+       (Ana, verified), `he → T2` (Zed, verified) and `de → T1` (Bob), sent
+       `he → T1`: the `iw` row is T1's own row in that language, so it
+       becomes `he → T1` with Ana, still verified, and its date; Bob's
+       `de → T1`, which the curator did not send back, is removed like any
+       link the curator removed. Until round 8 the second row on T1 made it
+       ambiguous, and the re-point reached T1 with no translator and not
+       verified. Two such rows in the re-point's primary language are still
+       ambiguous. A NEW language for a song (round 5's L3: stored `pt → T1`
+       and `es → T1`, sent `pt-BR → T1`) is deliberately not changed by
+       this: the lead's decision covers the re-point, and round 5 pinned
+       that case as ambiguous. Anything that does not pair is treated as
+       "removed one link, added another": the new link is inserted bare, a
+       re-point keeps no details, and the stored row is deleted (unless
+       protected). */
     $unmatchedDesired = [];
     foreach ($desired as $key => $want) {
         if (!isset($byKey[$key])) {
@@ -477,10 +494,28 @@ function songTranslationsPlanSync(array $desired, array $existing, array $protec
     foreach ($storedBySong as $song => $candidates) {
         $keys = $desiredBySong[$song] ?? [];
         $claims = count($keys) + count($repointsBySong[$song] ?? []);
-        if ($claims !== 1 || count($candidates) !== 1 || $isProtected($candidates[0])) {
+        if ($claims !== 1) {
             continue;
         }
-        $mine = $candidates[0];
+        /* This song's own row: its only unsent row, or, for a re-point to it
+           when it has several, the one in the re-point's primary language
+           (round 8) — if exactly one is. */
+        $mine = null;
+        if (count($candidates) === 1) {
+            $mine = $candidates[0];
+        } elseif ($keys === []) {
+            $claimLanguage = (string)$repoints[$repointsBySong[$song][0]]['language'];
+            $sameLanguage = array_values(array_filter(
+                $candidates,
+                static fn(array $r): bool => songTranslationsDetailsAfterChange((string)$r['language'], $claimLanguage) === 'keep'
+            ));
+            if (count($sameLanguage) === 1) {
+                $mine = $sameLanguage[0];
+            }
+        }
+        if ($mine === null || $isProtected($mine)) {
+            continue;
+        }
         if (count($keys) === 1) {
             /* A new language for this song (L3): the row is relabelled. */
             $want = $unmatchedDesired[$keys[0]];
