@@ -299,6 +299,10 @@ foreach ([
     'a song that is a list'                => [['songId' => ['T1'], 'language' => 'pt'], false],
     'a language that is an object'         => [['songId' => 'T1', 'language' => ['code' => 'pt']], false],
     'a language that is true'              => [['songId' => 'T1', 'language' => true], false],
+    /* #2137 review round 6 (finding 2): the right meaning under other key names */
+    'an object with other key names ({"song":"T2","lang":"de"})'          => [['song' => 'T2', 'lang' => 'de'], false],
+    'an object with differently-cased keys ({"SongId":"T2","Language":"de"})' => [['SongId' => 'T2', 'Language' => 'de'], false],
+    'an object with one right key and one other ({"songId":"T2","lang":"de"})' => [['songId' => 'T2', 'lang' => 'de'], true],
 ] as $what => [$entry, $want]) {
     $check("{$what} " . ($want ? 'is' : 'is NOT') . ' a link', songTranslationsIsLinkShaped($entry) === $want);
 }
@@ -576,6 +580,19 @@ if ($db === null) {
         [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1]], [['songId' => ['T1'], 'language' => 'pt']], true);
         $check('…a link whose song is itself a list: refused, unchanged',
             $a === $b && count($w) === 1 && str_contains($w[0], 'left unchanged'), json_encode([$a, $w]));
+        /* #2137 review round 6 (finding 2) — an object with neither a songId
+           nor a language key. Before this round both were skipped as empty
+           rows, and the stored de → T2 was DELETED (reproduced on MariaDB
+           11.8 and MySQL 8.4). */
+        [$b, $a, $w] = $scenario([['T2', 'de', 'Eva', 1]], [['song' => 'T2', 'lang' => 'de']], true);
+        $check('(finding 2) {"song":"T2","lang":"de"} over a stored de → T2: refused, nothing changes, and the plain warning says so (entry 1)',
+            $a === $b && count($w) === 1 && str_contains($w[0], 'left unchanged') && str_contains($w[0], 'entry 1'), json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T2', 'de', 'Eva', 1]], [['SongId' => 'T2', 'Language' => 'de']], true);
+        $check('(finding 2) {"SongId":"T2","Language":"de"} (the right names, the wrong letter case) over a stored de → T2: refused, nothing changes',
+            $a === $b && count($w) === 1 && str_contains($w[0], 'left unchanged') && str_contains($w[0], 'entry 1'), json_encode([$a, $w]));
+        [$b, $a, $w] = $scenario([['T2', 'de', 'Eva', 1], ['T3', 'es', 'Luis', 1]], [['songId' => 'T2', 'language' => 'de'], ['song' => 'T3', 'lang' => 'es']], true);
+        $check('(finding 2) …after a good link: the whole save refuses (entry 2), and es → T3 is NOT deleted',
+            $a === $b && count($w) === 1 && str_contains($w[0], 'entry 2'), json_encode([$a, $w]));
         [$b, $a, $w] = $scenario([['T1', 'pt', 'Ana', 1], ['T2', 'es', 'Luis', 1]], [['songId' => 'T1', 'language' => 'pt'], []], true);
         $check('…but an EMPTY object still names nothing and is skipped as before (es → T2, not sent, is removed)',
             array_column($a, 'TargetLanguage') === ['pt'] && $w === [], json_encode([$a, $w]));

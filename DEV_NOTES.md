@@ -886,8 +886,10 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   left unchanged because …", and the rest of the song is still saved — it used to commit whatever had been
   written, losing a link deleted before the failing write (a deadlock, and a failed undo, still stop the whole
   save); (3) a payload entry that is not a link (not an object, a list such as `["T1", "pt"]`, a song or language
-  that is not text) makes the whole translation save refuse, changing nothing — it used to be skipped and the
-  stored links deleted as if removed; (4) a successful change of language on the SAME song (`pt → T1`, translator
+  that is not text, and — since round 6, the fifth review's finding 2 — a non-empty object with neither a `songId`
+  nor a `language` key, such as `{"song":"T2","lang":"de"}` or `{"SongId":"T2","Language":"de"}`) makes the whole
+  translation save refuse, changing nothing — it used to be skipped and the stored links deleted as if removed
+  (an object with those keys but both empty or null still names nothing and is skipped); (4) a successful change of language on the SAME song (`pt → T1`, translator
   Ana, verified, becomes `pt-BR → T1`) now updates the row in place, as `iw → he` already did — it used to delete
   and insert a bare row. Only an unambiguous pair is updated: one stored row whose language nobody sent back and
   one sent link with a new language, for the same song, and the row not protected; two stored rows or two new

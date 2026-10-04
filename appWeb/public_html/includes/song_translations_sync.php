@@ -584,7 +584,12 @@ function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): ar
            language is trimmed by before it is compared (round 5). */
         $tId   = trim((string)($tr['songId']   ?? ''), IHYMNS_TRANSLATION_LINK_TRIM);
         $tLang = trim((string)($tr['language'] ?? ''), IHYMNS_TRANSLATION_LINK_TRIM);
-        if ($tId === '' && $tLang === '') { continue; }   /* an empty row: it names nothing, so it can protect nothing */
+        /* An empty row: it names nothing, so it can protect nothing. Only an
+           empty object, or one whose songId and language are both empty or
+           null, gets here — since round 6 an object with neither key at all
+           (other key names) is refused above instead, because skipping it
+           deleted the stored links it may have meant. */
+        if ($tId === '' && $tLang === '') { continue; }
         /* Half a link (#2137 review round 4): it used to be dropped in
            silence, and a stored link to the same song — or filed under
            the same language — was then deleted as if the curator had
@@ -835,11 +840,13 @@ function songTranslationsSaveLinks(\mysqli $db, string $songId, array $sent): ar
  * round 5, I6)
  *
  * A link is an OBJECT — in PHP, after json_decode(…, true), an array that is
- * not a list — whose `songId` and `language`, where present, are text (a
- * number is accepted as text; a missing value or JSON null counts as empty).
- * An empty object names nothing, which the save already skips. Anything else
- * — a string, a number, a list such as ["T1", "pt"], or a link whose song or
- * language is itself a list or an object — is not a link.
+ * not a list — that has a `songId` key or a `language` key (or both; the
+ * names exactly, letter case included), each, where present, text (a number
+ * is accepted as text; JSON null counts as empty). An empty object names
+ * nothing, which the save already skips. Anything else — a string, a number,
+ * a list such as ["T1", "pt"], a link whose song or language is itself a list
+ * or an object, or (round 6) a non-empty object with neither key, such as
+ * {"song": "T2", "lang": "de"} — is not a link.
  *
  * WHAT IT DOES NOT CHECK: whether the song exists or the language is a
  * language. Those are the save's own per-link checks, which skip one link with
@@ -853,6 +860,17 @@ function songTranslationsIsLinkShaped(mixed $entry): bool
         return false;
     }
     if ($entry !== [] && array_is_list($entry)) {
+        return false;
+    }
+    /* #2137 review round 6 (the fifth review's finding 2) — a non-empty
+       object with NEITHER a `songId` nor a `language` key is not a link.
+       `{"song": "T2", "lang": "de"}` or `{"SongId": "T2", "Language": "de"}`
+       (other key names, or the right names in the wrong letter case — PHP
+       array keys are case-sensitive) used to read as an empty row: the save
+       skipped it as naming nothing, and the stored `de → T2` was then
+       deleted as if the curator had removed it. The save cannot tell what
+       such an entry meant, so the whole translation save refuses. */
+    if ($entry !== [] && !array_key_exists('songId', $entry) && !array_key_exists('language', $entry)) {
         return false;
     }
     foreach (['songId', 'language'] as $field) {
