@@ -16,18 +16,25 @@
 #   -filter                  no clean/smudge filter;
 #   -working-tree-encoding   no conversion to another character encoding;
 #   -ident                   no expansion of a "$Id$" marker into a checksum.
-# They win over a broader line EARLIER in this file and over a person's own
-# core.attributesFile.
+# They win over any EARLIER line in this file that also matches a copy, and
+# over the global and system attributes files (a person's own
+# core.attributesFile, and git's system-wide file), which git always gives the
+# LOWEST priority.
 #
 # What they CANNOT stop — each of these wins over the lines below:
-#   - a broader line LATER in this same file (for example "* text=auto" or
-#     "*.md filter=…" added below these lines);
-#   - a .gitattributes file in a sub-folder that holds a copy (the nearer file
-#     wins over this one at the top of the repository);
-#   - .git/info/attributes on someone's own machine.
-# (Checked with "git check-attr" on git 2.55, #2137 review round 7.) If any of
-# these changes a copy's bytes, the copy checker reports the copy as changed:
-# that is the checker doing its job, not a fault in the copy.
+#   - any LATER line in this same file that also matches a copy: git uses the
+#     last matching line for each setting, so that line does not have to be
+#     broader ("* text=auto", "*.md filter=…", or the copy's own path again);
+#   - a .gitattributes file closer to a copy: in the copy's own folder, or in a
+#     folder between the copy and the top of the repository (a deeper file
+#     wins over a shallower one). A .gitattributes in some other sub-folder,
+#     one that does not contain the copy, has no effect on it;
+#   - .git/info/attributes on someone's own machine, because git always gives
+#     that file the HIGHEST priority.
+# (Checked with "git check-attr" on git 2.55, #2137 review rounds 7 and 8, and
+# against git's own gitattributes documentation.) If any of these changes a
+# copy's bytes, the copy checker reports the copy as changed: that is the
+# checker doing its job, not a fault in the copy.
 docs/standards/media-language-bcp47-policy.md -text -filter -working-tree-encoding -ident
 docs/standards/MWBM-MEDIA-LANG.lock -text -filter -working-tree-encoding -ident
 docs/standards/data/bcp47-language-data-v1.schema.json -text -filter -working-tree-encoding -ident
