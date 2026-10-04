@@ -735,7 +735,15 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   by planting it in the real tree (the guard goes red) and by removing each new pattern piece (its own checks go
   red); the whole tree still scans clean. Because `'English'` now counts, a language NAME written as data under a
   language key (`['code' => 'en', 'language' => 'English']`) would be flagged; none exists today, and one that
-  appears needs a decision, not a quiet exception.
+  appears needs a decision, not a quiet exception. **Since round 7 (the sixth review's decision 5):** English inside
+  brackets or a list, wherever it stands in the list (`|| ('en')`, `?? ('en')`, PHP's `array('en')`,
+  `['fr', 'en']`, `array('fr', 'en-GB')`); an assignment after a `case …:` or `default:` label (`default:lang='en'`,
+  `case '':lang='en'`); and a JavaScript private field (`#lang = 'en'`). Only a REAL comment line is skipped now: a
+  line starting `#` used to be skipped in every file, but in PHP `#[` starts an attribute, which is code
+  (`#[Pure] public function f(string $lang = 'en')`), and in JavaScript `#` never starts a comment — so a `#` line
+  is skipped only in PHP and only when it is not `#[`. Each shape was proven with the sixth review's own list
+  (its `enguard.php`, re-pointed at the moved code: every shape the decision names is now caught) and by planting
+  it in the real tree; the whole tree still scans clean.
   **What it still cannot see (its blind spots), so reviewers still look:** a PHP array key that is exactly
   `'lang' => 'en'` (left out on purpose — see below); a template literal
   (`` language: `en` ``); a value built by joining strings (`'e' + 'n'`); a fallback through a variable or constant
@@ -749,6 +757,11 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   line after the END of a comment that spans lines (` */ lang = 'en';` — only a comment opened and closed on ONE line
   is removed, and a line starting with `*` is skipped whole; the opposite case, a line inside a longer comment that
   does not start with `*`, is read as code, which can only flag too much, never too little);
+  a comment marker inside a string earlier on the line (`$s = 'a /* b'; $lang = $x ?? 'en'; // */` and
+  `$t = ' //'; $lang = $x ?? 'en';` — the scan removes comments by pattern, not by reading strings, so it cuts the
+  line there; found by the sixth review, still open); an English tag with a subtag longer than eight characters
+  (`'en-123456789'`, not a valid tag anyway); Python's `or` (`language = x.language or 'en'`, not a PHP or
+  JavaScript fallback); a trailing `#` comment in PHP is read as code (which can only flag too much);
   and anything outside the site's own PHP and JS (vendor folders, JSON files, the Apple and Android apps, `tools/`).
   Deliberate exceptions are listed in the test by file and the WHOLE line (trimmed) — since round 5 the whole line
   must be equal, because "contains the listed text" also excused a real fallback appended to that line (the fourth

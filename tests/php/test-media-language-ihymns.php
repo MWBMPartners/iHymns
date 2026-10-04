@@ -311,7 +311,12 @@ mliCheck("JSON-LD inLanguage no longer falls back to the page's own interface la
    (`'English'`), and a list holding it (`['en']`, `[ 'en-GB', … ]`). None of
    these is a song's language when the language is not known, any more than
    `'en'` is. */
-$EN = '(?:\[\s*)?[\'"](?:en(?:[-_][A-Za-z0-9]{1,8})*|eng|english)[\'"]';
+/* #2137 review round 7 (the sixth review's decision 5) — and English inside
+   brackets, or in a list wherever it stands in the list: `|| ('en')`,
+   `?? ('en')`, PHP's `array('en')`, `['fr', 'en']`, `array('fr', 'en-GB')`. An
+   opener (a round or square bracket, or `array(`) may be followed by up to
+   eight other quoted items before English; openers may nest (`(['en'])`). */
+$EN = '(?:(?:array\s*\(|[\[(])\s*(?:[\'"][^\'"\n]{0,40}[\'"]\s*,\s*){0,8})*[\'"](?:en(?:[-_][A-Za-z0-9]{1,8})*|eng|english)[\'"]';
 /* …except inside a `match`: there an arm giving 'English' or 'eng' is
    normally a LOOKUP (`'en' => 'English'`, `'en' => 'eng'`), not a fallback,
    so the two `match` patterns keep to the tag itself (`'en'`, `'en-GB'`,
@@ -358,6 +363,9 @@ $fallbackPatterns = [
     '/(?:^|[;{}(),]|\belse\b)\s*' . $LANGWORD . '\s*=\s*' . $EN . '/i',
     '/' . $LANGWORD . '\s*(?:\?\?|\|\||&&)=\s*' . $EN . '/i',                // lang||='en', language??='en' (logical assignment, any spacing)
     '/\bset' . $LANGWORD . '\s*\(\s*' . $EN . '\s*[,)]/i',                    // setLanguage('en'), setSongLang('en-GB', …)
+    /* #2137 review round 7 (the sixth review's decision 5): */
+    '/\b(?:default|case\b[^:\n]{0,60})\s*:\s*' . $LANGWORD . '\s*=\s*' . $EN . '/i', // default:lang='en';  case '':lang='en';
+    '/#' . $LANGWORD . '\s*=\s*' . $EN . '/i',                                   // a JavaScript private field: #lang='en', #language = 'en'
 ];
 /* A `match` spread over several lines — `$lang = match ($x) {` then `'' => 'en',`
    on a later line — cannot be seen one line at a time, so each file is also
@@ -386,9 +394,16 @@ $enExempt = [
    `x.language || /* fallback *\/ 'en'` used to be cut off at the comment and
    got through. Then a line that starts as a comment is skipped (null), and a
    trailing block or line comment is cut off. */
-$enCodeOf = static function (string $line): ?string {
+$enCodeOf = static function (string $line, string $kind = 'php'): ?string {
     $code = (string)preg_replace('~/\\*.*?\\*/~', ' ', $line);
-    if (preg_match('~^\\s*(?:\\*|//|/\\*|#)~', $code) === 1) {
+    /* #2137 review round 7 (the sixth review's decision 5) — only a REAL
+       comment line is skipped. A line starting `#` used to be skipped in every
+       file; but in PHP `#[` starts an attribute, which is code
+       (`#[Pure] public function f(string $lang = 'en')`), and in JavaScript `#`
+       never starts a comment (a private field, `#lang = 'en'`, is code). So: in
+       PHP a `#` line is skipped unless it is `#[`; in JavaScript it is read. */
+    if (preg_match('~^\\s*(?:\\*|//|/\\*)~', $code) === 1
+        || ($kind === 'php' && preg_match('~^\\s*#(?!\\[)~', $code) === 1)) {
         return null;
     }
     return (string)preg_replace('~\\s(?://|/\\*).*$~', '', $code);
@@ -406,7 +421,7 @@ foreach ($it as $file) {
     }
     $enScanned++;
     foreach (file($file->getPathname()) ?: [] as $i => $line) {
-        $code = $enCodeOf($line);
+        $code = $enCodeOf($line, $file->getExtension() === 'js' ? 'js' : 'php');
         if ($code === null) {
             continue;
         }
@@ -524,6 +539,18 @@ $enMustCatch = [
     "var lang = song.language || 'en_GB';",
     "song.languages = song.languages || ['en'];",
     "\$langs = \$row['languages'] ?? [ 'en-GB', 'fr' ];",
+    /* the sixth review's shapes (round 7, decision 5) */
+    "var lang = song.language || ('en');",
+    "\$lang = \$row['language'] ?? ('en');",
+    "\$langs = \$row['languages'] ?? array('en');",
+    "song.languages = song.languages || ['fr', 'en'];",
+    "\$langs = \$x['languages'] ?? array('fr', 'en-GB');",
+    "var langs = song.languages || (['de', 'en']);",
+    "default:lang='en';break;",
+    "case '':lang='en';break;",
+    "switch (x) { default: language = 'en'; }",
+    "#lang = 'en';",
+    "#language='en';",
 ];
 $enMustPass = ['<html lang="en">', "if (\$lang === 'en') {", "\$language = mediaLanguageOrUnknown(\$valid);", "\$locale = 'en';",
     "'lang'  => 'en',   /* a geocoder's result language, not a song's */", "\$isEnglish = \$lang === 'en' ? 1 : 0;",
@@ -535,7 +562,10 @@ $enMustPass = ['<html lang="en">', "if (\$lang === 'en') {", "\$language = media
     "echo '<html lang=\"en-GB\">';", "var english = 'en';", "\$locale = 'en-GB';",
     /* round 6 — a lookup inside a match, and English as a value of something that is not a language */
     "\$name = match (\$lang) { 'en' => 'English', default => \$lang };", "\$iso3 = match (\$lang) { 'en' => 'eng', default => '' };",
-    "\$title = \$song['title'] ?? 'English hymns';", "if (lang === 'eng') {"];
+    "\$title = \$song['title'] ?? 'English hymns';", "if (lang === 'eng') {",
+    /* round 7 — a list that is only looked in, a label, an XML attribute */
+    "if (in_array(\$lang, ['fr', 'en'], true)) {", "case 'en': label = 'English name'; break;",
+    "echo '<tt xml:lang=\"en\">';", "default: \$name = 'English';"];
 /* The multi-line `match` shape, on its own. */
 mliCheck("the 'en' guard catches a `match` over several lines giving 'en' for a language",
     preg_match($fallbackMatchWhole, "\$lang = match (\$raw) {\n    '' => 'en',\n    default => \$raw,\n};") === 1
@@ -559,6 +589,16 @@ foreach (["/* a doc comment showing lang || 'en' */", " * lang || 'en' inside a 
     $code = $enCodeOf($line);
     mliCheck("the 'en' guard, reading the line as the scan does, does not flag: {$line}", $code === null || !$enMatches($code), (string)$code);
 }
+/* #2137 review round 7 (decision 5) — which lines are comments depends on the
+   language: PHP's `#` comment is skipped but its `#[` attribute is read;
+   JavaScript's `#` is never a comment. */
+foreach ([["  #[Pure] public function f(string \$lang = 'en') {}", 'php'], ["    #lang = 'en';", 'js'],
+          ["  #language='en';", 'js']] as [$line, $kind]) {
+    $code = $enCodeOf($line, $kind);
+    mliCheck("the 'en' guard, reading a {$kind} line as the scan does, catches: {$line}", $code !== null && $enMatches($code), (string)$code);
+}
+$code = $enCodeOf("    # lang = 'en' — an old note", 'php');
+mliCheck("…and still skips a real PHP `#` comment line", $code === null, (string)$code);
 
 /* The ONE unknown-language fallback (#2137 review): its behaviour, and the
    four paths that save a song's language all calling it. */
