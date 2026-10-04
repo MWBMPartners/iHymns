@@ -30,7 +30,7 @@
  * ========================================================================== */
 
 import { STORAGE_LANGUAGE_FILTER } from '../constants.js';
-import { isPreferenceTag, orderByPreference } from '../utils/language-tags.js';
+import { orderByPreference, usablePreferenceList } from '../utils/language-tags.js';
 
 /**
  * Wire the per-line translation toggle on the song page. Idempotent — the
@@ -88,6 +88,13 @@ export function initLineTranslations() {
  * DOM-first (rule #30): each `<li>` carries `data-language-tag`, emitted by
  * includes/pages/song.php. The preference list is the same saved list the
  * language filter uses (STORAGE_LANGUAGE_FILTER).
+ *
+ * #2137 review round 6 (the fifth review's finding 5) — only the FIRST 32 of
+ * that list are used (usablePreferenceList()), exactly as every other reader
+ * in the browser and the server use them. It used to read the whole list, so
+ * a list saved before the 32-language limit put its 33rd language (French, in
+ * the review's case) at the top of this menu while the language filter, the
+ * request header and the server all ignored it.
  */
 export function orderTranslationPicker() {
     const menu = document.querySelector('.page-song .song-translations .dropdown-menu');
@@ -97,7 +104,7 @@ export function orderTranslationPicker() {
     try {
         const raw = localStorage.getItem(STORAGE_LANGUAGE_FILTER);
         const parsed = raw ? JSON.parse(raw) : [];
-        preferences = Array.isArray(parsed) ? parsed.filter(isPreferenceTag) : [];
+        preferences = usablePreferenceList(parsed);   /* the first 32 tag-shaped entries, in order */
     } catch (_e) {
         preferences = [];   /* private mode / corrupt value: keep the server's order */
     }

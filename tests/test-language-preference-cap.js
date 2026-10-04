@@ -32,14 +32,18 @@
  *    tick is refused;
  *  - the home/songbooks grid (js/modules/songbook-language-filter.js): it filters
  *    by the same first 32 (a tile in the 33rd language is hidden, as the server
- *    would hide it), and its dropdown refuses a 33rd tick with the same words.
+ *    would hide it), and its dropdown refuses a 33rd tick with the same words;
+ *  - the song page's translation picker (js/modules/song-translations.js,
+ *    round 6): with 33 saved languages, the 33rd (French) is not moved to the
+ *    top — only the first 32 count, as everywhere else.
  *
  *   node tests/test-language-preference-cap.js
  *
  * Mutation-proven (see the commit body): removing the picker's check, ignoring
  * the save's answer, dropping the "newest save only" guard, the list not being
  * cut to 32, the header not using it, and removing the grid's check each turn
- * checks red.
+ * checks red; so does the translation picker reading the whole saved list
+ * again (round 6).
  */
 
 import fs from 'node:fs';
@@ -245,6 +249,33 @@ async function bootSettings({ saved = null, signedIn = false } = {}) {
     first.dispatchEvent(new window.Event('change'));
     await flush(5);
     check('unticking one hides the note again', note.classList.contains('d-none'));
+}
+
+/* ---- 7. the song page's translation picker (#2137 review round 6, finding 5) ----
+   It puts the reader's languages first. It used to read the WHOLE saved list,
+   so a list saved before the limit moved its 33rd language to the top while
+   every other reader ignored it. The fifth review's case: 33 saved languages,
+   the 33rd is French. */
+{
+    const { orderTranslationPicker } = await import(mod('js/modules/song-translations.js'));
+    const saved33 = ['af', 'am', 'ar', 'az', 'be', 'bg', 'bn', 'bs', 'ca', 'cs', 'cy', 'da', 'de', 'el', 'es', 'et', 'eu',
+        'fa', 'fi', 'ga', 'gl', 'gu', 'he', 'hi', 'hr', 'hu', 'hy', 'id', 'is', 'it', 'ja', 'ka', 'fr'];
+    /** The menu as song.php emits it (original first, then A to Z by name), ordered for the reader. */
+    const pickerOrder = (tagsInMenu) => {
+        localStorage.clear();
+        localStorage.setItem(STORAGE, JSON.stringify(saved33));
+        document.body.innerHTML = '<div class="page-song"><div class="song-translations"><ul class="dropdown-menu">'
+            + tagsInMenu.map((t) => `<li data-language-tag="${t}">${t}</li>`).join('') + '</ul></div></div>';
+        orderTranslationPicker();
+        return Array.from(document.querySelectorAll('.dropdown-menu > li')).map((li) => li.dataset.languageTag);
+    };
+    check('the 33rd saved language (French) is one the server ignores', saved33.length === 33 && !tags.usablePreferenceList(saved33).includes('fr'));
+    const reviewers = pickerOrder(['en', 'nl', 'fr']);
+    check('the review\'s case (English original, Dutch, French): French, the 33rd, does NOT move to the top — the server\'s order stands',
+        same(reviewers, ['en', 'nl', 'fr']), reviewers.join(', '));
+    const withGerman = pickerOrder(['en', 'nl', 'fr', 'de']);
+    check('…while German, among the first 32, does move to the top; the rest keep the server\'s order',
+        same(withGerman, ['de', 'en', 'nl', 'fr']), withGerman.join(', '));
 }
 
 console.log(`\n  ${passed} passed, ${failed} failed`);
