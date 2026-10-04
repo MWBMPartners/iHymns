@@ -222,7 +222,7 @@ function tcaShort(string $name): string
     return $p === false ? $name : substr($name, $p + 1);
 }
 
-/** Is token $i a method call `->name(`, `?->name(` or `::name(`? Returns the name in lower case, or null. */
+/** Is token $i a call of the method $name on an object — `->name(` or `?->name(` (any case)? */
 function tcaMethodCall(array $t, int $i, string $name): bool
 {
     if ($t[$i]->id !== T_STRING || strtolower($t[$i]->text) !== $name) { return false; }
@@ -232,7 +232,7 @@ function tcaMethodCall(array $t, int $i, string $name): bool
         && $q >= 0 && $t[$q]->text === '(';
 }
 
-/** Is token $i a plain function call `name(`? */
+/** Is token $i a call of the plain function $name — `name(` or `\name(`, not a method or a definition? */
 function tcaFunctionCall(array $t, int $i, string $name): bool
 {
     if (!in_array($t[$i]->id, [T_STRING, T_NAME_FULLY_QUALIFIED], true) || tcaShort($t[$i]->text) !== $name) { return false; }
@@ -252,13 +252,11 @@ function tcaFunctionCall(array $t, int $i, string $name): bool
 function tcaIncludePath(array $parts, string $dir): ?string
 {
     $pos = 0;
-    $expr = null;
     $term = static function () use (&$term, &$pos, $parts, $dir): ?string {
         $tok = $parts[$pos] ?? null;
         if ($tok === null) { return null; }
         if ($tok->text === '(') {
             $pos++;
-            $v = null;
             /* a bracketed path: ( a . b ) */
             $acc = '';
             while (true) {
