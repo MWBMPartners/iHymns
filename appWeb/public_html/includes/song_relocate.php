@@ -218,14 +218,14 @@ class SongRelocateEnvironmentException extends \RuntimeException
  * external-link / works / translation-link blocks in save_song_core.php). Each of
  * those is CORRECT for what it was written for: a best-effort follow-up must not
  * cost the curator their edit. None of them was written with "the transaction I
- * am inside may already be gone" in mind. Copying a two-element error-code list
+ * am inside may already be gone" in mind. Copying a short error-code list
  * into ten catch blocks is precisely the "keep these in sync" comment rule #35
  * names as the failure rather than the fix — so the list lives here, once, and
  * every one of those catches opens with
  * `if (songRelocateIsTransactionFatal($e)) { throw $e; }`.
  *
- * THE TWO CODES, ACCURATELY
- * -------------------------
+ * THE THREE CODES, ACCURATELY
+ * ---------------------------
  *  - 1213 `ER_LOCK_DEADLOCK` — InnoDB picked this transaction as the deadlock
  *    victim and rolled the WHOLE transaction back. Swallowing this is what makes
  *    a false success reachable: `commit()` then succeeds trivially (there is
@@ -239,9 +239,22 @@ class SongRelocateEnvironmentException extends \RuntimeException
  *    behaves exactly like 1213, and (b) a statement that timed out waiting for a
  *    row lock in the middle of a multi-statement move is not something to log and
  *    walk past.
+ *  - 1020 `ER_CHECKREAD` ("Record has changed since last read in table …") —
+ *    added in #2137 review round 6 (the fifth independent review's finding 6).
+ *    MariaDB raises it when `innodb_snapshot_isolation` is ON (the default on
+ *    MariaDB 11.8): this transaction read a row, another committed a change to
+ *    it, and this one then tried to change it. Like 1213 it ends the WHOLE
+ *    transaction — checked on MariaDB 11.8.9: after it, `@@in_transaction` is 0,
+ *    the transaction's own earlier write is gone, and `ROLLBACK TO SAVEPOINT`
+ *    answers "SAVEPOINT … does not exist". Swallowing it is the same false
+ *    success: every later statement runs on its own, outside any transaction,
+ *    and the final `commit()` succeeds with nothing to commit. MySQL does not
+ *    raise it from InnoDB (its locking reads always see the latest row), so on
+ *    MySQL this entry changes nothing.
  *
  * https://dev.mysql.com/doc/mysql-errors/8.0/en/server-error-reference.html
  * https://dev.mysql.com/doc/refman/8.0/en/innodb-parameters.html#sysvar_innodb_rollback_on_timeout
+ * https://mariadb.com/kb/en/innodb-system-variables/#innodb_snapshot_isolation
  *
  * @param  \Throwable $e Anything a `catch` block caught.
  * @return bool TRUE when the caller must re-throw rather than continue to commit.
@@ -265,7 +278,7 @@ function songRelocateIsTransactionFatal(\Throwable $e): bool
        https://www.php.net/manual/en/exception.getprevious.php */
     for ($depth = 0; $e !== null && $depth < 10; $depth++, $e = $e->getPrevious()) {
         if ($e instanceof \mysqli_sql_exception
-            && in_array((int)$e->getCode(), [1213, 1205], true)
+            && in_array((int)$e->getCode(), [1213, 1205, 1020], true)
         ) {
             return true;
         }
@@ -1382,12 +1395,13 @@ function songRelocate(\mysqli $db, string $oldSongId, string $targetAbbr, ?int $
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'songbook_count.php';
         songbookRecomputeSongCount($db, $targetAbbr, $currentAbbr);
     } catch (\Throwable $e) {
-        /* #1679 F8 / A1 — "best-effort" must not mean "swallow anything". Two
-           MySQL errors do not fail just the STATEMENT, they can roll back the
+        /* #1679 F8 / A1 — "best-effort" must not mean "swallow anything". Some
+           MySQL/MariaDB errors do not fail just the STATEMENT, they can roll back the
            ENTIRE InnoDB transaction — the caller's transaction, containing the
            move — after which the caller's $db->commit() commits NOTHING and the
            endpoint answers {ok:true, songId:<new>} for a song that no longer
-           exists under that id. The two codes and the precise conditions live in
+           exists under that id. The codes (three since #2137 review round 6,
+           which added MariaDB's 1020) and the precise conditions live in
            songRelocateIsTransactionFatal(): ONE list, because the same test has
            to hold in every catch between the relocate and the commit, and the two
            funnels have ten more. Anything else (a missing SongCount column on an

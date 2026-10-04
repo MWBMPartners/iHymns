@@ -597,6 +597,111 @@ if ($db === null) {
         $check('…but an EMPTY object still names nothing and is skipped as before (es → T2, not sent, is removed)',
             array_column($a, 'TargetLanguage') === ['pt'] && $w === [], json_encode([$a, $w]));
 
+        /* #2137 review round 6 (the fifth review's finding 6) — MariaDB's
+           "Record has changed since last read" (1020). With
+           innodb_snapshot_isolation ON (MariaDB 11.8's default), a stored link
+           another curator changed after this save's transaction first read
+           makes the save's DELETE fail with 1020, and the database has then
+           rolled back the WHOLE transaction, savepoint included. Before this
+           round 1020 was not on the shared list: the wrapper tried ROLLBACK TO
+           SAVEPOINT, which failed with "SAVEPOINT … does not exist", and that
+           replaced the 1020 — the error that actually broke the save was never
+           logged or seen. Now 1020 is on the list and is re-thrown as itself.
+           MySQL has no such setting (its writes read the latest row), so there
+           the same steps simply save; both servers are checked, each for what
+           it really does — neither is skipped. */
+        $isMaria = str_contains((string)$db->server_info, 'MariaDB');
+        $db->query('DELETE FROM tblSongTranslations');
+        $db->query("INSERT INTO tblSongTranslations (SourceSongId, TranslatedSongId, TargetLanguage, Translator, Verified) VALUES ('S1','T1','pt','Ana',1),('S1','T2','es','Luis',1)");
+        $other = new mysqli($host, $user, $pass, $name, $port);
+        $other->set_charset('utf8mb4');
+        if ($isMaria) { $db->query('SET SESSION innodb_snapshot_isolation = ON'); }
+        $logFile = (string)tempnam(sys_get_temp_dir(), 'ihymns-t2137-');
+        $oldLog = ini_set('error_log', $logFile);
+        $db->begin_transaction();
+        $db->query("INSERT INTO tblSongs VALUES ('MARK2')");                  /* the rest of the song save wrote something */
+        $db->query('SELECT COUNT(*) FROM tblSongTranslations')->fetch_row();   /* …and read something: its view of the data is fixed here */
+        $other->query("UPDATE tblSongTranslations SET Translator = 'Bea' WHERE TargetLanguage = 'es'");   /* another curator, committed */
+        $thrown = null;
+        try {
+            songTranslationsSaveLinksAllOrNothing($db, 'S1', [['songId' => 'T1', 'language' => 'pt']]);   /* removes es → T2 */
+            $db->commit();
+        } catch (\Throwable $e) {
+            $thrown = $e;
+            try { $db->rollback(); } catch (\Throwable $_) {}   /* the caller's outer handler */
+        }
+        ini_set('error_log', $oldLog === false ? '' : $oldLog);
+        $logged = (string)file_get_contents($logFile);
+        @unlink($logFile);
+        $rows = $db->query('SELECT TargetLanguage, Translator FROM tblSongTranslations ORDER BY Id')->fetch_all(MYSQLI_ASSOC);
+        $markKept = (int)$db->query("SELECT COUNT(*) FROM tblSongs WHERE SongId = 'MARK2'")->fetch_row()[0];
+        $db->query("DELETE FROM tblSongs WHERE SongId = 'MARK2'");
+        if ($isMaria) { $db->query('SET SESSION innodb_snapshot_isolation = DEFAULT'); }
+        $other->close();
+        if ($isMaria) {
+            $check('(finding 6, MariaDB) another curator changed es → T2 after the save first read; the save\'s delete fails with 1020 — and THAT error is what comes out (not "SAVEPOINT … does not exist")',
+                $thrown instanceof \mysqli_sql_exception && (int)$thrown->getCode() === 1020 && songRelocateIsTransactionFatal($thrown),
+                $thrown === null ? 'nothing thrown' : get_class($thrown) . ' ' . $thrown->getCode() . ' ' . $thrown->getMessage());
+            $check('…no undo is attempted and nothing is logged as "undoing" — the database has already ended the transaction',
+                !str_contains($logged, 'undoing the translation links'), $logged);
+            $check('…the whole save stops: the song save\'s earlier write is gone, the links are as they were, and the other curator\'s change stands',
+                $markKept === 0 && $rows === [['TargetLanguage' => 'pt', 'Translator' => 'Ana'], ['TargetLanguage' => 'es', 'Translator' => 'Bea']],
+                json_encode([$markKept, $rows]));
+        } else {
+            $check('(finding 6, MySQL) the same steps: MySQL reads the latest row for a write, so there is no 1020 — the save goes through and removes es → T2',
+                $thrown === null && $markKept === 1 && $rows === [['TargetLanguage' => 'pt', 'Translator' => 'Ana']],
+                json_encode([$thrown?->getMessage(), $markKept, $rows]));
+        }
+
+        /* #2137 review round 6 (finding 6) — when a link write fails AND the
+           undo then fails, the ORIGINAL error is logged before the undo is
+           tried, and the error thrown names the undo's failure and carries the
+           original as its cause. A connection whose ROLLBACK TO SAVEPOINT
+           always fails stands in for an undo that breaks (the real servers
+           give no other way to make it fail on demand). */
+        $db->query('DELETE FROM tblSongTranslations');
+        $db->query("INSERT INTO tblSongTranslations (SourceSongId, TranslatedSongId, TargetLanguage, Translator, Verified) VALUES ('S1','T1','pt','Ana',1),('S1','T2','es','Luis',1)");
+        $before = $db->query('SELECT Id, TranslatedSongId, TargetLanguage, Translator, Verified, CreatedAt FROM tblSongTranslations ORDER BY Id')->fetch_all(MYSQLI_ASSOC);
+        $db->query("CREATE TRIGGER t2137_no_de BEFORE INSERT ON tblSongTranslations FOR EACH ROW BEGIN IF NEW.TargetLanguage = 'de' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'refused by test'; END IF; END");
+        $undoFails = new class ($host, $user, $pass, $name, $port) extends \mysqli {
+            public function query(string $query, int $result_mode = MYSQLI_STORE_RESULT): \mysqli_result|bool
+            {
+                if (str_starts_with($query, 'ROLLBACK TO SAVEPOINT')) {
+                    throw new \mysqli_sql_exception('simulated: the undo failed', 1305);
+                }
+                return parent::query($query, $result_mode);
+            }
+        };
+        $undoFails->set_charset('utf8mb4');
+        $logFile = (string)tempnam(sys_get_temp_dir(), 'ihymns-t2137-');
+        $oldLog = ini_set('error_log', $logFile);
+        $undoFails->begin_transaction();
+        $thrown = null;
+        try {
+            songTranslationsSaveLinksAllOrNothing($undoFails, 'S1', [['songId' => 'T3', 'language' => 'de']]);   /* deletes both, then the insert is refused */
+            $undoFails->commit();
+        } catch (\Throwable $e) {
+            $thrown = $e;
+            try { $undoFails->rollback(); } catch (\Throwable $_) {}   /* the caller's outer handler */
+        }
+        ini_set('error_log', $oldLog === false ? '' : $oldLog);
+        $logged = (string)file_get_contents($logFile);
+        @unlink($logFile);
+        $undoFails->close();
+        $db->query('DROP TRIGGER t2137_no_de');
+        $after = $db->query('SELECT Id, TranslatedSongId, TargetLanguage, Translator, Verified, CreatedAt FROM tblSongTranslations ORDER BY Id')->fetch_all(MYSQLI_ASSOC);
+        $firstAt = strpos($logged, 'a translation link write failed; undoing the translation links: refused by test');
+        $undoAt = strpos($logged, 'undoing the translation links FAILED');
+        $check('(finding 6) a write fails and then the undo fails: the original error is logged FIRST, before the undo is tried',
+            $firstAt !== false && $undoAt !== false && $firstAt < $undoAt, $logged);
+        $check('…the error thrown names the undo\'s failure AND the original, and carries the original (1644, "refused by test") as its cause',
+            $thrown instanceof \RuntimeException && str_contains($thrown->getMessage(), 'simulated: the undo failed')
+            && str_contains($thrown->getMessage(), 'refused by test')
+            && $thrown->getPrevious() instanceof \mysqli_sql_exception && (int)$thrown->getPrevious()->getCode() === 1644,
+            $thrown === null ? 'nothing thrown' : get_class($thrown) . ': ' . $thrown->getMessage());
+        $check('…and nothing half-written survives: the caller rolls the whole save back, the links are exactly as before',
+            $after === $before, json_encode($after));
+
         /* the ordinary cases still work */
         [$b, $a, $w] = $scenario([['T1', 'pt', '', 0], ['T2', 'es', '', 0]], [['T2', 'es'], ['T3', 'de']]);
         $check('a removed link is deleted, a new one inserted, an unchanged one left',

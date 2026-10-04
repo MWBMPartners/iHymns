@@ -914,12 +914,30 @@ const IHYMNS_TRANSLATION_LINKS_SAVEPOINT = 'ihymns_translation_links';
  *
  * WHAT IT LETS THROUGH, on purpose — each stops the WHOLE song save, which the
  * caller's outer handler then rolls back:
- *   - an error songRelocateIsTransactionFatal() recognises (a deadlock or lock
- *     timeout): the database has already rolled the transaction back, so
- *     carrying on would "commit" nothing and report a false success;
+ *   - an error songRelocateIsTransactionFatal() recognises. What the database
+ *     has already done differs by error, and the comment here used to get one
+ *     wrong (#2137 review round 6, the fifth review's finding 8):
+ *       · a deadlock (1213), and MariaDB's "Record has changed since last
+ *         read" (1020, with innodb_snapshot_isolation on — the default on
+ *         MariaDB 11.8): the database has already rolled the WHOLE
+ *         transaction back, savepoint included, so carrying on would "commit"
+ *         nothing and report a false success, and ROLLBACK TO SAVEPOINT could
+ *         only fail ("SAVEPOINT … does not exist");
+ *       · a lock wait timeout (1205): with the server's default
+ *         (innodb_rollback_on_timeout OFF) the database has rolled back only
+ *         the FAILED STATEMENT, not the transaction — the earlier writes are
+ *         still there. The whole save still stops: this re-throws it, and the
+ *         caller's outer handler rolls the whole transaction back. (Behaviour
+ *         kept; the shared list treats 1205 as fatal for the reasons in
+ *         song_relocate.php.)
  *   - a failure of the ROLLBACK TO SAVEPOINT itself: the links may then be
  *     half written, and committing that is exactly the fault this exists to
  *     prevent. Refusing the whole save loses nothing — the curator saves again.
+ *     The ORIGINAL error is logged BEFORE the undo is tried, and the error
+ *     thrown names the undo's error and carries the original as its cause
+ *     (round 6, finding 6): until then a failed undo replaced the original —
+ *     on MariaDB a 1020 surfaced only as "SAVEPOINT … does not exist", and
+ *     the error that actually broke the save was never logged.
  * It must be called inside the caller's transaction (a savepoint outside one
  * does not survive to be rolled back to).
  *
@@ -950,11 +968,27 @@ function songTranslationsSaveLinksAllOrNothing(\mysqli $db, string $songId, arra
         if (songRelocateIsTransactionFatal($e)) {
             throw $e;
         }
+        /* The ORIGINAL error first (round 6, the fifth review's finding 6):
+           if the undo below fails too, its error is what reaches the outer
+           handler, and this is then the only record of what broke. */
+        error_log('[editor save_song] a translation link write failed; undoing the translation links: ' . $e->getMessage());
         /* Undo this unit only. If THIS fails, it throws out of here on
            purpose — see the docblock: the whole save stops rather than
-           committing half the links. */
-        $db->query('ROLLBACK TO SAVEPOINT ' . IHYMNS_TRANSLATION_LINKS_SAVEPOINT);
-        error_log('[editor save_song] translation links left unchanged: ' . $e->getMessage());
+           committing half the links — naming the undo's error, with the
+           original carried along as the cause. */
+        try {
+            $db->query('ROLLBACK TO SAVEPOINT ' . IHYMNS_TRANSLATION_LINKS_SAVEPOINT);
+        } catch (\Throwable $undoError) {
+            error_log('[editor save_song] undoing the translation links FAILED, so the whole save stops: ' . $undoError->getMessage());
+            throw new \RuntimeException(
+                'Undoing the translation links failed (' . get_class($undoError) . ' ' . $undoError->getCode() . ': '
+                . $undoError->getMessage() . ') after a translation link write failed (' . get_class($e) . ' '
+                . $e->getCode() . ': ' . $e->getMessage() . ')',
+                0,
+                $e
+            );
+        }
+        error_log('[editor save_song] translation links left unchanged.');
         return [songTranslationsLeftUnchangedMessage($e)];
     }
 }

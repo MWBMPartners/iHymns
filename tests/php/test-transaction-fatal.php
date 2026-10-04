@@ -82,11 +82,20 @@ function txnFatalMysqli(int $code): \mysqli_sql_exception
 
 echo "Behaviour of songRelocateIsTransactionFatal()\n";
 
-/* ---- the two fatal codes, bare ---------------------------------------- */
+/* ---- the fatal codes, bare (three since #2137 review round 6) --------- */
 ok('1213 ER_LOCK_DEADLOCK is fatal',
    songRelocateIsTransactionFatal(txnFatalMysqli(1213)) === true);
 ok('1205 ER_LOCK_WAIT_TIMEOUT is fatal',
    songRelocateIsTransactionFatal(txnFatalMysqli(1205)) === true);
+/* #2137 review round 6 (the fifth independent review's finding 6) — MariaDB's
+   "Record has changed since last read" (innodb_snapshot_isolation ON, the
+   default on 11.8) ends the whole transaction like a deadlock: checked on
+   MariaDB 11.8.9, @@in_transaction is 0 after it and the savepoint is gone.
+   tests/php/test-song-translations-sync.php reproduces it on a real server. */
+ok('1020 ER_CHECKREAD (MariaDB snapshot isolation: "Record has changed since last read") is fatal',
+   songRelocateIsTransactionFatal(txnFatalMysqli(1020)) === true);
+ok('a RuntimeException WRAPPING a 1020 is fatal',
+   songRelocateIsTransactionFatal(new \RuntimeException('probe failed', 0, txnFatalMysqli(1020))) === true);
 
 /* ---- codes that must NOT be fatal -------------------------------------- *
  * 1146 is the one that matters most: an un-migrated install reading an

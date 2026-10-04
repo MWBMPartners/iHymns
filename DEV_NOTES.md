@@ -884,8 +884,8 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   row such as `"pt-BR"` + a no-break space that the database counts as the same language as `pt-BR`) runs
   `ROLLBACK TO SAVEPOINT`, so the links are exactly as before, the curator is told "The translation links were
   left unchanged because …", and the rest of the song is still saved — it used to commit whatever had been
-  written, losing a link deleted before the failing write (a deadlock, and a failed undo, still stop the whole
-  save); (3) a payload entry that is not a link (not an object, a list such as `["T1", "pt"]`, a song or language
+  written, losing a link deleted before the failing write (a deadlock, a lock wait timeout, MariaDB's 1020 since
+  round 6, and a failed undo still stop the whole save — see "MariaDB's 1020" below); (3) a payload entry that is not a link (not an object, a list such as `["T1", "pt"]`, a song or language
   that is not text, and — since round 6, the fifth review's finding 2 — a non-empty object with neither a `songId`
   nor a `language` key, such as `{"song":"T2","lang":"de"}` or `{"SongId":"T2","Language":"de"}`) makes the whole
   translation save refuse, changing nothing — it used to be skipped and the stored links deleted as if removed
@@ -919,6 +919,49 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   for the life of a process). Every one of the fourth review's seventeen planted translation faults turns it red on
   both servers, including the two it did not catch before round 5 (a failed link keyed by its raw spelling, and a
   sent clash protecting only its first link).
+- **MariaDB's 1020 ends the whole transaction (#2137 review round 6, the fifth review's finding 6).** With
+  `innodb_snapshot_isolation` ON — the default on MariaDB 11.8 — a transaction that read a row, and then tries to
+  change it after another session committed a change to it, fails with 1020 ("Record has changed since last
+  read"), and MariaDB has then rolled back the WHOLE transaction: checked on MariaDB 11.8.9, `@@in_transaction` is
+  0 afterwards, the transaction's own earlier write is gone, and `ROLLBACK TO SAVEPOINT` answers "SAVEPOINT … does
+  not exist". MySQL 8.4 does not raise it (its writes read the latest row). Until round 6, 1020 was not on the
+  shared list (`songRelocateIsTransactionFatal()` in `includes/song_relocate.php`, which had 1213 and 1205), so
+  the translation links' all-or-nothing wrapper tried its undo, the undo failed, and that "SAVEPOINT … does not
+  exist" replaced the 1020 — the error that actually broke the save was never logged (the save did still stop).
+  Now 1020 is on the list; the wrapper re-throws it as itself, and when an ordinary write fails it logs the
+  ORIGINAL error before trying the undo and, if the undo fails too, throws an error naming both with the original
+  as its cause. (Corrected in the same round, finding 8: after a lock wait timeout, 1205, the server's default —
+  `innodb_rollback_on_timeout` OFF — rolls back only the failed STATEMENT, not the transaction; the wrapper's
+  comment said otherwise. The whole save still stops, because the wrapper re-throws and the caller's outer
+  handler rolls the transaction back.) `tests/php/test-song-translations-sync.php` reproduces the 1020 on MariaDB
+  (and checks that MySQL simply saves); `tests/php/test-transaction-fatal.php` checks the list.
+  **What every other catch that uses the list now does with a 1020** — 34 calls in all, every one of the form
+  "if the list says so, re-throw; otherwise log and carry on". Each now re-throws a 1020 to its caller instead of
+  logging it and carrying on. Carrying on was the fault: after a 1020 there is no transaction any more, so each
+  later statement saved on its own and the final `commit()` reported success over a half-saved edit.
+  - `manage/editor/save_song_core.php`, all inside `editorSaveSongCore()`'s one transaction — the
+    ArrangementJson, Note, component-Language and ChordsJson column checks (~582, ~905, ~1194, ~1214), the
+    revision record (~1406), the songbook SongCount recompute (~1442), the external links (~1496) and the
+    translations-table check (~1621): the 1020 reaches the function's outer handler, which rolls the whole save
+    back, logs it, writes the `song.save_failed` activity row and answers 500 "Failed to save song". The column
+    and table checks only read `INFORMATION_SCHEMA`, so in practice a 1020 does not start there; the writes can.
+  - `includes/song_translations_sync.php`, `songTranslationsSaveLinksAllOrNothing()` (2): re-thrown as itself, no
+    undo attempted; the song save's outer handler then rolls everything back.
+  - `manage/editor/api2.php`: `ed2_touchRevision()` (the v2 editor's revision record, written just before each
+    endpoint's commit), the duplicate-song enrichment and scripture copy, and the work-medley lockstep in the
+    section save: re-thrown, so that endpoint's own transaction handler rolls the whole edit back and reports the
+    failure instead of committing what was left.
+  - `includes/song_relocate.php` (the move's SongCount recompute, and the cascade check's probe),
+    `includes/work_admin.php` (`workAutolinkSafe()` when it runs inside the caller's transaction),
+    `includes/ilyrics_id.php` (`ilidStampNewRow()`), `includes/song_soft_delete.php` (the soft delete's SongCount
+    recompute), and the write steps of `includes/lyric_lines_sync.php` (`lyricLinesWriteComponents()`,
+    `lyricLinesSnapshotDeletedEnrichment()`, `lyricLinesFlagRoundsAfterLineDelete()`): re-thrown to the save or
+    delete that called them, which rolls back as a whole.
+  - the readiness checks in `lyric_lines_sync.php`, `lyric_lines_read.php`, `lyric_rounds.php`, `vocal_parts.php`
+    and `vocal_part_review.php`: re-thrown likewise; they only read `INFORMATION_SCHEMA`, so in practice they do
+    not meet one.
+  - `.sql/migrate-backfill-vocal-part-suggestions.php`: a 1020 now stops the batch, as a deadlock already did,
+    instead of counting that song as "errored" and continuing.
 - **Reporting, not rewriting.** The curator audit on `/manage/languages` lists stored tags that are
   malformed, unregistered, retired, or not in standard form (e.g. `en-gb`), and offers a remap. Importers
   report a language they cannot read as an `import.language_unrecognised` row on `/manage/activity-log`.
