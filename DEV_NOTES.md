@@ -1049,7 +1049,7 @@ any other `run-conformance.php`. Never edit them: change the master, then run
     SongCount recompute in `songRelocate()` ~1398. `includes/song_soft_delete.php`:
     `_songSoftDeleteRecountSongbook()` ~441. `includes/song_translations_schema.php`:
     `songTranslationsLanguageFkPresent()` ~74. `includes/song_translations_sync.php`:
-    `songTranslationsSaveLinksAllOrNothing()` ~955 and ~967. `includes/tune_helpers.php`: `tuneTunesTableExists()`
+    `songTranslationsSaveLinksAllOrNothing()` ~1014 and ~1026. `includes/tune_helpers.php`: `tuneTunesTableExists()`
     ~148, `tuneFindOrCreateByName()` ~254. `includes/vocal_parts.php`: `vocalPartsTablesReady()` ~911,
     `vocalPartsSpansReady()` ~943. `includes/work_admin.php`: `workAdminReady()` ~181, `_workAdminIlIdColumnExists()`
     ~212, `workAutolinkSafe()` inside the caller's transaction ~1077, `workMedleyReady()` ~1202,
@@ -1071,7 +1071,7 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   - **Pass it back already, in their own way (3).** `workFindOrLinkByIdentifier()` (`work_admin.php` ~974)
     re-throws every database error except a duplicate (1062); `musicianReapOrphanedAutoRow()`
     (`musician_helpers.php` ~1886) re-throws every error except a missing table (1146);
-    `songTranslationsSaveLinksAllOrNothing()`'s catch around a failed undo (`song_translations_sync.php` ~981)
+    `songTranslationsSaveLinksAllOrNothing()`'s catch around a failed undo (`song_translations_sync.php` ~1040)
     always throws, carrying the original error.
   - **Handle a transaction of their own (3).** `workAutolinkSafe()` in its own-transaction mode (`work_admin.php`
     ~1064, and ~1067, the catch around its own rollback) and `songCopyrightHoldersReplace()` when it owns the

@@ -252,6 +252,13 @@ try {
        save — the save relies on its caller for some of these. */
     $inc = $repoRoot . '/appWeb/public_html/includes/';
     require_once $repoRoot . '/appWeb/public_html/manage/includes/auth.php';
+    /* auth.php registers an end-of-script step that writes a "request" row to
+       the activity log. It runs after this file has dropped its database, so
+       it fails, and its complaint goes to this run's log file — re-creating
+       the file after the `finally` below has deleted it (each run used to leave
+       one behind in the system's temporary folder). A step registered AFTER
+       auth.php's runs after it, so this one deletes the file last. */
+    register_shutdown_function(static function () use ($logFile): void { @unlink($logFile); });
     foreach (['db_mysql', 'api_tokens', 'activity_log', 'webhooks', 'notifications', 'csv_safe', 'external_link_helpers',
               'SongMediaStorage', 'song_media_visibility', 'song_importers', 'lyric_lines_sync', 'line_enrichment',
               'media_language', 'vocal_parts', 'lyric_rounds', 'arrangement', 'song_relocate', 'songbook_count',
