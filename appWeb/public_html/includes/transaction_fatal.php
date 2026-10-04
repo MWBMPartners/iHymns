@@ -31,6 +31,16 @@ declare(strict_types=1);
  * everything that loads song_relocate.php still has it.
  *
  * Tested by calling it, not by reading it: tests/php/test-transaction-fatal.php.
+ *
+ * ALSO HERE SINCE #2137 REVIEW ROUND 8: dbTransactionIsOpen()
+ * ------------------------------------------------------------
+ * The one way this code base asks "is a transaction open on this connection
+ * right now?" — so a best-effort write can stay out of a transaction (the geo
+ * cache), and the activity log can tell "a deadlock inside a save" (pass it
+ * back) from "a deadlock on a log row written after the work committed" (log it
+ * and carry on). It lives here for the same reason as the list: this file loads
+ * nothing, so any file can use it. Tested against a real database in
+ * tests/php/test-activity-log-outside-transaction.php.
  */
 
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
@@ -123,4 +133,66 @@ function songRelocateIsTransactionFatal(\Throwable $e): bool
     }
 
     return false;
+}
+
+/**
+ * Is a transaction open on this connection right now? (#2137 review round 8)
+ *
+ * ELI5: some writes must not happen inside somebody else's transaction (a
+ * shared cache row that another request may be writing at the same moment),
+ * and some errors mean "the whole save is gone" only when a save was running.
+ * This asks the database server, which is the only thing that really knows.
+ *
+ * @return bool|null TRUE: a transaction is open. FALSE: none is open (each
+ *         statement saves itself as it runs). NULL: the server's answer could
+ *         not be read — treat that as "maybe open", never as "not open".
+ *
+ * HOW IT ASKS, AND WHY THIS WAY
+ * -----------------------------
+ * It runs `SET TRANSACTION READ WRITE`. Without GLOBAL or SESSION that
+ * statement sets only the NEXT transaction's access mode, and both MySQL and
+ * MariaDB refuse it with error 1568 ("Transaction characteristics can't be
+ * changed while a transaction is in progress") while one is open — from the
+ * moment `begin_transaction()` returns, before any other statement, and in a
+ * connection with autocommit switched off once a statement has run. That
+ * refusal is documented by both servers and was checked on MariaDB 11.8.9,
+ * MySQL 8.4.11 and MySQL 5.7.44; a refused SET leaves the open transaction
+ * exactly as it was (its earlier writes still commit). When no transaction is
+ * open, the only effect is that the next transaction is read-write — which is
+ * what it would have been anyway: nothing in iHymns makes a transaction
+ * read-only by default.
+ *
+ * Rejected:
+ *   - MariaDB's `@@in_transaction` — MySQL does not have it (error 1193).
+ *   - information_schema.INNODB_TRX — MySQL needs the PROCESS privilege to
+ *     read it, which a shared host's account usually lacks, and it lists a
+ *     transaction only after its first statement.
+ *   - Counting begin_transaction() / commit() in PHP — every one of the 140-odd
+ *     places that open a transaction would have to take part, and a single one
+ *     that did not would make this answer "not open" inside a transaction,
+ *     which is exactly the wrong way to be wrong.
+ *   - Passing "a transaction is open" in from the callers — the code that needs
+ *     to know (the activity log, the geo cache) is called from hundreds of
+ *     places, most of which have no idea whether their caller opened one.
+ *
+ * WHAT IT CANNOT DO
+ * -----------------
+ * Ask it BEFORE the statement that might fail, never after. A deadlock (1213)
+ * or MariaDB's 1020 has already ended the whole transaction by the time PHP
+ * sees it, so asking afterwards answers "not open" about a save that WAS
+ * running a moment ago. It costs one round trip to the server each time.
+ */
+function dbTransactionIsOpen(\mysqli $db): ?bool
+{
+    try {
+        $ok = $db->query('SET TRANSACTION READ WRITE');
+    } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* the shared rule, as in every catch a transaction can reach */
+        return ($e instanceof \mysqli_sql_exception && (int)$e->getCode() === 1568) ? true : null;
+    }
+    if ($ok === true) {
+        return false;
+    }
+    /* A connection with error reporting switched off answers false and sets errno instead of throwing. */
+    return (int)$db->errno === 1568 ? true : null;
 }

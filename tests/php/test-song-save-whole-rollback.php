@@ -42,6 +42,12 @@ declare(strict_types=1);
  * -------------------------------------------------------------
  *   Part A — the two find-or-create helpers, called inside a transaction,
  *            let a 1020 at their IL-id step through to the caller.
+ *   B5     — (round 8, the seventh review's L2) another request writes the
+ *            geo-cache row for the curator's address while the save is
+ *            running: the save still answers 200 and saves everything, and it
+ *            writes no cache row of its own (on MariaDB its write used to meet
+ *            a 1020 and end the whole save with "Failed to save song"). It
+ *            runs first, because the address is looked up once per process.
  *   B0     — a save with nothing wrong is saved (so the checks below are not
  *            passing just because nothing ever gets saved).
  *   B1     — a 1020 while the save creates a new tune: the save answers 500
@@ -247,6 +253,20 @@ try {
     define('DB_NAME', $name);
     define('DB_PORT', $port);
     $_SERVER['REQUEST_METHOD'] = 'POST';
+    /* B5 (round 8): the curator's address, and a stand-in for the local
+       country database (MaxMind), which a test run does not have — the geo
+       code uses it when its file exists and the reader class is loaded, and
+       only then writes the cache. Both must be in place before
+       includes/ip_geolocation.php loads (it fixes the file's path). The
+       address is a documentation one (RFC 5737), never a real visitor's. */
+    $_SERVER['REMOTE_ADDR'] = '203.0.113.50';
+    $mmdb = (string)tempnam(sys_get_temp_dir(), 'ihymns-t2137-mmdb-');
+    register_shutdown_function(static function () use ($mmdb): void { @unlink($mmdb); });
+    define('IHYMNS_GEO_MMDB_PATH', $mmdb);
+    eval('namespace MaxMind\\Db; final class Reader {
+        public function __construct(string $path) {}
+        public function get(string $ip): array { return ["country" => ["iso_code" => "GB", "names" => ["en" => "United Kingdom"]]]; }
+    }');
 
     /* What the v2 editor (manage/editor/api2.php) loads before it calls the
        save — the save relies on its caller for some of these. */
@@ -413,6 +433,37 @@ try {
 
     /* ------------------------------------------------------------------ Part B */
     echo "\nPart B — the whole save (editorSaveSongCore) saves everything or nothing\n";
+
+    /* B5 — #2137 review round 8 (the seventh review's L2, the lead's decision
+       2). The save writes its activity row inside its transaction, and
+       logActivity() looks up the curator's country as it does — and used to
+       write the shared geo-cache row there too. Here another request writes
+       that address's row (and commits) just before the save reads the cache:
+       the save has already read the database, so on MariaDB its cache write
+       met a 1020, which ended the whole save ("Failed to save song"); on
+       MySQL it wrote the row inside the save. Now the save only reads the
+       cache inside its transaction. Runs first: the address is resolved and
+       looked up once per process, so a later save would not look again. */
+    $makeSource('MISC-0105', 105);
+    $conn->hooks[] = ['/SELECT CountryCode, CountryName, GeoLookedUpAt/', static function () use ($other): void {
+        $other->query("INSERT INTO tblIpReputation (IpAddress, CountryCode, CountryName, GeoLookedUpAt, Source)
+                       VALUES ('203.0.113.50', 'FR', 'France', NOW(), 'other-request')");
+    }];
+    $r = $runSave($payload('MISC-0105', '', [['songId' => 'MISC-0901', 'language' => 'pt']]));
+    $raced = $conn->hooks === [];
+    $conn->hooks = [];
+    $geoRow = $look->query("SELECT CountryCode, Source FROM tblIpReputation WHERE IpAddress = '203.0.113.50'")->fetch_assoc();
+    $check('B5 (round 8, decision 2): another request writes the geo-cache row for the curator\'s address during the save — the save answers 200 and is saved (on MariaDB it used to fail with a 1020)',
+        $raced && $r['status'] === 200 && ($songRow('MISC-0105')['Title'] ?? null) === 'New title'
+        && $links('MISC-0105') === [['TranslatedSongId' => 'MISC-0901', 'TargetLanguage' => 'pt', 'Translator' => 'Ana', 'Verified' => '1']],
+        json_encode([$raced, $r, $songRow('MISC-0105')]));
+    $check('…and the save wrote no cache row inside its transaction (the other request\'s row is as it left it)',
+        $geoRow === ['CountryCode' => 'FR', 'Source' => 'other-request'], json_encode($geoRow));
+    $check('…and its song.edit row still records the country, looked up locally',
+        ($activity('MISC-0105', 'song.edit')['Result'] ?? null) === 'success'
+        && (string)$look->query("SELECT Country FROM tblActivityLog WHERE EntityId = 'MISC-0105' AND Action = 'song.edit' ORDER BY Id DESC LIMIT 1")->fetch_row()[0] === 'GB',
+        json_encode($look->query("SELECT Country, Result FROM tblActivityLog WHERE EntityId = 'MISC-0105'")->fetch_all(MYSQLI_ASSOC)));
+    $check('…and leaves no transaction open on its connection', $openTransactions() === 0);
 
     /* B0 — nothing goes wrong. */
     $makeSource('MISC-0100', 100);

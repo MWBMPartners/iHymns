@@ -158,6 +158,15 @@ const TCA_ALLOWED = [
         'The catch around a failed undo of the translation links: it ALWAYS throws, carrying the original error '
         . 'as its cause, so songRelocateIsTransactionFatal() still finds a 1213/1205/1020 down the chain.'],
 
+    /* Pass it back only when a transaction was open — decided before the write (#2137 review round 8). */
+    ['appWeb/public_html/includes/activity_log.php', 'logActivity', 3,
+        'Its main catch starts `if (songRelocateIsTransactionFatal($e) && $transactionOpen !== false) { throw $e; }`: '
+        . 'it passes such an error back whenever a transaction was open (or it could not tell) when the call began '
+        . '— asked with dbTransactionIsOpen() BEFORE the first statement, because afterwards the server has already '
+        . 'ended the transaction. Outside a transaction (a log row written after the work committed) such an error '
+        . 'has ended nothing but that row, so it logs and carries on (the lead\'s decision 3). Proven against a real '
+        . 'database by test-activity-log-outside-transaction.php (both sides) and test-song-save-whole-rollback.php (B4).'],
+
     /* Handle a transaction of their own, opened only after the caller's own work has committed. */
     ['appWeb/public_html/includes/work_admin.php', 'workAutolinkSafe', 1,
         'Its own-transaction mode ($ownTransaction = true): rolls back ITS OWN transaction, opened just above, '

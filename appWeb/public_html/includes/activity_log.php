@@ -210,7 +210,13 @@ function activityLogResolveUserId(?int $userId): ?int
  * @param int|null $userId     Override acting user (defaults to session/auth).
  * @param int|null $durationMs Wall-clock duration of the logged op.
  *
- * @return void Best-effort — never throws.
+ * @return void Best-effort. It throws only when a transaction was open on
+ *              the shared connection as the call began AND the write met an
+ *              error that has ended that transaction (a deadlock, a lock wait
+ *              timeout, MariaDB's 1020 — songRelocateIsTransactionFatal()):
+ *              the caller's save must stop rather than carry on with no
+ *              transaction. Outside a transaction it never throws (#2137
+ *              review round 8; see the main catch below).
  */
 function logActivity(
     string $action,
@@ -259,26 +265,41 @@ function logActivity(
         $detailsJson = null;
     }
 
-    $resolvedUserId = activityLogResolveUserId($userId);
-    /* Real client IP + proxy chain + heuristic indicator (#proxy-vpn).
-       Honours CF-Connecting-IP / X-Forwarded-For / X-Real-IP so that
-       behind Cloudflare or any reverse proxy the audit trail records
-       the actual visitor's IP, not the proxy's. The resolver also
-       computes a proxy/VPN indicator + classification detail; both
-       columns are NULL on a pre-migration deployment, in which case
-       the bind_param below sends them as NULL and MySQL accepts. */
-    [$ip, $proxyChain, $proxyInd, $proxyDetail] = activityLogResolveClientIp();
-    $proxyDetailJson = $proxyDetail !== null
-        ? json_encode($proxyDetail, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR)
-        : null;
-    if ($proxyDetailJson === false) $proxyDetailJson = null;
-
-    $ua             = substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 500);
-    $method         = strtoupper((string)($_SERVER['REQUEST_METHOD']  ?? ''));
-    $rid            = activityLogRequestId();
-
+    /* #2137 review round 8 (the seventh independent review's check 2, the
+       lead's decision 3) — is a transaction open on the shared connection?
+       Asked ONCE, here, before this function's first database statement:
+       a deadlock or MariaDB's 1020 ends the whole transaction before PHP
+       sees the error, so asking in the catch would always answer "not
+       open". null = not known yet / could not tell, which the catch treats
+       as "maybe open". See the main catch at the end for what it decides,
+       and dbTransactionIsOpen() (transaction_fatal.php) for how it asks. */
+    $transactionOpen = null;
     try {
         $db = getDbMysqli();
+        $transactionOpen = dbTransactionIsOpen($db);
+
+        /* The user and the client address are worked out inside this try (they
+           were above it until round 8): both can read the database
+           (getAuthenticatedUser(), the IP-reputation cache), so an error there
+           must reach the same catch. */
+        $resolvedUserId = activityLogResolveUserId($userId);
+        /* Real client IP + proxy chain + heuristic indicator (#proxy-vpn).
+           Honours CF-Connecting-IP / X-Forwarded-For / X-Real-IP so that
+           behind Cloudflare or any reverse proxy the audit trail records
+           the actual visitor's IP, not the proxy's. The resolver also
+           computes a proxy/VPN indicator + classification detail; both
+           columns are NULL on a pre-migration deployment, in which case
+           the bind_param below sends them as NULL and MySQL accepts. */
+        [$ip, $proxyChain, $proxyInd, $proxyDetail] = activityLogResolveClientIp();
+        $proxyDetailJson = $proxyDetail !== null
+            ? json_encode($proxyDetail, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR)
+            : null;
+        if ($proxyDetailJson === false) $proxyDetailJson = null;
+
+        $ua             = substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 500);
+        $method         = strtoupper((string)($_SERVER['REQUEST_METHOD']  ?? ''));
+        $rid            = activityLogRequestId();
+
         /* The new IpProxyChain / ProxyVpnIndicator / ProxyVpnDetail
            columns ship via migrate-activity-log-proxy-vpn.php. On
            pre-migration deployments INSERTing into the new column
@@ -392,7 +413,25 @@ function logActivity(
         $stmt->close();
         activityLogWriteCount($count + 1);
     } catch (\Throwable $e) {
-        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
+        /* #2137 review round 7 made this catch pass back every error that ends
+           a transaction, because the song save writes its activity row INSIDE
+           its transaction: swallowing a deadlock there let the save carry on
+           with no transaction at all (test-song-save-whole-rollback.php, B4).
+           Round 8 (the seventh review's check 2, the lead's decision 3): that
+           holds only when a transaction WAS open as this call began. Outside
+           one — most often the row a page writes AFTER its work has
+           committed (api2.php's create_song, the songbooks page's audit row,
+           about a hundred such calls in twelve files, listed in DEV_NOTES) —
+           a deadlock or lock wait timeout on the log row has ended nothing
+           but that one statement, and passing it back failed a request whose
+           work was already saved, inviting a duplicate on retry. So outside a
+           transaction this logs and carries on, as before round 7. "Could not
+           tell" (null) counts as open. This is why this catch does not start
+           with the plain guard; it is on the allow-list of
+           tests/php/test-transaction-catch-audit.php with that reason, and
+           tests/php/test-activity-log-outside-transaction.php proves both
+           sides against a real database. */
+        if (songRelocateIsTransactionFatal($e) && $transactionOpen !== false) { throw $e; }
         /* Logging is best-effort. A failure here must not propagate.
            One error_log so admins can spot a sustained outage. */
         error_log('[activity_log] write failed for "' . $action . '": ' . $e->getMessage());

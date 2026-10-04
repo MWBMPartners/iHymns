@@ -59,9 +59,16 @@ if (!function_exists('getDbMysqli')) {
 const IHYMNS_GEO_TTL_DAYS = 90;
 
 /** Path to the MaxMind GeoLite2-Country database, when the follow-up has
- *  installed it (kept OUTSIDE the web root; the deploy/cron drops it here). */
-const IHYMNS_GEO_MMDB_PATH = __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR
-    . '..' . DIRECTORY_SEPARATOR . '.geoip' . DIRECTORY_SEPARATOR . 'GeoLite2-Country.mmdb';
+ *  installed it (kept OUTSIDE the web root; the deploy/cron drops it here).
+ *  #2137 review round 8: a deploy or a test may point it elsewhere by
+ *  defining IHYMNS_GEO_MMDB_PATH before this file loads (tests/php/
+ *  test-activity-log-outside-transaction.php and test-song-save-whole-
+ *  rollback.php point it at a stand-in, so the cache write below can be
+ *  tested without the real database file). */
+if (!defined('IHYMNS_GEO_MMDB_PATH')) {
+    define('IHYMNS_GEO_MMDB_PATH', __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR
+        . '..' . DIRECTORY_SEPARATOR . '.geoip' . DIRECTORY_SEPARATOR . 'GeoLite2-Country.mmdb');
+}
 
 /**
  * Resolve an IP to ['code' => 'GB', 'name' => 'United Kingdom', 'source' => …]
@@ -161,9 +168,30 @@ function ihymnsGeoCacheGet(mysqli $db, string $ip): ?array
 /**
  * Upsert a geo result into tblIpReputation (IpAddress PK; other columns keep
  * their defaults / existing proxy values). Best-effort.
+ *
+ * NEVER INSIDE A TRANSACTION (#2137 review round 8 — the seventh independent
+ * review's L2, the lead's decision). This row is shared: any request from the
+ * same address may write it at the same moment. logActivity() looks the
+ * country up while it writes its row, and a song save writes its activity row
+ * INSIDE its own transaction — so the cache write used to run inside the save.
+ * On MariaDB, when another request wrote the same address's row after the
+ * save had started reading, the save's write met error 1020 ("Record has
+ * changed since last read"), which ends the WHOLE transaction: the curator was
+ * told "Failed to save song" over a best-effort cache. (On MySQL the write
+ * waited for the other request's lock instead, inside the save.) So while a
+ * transaction is open on this connection — or when that cannot be told — this
+ * writes nothing; the lookup still answered from the local country database,
+ * and the row is written by the next lookup made outside any transaction (the
+ * next request from that address, or the activity-log viewer's catch-up).
+ * Asked with dbTransactionIsOpen() (includes/transaction_fatal.php, which says
+ * how and why), BEFORE the write: after a 1020 the transaction has already
+ * ended, so asking afterwards would answer "not open".
  */
 function ihymnsGeoCachePut(mysqli $db, string $ip, string $code, string $name, string $source): void
 {
+    if (dbTransactionIsOpen($db) !== false) {
+        return;
+    }
     try {
         $code = strtoupper(substr($code, 0, 2));
         $name = substr($name, 0, 100);

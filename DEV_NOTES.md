@@ -1053,16 +1053,18 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   its own file, `includes/transaction_fatal.php`, which loads nothing else: `song_relocate.php` also loads the
   database layer, and loading it in some two dozen more files broke a test that stands in its own
   `getDbMysqli()` (`test-songbook-render-parity.php`). Its name is unchanged and `song_relocate.php` loads the new
-  file, so every existing caller works as before. The 99 catch blocks the test finds today (round 7's 95, plus
-  the four activity-log handlers below that its tool could not see), by what each does now (line numbers
-  approximate):
+  file, so every existing caller works as before. The 100 catch blocks the test finds today (round 7's 95, the
+  four activity-log handlers below that its tool could not see, and round 8's `dbTransactionIsOpen()`), by what
+  each does now (line numbers approximate):
   - **Start by passing the error back to the caller (89).** `api.php`: `slideAuthTokenExpiry()` ~28140.
-    `includes/activity_log.php`: `activityLogResolveUserId()` ~185; `logActivity()` ~298, ~319, ~393;
-    `activityLogIpReputation()` ~674. `includes/api_tokens.php`: `apiTokensDeviceMetaColumnsExist()` ~102.
+    `includes/transaction_fatal.php`: `dbTransactionIsOpen()` ~190 (round 8).
+    `includes/activity_log.php`: `activityLogResolveUserId()` ~187; `logActivity()`'s two column probes ~321,
+    ~342 (its main catch is in its own group below since round 8);
+    `activityLogIpReputation()` ~715. `includes/api_tokens.php`: `apiTokensDeviceMetaColumnsExist()` ~102.
     `includes/arrangement.php`: `arrangementColumnExists()` ~207. `includes/external_link_helpers.php`:
     `loadExternalLinksForRow()` ~365. `includes/ilyrics_id.php`: `ilidSequenceReady()` ~268, `ilidColumnReady()`
-    ~405, `ilidStampNewRow()` ~535. `includes/ip_geolocation.php`: `ihymnsGeoCacheGet()` ~155,
-    `ihymnsGeoCachePut()` ~182. `includes/lyric_lines_read.php`: `lyricLinesMirrorPresent()` ~105,
+    ~405, `ilidStampNewRow()` ~535. `includes/ip_geolocation.php`: `ihymnsGeoCacheGet()` ~163,
+    `ihymnsGeoCachePut()` ~211. `includes/lyric_lines_read.php`: `lyricLinesMirrorPresent()` ~105,
     `lyricLinesComponentExtrasPresent()` ~172. `includes/lyric_lines_sync.php`: `lyricLinesSyncReady()` ~84,
     `lyricLinesComponentsLangReady()` ~121, `lyricLinesPartTypeSlug()` ~439, `lyricLinesShadowColumnsPresent()`
     ~576, `lyricLinesWriteComponents()` ~817 and ~837, `lyricLinesEnrichmentTablesPresent()` ~1588,
@@ -1103,12 +1105,14 @@ any other `run-conformance.php`. Never edit them: change the master, then run
     (`logActivity()`, a deadlock while the save writes its own activity-log row); the rest rest on this audit.
     **Round 8 added the guard to five more** that round 7 had listed by hand as safe, so that they need no
     allow-list entry: `activityLogRequestId()` ~141 (makes a random id), `getDbMysqli()` (`db_mysql.php` ~107;
-    checks whether its saved connection is still open, no query), `ihymnsGeoViaMaxmind()` ~216 (reads a local
+    checks whether its saved connection is still open, no query), `ihymnsGeoViaMaxmind()` ~244 (reads a local
     file), `mediaLanguageReady()` (`media_language.php` ~156; loads the shared language rules) and the
     `\InvalidArgumentException` around a malformed alternative title in `_bulkImport_saveSong()`
     (`song_importers.php` ~1078). None of their tries touches the database today, so nothing changes; but "cannot
     meet a database error" is a claim a later edit to the try can quietly make false, and the guard cannot be.
     `db_mysql.php` and `media_language.php` now load `transaction_fatal.php` at their top for it.
+  - **Pass it back only when a transaction was open (1)** — round 8. `logActivity()`'s main catch
+    (`activity_log.php` ~434): see "Round 8 … corrected for the two best-effort writes" below.
   - **Pass it back already, in their own way (3).** `workFindOrLinkByIdentifier()` (`work_admin.php` ~974)
     re-throws every database error except a duplicate (1062); `musicianReapOrphanedAutoRow()`
     (`musician_helpers.php` ~1886) re-throws every error except a missing table (1146);
@@ -1126,7 +1130,7 @@ any other `run-conformance.php`. Never edit them: change the master, then run
     "fatal.php_error" row (a shutdown function, ~985). PHP calls these only after the request's own code has
     finished or an exception has escaped everything, so no save code runs after them; the guard there would only
     turn a failed end-of-request log row into an error after the response.
-  The ten not passing the error back with the guard (the last three groups) are the test's allow-list, each with
+  The eleven not passing the error back with the plain guard (every group after the first) are the test's allow-list, each with
   its reason in the test.
 
   **What this changes outside a transaction.** Most of these helpers are also called where no transaction is
@@ -1136,6 +1140,54 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   they are a change. The song save's own error handler, which runs after its rollback, wraps the two calls in it
   that could now meet one (the failure's activity-log row and the "who is signed in" lookup), so the save's own
   error answer is never replaced; other error handlers were not changed this round.
+  **Round 8 (the seventh review's check 2 and L2, the lead's decisions 3 and 2) — corrected for the two
+  best-effort writes.** The seventh review showed the change above was real and harmful for the activity log:
+  another session holding the log table's last gap (its "purge lock") made a log row written AFTER a page's work
+  had committed meet a lock wait timeout (1205), and the request failed — on work already saved, inviting a
+  duplicate on retry. Such calls are everywhere: a tokenizer scan found 104 `logActivity()` calls written after a
+  `commit()` in the same function or page block with no new `begin_transaction()` between (api.php 31,
+  manage/editor/api2.php 50 — `create_song` ~2363 among them —, manage/songbooks.php 5 — the auto-colour audit
+  row ~2264 among them —, duplicate-songs.php, publishers.php, tunes.php and vocal-parts-review.php 3 each,
+  includes/song_importers.php 2, manage/editor/api.php, manage/includes/auth.php, songbook-series.php and
+  works.php 1 each), and more functions write their own log row after their own work (auth.php's user
+  functions, for example). So the fix is in `logActivity()` itself, not at a hundred call sites: it asks once,
+  BEFORE its first database statement, whether a transaction is open on the shared connection
+  (`dbTransactionIsOpen()`, below); its main catch passes a transaction-ending error back only when one was open
+  (or it could not tell), and otherwise logs and carries on, as before round 7. It has to ask first: a deadlock
+  or a 1020 has already rolled the whole transaction back by the time PHP sees it, so asking in the catch would
+  always answer "not open" — `tests/php/test-activity-log-outside-transaction.php` proves that with a REAL
+  deadlock on the log row inside a transaction (B8), which a check made afterwards lets through. The user and
+  client-address lookups moved inside its try, so their errors reach the same catch. That catch is therefore on
+  the audit test's allow-list, with this reason. The ISWC works backfill (`.sql/backfill-works-from-iswc.php`
+  ~304) already wrapped its own log row in a catch that carries on; a deadlock there finishes the batch, and the
+  test pins it (B7). **The geo cache is never written inside a transaction.** `logActivity()` looks up the
+  visitor's country while it writes its row, and `ihymnsGeoCachePut()` wrote the shared `tblIpReputation` row on
+  the same connection — inside the song save's transaction, since the save writes its activity row there. On
+  MariaDB, when another request wrote the same address's row after the save had begun reading, the save's write
+  met a 1020 and the save answered "Failed to save song" over a best-effort cache (on MySQL it wrote the row
+  inside the save). Now, while a transaction is open (or that cannot be told), `ihymnsGeoCachePut()` writes
+  nothing; the lookup still answers from the local country database, and the row is written by the next lookup
+  made outside a transaction. Proven on both servers: the review's race through the real save (B5 in
+  `test-song-save-whole-rollback.php` — on round 7's code MariaDB answered 500 and MySQL wrote the row), and at
+  the cache write itself (C1–C3 in the new test). `IHYMNS_GEO_MMDB_PATH` can now be defined before
+  `ip_geolocation.php` loads, which is how both tests put a stand-in country database in place.
+  **How "is a transaction open?" is asked — `dbTransactionIsOpen()`, in `includes/transaction_fatal.php`.** It
+  runs `SET TRANSACTION READ WRITE`: without GLOBAL or SESSION that sets only the NEXT transaction's access mode,
+  and both servers refuse it with 1568 while a transaction is open — from `begin_transaction()` on, before any
+  statement, and once a statement has run with autocommit off. Checked on MariaDB 11.8.9, MySQL 8.4.11 and MySQL
+  5.7.44; a refused SET leaves the open transaction exactly as it was. When none is open, its only effect is
+  that the next transaction is read-write, which it would have been anyway. Rejected: MariaDB's
+  `@@in_transaction` (MySQL lacks it — 1193); `information_schema.INNODB_TRX` (MySQL needs the PROCESS
+  privilege, which a shared host's account usually lacks); counting `begin_transaction()`/`commit()` in PHP (all
+  ~146 places that open one would have to take part, and one that did not would make the answer "not open"
+  inside a transaction — the wrong way to be wrong); passing the knowledge in from callers (the activity log and
+  the geo cache are called from hundreds of places that do not know). It costs one round trip per log row and
+  per cache write. **Planted faults, each turning these tests red on both servers:** the cache check removed,
+  `dbTransactionIsOpen()` always answering "not open", `logActivity()`'s catch back to round 7's plain guard,
+  back to swallowing everything, and asking only after the error. **Not covered:** the
+  other best-effort helpers round 7 guarded (a sign-in token's sliding expiry and the like) still pass such an
+  error back outside a transaction too; they write single rows that rarely wait on a lock, and the decision named
+  the activity log and the geo cache.
   **Still true from round 6, outside this round's scope:** `.sql/migrate-backfill-vocal-part-suggestions.php`
   stops the batch on a 1020, as it already did on a deadlock, instead of counting that song as "errored" and
   continuing; `includes/vocal_part_review.php` still checks the list through `function_exists()` (it is not
