@@ -761,10 +761,21 @@ function editorSaveSongCore(): array
              * that probe's doc-block; this file already has places.php
              * loaded, so reusing it here is the ONE-probe path, not a
              * second fork). tuneFindOrCreateByName() (tune_helpers.php,
-             * P4b) already degrades to null when tblTunes itself is
-             * absent — this block runs unguarded inside the transaction (no
-             * try/catch of its own) so a genuine DB fault still rolls the
-             * whole save back honestly, matching the places-UPDATE posture
+             * P4b) answers null when tblTunes itself is absent, and also when
+             * its own lookup or insert fails in an ordinary way (logged): the
+             * song is then saved with no TuneId this time, NOT rolled back —
+             * an earlier version of this comment said a genuine database fault
+             * here "still rolls the whole save back", which was never true of
+             * the tune lookup itself. What does stop the whole save: an error
+             * that has already ended the transaction (a deadlock, a lock wait
+             * timeout, MariaDB's 1020) — tuneFindOrCreateByName() passes that
+             * back as itself (#2137 review round 7; until then it logged it and
+             * returned null, so the save carried on with no transaction and
+             * committed a half-saved song — proven in
+             * tests/php/test-song-save-whole-rollback.php, case B1) — and any
+             * failure of the UPDATE just below, which has no try/catch of its
+             * own. Either reaches this function's outer handler, which rolls
+             * the whole save back, matching the places-UPDATE posture
              * immediately above. */
             if (placeColumnExists($db, 'tblSongs', 'TuneId')) {
                 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_helpers.php';

@@ -74,6 +74,15 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that can see a database error starts by passing those back to its
+   caller. Loaded here, at the top, so that check can always be a catch's first
+   line. No cycle: song_relocate.php itself loads only db_mysql.php,
+   song_redirects.php and sql_identifier.php. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';
+
 /**
  * Tune name → URL-safe handle ("HYFRYDOL" → "hyfrydol", "St. Anne" →
  * "st-anne"). Re-homed byte-for-byte from `migrate-tunes-entity.php`'s
@@ -178,12 +187,24 @@ function tuneTunesTableExists(\mysqli $db): bool
  *     TuneId this save; the curator's next edit re-resolves it, since by
  *     then the concurrent INSERT has landed and the `Name = ?` lookup
  *     above will hit).
+ *   - EXCEPT an error that has already ended the caller's whole
+ *     transaction — a deadlock (1213), a lock wait timeout (1205) or
+ *     MariaDB's "Record has changed since last read" (1020), as decided by
+ *     `songRelocateIsTransactionFatal()`. That one is passed back to the
+ *     caller as itself, never turned into `null` (#2137 review round 7). The
+ *     song save calls this function INSIDE its transaction; a `null` there
+ *     let the save carry on with no transaction at all — each later write
+ *     saved on its own, and the final `commit()` reported success over a
+ *     half-saved song. The IL-id step (`ilidStampNewRow()`) re-throws exactly
+ *     these errors on purpose; this catch used to drop them.
  *
  * @param \mysqli $db
  * @param string  $name Curator-typed tune name, any whitespace already
  *                       trimmed by the caller or not — trimmed again here.
  * @return int|null tblTunes.Id, or null (empty name / tblTunes absent /
- *                   an unexpected DB error, logged and swallowed).
+ *                   an ordinary DB error, logged and swallowed).
+ * @throws \Throwable Only an error that has already ended the caller's
+ *         transaction (`songRelocateIsTransactionFatal()` true).
  * @link .claude/catalogue-1741-P4-plan.md §2.4.3
  */
 function tuneFindOrCreateByName(\mysqli $db, string $name): ?int
@@ -219,13 +240,23 @@ function tuneFindOrCreateByName(\mysqli $db, string $name): ?int
         $ins->execute();
         $newId = (int)$db->insert_id;
         $ins->close();
-        /* #1860 go-live — mint this tune's permanent IL-id (ILT…). Runs
-           inside this function's OWN try/catch, which already degrades any
-           throwable to a logged null — ilidStampNewRow() shares that same
-           fail-safe posture internally, so nesting it here is harmless. */
+        /* #1860 go-live — mint this tune's permanent IL-id (ILT…).
+           ilidStampNewRow() logs and swallows its own ordinary failures (a
+           tune with no IL id yet is fine — the backfill fills it in later),
+           but it RE-THROWS an error that has already ended the transaction,
+           and the catch below passes that on to the caller as well. (This
+           comment used to say any error here became a logged null, "so nesting
+           it here is harmless" — which is exactly how a 1020 here was lost;
+           #2137 review round 7.) */
         ilidStampNewRow($db, 'tune', $newId);
         return $newId;
     } catch (\Throwable $e) {
+        /* #2137 review round 7 — first, an error that has already ended the
+           caller's whole transaction goes back to the caller as itself (see
+           the doc-block above). tests/php/test-song-save-whole-rollback.php
+           makes MariaDB raise a real 1020 here during a song save and checks
+           that the save answers an error and saves nothing. */
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }
         error_log('[tuneFindOrCreateByName] ' . $e->getMessage());
         return null;
     }
