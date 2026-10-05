@@ -1083,15 +1083,15 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   file, so every existing caller works as before. The 100 catch blocks the test finds today (round 7's 95, the
   four activity-log handlers below that its tool could not see, and round 8's `dbTransactionIsOpen()`), by what
   each does now (line numbers approximate):
-  - **Start by passing the error back to the caller (89).** `api.php`: `slideAuthTokenExpiry()` ~28140.
+  - **Start by passing the error back to the caller (87).**
     `includes/transaction_fatal.php`: `dbTransactionIsOpen()` ~190 (round 8).
     `includes/activity_log.php`: `activityLogResolveUserId()` ~187; `logActivity()`'s two column probes ~321,
     ~342 (its main catch is in its own group below since round 8);
     `activityLogIpReputation()` ~715. `includes/api_tokens.php`: `apiTokensDeviceMetaColumnsExist()` ~102.
     `includes/arrangement.php`: `arrangementColumnExists()` ~207. `includes/external_link_helpers.php`:
     `loadExternalLinksForRow()` ~365. `includes/ilyrics_id.php`: `ilidSequenceReady()` ~268, `ilidColumnReady()`
-    ~405, `ilidStampNewRow()` ~535. `includes/ip_geolocation.php`: `ihymnsGeoCacheGet()` ~163,
-    `ihymnsGeoCachePut()` ~211. `includes/lyric_lines_read.php`: `lyricLinesMirrorPresent()` ~105,
+    ~405, `ilidStampNewRow()` ~535. `includes/ip_geolocation.php`: `ihymnsGeoCacheGet()` ~163.
+    `includes/lyric_lines_read.php`: `lyricLinesMirrorPresent()` ~105,
     `lyricLinesComponentExtrasPresent()` ~172. `includes/lyric_lines_sync.php`: `lyricLinesSyncReady()` ~84,
     `lyricLinesComponentsLangReady()` ~121, `lyricLinesPartTypeSlug()` ~439, `lyricLinesShadowColumnsPresent()`
     ~576, `lyricLinesWriteComponents()` ~817 and ~837, `lyricLinesEnrichmentTablesPresent()` ~1588,
@@ -1140,6 +1140,11 @@ any other `run-conformance.php`. Never edit them: change the master, then run
     `db_mysql.php` and `media_language.php` now load `transaction_fatal.php` at their top for it.
   - **Pass it back only when a transaction was open (1)** — round 8. `logActivity()`'s main catch
     (`activity_log.php` ~434): see "Round 8 … corrected for the two best-effort writes" below.
+  - **Write only when no transaction is open, and log every error (2)** — round 9 (the eighth review's L1, the
+    lead's decision 1). `ihymnsGeoCachePut()` (`ip_geolocation.php` ~231) and `slideAuthTokenExpiry()`
+    (`api.php` ~28167) return before their try whenever `dbTransactionIsOpen()` does not answer "not open", so
+    their write runs only outside a transaction, where a deadlock or a lock wait timeout ends nothing but that one
+    row: their catch logs it and carries on. See "Round 9" below.
   - **Pass it back already, in their own way (3).** `workFindOrLinkByIdentifier()` (`work_admin.php` ~974)
     re-throws every database error except a duplicate (1062); `musicianReapOrphanedAutoRow()`
     (`musician_helpers.php` ~1886) re-throws every error except a missing table (1146);
@@ -1157,8 +1162,8 @@ any other `run-conformance.php`. Never edit them: change the master, then run
     "fatal.php_error" row (a shutdown function, ~985). PHP calls these only after the request's own code has
     finished or an exception has escaped everything, so no save code runs after them; the guard there would only
     turn a failed end-of-request log row into an error after the response.
-  The eleven not passing the error back with the plain guard (every group after the first) are the test's allow-list, each with
-  its reason in the test.
+  The thirteen not passing the error back with the plain guard (every group after the first) are the test's
+  allow-list, each with its reason in the test.
 
   **What this changes outside a transaction.** Most of these helpers are also called where no transaction is
   open. There too, a deadlock, a lock wait timeout or a 1020 is now passed back instead of being logged and
@@ -1211,10 +1216,31 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   the geo cache are called from hundreds of places that do not know). It costs one round trip per log row and
   per cache write. **Planted faults, each turning these tests red on both servers:** the cache check removed,
   `dbTransactionIsOpen()` always answering "not open", `logActivity()`'s catch back to round 7's plain guard,
-  back to swallowing everything, and asking only after the error. **Not covered:** the
+  back to swallowing everything, and asking only after the error. **Not covered by round 8:** the
   other best-effort helpers round 7 guarded (a sign-in token's sliding expiry and the like) still pass such an
   error back outside a transaction too; they write single rows that rarely wait on a lock, and the decision named
   the activity log and the geo cache.
+  **Round 9 (the eighth review's L1, the lead's decision 1) — a write that only ever runs outside a transaction
+  never fails the request.** Round 8 left the geo cache's catch passing a deadlock or a lock wait timeout back,
+  although since round 8 that write only runs when no transaction is open. Checked on MariaDB 11.8.9 and MySQL
+  8.4.11 before the change, with another request holding the same address's cache row for a moment (its insert
+  not yet committed): `logActivity()` threw nothing but lost its whole activity row (only "write failed … Lock
+  wait timeout" in the error log), and the admin "geolocate" request (`manage/activity-log.php ?action=geo`,
+  `api.php`'s `admin_ip_geolocate`, through `activityLogGeoResolveIps()`) failed with the 1205. Now that catch
+  logs every error and carries on. **The sign-in token's sliding expiry had the same fault, and now has the same
+  treatment.** `logActivity()` asks `getAuthenticatedUser()` (`api.php`) who is signed in, which slides the
+  token's expiry once a day (an UPDATE of the token's row). With another request holding that row, checked on
+  both servers before the change: `logActivity()` lost its row, and `getAuthenticatedUser()` itself threw the 1205
+  (so the request asking who is signed in failed). Now `slideAuthTokenExpiry()` asks `dbTransactionIsOpen()`
+  first and writes nothing while a transaction is open (or that cannot be told) — the next sign-in check outside
+  one slides the token — and its catch logs every error and carries on. So that the question costs nothing on
+  the other days, `getAuthenticatedUser()` reads whether the slide is due with the user (the same comparison as
+  the slide's UPDATE) and calls it only then; before, it sent the (usually empty) UPDATE on every call. Tests:
+  `test-activity-log-outside-transaction.php` C4 and C5 (the geo cache, a real 1205) and Part D (the token: D1–D2
+  a real 1205 outside a transaction, D3 inside one it writes nothing and waits for nothing, D4 the next check
+  slides it, D5 nothing is sent when the slide is not due). **Still not changed:** `adoptApiTokenSession()`'s own
+  sliding expiry (`manage/includes/auth.php` ~310, used when a /manage page adopts the main app's sign-in) has
+  the same shape and still passes such an error back outside a transaction (from reading; not reproduced).
   **Still true from round 6, outside this round's scope:** `.sql/migrate-backfill-vocal-part-suggestions.php`
   stops the batch on a 1020, as it already did on a deadlock, instead of counting that song as "errored" and
   continuing; `includes/vocal_part_review.php` still checks the list through `function_exists()` (it is not

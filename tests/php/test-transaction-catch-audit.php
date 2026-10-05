@@ -81,7 +81,8 @@ declare(strict_types=1);
  * `generateUniqueMusicianSlug()`, `adoptApiTokenSession()`'s sliding expiry,
  * `pickAutoSongbookColour()`) and no test noticed. Each of the eight turns this
  * file red, and so does a new catch with no guard added to a helper the save
- * calls.
+ * calls. (Since round 9 `slideAuthTokenExpiry()`'s catch has no guard and is
+ * on the allow-list instead: it now writes only when no transaction is open.)
  *
  *   php tests/php/test-transaction-catch-audit.php
  *
@@ -166,6 +167,20 @@ const TCA_ALLOWED = [
         . 'ended the transaction. Outside a transaction (a log row written after the work committed) such an error '
         . 'has ended nothing but that row, so it logs and carries on (the lead\'s decision 3). Proven against a real '
         . 'database by test-activity-log-outside-transaction.php (both sides) and test-song-save-whole-rollback.php (B4).'],
+
+    /* Write only when no transaction is open: they return before their try whenever dbTransactionIsOpen()
+       does not answer false (a transaction is open, or that cannot be told), so nothing their catch walks past
+       can have ended a transaction (#2137 review round 9, the lead's decision 1). */
+    ['appWeb/public_html/includes/ip_geolocation.php', 'ihymnsGeoCachePut', 1,
+        'The geo-cache write runs only outside a transaction (the early return above its try), so a deadlock or a '
+        . 'lock wait timeout on it has ended nothing but that one cache row: it logs every error and carries on. '
+        . 'Passing such an error back cost logActivity() its activity row and failed the admin geolocate request. '
+        . 'Proven by test-activity-log-outside-transaction.php (C3, C4, C5).'],
+    ['appWeb/public_html/api.php', 'slideAuthTokenExpiry', 1,
+        'The sign-in token\'s sliding expiry runs only outside a transaction (the early return above its try), so a '
+        . 'deadlock or a lock wait timeout on it has ended nothing but that one token row: it logs every error and '
+        . 'carries on. Passing such an error back made getAuthenticatedUser() throw and cost logActivity() its '
+        . 'activity row. Proven by test-activity-log-outside-transaction.php (Part D).'],
 
     /* Handle a transaction of their own, opened only after the caller's own work has committed. */
     ['appWeb/public_html/includes/work_admin.php', 'workAutolinkSafe', 1,

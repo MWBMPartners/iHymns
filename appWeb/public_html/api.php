@@ -28098,16 +28098,43 @@ function getAuthBearerToken(): ?string
  * request, we only bump when the current ExpiresAt is less than
  * (30 days - 1 day) from now — i.e. at most once per day per token.
  * Also refreshes the browser-side cookie lifetime so the two stay in sync.
+ *
+ * NEVER INSIDE A TRANSACTION, AND NEVER FAILS THE REQUEST (#2137 review
+ * round 9 — the eighth review's L1, the lead's decision 1). The slide is a
+ * best-effort write to the token's own row, and it can run inside somebody
+ * else's transaction: logActivity() works out who is signed in (through
+ * getAuthenticatedUser()) while a save's transaction is open. Since round 7
+ * its catch passed a deadlock or a lock wait timeout back — right inside a
+ * transaction, but outside one another request holding the token's row for a
+ * moment made getAuthenticatedUser() itself throw (so the request asking who
+ * is signed in failed), and cost logActivity() its activity row. Checked on
+ * MariaDB 11.8 and MySQL 8.4 before this change: both happened.
+ * So now, like the geo cache (ihymnsGeoCachePut()): while a transaction is
+ * open on the connection — or when that cannot be told — this writes nothing
+ * (the next request outside a transaction slides the token), asked with
+ * dbTransactionIsOpen() BEFORE the write; and the write therefore runs only
+ * outside a transaction, where an error on it has ended nothing but this one
+ * row, so its catch logs every error and carries on. That catch does not
+ * start with the shared guard and is on the allow-list of
+ * tests/php/test-transaction-catch-audit.php with this reason. Tested in
+ * tests/php/test-activity-log-outside-transaction.php (Part D).
+ *
+ * getAuthenticatedUser() calls this only when the slide is due (its own read
+ * of the token answers that, with the same comparison as the UPDATE below),
+ * so the "is a transaction open?" question costs nothing on the other days.
  */
 function slideAuthTokenExpiry(string $rawToken): void
 {
+    $db = getDbMysqli();   /* the connection getAuthenticatedUser() has just read the token with */
+    if (dbTransactionIsOpen($db) !== false) {
+        return;
+    }
     try {
         $hashedToken  = hash('sha256', $rawToken);
         $newExpiresTs = time() + 30 * 86400;
         $newExpiresAt = gmdate('Y-m-d H:i:s', $newExpiresTs);
         $threshold    = gmdate('Y-m-d H:i:s', time() + 29 * 86400);
 
-        $db = getDbMysqli();
         /* #1409 — LastSeenAt piggybacks on this SAME already-throttled
            UPDATE (fires at most once per ~24h of active use PER TOKEN)
            rather than a new per-request write. A "last active" column read
@@ -28138,10 +28165,10 @@ function slideAuthTokenExpiry(string $rawToken): void
             setAuthTokenCookie($rawToken, $newExpiresTs);
         }
     } catch (\Throwable $e) {
-        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
-        /* Non-fatal: sliding expiry is best-effort. Logged so admins
-           notice if the UPDATE is failing systematically (e.g.,
-           tblApiTokens DDL drift). */
+        /* Non-fatal: sliding expiry is best-effort, and this runs only
+           outside a transaction (see above), so every error is logged and
+           walked past. Logged so admins notice if the UPDATE is failing
+           systematically (e.g., tblApiTokens DDL drift). */
         error_log('[api/slideAuthTokenExpiry] ' . $e->getMessage());
     }
 }
@@ -28177,26 +28204,37 @@ function getAuthenticatedUser(): ?array
     }
     $avatarSvcCol = $hasAvatarSvcCol ? ', u.AvatarService' : ', NULL AS AvatarService';
     $emailCol     = ', u.Email';
+    /* #2137 review round 9 — is the 30-day slide due (under 29 days left)?
+       The SAME comparison slideAuthTokenExpiry()'s UPDATE makes, read here
+       with the user so the slide (and its "is a transaction open?" question)
+       runs only on the day it can change something. Removed from the row
+       below, so callers see exactly the columns they did before. */
+    $slideThreshold = gmdate('Y-m-d H:i:s', time() + 29 * 86400);
 
     $stmt = $db->prepare(
         "SELECT u.Id, u.Username, u.DisplayName, u.Role
                 {$emailCol}
                 {$avatarSvcCol}
+                , (t.ExpiresAt < ?) AS _SlideDue
          FROM tblApiTokens t
          JOIN tblUsers u ON u.Id = t.UserId
          WHERE t.Token = ? AND t.ExpiresAt > ? AND u.IsActive = 1"
     );
-    $stmt->bind_param('ss', $hashedToken, $now);
+    $stmt->bind_param('sss', $slideThreshold, $hashedToken, $now);
     $stmt->execute();
     $user = $stmt->get_result()->fetch_assoc();
     $stmt->close();
 
     if (!$user) return null;
+    $slideDue = (int)($user['_SlideDue'] ?? 1) === 1;
+    unset($user['_SlideDue']);
 
     /* Sliding expiry (#390) — any active use extends the token 30 days,
        at most once per day per token. Keeps long-term users signed in
        without daily DB writes. */
-    slideAuthTokenExpiry($token);
+    if ($slideDue) {
+        slideAuthTokenExpiry($token);
+    }
 
     $user['Id'] = (int)$user['Id'];
     return $user;

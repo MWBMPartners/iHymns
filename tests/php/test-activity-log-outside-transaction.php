@@ -41,7 +41,18 @@ declare(strict_types=1);
  *            on a later lookup outside any transaction. On MariaDB, the
  *            seventh review's race — another request writes the same IP's
  *            row while a transaction is open — used to end that whole
- *            transaction with a 1020.
+ *            transaction with a 1020. Round 9 (the eighth review's L1): the
+ *            cache write, which now runs only outside a transaction, meeting
+ *            a REAL lock wait timeout no longer costs logActivity() its row
+ *            (C4) or fails the admin "geolocate" request (C5).
+ *   Part D — the sign-in token's sliding expiry (api.php's
+ *            slideAuthTokenExpiry(), reached through getAuthenticatedUser(),
+ *            which logActivity() asks who is signed in): round 9 gave it the
+ *            geo cache's treatment. Outside a transaction a real lock wait
+ *            timeout on it no longer fails the sign-in check (D1) or costs
+ *            logActivity() its row (D2); inside one it writes nothing (D3),
+ *            and the next check outside one slides the token (D4); when the
+ *            slide is not due, nothing is sent for it at all (D5).
  *
  * HOW THE FAILURES ARE MADE
  * -------------------------
@@ -60,6 +71,8 @@ declare(strict_types=1);
  * It calls logActivity() and the backfill directly, not through a web page.
  * The pages' own post-commit log calls (about a hundred, in twelve files —
  * listed in DEV_NOTES) all go through logActivity(), which is what is tested.
+ * Part D runs the three sign-in helpers lifted out of api.php, not api.php
+ * itself (loading api.php runs the API).
  *
  * Database: IHYMNS_TEST_DSN="host=127.0.0.1;port=3306;user=root;pass=".
  * Without one, this file reports a SKIP — a gap, not a pass. It builds its own
@@ -73,13 +86,6 @@ declare(strict_types=1);
  */
 
 $repoRoot = dirname(__DIR__, 2);
-$passed = 0;
-$failed = 0;
-$check = static function (string $label, bool $ok, string $detail = '') use (&$passed, &$failed): void {
-    if ($ok) { $passed++; echo "  PASS  {$label}\n"; }
-    else     { $failed++; echo "  FAIL  {$label}" . ($detail !== '' ? " — {$detail}" : '') . "\n"; }
-};
-echo "tests/php/test-activity-log-outside-transaction.php — a failed log or cache row outside a transaction never fails the request\n";
 
 $dsn = getenv('IHYMNS_TEST_DSN') ?: '';
 $host = '127.0.0.1'; $port = 3306; $user = 'root'; $pass = '';
@@ -90,6 +96,65 @@ foreach (explode(';', $dsn) as $kv) {
     if ($k === 'user') { $user = $v; }
     if ($k === 'pass') { $pass = $v; }
 }
+
+/* The stand-in for the local country database (MaxMind): the geo code uses it
+   when its file exists and the reader class is loaded. Both must be in place
+   before includes/ip_geolocation.php is loaded, which fixes the file's path. */
+$standInCountryDatabase = static function (string $path): void {
+    define('IHYMNS_GEO_MMDB_PATH', $path);
+    eval('namespace MaxMind\\Db; final class Reader {
+        public static int $reads = 0;
+        public function __construct(string $path) {}
+        public function get(string $ip): array { self::$reads++; return ["country" => ["iso_code" => "GB", "names" => ["en" => "United Kingdom"]]]; }
+    }');
+};
+
+/* ONE ACTIVITY ROW, WRITTEN BY A FRESH PROCESS (#2137 review round 9). The
+   activity log works out the visitor's address once per process, and the geo
+   lookup remembers each address's answer for the rest of the process; so by
+   the time C4 runs, this process can no longer make logActivity() look a new
+   address up. C4 therefore runs this same file again as a separate process
+   with these arguments: it logs one action from the address given, on its own
+   connection (lock waits of one second), and prints what happened as JSON.
+     php test-activity-log-outside-transaction.php --log-once-as <database> <address> <action> <stand-in file> <error log> */
+if (($argv[1] ?? '') === '--log-once-as') {
+    [, , $childDb, $childIp, $childAction, $childMmdb, $childLog] = $argv;
+    ini_set('error_log', $childLog);
+    $standInCountryDatabase($childMmdb);
+    define('DB_HOST', $host);
+    define('DB_USER', $user);
+    define('DB_PASS', $pass);
+    define('DB_NAME', $childDb);
+    define('DB_PORT', $port);
+    require_once $repoRoot . '/appWeb/public_html/includes/db_mysql.php';
+    require_once $repoRoot . '/appWeb/public_html/includes/activity_log.php';
+    require_once $repoRoot . '/appWeb/public_html/includes/ip_geolocation.php';
+    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+    $childConn = new mysqli($host, $user, $pass, $childDb, $port);
+    $childConn->set_charset('utf8mb4');
+    $childConn->query('SET SESSION innodb_lock_wait_timeout = 1');
+    $GLOBALS['_mysqliConnection'] = $childConn;
+    $_SERVER['REMOTE_ADDR'] = $childIp;
+    $_SERVER['REQUEST_METHOD'] = 'POST';
+    $t0 = microtime(true);
+    $thrown = null;
+    try {
+        logActivity($childAction, 'test', 'child');
+    } catch (\Throwable $e) {
+        $thrown = get_class($e) . ' ' . $e->getCode() . ': ' . $e->getMessage();
+    }
+    echo json_encode(['thrown' => $thrown, 'secs' => microtime(true) - $t0]);
+    exit(0);
+}
+
+$passed = 0;
+$failed = 0;
+$check = static function (string $label, bool $ok, string $detail = '') use (&$passed, &$failed): void {
+    if ($ok) { $passed++; echo "  PASS  {$label}\n"; }
+    else     { $failed++; echo "  FAIL  {$label}" . ($detail !== '' ? " — {$detail}" : '') . "\n"; }
+};
+echo "tests/php/test-activity-log-outside-transaction.php — a failed log or cache row outside a transaction never fails the request\n";
+
 $admin = null;
 if ($dsn !== '') {
     try {
@@ -121,17 +186,10 @@ ini_set('error_log', $logFile);
 register_shutdown_function(static function () use ($logFile): void { @unlink($logFile); });
 $logged = static function () use ($logFile): string { clearstatcache(); return (string)@file_get_contents($logFile); };
 
-/* The stand-in for the local country database (MaxMind): the geo code uses it
-   when its file exists and the reader class is loaded. Both must be in place
-   before includes/ip_geolocation.php is loaded, which fixes the file's path. */
+/* The stand-in country database's file (see $standInCountryDatabase above). */
 $mmdb = (string)tempnam(sys_get_temp_dir(), 'ihymns-t2137-mmdb-');
 register_shutdown_function(static function () use ($mmdb): void { @unlink($mmdb); });
-define('IHYMNS_GEO_MMDB_PATH', $mmdb);
-eval('namespace MaxMind\\Db; final class Reader {
-    public static int $reads = 0;
-    public function __construct(string $path) {}
-    public function get(string $ip): array { self::$reads++; return ["country" => ["iso_code" => "GB", "names" => ["en" => "United Kingdom"]]]; }
-}');
+$standInCountryDatabase($mmdb);
 
 try {
     /* ------------------------------------------------------------------ the database
@@ -405,6 +463,141 @@ try {
         $e === null && $stillOpen === true && (int)$look->query('SELECT V FROM r8_probe WHERE Id = 1')->fetch_row()[0] === 300
         && $cacheRow('203.0.113.23') === ['CountryCode' => 'FR', 'Source' => 'other-request'],
         $describe($e) . ' | open=' . var_export($stillOpen, true) . ' | ' . json_encode($cacheRow('203.0.113.23')));
+
+    /* #2137 review round 9 (the eighth review's L1, the lead's decision 1) —
+       OUTSIDE any transaction, another request is adding the same address's
+       cache row and has not committed yet, so this request's cache write waits
+       for it and gives up with a REAL lock wait timeout (1205). Round 8 passed
+       that back: logActivity() lost its whole activity row, and the admin
+       "geolocate" request failed. The cache write now logs it and carries on. */
+    $holdCacheRow = static function (string $ip) use ($other): void {
+        $other->begin_transaction();
+        $st = $other->prepare("INSERT INTO tblIpReputation (IpAddress, CountryCode, CountryName, GeoLookedUpAt, Source) VALUES (?, 'FR', 'France', NOW(), 'other-request')");
+        $st->bind_param('s', $ip);
+        $st->execute();
+        $st->close();
+    };
+    $holdCacheRow('203.0.113.24');
+    $childOut = (string)shell_exec(implode(' ', array_map('escapeshellarg',
+        [PHP_BINARY, __FILE__, '--log-once-as', $name, '203.0.113.24', 'r9.geo_locked', $mmdb, $logFile])) . ' 2>&1');
+    $releaseLog();
+    $child = json_decode($childOut, true);
+    $e = is_array($child) && $child['thrown'] !== null ? new \RuntimeException((string)$child['thrown']) : null;
+    $secs = is_array($child) ? (float)$child['secs'] : 0.0;
+    $countryOf = static function (string $action) use ($look): ?string {
+        $st = $look->prepare('SELECT Country FROM tblActivityLog WHERE Action = ?');
+        $st->bind_param('s', $action);
+        $st->execute();
+        $row = $st->get_result()->fetch_row();
+        $st->close();
+        return $row === null ? null : (string)$row[0];
+    };
+    $check('C4: outside a transaction, the cache row of the visitor\'s address held by another request (a real 1205 on the cache write): logActivity() throws nothing, the activity row IS written with its country, and the cache failure is logged',
+        $e === null && $secs >= 0.9 && $rowsFor('r9.geo_locked') === 1 && $countryOf('r9.geo_locked') === 'GB'
+        && str_contains($logged(), '[ip_geolocation] cache write failed'),
+        (is_array($child) ? $describe($e) : 'the separate process answered: ' . $childOut)
+        . sprintf(', %.1f s, rows=%d, country=%s', $secs, $rowsFor('r9.geo_locked'), var_export($countryOf('r9.geo_locked'), true)));
+
+    /* The admin "geolocate" path (manage/activity-log.php ?action=geo and
+       api.php's admin_ip_geolocate share activityLogGeoResolveIps(), which has
+       no catch around the lookup). */
+    require_once $repoRoot . '/appWeb/public_html/includes/activity_log_geo.php';
+    $holdCacheRow('203.0.113.25');
+    [$e, $secs] = $run(static function () use ($conn, &$answer): void { $answer = activityLogGeoResolveIps($conn, ['203.0.113.25']); });
+    $releaseLog();
+    $check('C5: the admin geolocate request, with the same address\'s cache row held by another request: it answers (GB) instead of failing',
+        $e === null && ($answer ?? null) === ['203.0.113.25' => 'GB'], $describe($e) . ' | ' . json_encode($answer ?? null));
+
+    /* ------------------------------------------------------------------ Part D */
+    echo "\nPart D — the sign-in token's sliding expiry is never written inside a transaction, and never fails the request\n";
+    /* #2137 review round 9 (the eighth review's L1, the lead's decision 1) —
+       the same mechanism through the sign-in check: logActivity() asks
+       getAuthenticatedUser() who is signed in, which slides the token's expiry
+       (an UPDATE of its row) on the day that is due. These three functions live
+       in api.php, which runs the API when it is loaded, so they are lifted out
+       of it with PHP's tokenizer and loaded on their own. */
+    require_once $repoRoot . '/appWeb/public_html/includes/auth_cookie.php';
+    require_once $repoRoot . '/appWeb/public_html/includes/api_tokens.php';
+    $apiTokens = PhpToken::tokenize((string)file_get_contents($repoRoot . '/appWeb/public_html/api.php'));
+    $lifted = [];
+    foreach (['getAuthBearerToken', 'slideAuthTokenExpiry', 'getAuthenticatedUser'] as $fn) {
+        for ($i = 0, $n = count($apiTokens); $i < $n; $i++) {
+            if ($apiTokens[$i]->id !== T_FUNCTION) { continue; }
+            $j = $i + 1;
+            while ($apiTokens[$j]->id === T_WHITESPACE) { $j++; }
+            if ($apiTokens[$j]->text !== $fn) { continue; }
+            $depth = 0;
+            $code = '';
+            for ($k = $i; $k < $n; $k++) {
+                $code .= $apiTokens[$k]->text;
+                if ($apiTokens[$k]->text === '{' || $apiTokens[$k]->id === T_CURLY_OPEN || $apiTokens[$k]->id === T_DOLLAR_OPEN_CURLY_BRACES) { $depth++; }
+                elseif ($apiTokens[$k]->text === '}') { $depth--; if ($depth === 0) { break; } }
+            }
+            eval($code);
+            $lifted[] = $fn;
+            break;
+        }
+    }
+    unset($apiTokens);
+    $check('D0: getAuthBearerToken(), slideAuthTokenExpiry() and getAuthenticatedUser() were lifted out of api.php',
+        $lifted === ['getAuthBearerToken', 'slideAuthTokenExpiry', 'getAuthenticatedUser'], json_encode($lifted));
+
+    $admin->query("INSERT INTO tblUsers (Id, Username, IsActive) VALUES (7, 'r9-signed-in', 1)");
+    $rawToken = str_repeat('ab', 32);
+    $tokenHash = hash('sha256', $rawToken);
+    /** Make the token due to slide (one day left) or not (thirty days left). */
+    $tokenExpiresIn = static function (int $days) use ($admin, $tokenHash): void {
+        $admin->query("DELETE FROM tblApiTokens WHERE Token = '{$tokenHash}'");
+        $admin->query("INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES ('{$tokenHash}', 7, UTC_TIMESTAMP() + INTERVAL {$days} DAY)");
+    };
+    $tokenSlid = static fn(): bool => (int)$look->query("SELECT ExpiresAt > UTC_TIMESTAMP() + INTERVAL 29 DAY FROM tblApiTokens WHERE Token = '{$tokenHash}'")->fetch_row()[0] === 1;
+    $holdToken = static function () use ($other, $tokenHash): void {
+        $other->begin_transaction();
+        $other->query("UPDATE tblApiTokens SET AppVersion = 'other-request' WHERE Token = '{$tokenHash}'");
+    };
+    $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $rawToken;
+
+    $tokenExpiresIn(1);
+    $holdToken();
+    $answer = null;
+    [$e, $secs] = $run(static function () use (&$answer): void { $answer = getAuthenticatedUser(); });
+    $releaseLog();
+    $check('D1: outside a transaction, the token\'s row held by another request (a real 1205 on the slide): getAuthenticatedUser() still answers the user, and the slide\'s failure is logged',
+        $e === null && ($answer['Id'] ?? null) === 7 && !array_key_exists('_SlideDue', (array)$answer)
+        && str_contains($logged(), '[api/slideAuthTokenExpiry] Lock wait timeout'),
+        $describe($e) . sprintf(', %.1f s | ', $secs) . json_encode($answer));
+
+    $tokenExpiresIn(1);
+    $holdToken();
+    [$e, $secs] = $run(static fn() => logActivity('r9.token_locked', 'test', 'D2'));
+    $releaseLog();
+    $userOf = (int)($look->query("SELECT UserId FROM tblActivityLog WHERE Action = 'r9.token_locked'")->fetch_row()[0] ?? 0);
+    $check('D2: outside a transaction, logActivity() as the signed-in user with the token\'s row held by another request: nothing thrown, and the activity row IS written, naming the user',
+        $e === null && $rowsFor('r9.token_locked') === 1 && $userOf === 7, $describe($e) . " | rows=" . $rowsFor('r9.token_locked') . " user={$userOf}");
+
+    $tokenExpiresIn(1);
+    $holdToken();
+    $conn->begin_transaction();
+    $conn->query('UPDATE r8_probe SET V = 500 WHERE Id = 1');
+    $answer = null;
+    [$e, $secs] = $run(static function () use (&$answer): void { $answer = getAuthenticatedUser(); });
+    $conn->commit();
+    $releaseLog();
+    $check('D3: INSIDE a transaction the due slide writes nothing: no wait for the other request\'s lock, the user is answered, the token is not slid, and the transaction commits its own work',
+        $e === null && ($answer['Id'] ?? null) === 7 && $secs < 0.9 && !$tokenSlid()
+        && (int)$look->query('SELECT V FROM r8_probe WHERE Id = 1')->fetch_row()[0] === 500,
+        $describe($e) . sprintf(', %.1f s, slid=%s', $secs, var_export($tokenSlid(), true)));
+    getAuthenticatedUser();
+    $check('D4: …and the next sign-in check outside a transaction slides it', $tokenSlid());
+
+    $tokenExpiresIn(30);
+    $tokenWrites = 0;
+    $conn->hooks[] = ['/^\s*UPDATE\s+tblApiTokens\b/i', static function () use (&$tokenWrites): void { $tokenWrites++; }];
+    $answer = getAuthenticatedUser();
+    $conn->hooks = [];
+    $check('D5: when the slide is not due, the sign-in check sends no UPDATE for it at all (so asking "is a transaction open?" costs nothing on those days)',
+        ($answer['Id'] ?? null) === 7 && $tokenWrites === 0, "updates sent: {$tokenWrites}");
+    unset($_SERVER['HTTP_AUTHORIZATION']);
 } finally {
     try { $admin->query("DROP DATABASE IF EXISTS `{$name}`"); } catch (\Throwable $_) {}
 }

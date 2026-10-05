@@ -180,12 +180,33 @@ function ihymnsGeoCacheGet(mysqli $db, string $ip): ?array
  * told "Failed to save song" over a best-effort cache. (On MySQL the write
  * waited for the other request's lock instead, inside the save.) So while a
  * transaction is open on this connection — or when that cannot be told — this
- * writes nothing; the lookup still answered from the local country database,
- * and the row is written by the next lookup made outside any transaction (the
- * next request from that address, or the activity-log viewer's catch-up).
+ * writes nothing; the lookup still answered from the local country database.
  * Asked with dbTransactionIsOpen() (includes/transaction_fatal.php, which says
  * how and why), BEFORE the write: after a 1020 the transaction has already
  * ended, so asking afterwards would answer "not open".
+ *
+ * WHEN THE SKIPPED ROW IS WRITTEN (#2137 review round 9 — the eighth review's
+ * L10 corrected what this used to say): by a LATER request from that address
+ * whose first lookup of it is made outside a transaction. Not by a later
+ * lookup in the same request — ihymnsGeoLookup() remembers its answer for the
+ * rest of the request and writes nothing more. And not by the activity-log
+ * viewer's catch-up (activityLogGeoResolveIps()): the viewer sends only the
+ * addresses whose shown rows have no country, and a row written inside the
+ * save already has one, from the local country database.
+ *
+ * NEVER FAILS THE REQUEST (#2137 review round 9 — the eighth review's L1, the
+ * lead's decision 1). Because of the early return above, the write below runs
+ * only when no transaction is open, so a deadlock or a lock wait timeout on
+ * it has ended nothing but this one cache row (with autocommit switched off,
+ * the transaction it would open holds nothing but this row). So its catch
+ * logs every error and carries on; it does not start with the shared
+ * "pass back an error that has ended the transaction" guard, and it is on the
+ * allow-list of tests/php/test-transaction-catch-audit.php with this reason.
+ * Before round 9 that guard passed such an error back: outside any
+ * transaction, another request holding the same address's cache row for a
+ * moment cost logActivity() its whole activity row, and failed the admin
+ * "geolocate" request (tests/php/test-activity-log-outside-transaction.php,
+ * C4 and C5).
  */
 function ihymnsGeoCachePut(mysqli $db, string $ip, string $code, string $name, string $source): void
 {
@@ -208,8 +229,9 @@ function ihymnsGeoCachePut(mysqli $db, string $ip, string $code, string $name, s
         $stmt->execute();
         $stmt->close();
     } catch (\Throwable $_e) {
-        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
-        /* best-effort cache write */
+        /* Best-effort cache write, run only outside a transaction (see "NEVER
+           FAILS THE REQUEST" above): log it and carry on, whatever it was. */
+        error_log('[ip_geolocation] cache write failed: ' . $_e->getMessage());
     }
 }
 
