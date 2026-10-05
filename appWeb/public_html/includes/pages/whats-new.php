@@ -102,7 +102,9 @@ $whatsNewHtml = _whatsNewRenderExcerpt($whatsNewFile);
              is safe to echo directly — see that file's doc-block for why
              the ordering matters. -->
         <div class="card card-settings mb-3">
-            <div class="card-body">
+            <?php /* .whats-new-notes sizes the rendered release headings below the
+                     page's own <h1> (css/app.css, "WHAT'S NEW RELEASE NOTES"). */ ?>
+            <div class="card-body whats-new-notes">
                 <?= $whatsNewHtml ?>
             </div>
         </div>

@@ -3782,6 +3782,36 @@ body.reduce-motion .song-list-item.alphabet-highlight {
 }
 
 /* ==========================================================================
+   WHAT'S NEW RELEASE NOTES (/whats-new)
+   ========================================================================== */
+
+/* ELI5: each release's heading ("1.3.0 — 30 August 2026") was printed
+   bigger than the page's own "What's New" title above it.
+
+   DETAILED: includes/markdown_lite.php turns "## …" into a plain <h2>,
+   which Bootstrap sizes at 2rem, while the page <h1> is deliberately
+   `.h4` (1.5rem), like every other page title in the app. These rules
+   bring the release headings under the page title, in step with the
+   other in-card headings, without giving the shared renderer any
+   page-specific classes. The first heading drops its top margin so the
+   card does not open with a gap. */
+.whats-new-notes h2 {
+    font-size: 1.25rem;
+    margin-top: 1.75rem;
+    margin-bottom: 0.75rem;
+}
+.whats-new-notes h3 {
+    font-size: 1.05rem;
+    margin-top: 1.25rem;
+}
+.whats-new-notes > :first-child {
+    margin-top: 0;
+}
+.whats-new-notes li + li {
+    margin-top: 0.5rem;
+}
+
+/* ==========================================================================
    SEARCH HISTORY CHIPS (#110)
    ========================================================================== */
 
