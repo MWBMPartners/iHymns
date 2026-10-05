@@ -1080,11 +1080,12 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   its own file, `includes/transaction_fatal.php`, which loads nothing else: `song_relocate.php` also loads the
   database layer, and loading it in some two dozen more files broke a test that stands in its own
   `getDbMysqli()` (`test-songbook-render-parity.php`). Its name is unchanged and `song_relocate.php` loads the new
-  file, so every existing caller works as before. The 100 catch blocks the test finds today (round 7's 95, the
-  four activity-log handlers below that its tool could not see, and round 8's `dbTransactionIsOpen()`), by what
-  each does now (line numbers approximate):
-  - **Start by passing the error back to the caller (87).**
-    `includes/transaction_fatal.php`: `dbTransactionIsOpen()` ~190 (round 8).
+  file, so every existing caller works as before. The 101 catch blocks the test finds today (round 7's 95, the
+  four activity-log handlers below that its tool could not see, round 8's in `dbTransactionIsOpen()` and round
+  9's second one there, around reading the session's access mode), by what each does now (line numbers
+  approximate):
+  - **Start by passing the error back to the caller (88).**
+    `includes/transaction_fatal.php`: `dbTransactionIsOpen()` ~224 (round 9) and ~243 (round 8).
     `includes/activity_log.php`: `activityLogResolveUserId()` ~187; `logActivity()`'s two column probes ~321,
     ~342 (its main catch is in its own group below since round 8);
     `activityLogIpReputation()` ~715. `includes/api_tokens.php`: `apiTokensDeviceMetaColumnsExist()` ~102.
@@ -1204,17 +1205,32 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   the cache write itself (C1–C3 in the new test). `IHYMNS_GEO_MMDB_PATH` can now be defined before
   `ip_geolocation.php` loads, which is how both tests put a stand-in country database in place.
   **How "is a transaction open?" is asked — `dbTransactionIsOpen()`, in `includes/transaction_fatal.php`.** It
-  runs `SET TRANSACTION READ WRITE`: without GLOBAL or SESSION that sets only the NEXT transaction's access mode,
-  and both servers refuse it with 1568 while a transaction is open — from `begin_transaction()` on, before any
-  statement, and once a statement has run with autocommit off. Checked on MariaDB 11.8.9, MySQL 8.4.11 and MySQL
-  5.7.44; a refused SET leaves the open transaction exactly as it was. When none is open, its only effect is
-  that the next transaction is read-write, which it would have been anyway. Rejected: MariaDB's
+  reads the session's own access mode (`@@SESSION.transaction_read_only`, or `tx_read_only` on a server that does
+  not know that name — MariaDB 10.11, for one), then runs `SET TRANSACTION READ ONLY` or `SET TRANSACTION READ
+  WRITE`, whichever the session already has: without GLOBAL or SESSION that sets only the NEXT transaction's access
+  mode, and both servers refuse it with 1568 while a transaction is open — from `begin_transaction()` on, before
+  any statement, and with autocommit off once a statement has read or written a table (round 9, the eighth
+  review's L9: with autocommit off a statement that touches no table, such as `SELECT 1`, opens nothing, and the
+  answer "not open" is then right — nothing could be lost). Checked on MariaDB 11.8.9, MySQL 8.4.11 and MySQL
+  5.7.44; a refused SET leaves the open transaction exactly as it was. **What asking changes (round 9, the eighth
+  review's L2, the lead's decision 2).** Round 8 ran `SET TRANSACTION READ WRITE` whatever the session's mode, and
+  said its only effect was a read-write next transaction "which it would have been anyway"; the eighth review
+  showed that in a session set to READ ONLY the next write then went through. Now, when no transaction is open,
+  asking KEEPS the session's own access mode and isolation level (the next autocommit statement and the next
+  `BEGIN` behave exactly as without asking: a read-only session still refuses a write, a session at READ
+  UNCOMMITTED still reads another request's uncommitted change) and a one-off isolation level set with `SET
+  TRANSACTION ISOLATION LEVEL …` just before asking. It does NOT keep a one-off access mode set with `SET
+  TRANSACTION READ ONLY` (or READ WRITE) just before asking, where that differs from the session's own: the next
+  transaction gets the session's mode instead (the server shows a pending one-off nowhere it can be read back;
+  nothing in iHymns sets one). Proven on MariaDB 11.8.9, MySQL 8.4.11 and MariaDB 10.11.19 by
+  `test-activity-log-outside-transaction.php` A8–A12 (A12 pins what is not kept), and on MySQL 5.7.44 with the
+  eighth review's own probe. It now costs two round trips. Rejected: MariaDB's
   `@@in_transaction` (MySQL lacks it — 1193); `information_schema.INNODB_TRX` (MySQL needs the PROCESS
   privilege, which a shared host's account usually lacks); counting `begin_transaction()`/`commit()` in PHP (all
   ~146 places that open one would have to take part, and one that did not would make the answer "not open"
   inside a transaction — the wrong way to be wrong); passing the knowledge in from callers (the activity log and
-  the geo cache are called from hundreds of places that do not know). It costs one round trip per log row and
-  per cache write. **Planted faults, each turning these tests red on both servers:** the cache check removed,
+  the geo cache are called from hundreds of places that do not know). It costs two round trips (one before round
+  9) per log row, per cache write and per due token slide. **Planted faults, each turning these tests red on both servers:** the cache check removed,
   `dbTransactionIsOpen()` always answering "not open", `logActivity()`'s catch back to round 7's plain guard,
   back to swallowing everything, and asking only after the error. **Not covered by round 8:** the
   other best-effort helpers round 7 guarded (a sign-in token's sliding expiry and the like) still pass such an

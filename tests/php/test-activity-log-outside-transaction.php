@@ -318,6 +318,102 @@ try {
     $check('A7: a connection with error reporting switched off gets the same answers (false, true, false)',
         $q1 === false && $q2 === true && $q3 === false, json_encode([$q1, $q2, $q3]));
 
+    /* #2137 review round 9 (the eighth review's L2, the lead's decision 2) —
+       asking must change nothing about the NEXT statement or transaction.
+       Round 8 asked with `SET TRANSACTION READ WRITE` whatever the session's
+       own mode, so in a session set to read-only the next write went through.
+       Each case below runs the same steps twice — once without asking, once
+       asking before each step — and the answers must be the same. */
+    /** Run a statement; answer 'ok', the error code, or what a read returned. */
+    $try = static function (string $sql) use ($conn): string {
+        try {
+            $r = $conn->query($sql);
+            return $r instanceof \mysqli_result ? (string)($r->fetch_row()[0] ?? '') : 'ok';
+        } catch (\mysqli_sql_exception $e) {
+            return (string)$e->getCode();
+        }
+    };
+    $twice = static function (callable $steps) use ($conn): array {
+        $without = $steps(static function (): void {});
+        $asked = [];
+        $with = $steps(static function () use ($conn, &$asked): void { $asked[] = dbTransactionIsOpen($conn); });
+        return [$without, $with, $asked];
+    };
+
+    $conn->query('SET SESSION TRANSACTION READ ONLY');
+    [$without, $with, $asked] = $twice(static function (callable $ask) use ($conn, $try): array {
+        $out = [];
+        $ask();
+        $out[] = $try('UPDATE r8_probe SET V = V WHERE Id = 1');          /* the next autocommit write */
+        $ask();
+        $out[] = $try('UPDATE r8_probe SET V = V WHERE Id = 1');          /* and the one after it */
+        $ask();
+        $conn->query('BEGIN');
+        $out[] = $try('UPDATE r8_probe SET V = V WHERE Id = 1');          /* a write inside the next BEGIN */
+        $conn->query('ROLLBACK');
+        return $out;
+    });
+    $conn->query('SET SESSION TRANSACTION READ WRITE');
+    $check('A8: a session set to READ ONLY: asking first changes nothing — the next autocommit write, the one after it, and a write inside the next BEGIN are all still refused (1792)',
+        $without === ['1792', '1792', '1792'] && $with === $without && $asked === [false, false, false],
+        json_encode(['without' => $without, 'asking' => $with, 'answers' => $asked]));
+
+    $conn->query('START TRANSACTION READ ONLY');
+    $inRo = dbTransactionIsOpen($conn);
+    $roWrite = $try('UPDATE r8_probe SET V = V WHERE Id = 1');
+    $conn->query('ROLLBACK');
+    $check('A9: inside a read-only transaction, asking answers "open" and the transaction stays read-only',
+        $inRo === true && $roWrite === '1792', json_encode([$inRo, $roWrite]));
+
+    /* An isolation level is seen by what a read returns: at READ UNCOMMITTED a
+       read sees another request's change before it commits; at any other level
+       it does not. */
+    $holdChange = static function () use ($other): void {
+        $other->begin_transaction();
+        $other->query('UPDATE r8_probe SET V = 777 WHERE Id = 1');
+    };
+    $dropChange = static function () use ($other): void { $other->rollback(); };
+    $conn->query('SET SESSION TRANSACTION ISOLATION LEVEL READ UNCOMMITTED');
+    [$without, $with, $asked] = $twice(static function (callable $ask) use ($conn, $try, $holdChange, $dropChange): array {
+        $holdChange();
+        $out = [];
+        $ask();
+        $out[] = $try('SELECT V FROM r8_probe WHERE Id = 1');             /* the next autocommit read */
+        $ask();
+        $conn->query('BEGIN');
+        $out[] = $try('SELECT V FROM r8_probe WHERE Id = 1');             /* a read inside the next BEGIN */
+        $conn->query('COMMIT');
+        $dropChange();
+        return $out;
+    });
+    $conn->query('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+    $check('A10: a session at READ UNCOMMITTED (not the default): asking first changes nothing — the next autocommit read and a read inside the next BEGIN both still see another request\'s uncommitted change',
+        $without === ['777', '777'] && $with === $without && $asked === [false, false],
+        json_encode(['without' => $without, 'asking' => $with, 'answers' => $asked]));
+
+    [$without, $with] = $twice(static function (callable $ask) use ($conn, $try, $holdChange, $dropChange): array {
+        $holdChange();
+        $conn->query('SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED');  /* a one-off, for the next transaction only */
+        $ask();
+        $conn->query('BEGIN');
+        $out = [$try('SELECT V FROM r8_probe WHERE Id = 1')];
+        $conn->query('COMMIT');
+        $dropChange();
+        return $out;
+    });
+    $check('A11: a one-off isolation level set just before asking is kept (the next BEGIN still reads at READ UNCOMMITTED)',
+        $without === ['777'] && $with === $without, json_encode(['without' => $without, 'asking' => $with]));
+
+    [$without, $with] = $twice(static function (callable $ask) use ($conn, $try): array {
+        $conn->query('SET TRANSACTION READ ONLY');                         /* a one-off ACCESS MODE */
+        $ask();
+        $out = [$try('UPDATE r8_probe SET V = V WHERE Id = 1')];
+        $conn->query('SET TRANSACTION READ WRITE');                        /* leave nothing pending */
+        return $out;
+    });
+    $check('A12: what is NOT kept, as transaction_fatal.php says: a one-off access mode set just before asking (here READ ONLY, in a read-write session) is replaced by the session\'s own — the next write is refused without asking and goes through after it',
+        $without === ['1792'] && $with === ['ok'], json_encode(['without' => $without, 'asking' => $with]));
+
     /* ------------------------------------------------------------------ Part B */
     echo "\nPart B — logActivity() outside a transaction logs a failed row and carries on; inside one it passes the error back\n";
     $conn->query('SET SESSION innodb_lock_wait_timeout = 1');

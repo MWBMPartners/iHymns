@@ -149,18 +149,47 @@ function songRelocateIsTransactionFatal(\Throwable $e): bool
  *
  * HOW IT ASKS, AND WHY THIS WAY
  * -----------------------------
- * It runs `SET TRANSACTION READ WRITE`. Without GLOBAL or SESSION that
- * statement sets only the NEXT transaction's access mode, and both MySQL and
- * MariaDB refuse it with error 1568 ("Transaction characteristics can't be
- * changed while a transaction is in progress") while one is open — from the
- * moment `begin_transaction()` returns, before any other statement, and in a
- * connection with autocommit switched off once a statement has run. That
+ * It reads the session's own access mode (`@@SESSION.transaction_read_only`,
+ * or the older name `tx_read_only` on a server that does not know that one —
+ * MariaDB before 11.1 and MySQL before 5.7.20, by their documentation; checked
+ * on MariaDB 10.11.19), then runs `SET TRANSACTION READ ONLY` or
+ * `SET TRANSACTION READ WRITE` — whichever the session already has. Without
+ * GLOBAL or SESSION that statement sets only the NEXT transaction's access
+ * mode, and both MySQL and MariaDB refuse it with error 1568 ("Transaction
+ * characteristics can't be changed while a transaction is in progress")
+ * while one is open — from the moment `begin_transaction()` returns, before
+ * any other statement, and in a connection with autocommit switched off once
+ * a statement has read or written a table. (With autocommit off, a statement
+ * that touches no table, such as `SELECT 1` or the read above, opens nothing,
+ * and the answer is "not open" — rightly: nothing could be lost yet.) That
  * refusal is documented by both servers and was checked on MariaDB 11.8.9,
  * MySQL 8.4.11 and MySQL 5.7.44; a refused SET leaves the open transaction
- * exactly as it was (its earlier writes still commit). When no transaction is
- * open, the only effect is that the next transaction is read-write — which is
- * what it would have been anyway: nothing in iHymns makes a transaction
- * read-only by default.
+ * exactly as it was (its earlier writes still commit, and a read-only one
+ * stays read-only).
+ *
+ * WHAT ASKING CHANGES, EXACTLY (#2137 review round 9 — the eighth review's
+ * L2, the lead's decision 2; checked on MariaDB 11.8.9, MySQL 8.4.11 and
+ * MariaDB 10.11.19 by tests/php/test-activity-log-outside-transaction.php,
+ * A8–A12, and on MySQL 5.7.44 with the eighth review's own probe). Round 8 asked
+ * with `SET TRANSACTION READ WRITE` whatever the session's own mode, and so
+ * made the next statement read-write in a session set to read-only — the
+ * opposite of what this comment then said. Now, when no transaction is open:
+ *   - KEPT: the session's own access mode and isolation level — the next
+ *     autocommit statement and the next transaction behave exactly as they
+ *     would have without the question (a read-only session still refuses a
+ *     write; a session at READ UNCOMMITTED still reads another request's
+ *     uncommitted change); and a one-off isolation level set with
+ *     `SET TRANSACTION ISOLATION LEVEL …` just before asking (the question
+ *     names only the access mode, and reading the session's mode does not use
+ *     a one-off up).
+ *   - NOT KEPT: a one-off ACCESS MODE set with `SET TRANSACTION READ ONLY`
+ *     (or READ WRITE) just before asking, where it differs from the session's
+ *     own: the next transaction gets the session's mode instead. The server
+ *     shows a pending one-off nowhere it could be read back from (the
+ *     variables show the session's value), so it cannot be put back. Nothing
+ *     in iHymns sets one.
+ *   - Like any statement, it resets the connection's insert_id and
+ *     affected_rows.
  *
  * Rejected:
  *   - MariaDB's `@@in_transaction` — MySQL does not have it (error 1193).
@@ -180,12 +209,37 @@ function songRelocateIsTransactionFatal(\Throwable $e): bool
  * Ask it BEFORE the statement that might fail, never after. A deadlock (1213)
  * or MariaDB's 1020 has already ended the whole transaction by the time PHP
  * sees it, so asking afterwards answers "not open" about a save that WAS
- * running a moment ago. It costs one round trip to the server each time.
+ * running a moment ago. It costs two round trips to the server each time
+ * (one since round 8, a second since round 9 to read the session's mode).
  */
 function dbTransactionIsOpen(\mysqli $db): ?bool
 {
+    /* The name the server uses for the session's access mode, once found. */
+    static $modeVariable = null;
     try {
-        $ok = $db->query('SET TRANSACTION READ WRITE');
+        $readOnly = null;
+        foreach ($modeVariable !== null ? [$modeVariable] : ['transaction_read_only', 'tx_read_only'] as $variable) {
+            try {
+                $res = $db->query('SELECT @@SESSION.' . $variable);
+            } catch (\mysqli_sql_exception $e) {
+                if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* the shared rule, as in every catch a transaction can reach */
+                if ((int)$e->getCode() === 1193) { continue; }   /* "unknown system variable": an older server's name is next */
+                return null;
+            }
+            if (!$res instanceof \mysqli_result) {
+                /* A connection with error reporting switched off answers false and sets errno instead of throwing. */
+                if ((int)$db->errno === 1193) { continue; }
+                return null;
+            }
+            $readOnly = (int)($res->fetch_row()[0] ?? 0) === 1;
+            $res->free();
+            $modeVariable = $variable;
+            break;
+        }
+        if ($readOnly === null) {
+            return null;
+        }
+        $ok = $db->query($readOnly ? 'SET TRANSACTION READ ONLY' : 'SET TRANSACTION READ WRITE');
     } catch (\Throwable $e) {
         if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* the shared rule, as in every catch a transaction can reach */
         return ($e instanceof \mysqli_sql_exception && (int)$e->getCode() === 1568) ? true : null;
