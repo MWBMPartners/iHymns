@@ -1010,7 +1010,9 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   `he-IL`) are still ambiguous, and a protected one is still never relabelled. This is for a re-point only: a NEW
   language for a song with two unsent rows (stored `pt → T1` and `es → T1`, sent `pt-BR → T1`) is still read as
   "removed two, added one", as round 5 decided — the lead's decision named the re-point case, so that one was
-  left as it was. Tested for
+  left as it was. **That stays ambiguous on purpose (round 9, the lead's carry-over 1): do not "fix" it by analogy
+  with the re-point rule above** — stored `pt → T1` and `es → T1`, sent `pt-BR → T1`, keeps no translator and no
+  verified flag, as round 5 pinned it. Tested for
   `iw`/`he`, `in`/`id`, `ji`/`yi` and `mo`/`ro`, both ways round, on both servers. Stored song ids are now compared
   after the same trim as stored languages (`songTranslationsSongKey()`): a stored `'T1 '`, which the database
   accepts as a link to T1 because its collation ignores trailing spaces, re-saved unchanged keeps its translator
