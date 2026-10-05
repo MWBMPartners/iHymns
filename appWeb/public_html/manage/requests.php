@@ -29,9 +29,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('review_song_requests', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — review_song_requests required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('review_song_requests');
 }
 
 $activePage = 'requests';
@@ -100,9 +98,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
        form), arm (b) additionally covers a same-origin AJAX submit if this
        page ever grows one later. Matches manage/works.php:412's precedent. */
     if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
     $id           = (int)($_POST['id']            ?? 0);
     $newStatus    = (string)($_POST['new_status'] ?? '');

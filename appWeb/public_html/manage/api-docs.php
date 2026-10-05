@@ -46,9 +46,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('view_api_docs', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — view_api_docs required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('view_api_docs');
 }
 $activePage  = 'api-docs';
 

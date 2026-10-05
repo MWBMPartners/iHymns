@@ -135,9 +135,7 @@ $role        = $currentUser['role'] ?? null;
 /* Page gate = the entitlement the nav row advertises (admin-links.php) —
    test-admin-gate-parity.php fails the build if the two ever drift (#1587). */
 if (!$currentUser || !userHasEntitlement('edit_songs', $role)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — edit_songs required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('edit_songs');
 }
 
 $activePage = 'vocal-parts-review';

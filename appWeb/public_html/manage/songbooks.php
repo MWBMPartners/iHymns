@@ -63,9 +63,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_songbooks', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_songbooks required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('manage_songbooks');
 }
 $activePage = 'songbooks';
 
@@ -670,9 +668,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
     header('Content-Type: application/json; charset=UTF-8');
     header('Cache-Control: no-store');
     if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo json_encode(['error' => 'Invalid CSRF token.']);
-        exit;
+        /* Keep this endpoint's own {"error": …} shape (its client reads
+           `.error`); only the wording changes to the friendlier one. */
+        adminDenyCsrf([
+            'format' => 'json',
+            'json'   => ['error' => 'Your session expired. Reload the page and try again.'],
+        ]);
     }
     if (!in_array(($currentUser['role'] ?? ''), ['editor', 'admin', 'global_admin'], true)) {
         http_response_code(403);
@@ -914,9 +915,7 @@ $hasOpenLibraryCols = placeColumnExists($db, 'tblSongbooks', 'OpenLibraryWorkId'
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
 
     $action = (string)($_POST['action'] ?? '');

@@ -54,9 +54,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_songbooks', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_songbooks required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('manage_songbooks');
 }
 $activePage = 'print-templates';
 
@@ -75,9 +73,7 @@ $hasSchema = printTemplateAdminTableExists($db); /* API-coverage batch 4b-ii A8 
 /* ---- POST actions ---- */
 if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
     $action = (string)($_POST['action'] ?? '');
     try {

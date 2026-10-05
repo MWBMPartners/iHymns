@@ -65,9 +65,7 @@ $role        = $currentUser['role'] ?? null;
 /* Page gate = the entitlement the nav row advertises (admin-links.php) —
    test-admin-gate-parity.php fails the build if the two ever drift (#1587). */
 if (!$currentUser || !userHasEntitlement('delete_songs', $role)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — delete_songs required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('delete_songs');
 }
 /* The destructive purge is gated PER-ACTION, like duplicate-songs' Merge:
    curators with delete_songs can restore; only purge_songs holders destroy. */

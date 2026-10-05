@@ -28,8 +28,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 requireAuth();
 $currentUser = getCurrentUser();
 if (!userHasEntitlement('edit_songs', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    exit('Access denied — missing-numbers report requires the edit_songs entitlement.');
+    adminDenyEntitlement('edit_songs');
 }
 
 $activePage = 'missing-numbers';

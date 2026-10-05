@@ -64,9 +64,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('edit_songs', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — edit_songs required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('edit_songs');
 }
 $activePage = 'ia-reconcile';
 

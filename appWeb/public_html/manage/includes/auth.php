@@ -74,6 +74,15 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
           . DIRECTORY_SEPARATOR . 'entitlements.php';
 
+/* Themed admin error screens (permission refused / form timed out). Loaded here
+   for the same reason as entitlements.php above: every admin page requires
+   this bootstrap first, so adminDeny() / adminDenyEntitlement() /
+   adminDenyCsrf() are available everywhere without each page having to
+   remember its own require. Replaces the bare "403 — <key> required" and
+   "Invalid CSRF token" echoes the pages used to print. Presentation only —
+   every page still makes its own allow/deny decision. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'admin-error.php';
+
 /* Activity log helper (#535) — every auth event below writes one row
    via logActivity(). Loaded here so the helper is available as soon
    as anything in the /manage/ stack runs. Best-effort, never throws. */
@@ -528,8 +537,7 @@ function requireAdmin(): void
     requireAuth();
     $user = getCurrentUser();
     if ($user === null || !hasRole($user['role'], 'admin')) {
-        http_response_code(403);
-        exit('Access denied. Admin role required.');
+        adminDenyRole('admin');
     }
 }
 
@@ -541,8 +549,7 @@ function requireEditor(): void
     requireAuth();
     $user = getCurrentUser();
     if ($user === null || !hasRole($user['role'], 'editor')) {
-        http_response_code(403);
-        exit('Access denied. Curator/Editor role required.');
+        adminDenyRole('editor');
     }
 }
 
@@ -554,8 +561,7 @@ function requireGlobalAdmin(): void
     requireAuth();
     $user = getCurrentUser();
     if ($user === null || $user['role'] !== 'global_admin') {
-        http_response_code(403);
-        exit('Access denied. Global Admin role required.');
+        adminDenyRole('global_admin');
     }
 }
 

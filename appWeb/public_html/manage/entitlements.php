@@ -22,9 +22,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_entitlements', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_entitlements required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('manage_entitlements');
 }
 
 $activePage = 'entitlements';
@@ -40,9 +38,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
        never-stale X-Requested-With + host-match route, so this long-lived matrix
        page doesn't throw a spurious CSRF error when its baked token rotates. */
     if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
     $submitted = $_POST['ent'] ?? [];
     if (!is_array($submitted)) $submitted = [];

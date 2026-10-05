@@ -56,8 +56,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser) {
-    http_response_code(403);
-    exit('Access denied.');
+    adminDeny(403, "We couldn't load your account details. Try signing out and signing back in.", ['title' => "You don't have access"]);
 }
 
 /* Page-level gate (#707):
@@ -73,18 +72,15 @@ $userId      = (int)($currentUser['id'] ?? $currentUser['Id'] ?? 0);
 
 if (!$systemAdmin) {
     if (!userHasEntitlement('manage_own_organisation', $currentUser['role'] ?? null)) {
-        http_response_code(403);
-        exit('Access denied. The manage_own_organisation entitlement is required.');
+        adminDenyEntitlement('manage_own_organisation');
     }
     if (!userHasOwnOrganisation($userId)) {
-        http_response_code(403);
-        echo '<!DOCTYPE html><html><body style="font-family:sans-serif;padding:2rem;">';
-        echo '<h1>403 — Not an organisation admin</h1>';
-        echo '<p>You don\'t hold an admin or owner role on any organisation. ';
-        echo 'A system administrator can grant you that role from /manage/organisations.</p>';
-        echo '<p><a href="/manage/">Back to Dashboard</a></p>';
-        echo '</body></html>';
-        exit;
+        adminDeny(
+            403,
+            "You don't hold an admin or owner role on any organisation. "
+                . 'A system administrator can grant you that role from the Organisations page.',
+            ['title' => 'Not an organisation admin']
+        );
     }
 }
 
@@ -145,22 +141,23 @@ $canActOnOrg = function (int $orgId) use ($systemAdmin, $userId): bool {
  * ==================================================================== */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
     $action = (string)($_POST['action'] ?? '');
     $orgId  = (int)($_POST['org_id'] ?? 0);
 
     if (!$canActOnOrg($orgId)) {
-        http_response_code(403);
-        echo '<!DOCTYPE html><html><body style="font-family:sans-serif;padding:2rem;">';
-        echo '<h1>403 — Not authorised on this organisation</h1>';
-        echo '<p>You don\'t hold an admin or owner role on the target organisation. ';
-        echo 'This action was rejected at the server-side row-level check.</p>';
-        echo '<p><a href="/manage/my-organisations">Back to My Organisations</a></p>';
-        echo '</body></html>';
-        exit;
+        adminDeny(
+            403,
+            "You don't hold an admin or owner role on that organisation, so this change was not made.",
+            [
+                'title'   => 'Not allowed on this organisation',
+                'actions' => [
+                    ['label' => 'Back to My Organisations', 'href' => '/manage/my-organisations', 'primary' => true],
+                    ['label' => 'Back to dashboard',        'href' => '/manage/'],
+                ],
+            ]
+        );
     }
 
     try {

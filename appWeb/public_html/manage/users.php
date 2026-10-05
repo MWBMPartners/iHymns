@@ -33,8 +33,7 @@ $currentUser = getCurrentUser();
    previously hid the nav link while the page still admitted every admin, on a
    page listing every user account. */
 if (!$currentUser || !userHasEntitlement('view_users', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    exit('Access denied. The view_users entitlement is required.');
+    adminDenyEntitlement('view_users');
 }
 $activePage  = 'users';
 

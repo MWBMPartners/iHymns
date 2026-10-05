@@ -77,9 +77,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('view_diagnostics', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html lang="en"><body><h1>403 — view_diagnostics required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('view_diagnostics');
 }
 $activePage = 'diagnostics';
 $csrf       = csrfToken();

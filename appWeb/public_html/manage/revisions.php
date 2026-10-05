@@ -17,8 +17,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 requireAuth();
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('verify_songs', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    exit('Access denied. The verify_songs entitlement is required.');
+    adminDenyEntitlement('verify_songs');
 }
 
 $activePage = 'revisions';

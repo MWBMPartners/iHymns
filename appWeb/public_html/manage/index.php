@@ -38,8 +38,17 @@ foreach ($_manageEntitlements as $_e) {
     if (userHasEntitlement($_e, $_role)) { $_canManage = true; break; }
 }
 if (!$_canManage) {
-    http_response_code(403);
-    exit('Access denied. A management entitlement is required.');
+    /* The dashboard opens for ANY of several entitlements, so there is no one
+       permission to name. "Back to dashboard" would point at this same page,
+       so the only way out offered is the main site. */
+    adminDeny(
+        403,
+        "You don't have permission to use the admin area. Ask an administrator if you need access.",
+        [
+            'title'   => "You don't have access",
+            'actions' => [['label' => 'Go to iHymns', 'href' => '/', 'primary' => true]],
+        ]
+    );
 }
 
 $activePage  = 'dashboard';

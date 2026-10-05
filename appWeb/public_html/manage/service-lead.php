@@ -52,9 +52,7 @@ $userId = (int)($currentUser['id'] ?? $currentUser['Id'] ?? 0);
 $isSuper = userHasEntitlement('manage_organisations', $role);
 $adminOrgIds = $isSuper ? [] : userIsOrgAdminOf($userId);
 if (!$isSuper && empty($adminOrgIds)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — you must manage an organisation to lead a service</h1></body></html>';
-    exit;
+    adminDeny(403, "You need to manage an organisation to lead a service. Ask an administrator if you need access.", ['title' => "You don't have access"]);
 }
 $activePage = 'service-lead';
 $db = getDbMysqli();

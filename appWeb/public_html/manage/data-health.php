@@ -31,8 +31,7 @@ $currentUser = getCurrentUser();
    `drop_legacy_tables` is exactly the role set this replaced, so behaviour is unchanged
    until someone overrides it. Rule #1587's red flag. */
 if (!$currentUser || !userHasEntitlement('drop_legacy_tables', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    exit('Access denied. The drop_legacy_tables entitlement is required.');
+    adminDenyEntitlement('drop_legacy_tables');
 }
 $activePage  = 'data-health';
 
@@ -76,9 +75,7 @@ $sqliteDbPath  = $legacyPaths['sqlite_db'];
 /* ---- POST: disconnect-legacy-fallbacks action ---- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
     if (($_POST['action'] ?? '') === 'disconnect_fallbacks') {
         /* #1969 API-coverage Batch 5 — the rename loop now lives in the ONE

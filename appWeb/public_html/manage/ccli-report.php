@@ -52,8 +52,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 requireAuth();
 $currentUser = getCurrentUser();
 if (!userHasEntitlement('view_ccli_report', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    exit('Access denied — CCLI report requires the view_ccli_report entitlement.');
+    adminDenyEntitlement('view_ccli_report');
 }
 
 $activePage = 'ccli-report';

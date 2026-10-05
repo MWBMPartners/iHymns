@@ -47,9 +47,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_publishers', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_publishers required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('manage_publishers');
 }
 $activePage = 'publishers';
 
@@ -130,9 +128,7 @@ if ($hasSchema
 /* ---- POST actions — all gated by validateCsrfRequest(). ---- */
 if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
     $action = (string)($_POST['action'] ?? '');
 

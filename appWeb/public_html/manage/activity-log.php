@@ -40,8 +40,7 @@ $currentUser = getCurrentUser();
    which is the entire point. Rule #1587's red flag: "an admin page whose own
    gate differs from the entitlement its nav entry advertises". */
 if (!$currentUser || !userHasEntitlement('view_activity_log', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    exit('Access denied. The view_activity_log entitlement is required.');
+    adminDenyEntitlement('view_activity_log');
 }
 
 $activePage = 'activity-log';

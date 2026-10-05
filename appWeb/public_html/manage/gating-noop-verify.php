@@ -52,8 +52,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 requireAuth();
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_configuration', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    exit('Access denied. The manage_configuration entitlement is required.');
+    adminDenyEntitlement('manage_configuration');
 }
 $activePage  = 'gating-noop-verify';
 

@@ -32,9 +32,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_access_tiers', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_access_tiers required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('manage_access_tiers');
 }
 $activePage = 'tiers';
 
@@ -54,9 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
        X-Requested-With + host-match route, so a long-lived tiers page whose
        token has rotated/GC'd no longer throws a spurious CSRF error on save. */
     if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
 
     $action = (string)($_POST['action'] ?? '');

@@ -79,9 +79,7 @@ $currentUser = getCurrentUser();
    two-tier manage/request split) — webhooks are a single-tier admin surface. */
 $canManage = $currentUser ? userHasEntitlement('manage_webhooks', $currentUser['role'] ?? null) : false;
 if (!$currentUser || !$canManage) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — Webhook management access required</h1><p>The manage_webhooks entitlement is required to view this page.</p></body></html>';
-    exit;
+    adminDenyEntitlement('manage_webhooks');
 }
 $activePage = 'webhooks';
 

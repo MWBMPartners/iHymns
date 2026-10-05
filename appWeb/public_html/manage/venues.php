@@ -48,9 +48,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_organisations', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_organisations required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('manage_organisations');
 }
 $activePage = 'venues';
 
@@ -213,9 +211,7 @@ function venueNextOccurrences(array $s, int $n = 3): array
  * =================================================================== */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $schemaReady) {
     if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
     $action = (string)($_POST['action'] ?? '');
     try {

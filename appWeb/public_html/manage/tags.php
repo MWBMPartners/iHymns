@@ -41,9 +41,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_tags', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_tags required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('manage_tags');
 }
 $activePage = 'tags';
 

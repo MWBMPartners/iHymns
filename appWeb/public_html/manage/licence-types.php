@@ -33,9 +33,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_licence_types', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_licence_types required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('manage_licence_types');
 }
 $activePage = 'licence-types';
 
@@ -48,9 +46,7 @@ $gates   = licenceTypeAdminGates($db);
 /* ----- POST actions (only meaningful once the table exists) ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
     if (!$gates['hasTable']) {
         $error = 'The licence-type registry table has not been created yet — run the “Gating facts + licence-type registry” card on Setup Database first.';

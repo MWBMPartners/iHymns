@@ -29,8 +29,7 @@ $currentUser = getCurrentUser();
    `view_analytics` is exactly the role set this replaced, so behaviour is unchanged
    until someone overrides it. Rule #1587's red flag. */
 if (!$currentUser || !userHasEntitlement('view_analytics', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    exit('Access denied. The view_analytics entitlement is required.');
+    adminDenyEntitlement('view_analytics');
 }
 
 $activePage  = 'analytics';

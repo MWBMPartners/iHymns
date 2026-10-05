@@ -50,9 +50,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_configuration', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_configuration required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('manage_configuration');
 }
 $activePage = 'intapps-status';
 

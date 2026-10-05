@@ -33,9 +33,7 @@ $currentUser = getCurrentUser();
 $canManage  = $currentUser ? userHasEntitlement('manage_api_keys', $currentUser['role'] ?? null) : false;
 $canRequest = $currentUser ? userHasEntitlement('request_api_keys', $currentUser['role'] ?? null) : false;
 if (!$currentUser || (!$canManage && !$canRequest)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — API key access required</h1><p>API key management or request access is required.</p></body></html>';
-    exit;
+    adminDeny(403, "You don't have permission to manage or request API keys. Ask an administrator if you need access.", ['title' => "You don't have access"]);
 }
 $activePage = 'api-keys';
 

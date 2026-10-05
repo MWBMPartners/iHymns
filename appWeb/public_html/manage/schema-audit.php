@@ -51,8 +51,7 @@ $currentUser = getCurrentUser();
    `drop_legacy_tables` is exactly the role set this replaced, so behaviour is unchanged
    until someone overrides it. Rule #1587's red flag. */
 if (!$currentUser || !userHasEntitlement('drop_legacy_tables', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    exit('Access denied. The drop_legacy_tables entitlement is required.');
+    adminDenyEntitlement('drop_legacy_tables');
 }
 $activePage  = 'schema-audit';
 

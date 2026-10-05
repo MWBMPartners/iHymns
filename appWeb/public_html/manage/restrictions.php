@@ -44,9 +44,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_content_restrictions', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_content_restrictions required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('manage_content_restrictions');
 }
 $activePage = 'restrictions';
 
@@ -98,9 +96,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     /* #1769 P0, rule #29: same-origin-aware CSRF (still accepts the baked
        session token; adds the never-stale X-Requested-With route). */
     if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
 
     $action = (string)($_POST['action'] ?? '');

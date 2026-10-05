@@ -45,9 +45,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_songbooks', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_songbooks required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('manage_songbooks');
 }
 $activePage = 'catalogues';
 
@@ -168,9 +166,7 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
        sessions. These forms are plain POSTs, so the session-token branch is
        what fires today — the upgrade avoids the flaky single-path check. */
     if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
     $action = (string)($_POST['action'] ?? '');
 

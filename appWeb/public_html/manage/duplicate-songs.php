@@ -70,9 +70,7 @@ $role        = $currentUser['role'] ?? null;
 /* Page view is curator-level (the suggestions page it absorbed was edit_songs);
    the destructive Merge stays admin-level. */
 if (!$currentUser || !userHasEntitlement('edit_songs', $role)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — edit_songs required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('edit_songs');
 }
 $canMerge = userHasEntitlement('manage_duplicate_songs', $role);
 $activePage = 'duplicate-songs';

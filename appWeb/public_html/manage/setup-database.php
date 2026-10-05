@@ -55,9 +55,7 @@ if (!$isInitialSetup) {
        Note the $isInitialSetup branch above deliberately bypasses this: on a
        virgin install there is no user table to have a role in yet. */
     if (!$currentUser || !userHasEntitlement('run_db_install', $currentUser['role'] ?? null)) {
-        http_response_code(403);
-        echo '<!DOCTYPE html><html lang="en"><body><h1>403 — the run_db_install entitlement is required</h1></body></html>';
-        exit;
+        adminDenyEntitlement('run_db_install');
     }
 }
 
@@ -459,9 +457,7 @@ if (!$isInitialSetup
     && ($_POST['action'] ?? '') === 'delete-backup') {
 
     if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
 
     /* Re-confirm Global Admin — defence in depth, mirrors the secret_*
@@ -548,9 +544,7 @@ if (!$isInitialSetup
    the backup-upload form go through here. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
 }
 
@@ -1250,8 +1244,14 @@ if ($action !== '' && $action !== 'deploy-forensics') {
             echo "ACTION: {$action}\n";
             echo "ERROR: CSRF check failed — reload the page and try again.\n";
         } else {
-            header('Content-Type: text/html; charset=UTF-8');
-            echo '<!DOCTYPE html><html lang="en"><body><h1>403 — CSRF check failed. Reload the page and try again.</h1></body></html>';
+            /* The shutdown handler registered above would otherwise tack its
+               "emergency chrome closure" onto the end of this error page, so
+               switch it off BEFORE the page is written (adminDenyCsrf() exits). */
+            $pageRenderedCleanly = true;
+            /* 'format' => 'html': this branch is already the explicit "not
+               format=text" choice, so keep it a page rather than letting the
+               helper guess JSON from a request header. */
+            adminDenyCsrf(['format' => 'html']);
         }
         $pageRenderedCleanly = true;   /* suppress the shutdown chrome-closer */
         exit;
@@ -1322,10 +1322,10 @@ if ($action !== '' && !$isInitialSetup) {
             echo "ACTION: {$action}\n";
             echo "ERROR: The {$actionEntitlement} entitlement is required.\n";
         } else {
-            header('Content-Type: text/html; charset=UTF-8');
-            echo '<!DOCTYPE html><html lang="en"><body><h1>403 — the '
-               . htmlspecialchars($actionEntitlement, ENT_QUOTES, 'UTF-8')
-               . ' entitlement is required</h1></body></html>';
+            /* Same reason as the CSRF branch above: stop the shutdown handler
+               appending its chrome closer to the error page. */
+            $pageRenderedCleanly = true;
+            adminDenyEntitlement($actionEntitlement, ['format' => 'html']);
         }
         $pageRenderedCleanly = true;   /* suppress the shutdown chrome-closer */
         exit;

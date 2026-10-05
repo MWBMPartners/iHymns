@@ -74,33 +74,30 @@ $currentUser = getCurrentUser();
 $userId      = (int)($currentUser['id'] ?? $currentUser['Id'] ?? 0);
 
 if (!userHasEntitlement('view_org_ccli_report', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    exit('Access denied. The view_org_ccli_report entitlement is required.');
+    adminDenyEntitlement('view_org_ccli_report');
 }
 
 /* THE membership lookup — the ONLY source of scope for this page. Never
    widened by a system-admin/global_admin role check (see doc-block above). */
 $allowedOrgIds = userIsOrgAdminOf($userId);
 if ($allowedOrgIds === []) {
-    http_response_code(403);
     $alsoSystemViewer = userHasEntitlement('view_ccli_report', $currentUser['role'] ?? null);
-    /* #1874 — a standalone HTML document needs a page language (WCAG 3.1.1)
-       and a title (WCAG 2.4.2), both Level A; the inline 403 previously emitted
-       neither. */
-    echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">';
-    echo '<title>403 — Not an organisation admin</title></head>';
-    echo '<body style="font-family:sans-serif;padding:2rem;">';
-    echo '<h1>403 — Not an organisation admin</h1>';
-    echo '<p>You don\'t hold an admin or owner role on any organisation, so there is no ';
-    echo 'organisation-scoped CCLI report to show you. A system administrator can grant you ';
-    echo 'that role from /manage/organisations.</p>';
+    /* The shared themed error page (admin-error.php) already carries a page
+       language and a title (WCAG 3.1.1 / 2.4.2, the #1874 fix), so this no
+       longer hand-builds a standalone document. The system-wide report link
+       is kept as an extra button for anyone who is allowed to use it. */
+    $deniedActions = [];
     if ($alsoSystemViewer) {
-        echo '<p>As a system administrator, you can see every organisation\'s usage on ';
-        echo '<a href="/manage/ccli-report">the system-wide CCLI Usage Report</a> instead.</p>';
+        $deniedActions[] = ['label' => 'Open the system-wide CCLI report', 'href' => '/manage/ccli-report', 'primary' => true];
     }
-    echo '<p><a href="/manage/">Back to Dashboard</a></p>';
-    echo '</body></html>';
-    exit;
+    $deniedActions[] = ['label' => 'Back to dashboard', 'href' => '/manage/', 'primary' => !$alsoSystemViewer];
+    adminDeny(
+        403,
+        "You don't hold an admin or owner role on any organisation, so there is no organisation-scoped CCLI report to show you. "
+            . 'A system administrator can grant you that role from the Organisations page.'
+            . ($alsoSystemViewer ? " As a system administrator, you can see every organisation's usage on the system-wide CCLI report instead." : ''),
+        ['title' => 'Not an organisation admin', 'actions' => $deniedActions]
+    );
 }
 
 /* Turn "what did the URL ask for" + "what is this user actually allowed to
@@ -119,8 +116,7 @@ $scope = is_array($rawOrg)
     ? ['orgIds' => [], 'denied' => true]
     : ccliReportResolveOrgScope($rawOrg, $allowedOrgIds);
 if ($scope['denied']) {
-    http_response_code(403);
-    exit('Access denied. That organisation is not one you administer.');
+    adminDeny(403, "That organisation isn't one you administer. Pick one of your own organisations and try again.", ['title' => "You don't have access"]);
 }
 $orgIds = $scope['orgIds'];
 $orgId  = $orgIds[0]; // always exactly one — a per-licence report is always one org at a time

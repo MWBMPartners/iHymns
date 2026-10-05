@@ -24,9 +24,7 @@ if (!isAuthenticated()) {
 }
 $u = getCurrentUser();
 if (!$u || !hasRole((string)($u['role'] ?? ''), 'editor')) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html lang="en"><body><h1>403 — editor access required</h1></body></html>';
-    exit;
+    adminDenyRole('editor');
 }
 
 /* CSRF token api2.php validates (X-CSRF-Token header), emitted as a <meta> for

@@ -46,9 +46,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_songbooks', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_songbooks required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('manage_songbooks');
 }
 $activePage = 'songbook-series';
 
@@ -204,9 +202,7 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
        actually fires — the upgrade is about not regressing to the flaky
        single-path check, not about wiring a new AJAX header. */
     if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
-        http_response_code(403);
-        echo 'Invalid CSRF token';
-        exit;
+        adminDenyCsrf();
     }
     $action = (string)($_POST['action'] ?? '');
     try {

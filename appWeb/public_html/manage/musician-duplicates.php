@@ -71,9 +71,7 @@ if (!isAuthenticated()) {
 }
 $currentUser = getCurrentUser();
 if (!$currentUser || !userHasEntitlement('manage_musicians', $currentUser['role'] ?? null)) {
-    http_response_code(403);
-    echo '<!DOCTYPE html><html><body><h1>403 — manage_musicians required</h1></body></html>';
-    exit;
+    adminDenyEntitlement('manage_musicians');
 }
 /* No admin-links.php nav entry (mirrors musicians-bulk-promote.php — a
    companion surface reached via a CTA, not a sidebar item); $activePage
