@@ -103,6 +103,44 @@
        the consumers that render it as readable TEXT switch to this one. */
     --accent-text: #4f46e5;
 
+    /* ---- Brand "primary" tokens (UI polish pass, 2026-10) ----
+       ELI5: Bootstrap paints "primary" things (blue buttons, the active
+       tab pill, the on/off switches, the primary badges) its own blue
+       (#0d6efd). The rest of iHymns is indigo, so those parts looked like
+       they belonged to a different app. These tokens give every "primary"
+       control the brand indigo instead; section 2.6 below wires them into
+       Bootstrap's components.
+       Detail: Bootstrap's compiled CSS bakes the blue into several
+       components as literal colours, so overriding --bs-primary alone does
+       not recolour them — each component's own variables are set in 2.6.
+       --accent-fill is the colour of a SOLID primary surface (a filled
+       button); --accent-on-fill is the text/tick drawn on top of it. In
+       light that is Indigo 600 (--accent-text) with white text: 6.29:1 on
+       white, so it passes the 4.5:1 text floor. Hover gets darker, pressed
+       darker still. The -rgb twins exist because Bootstrap (and our own
+       tints) need a bare "r, g, b" triplet for rgba(var(--x), 0.1). */
+    --accent-solid-rgb: 99, 102, 241;
+    --accent-fill: var(--accent-text);
+    --accent-fill-rgb: 79, 70, 229;
+    --accent-fill-hover: #4338ca;       /* Indigo 700 — white on it 7.9:1 */
+    --accent-fill-hover-rgb: 67, 56, 202;
+    --accent-fill-active: #3730a3;      /* Indigo 800 — white on it 9.9:1 */
+    --accent-on-fill: #ffffff;
+
+    /* Point Bootstrap's own tokens at the brand (utilities such as
+       .bg-primary / .text-primary / .border-primary / .link-primary and the
+       alert/list-group "primary" variants read these). */
+    --bs-primary: var(--accent-fill);
+    --bs-primary-rgb: var(--accent-fill-rgb);
+    --bs-primary-text-emphasis: #312e81;    /* Indigo 900 */
+    --bs-primary-bg-subtle: #e0e7ff;        /* Indigo 100 */
+    --bs-primary-border-subtle: #c7d2fe;    /* Indigo 200 */
+    --bs-link-color: var(--accent-fill);
+    --bs-link-color-rgb: var(--accent-fill-rgb);
+    --bs-link-hover-color: var(--accent-fill-hover);
+    --bs-link-hover-color-rgb: var(--accent-fill-hover-rgb);
+    --bs-focus-ring-color: rgba(var(--accent-solid-rgb), 0.25);
+
     /* Surfaces */
     --surface-bg: #f8fafc;          /* Slate 50 */
     --surface-card: #ffffff;
@@ -222,6 +260,28 @@
        token rather than needing its own darker literal. */
     --accent-text: var(--accent-solid);
 
+    /* Brand "primary" tokens — dark values (see the light block for the why).
+       The dark accent is bright (#818cf8), so white text on it is only ~2.9:1
+       and fails. Filled primary controls therefore carry DARK text here
+       (#0f172a on #818cf8 = ~6:1), the same fix the dark songbook badges
+       already use. Hover gets lighter, pressed lighter still, because on a
+       dark page "lighter" reads as "more active". */
+    --accent-solid-rgb: 129, 140, 248;
+    --accent-fill: var(--accent-solid);
+    --accent-fill-rgb: 129, 140, 248;
+    --accent-fill-hover: #a5b4fc;       /* Indigo 300 */
+    --accent-fill-hover-rgb: 165, 180, 252;
+    --accent-fill-active: #c7d2fe;      /* Indigo 200 */
+    --accent-on-fill: #0f172a;          /* Slate 900 */
+
+    /* Bootstrap's own dark block sets these to blue; our light block above
+       already points --bs-primary / --bs-link-* at the accent tokens (which
+       resolve to the dark values here), so only the literal ones need
+       repeating. */
+    --bs-primary-text-emphasis: #a5b4fc;    /* Indigo 300 */
+    --bs-primary-bg-subtle: #1e1b4b;        /* Indigo 950 */
+    --bs-primary-border-subtle: #3730a3;    /* Indigo 800 */
+
     /* Surfaces */
     --surface-bg: #0f172a;          /* Slate 900 */
     --surface-card: #1e293b;        /* Slate 800 */
@@ -303,6 +363,19 @@
     --accent-start: #0000cc;
     --accent-end: #0000cc;
     --accent-solid: #0000cc;
+
+    /* Brand "primary" tokens for high contrast — deep blue with white text
+       (white on #0000cc is 11.2:1). See the light block. */
+    --accent-solid-rgb: 0, 0, 204;
+    --accent-fill: var(--accent-solid);
+    --accent-fill-rgb: 0, 0, 204;
+    --accent-fill-hover: #000099;
+    --accent-fill-hover-rgb: 0, 0, 153;
+    --accent-fill-active: #000066;
+    --accent-on-fill: #ffffff;
+    --bs-primary-text-emphasis: #000066;
+    --bs-primary-bg-subtle: #e6e6ff;
+    --bs-primary-border-subtle: #9999ff;
 
     --surface-bg: #ffffff;
     --surface-card: #ffffff;
@@ -482,7 +555,7 @@ body {
 
 /* Selection colour */
 ::selection {
-    background-color: rgba(99, 102, 241, 0.25);
+    background-color: rgba(var(--accent-solid-rgb), 0.25);
     color: inherit;
 }
 
@@ -600,6 +673,184 @@ a.link-bare:hover {
 }
 
 /* ==========================================================================
+   2.6  BRAND PRIMARY — Bootstrap blue replaced by the iHymns indigo
+
+   ELI5: every "primary" Bootstrap control (the blue button, the active tab
+   pill, the on/off switch, the primary badge, the blue focus glow) now uses
+   the app's indigo instead of Bootstrap's blue, in light, dark and high
+   contrast. The colours themselves come from the --accent-fill* tokens in
+   the theme blocks at the top of this file; this section only plugs them
+   into Bootstrap's components.
+
+   Detail: Bootstrap 5.3 compiles several components with the blue written
+   in as a literal (.btn-primary sets --bs-btn-bg:#0d6efd,
+   .form-check-input:checked sets background-color:#0d6efd, …), so changing
+   --bs-primary alone does not reach them. Each rule below sets that
+   component's OWN variables. Specificity matches Bootstrap's, and this file
+   loads after Bootstrap, so source order lets these win without
+   !important (except where Bootstrap itself uses !important).
+   Loaded on admin pages too (app.css is shared), so admin primary buttons
+   and badges pick up the brand colour as well.
+   Text on a filled surface is always --accent-on-fill, never a hard-coded
+   white: in dark theme the fill is bright and needs dark text to stay
+   readable (AA, 4.5:1).
+   https://getbootstrap.com/docs/5.3/customize/css-variables/
+   ========================================================================== */
+
+/* Solid + outline primary buttons. */
+.btn-primary {
+    --bs-btn-color: var(--accent-on-fill);
+    --bs-btn-bg: var(--accent-fill);
+    --bs-btn-border-color: var(--accent-fill);
+    --bs-btn-hover-color: var(--accent-on-fill);
+    --bs-btn-hover-bg: var(--accent-fill-hover);
+    --bs-btn-hover-border-color: var(--accent-fill-hover);
+    --bs-btn-focus-shadow-rgb: var(--accent-solid-rgb);
+    --bs-btn-active-color: var(--accent-on-fill);
+    --bs-btn-active-bg: var(--accent-fill-active);
+    --bs-btn-active-border-color: var(--accent-fill-active);
+    --bs-btn-disabled-color: var(--accent-on-fill);
+    --bs-btn-disabled-bg: var(--accent-fill);
+    --bs-btn-disabled-border-color: var(--accent-fill);
+}
+
+.btn-outline-primary {
+    --bs-btn-color: var(--accent-fill);
+    --bs-btn-border-color: var(--accent-fill);
+    --bs-btn-hover-color: var(--accent-on-fill);
+    --bs-btn-hover-bg: var(--accent-fill);
+    --bs-btn-hover-border-color: var(--accent-fill);
+    --bs-btn-focus-shadow-rgb: var(--accent-solid-rgb);
+    --bs-btn-active-color: var(--accent-on-fill);
+    --bs-btn-active-bg: var(--accent-fill-active);
+    --bs-btn-active-border-color: var(--accent-fill-active);
+    --bs-btn-disabled-color: var(--accent-fill);
+    --bs-btn-disabled-border-color: var(--accent-fill);
+}
+
+/* Active tab / pill, dropdown choice, list row and page number. */
+.nav-pills {
+    --bs-nav-pills-link-active-color: var(--accent-on-fill);
+    --bs-nav-pills-link-active-bg: var(--accent-fill);
+}
+
+.dropdown-menu {
+    --bs-dropdown-link-active-color: var(--accent-on-fill);
+    --bs-dropdown-link-active-bg: var(--accent-fill);
+}
+
+.list-group {
+    --bs-list-group-active-color: var(--accent-on-fill);
+    --bs-list-group-active-bg: var(--accent-fill);
+    --bs-list-group-active-border-color: var(--accent-fill);
+}
+
+.pagination {
+    --bs-pagination-active-color: var(--accent-on-fill);
+    --bs-pagination-active-bg: var(--accent-fill);
+    --bs-pagination-active-border-color: var(--accent-fill);
+    --bs-pagination-focus-box-shadow: 0 0 0 0.25rem rgba(var(--accent-solid-rgb), 0.25);
+}
+
+.progress,
+.progress-stacked {
+    --bs-progress-bar-color: var(--accent-on-fill);
+    --bs-progress-bar-bg: var(--accent-fill);
+}
+
+/* Focus glow. Bootstrap hard-codes a blue ring on these; keep the same
+   shape and strength but in the brand colour. */
+.nav-link:focus-visible {
+    box-shadow: 0 0 0 0.25rem rgba(var(--accent-solid-rgb), 0.25);
+}
+
+.btn-close {
+    --bs-btn-close-focus-shadow: 0 0 0 0.25rem rgba(var(--accent-solid-rgb), 0.25);
+}
+
+.form-control:focus,
+.form-select:focus,
+.form-check-input:focus {
+    border-color: var(--accent-solid);
+    box-shadow: 0 0 0 0.25rem rgba(var(--accent-solid-rgb), 0.25);
+}
+
+/* Checkboxes, radios and switches when ticked. */
+.form-check-input:checked,
+.form-check-input[type="checkbox"]:indeterminate {
+    background-color: var(--accent-fill);
+    border-color: var(--accent-fill);
+}
+
+/* The little round knob of a focused (not yet ticked) switch is pale blue in
+   Bootstrap; pale indigo here. The ticked knob is restated straight after so
+   it stays white when a switch is both ticked and focused (same specificity,
+   so source order decides). */
+.form-switch .form-check-input:focus {
+    --bs-form-switch-bg: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23a5b4fc'/%3e%3c/svg%3e");
+}
+.form-switch .form-check-input:checked {
+    --bs-form-switch-bg: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23fff'/%3e%3c/svg%3e");
+}
+
+/* Dark theme (and high contrast, which is the same idea: a bright fill):
+   the tick / dot / knob must be DARK, not white, or it fades into the bright
+   fill (white on #818cf8 is only ~2.9:1; the 3:1 minimum for UI graphics is
+   WCAG 1.4.11). The SVG colour cannot use a CSS variable, so it is written
+   out here: %230f172a is #0f172a, the same --accent-on-fill as dark theme. */
+[data-bs-theme="dark"] .form-check-input:checked[type="checkbox"] {
+    --bs-form-check-bg-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%230f172a' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='m6 10 3 3 6-6'/%3e%3c/svg%3e");
+}
+[data-bs-theme="dark"] .form-check-input:checked[type="radio"] {
+    --bs-form-check-bg-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='2' fill='%230f172a'/%3e%3c/svg%3e");
+}
+[data-bs-theme="dark"] .form-check-input[type="checkbox"]:indeterminate {
+    --bs-form-check-bg-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%230f172a' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='M6 10h8'/%3e%3c/svg%3e");
+}
+[data-bs-theme="dark"] .form-switch .form-check-input:checked {
+    --bs-form-switch-bg: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%230f172a'/%3e%3c/svg%3e");
+}
+
+/* Slider thumb (Settings → text size). */
+.form-range::-webkit-slider-thumb {
+    background-color: var(--accent-fill);
+}
+.form-range::-moz-range-thumb {
+    background-color: var(--accent-fill);
+}
+.form-range:focus::-webkit-slider-thumb {
+    box-shadow: 0 0 0 1px var(--surface-bg), 0 0 0 0.25rem rgba(var(--accent-solid-rgb), 0.25);
+}
+.form-range:focus::-moz-range-thumb {
+    box-shadow: 0 0 0 1px var(--surface-bg), 0 0 0 0.25rem rgba(var(--accent-solid-rgb), 0.25);
+}
+
+/* Utilities. .bg-primary / .text-primary / .border-primary / .focus-ring-
+   primary already follow --bs-primary-rgb. Two things do not: the text colour
+   Bootstrap puts on a primary badge / "text-bg" pair (hard-coded white), and
+   the hover colour of .link-primary (hard-coded dark blue). */
+.badge.bg-primary {
+    --bs-badge-color: var(--accent-on-fill);
+}
+
+.text-bg-primary {
+    color: var(--accent-on-fill) !important;
+}
+
+/* The skip-to-content link is `bg-primary text-white`; `.text-white` is
+   !important, so in dark theme (bright fill) it needs this to keep dark text. */
+.bg-primary.text-white {
+    color: var(--accent-on-fill) !important;
+}
+
+.link-primary:hover,
+.link-primary:focus {
+    color: RGBA(var(--accent-fill-hover-rgb), var(--bs-link-opacity, 1)) !important;
+    -webkit-text-decoration-color: RGBA(var(--accent-fill-hover-rgb), var(--bs-link-underline-opacity, 1)) !important;
+    text-decoration-color: RGBA(var(--accent-fill-hover-rgb), var(--bs-link-underline-opacity, 1)) !important;
+}
+
+/* ==========================================================================
    3. LAYOUT — Header, Footer, Main Content
    ========================================================================== */
 
@@ -706,7 +957,7 @@ a.link-bare:hover {
     letter-spacing: 0.04em;
     padding: 0.22em 0.55em;
     line-height: 1.05;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     transition: padding 0.15s ease;
 }
 @media (max-width: 359.98px) {
@@ -720,7 +971,7 @@ a.link-bare:hover {
 }
 
 .btn-header-icon:hover {
-    background-color: rgba(99, 102, 241, 0.1);
+    background-color: rgba(var(--accent-solid-rgb), 0.1);
     color: var(--accent-solid);
 }
 
@@ -763,6 +1014,10 @@ a.link-bare:hover {
     padding-top: calc(var(--header-height) + 8px);
     padding-bottom: calc(var(--footer-total-height) + 8px);
     min-height: 100vh;
+    /* 100vh is the tall "toolbar hidden" height on phones, so the page could
+       scroll a little even when empty. 100dvh follows the real visible
+       height; browsers that do not know dvh keep the line above. */
+    min-height: 100dvh;
 }
 
 /* Adjust when install banner is visible */
@@ -1186,7 +1441,7 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
     border-radius: var(--radius-md);
     text-decoration: none;
     color: var(--text-muted);
-    font-size: 0.6rem;
+    font-size: 0.65rem;   /* 10.4px — the readable floor for these labels */
     font-weight: 600;
     letter-spacing: 0.02em;
     text-transform: uppercase;
@@ -1204,7 +1459,7 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
 
 .footer-nav-item:hover {
     color: var(--accent-solid);
-    background-color: rgba(99, 102, 241, 0.08);
+    background-color: rgba(var(--accent-solid-rgb), 0.08);
 }
 
 .footer-nav-item:active {
@@ -1342,7 +1597,7 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
     color: #ffffff;
     font-size: 1.2rem;
     background: var(--songbook-CP);
-    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 2px 8px rgba(var(--accent-solid-rgb), 0.3);
 }
 
 /* Songbook ID-based colour classes + contrast-safe text (#98, #152) */
@@ -1401,11 +1656,43 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
 }
 
 .song-list-item:hover {
-    background-color: rgba(99, 102, 241, 0.04);
+    background-color: rgba(var(--accent-solid-rgb), 0.04);
 }
 
 .song-list-item:active {
     transform: scale(0.99);
+}
+
+/* Long titles and unbroken words must wrap inside their box, never push the
+   page sideways.
+   ELI5: a song with a very long title (or one long word with no spaces) made
+   its row wider than the phone, so the whole page scrolled left-right and the
+   right-hand arrow was lost off screen.
+   Detail: two things cause it. (1) A flex item will not shrink below its
+   content width unless it has min-width: 0, so the text column inside a
+   .song-list-item (and the title column on the song / songbook header cards)
+   stretched the row. (2) Even with room to shrink, a word with no break
+   points cannot wrap, so overflow-wrap: anywhere lets it break at any letter
+   (the plain `break-word` line is the fallback for browsers that do not know
+   `anywhere` yet).
+   https://developer.mozilla.org/en-US/docs/Web/CSS/overflow-wrap */
+.song-info,
+.song-list-item .flex-grow-1,
+.card-song-header .flex-grow-1 {
+    min-width: 0;
+}
+
+.song-info,
+.song-title,
+.page-content h1,
+.page-content h2,
+.page-content h3,
+.page-content h4,
+.page-content .card-title,
+.breadcrumb-item,
+.lyric-line {
+    overflow-wrap: break-word;
+    overflow-wrap: anywhere;
 }
 
 .song-number-badge {
@@ -1457,7 +1744,7 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
     font-weight: 700;
     font-size: 1.1rem;
     flex-shrink: 0;
-    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 2px 8px rgba(var(--accent-solid-rgb), 0.3);
     text-shadow: 0 1px 2px rgba(0,0,0,0.5); /* #263 — improve contrast in dark mode */
 }
 
@@ -1599,7 +1886,7 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
     color: var(--text-primary);
     background-color: var(--surface-elevated);
     padding: 0.15em 0.55em;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     margin-bottom: 0.4rem;
     border: 1px solid var(--card-border);
     opacity: 0.9;
@@ -1803,7 +2090,7 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
     background: var(--surface-elevated);
     border: 1px solid var(--card-border);
     padding: 0.1em 0.55em;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     margin-right: 0.3rem;
 }
 /* A background/echo chip: dashed border + italics carry the SAME "this is
@@ -1966,7 +2253,7 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
 /* Narrow viewports: ignore the JS-computed near-the-line position and just
    centre the box — there is rarely enough room to anchor it sensibly next
    to a line on a phone-width screen. */
-@media (max-width: 576px) {
+@media (max-width: 575.98px) {
     .song-markup-popover-box {
         top: 50% !important;
         left: 50% !important;
@@ -2289,7 +2576,7 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
 }
 
 .numpad-results .list-group-item:hover {
-    background-color: rgba(99, 102, 241, 0.06);
+    background-color: rgba(var(--accent-solid-rgb), 0.06);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2310,7 +2597,7 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
 
 .btn-shuffle-option:hover {
     border-color: var(--accent-solid);
-    background: rgba(99, 102, 241, 0.04);
+    background: rgba(var(--accent-solid-rgb), 0.04);
     color: var(--accent-solid);
 }
 
@@ -2583,10 +2870,15 @@ body.reduce-transparency .pwa-install-banner {
         font-size: 1rem;
     }
 
+    /* Footer tabs on phones: tighter side padding only. The size floors now
+       live on the base .footer-nav-item rule (every tab at least 44px wide,
+       the touch-target size iOS and Android both recommend, and a label of
+       0.65rem or bigger) — this block used to shrink them to 38px and
+       0.55rem (about 9px, hard to read). Six tabs share the width and the
+       widest label ("Favourites") sets the budget, which is why the
+       narrower step below trims padding rather than text. */
     .footer-nav-item {
         padding: 4px 6px;
-        font-size: 0.55rem;
-        min-width: 38px;
     }
 
     .footer-nav-item i {
@@ -2605,6 +2897,31 @@ body.reduce-transparency .pwa-install-banner {
 
     .btn-numpad {
         font-size: 1.2rem;
+    }
+
+    /* Song page buttons are btn-sm (about 31px tall) — a bit small for a
+       thumb. Lift them to 40px on phones only; the extra padding keeps the
+       label centred without turning every button into a flex box. Covers the
+       action buttons, the font-size +/- pair and the spacing select. */
+    .page-song .btn-sm,
+    .page-song .btn-group-sm > .btn,
+    .page-song .form-select-sm {
+        --bs-btn-padding-y: 0.5rem;
+        min-height: 40px;
+    }
+}
+
+/* Very narrow phones (about 375px and under): with six tabs at 0.65rem the
+   normal side padding no longer fits, so trim the padding and letter gap
+   instead of shrinking the text again. */
+@media (max-width: 399.98px) {
+    .footer-nav-items {
+        padding: 0;
+    }
+
+    .footer-nav-item {
+        padding: 4px 2px;
+        letter-spacing: 0;
     }
 }
 
@@ -2810,15 +3127,15 @@ body.reduce-motion .btn-autoscroll-fab {
 /* Chorus highlighting — enhanced distinction (refrain = chorus alias) */
 .song-lyrics.chorus-highlight .lyric-chorus,
 .song-lyrics.chorus-highlight .lyric-refrain {
-    border-left: 4px solid var(--bs-primary, #6366f1);
+    border-left: 4px solid var(--accent-solid);
     padding-left: 1rem;
-    background: rgba(99, 102, 241, 0.05);
+    background: rgba(var(--accent-solid-rgb), 0.05);
     border-radius: 0 0.25rem 0.25rem 0;
 }
 
 [data-bs-theme="dark"] .song-lyrics.chorus-highlight .lyric-chorus,
 [data-bs-theme="dark"] .song-lyrics.chorus-highlight .lyric-refrain {
-    background: rgba(99, 102, 241, 0.1);
+    background: rgba(var(--accent-solid-rgb), 0.1);
 }
 
 /* Chorus plain — no distinction */
@@ -2866,8 +3183,8 @@ body.reduce-motion .btn-autoscroll-fab {
 }
 
 .presentation-number {
-    background: var(--bs-primary, #6366f1);
-    color: #fff;
+    background: var(--accent-fill);
+    color: var(--accent-on-fill);
     border-radius: 0.5rem;
     padding: 0.25rem 0.75rem;
     font-size: 1.5rem;
@@ -2901,7 +3218,7 @@ body.reduce-motion .btn-autoscroll-fab {
     color: #fff;
     background-color: rgba(255, 255, 255, 0.12);
     padding: 0.2em 0.75em;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     margin-bottom: 0.7rem;
     opacity: 0.85;
 }
@@ -2992,8 +3309,8 @@ body.presentation-active .scroll-to-top-btn {
     top: 80px;
     right: 20px;
     z-index: 1080;
-    background: var(--bs-primary, #6366f1);
-    color: #fff;
+    background: var(--accent-fill);
+    color: var(--accent-on-fill);
     border-radius: 0.75rem;
     padding: 0.75rem 1.25rem;
     text-align: center;
@@ -3341,7 +3658,7 @@ body.reduce-motion .shortcuts-overlay {
     left: 0;
     width: 0;
     height: 3px;
-    background: var(--bs-primary, #6366f1);
+    background: var(--accent-solid);
     /* z-index above .app-header (1030) so the bar paints on top of the
        header's blurred composite layer regardless of DOM order. Stays
        below the modal / overlay band (1100). #899 */
@@ -3402,9 +3719,9 @@ body.reduce-motion .reading-progress-bar {
 }
 
 .alphabet-letter:hover:not(.disabled) {
-    background: var(--bs-primary, #6366f1);
-    color: #fff;
-    border-color: var(--bs-primary, #6366f1);
+    background: var(--accent-fill);
+    color: var(--accent-on-fill);
+    border-color: var(--accent-fill);
 }
 
 .alphabet-letter.disabled {
@@ -3492,7 +3809,7 @@ body.reduce-motion .song-list-item.alphabet-highlight {
 }
 
 .card-song-of-the-day .card-title:hover {
-    color: var(--bs-primary, #6366f1);
+    color: var(--accent-text);
 }
 
 /* #1841 — the Song-of-the-Day lyric preview is a single-line "complete thought"
@@ -3667,7 +3984,7 @@ body.reduce-motion .related-songs-chevron {
 }
 
 #favorites-list .song-list-item.active {
-    background-color: var(--bs-primary-bg-subtle, #cfe2ff);
+    background-color: var(--bs-primary-bg-subtle, #e0e7ff);
 }
 
 .fav-tag-badge {
@@ -3690,6 +4007,11 @@ body.reduce-motion .related-songs-chevron {
     background: none;
     cursor: pointer;
     padding: 0;
+    /* The menu button was only as tall as its text (about 28px), too small to
+       tap reliably. 44px is the standard touch-target size and still fits
+       inside the 56px header, so the header does not grow. */
+    min-height: 44px;
+    min-width: 44px;
 }
 
 #logo-nav-btn::after {
@@ -3716,7 +4038,7 @@ body.reduce-motion .related-songs-chevron {
 
 .stats-bar {
     height: 100%;
-    background: var(--bs-primary, #0d6efd);
+    background: var(--accent-solid);
     border-radius: 4px;
     min-width: 4px;
 }
@@ -3811,14 +4133,14 @@ body.reduce-motion .related-songs-chevron {
 .gesture-peek--left {
     left: 0;
     background: linear-gradient(to right,
-        var(--bs-primary, #0d6efd),
+        var(--accent-solid),
         transparent);
 }
 
 .gesture-peek--right {
     right: 0;
     background: linear-gradient(to left,
-        var(--bs-primary, #0d6efd),
+        var(--accent-solid),
         transparent);
 }
 
@@ -4002,7 +4324,7 @@ body.reduce-motion .related-songs-chevron {
 }
 
 /* Responsive: smaller text on mobile */
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
     .presentation-overlay .present-lyrics {
         font-size: 1.75rem;
     }
@@ -4559,7 +4881,7 @@ body.reduce-motion .theme-chip:focus-visible {
     max-width: min(680px, calc(100vw - 1.5rem));
     padding: 0.5rem 0.65rem;
     border: 1px solid var(--bs-border-color, rgba(127, 127, 127, 0.35));
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     background-color: var(--bs-body-bg, #fff);
     /* Theme-aware by using Bootstrap's own tokens rather than a hardcoded
        colour — the app supports light, dark, high-contrast and CVD modes. */
@@ -4592,7 +4914,7 @@ body.reduce-motion .theme-chip:focus-visible {
 
 .playlist-bar-btn {
     flex-shrink: 0;
-    border-radius: 999px;
+    border-radius: var(--radius-pill);
     white-space: nowrap;
 }
 

@@ -90,6 +90,27 @@
     --text-muted: #ccc !important;
     --glass-bg: #000 !important;
     --card-border: #fff !important;
+    /* app.css's high-contrast theme block sets these two to literal white
+       (not var(--glass-bg)), so the line above never reached the bottom nav:
+       it rendered as a WHITE bar carrying yellow link text (~1.07:1, near
+       invisible) and grey labels. Forcing them black here finishes what the
+       --glass-bg line above set out to do. */
+    --footer-bg: #000 !important;
+    --header-bg: #000 !important;
+
+    /* Brand "primary" tokens (app.css section 2.6). High contrast already
+       paints primary buttons and ticked boxes yellow-on-black below, so every
+       other primary-coloured control (active pill, primary badge, list row,
+       page number, progress bar, switch…) is pointed at the same pair via the
+       tokens instead of keeping the theme's deep-blue fill, which would be
+       blue-on-black here. Yellow (#ffff00) on black is ~19.6:1 either way
+       round. */
+    --accent-fill: #ffff00 !important;
+    --accent-fill-rgb: 255, 255, 0 !important;
+    --accent-fill-hover: #ffcc00 !important;
+    --accent-fill-hover-rgb: 255, 204, 0 !important;
+    --accent-fill-active: #ffcc00 !important;
+    --accent-on-fill: #000 !important;
 }
 
 [data-ihymns-contrast="high"] body {
@@ -249,6 +270,23 @@
     border-color: #ffff00 !important;
 }
 
+/* The tick / dot / knob is white in Bootstrap, which vanishes on the yellow
+   fill above (white on yellow is ~1.07:1). Draw it black instead. The colour
+   is baked into the SVG (%23000 = #000) because an image cannot read a CSS
+   variable. */
+[data-ihymns-contrast="high"] .form-check-input:checked[type="checkbox"] {
+    --bs-form-check-bg-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='m6 10 3 3 6-6'/%3e%3c/svg%3e");
+}
+[data-ihymns-contrast="high"] .form-check-input:checked[type="radio"] {
+    --bs-form-check-bg-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='2' fill='%23000'/%3e%3c/svg%3e");
+}
+[data-ihymns-contrast="high"] .form-check-input[type="checkbox"]:indeterminate {
+    --bs-form-check-bg-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3e%3cpath fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='3' d='M6 10h8'/%3e%3c/svg%3e");
+}
+[data-ihymns-contrast="high"] .form-switch .form-check-input:checked {
+    --bs-form-switch-bg: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='-4 -4 8 8'%3e%3ccircle r='3' fill='%23000'/%3e%3c/svg%3e");
+}
+
 /* Alerts carry meaning by colour alone in Bootstrap's default palette, so in
    high contrast they get a uniform treatment plus a border; the text inside
    still says which kind it is. */
@@ -272,6 +310,31 @@
 [data-ihymns-contrast="high"] .dropdown-item:focus {
     background: #fff !important;
     color: #000 !important;
+}
+
+/* The chosen item in a dropdown (e.g. the current theme) takes the primary
+   fill, which is yellow here. The rule above forces every item's text white,
+   so without this the chosen item would be white-on-yellow and unreadable. */
+[data-ihymns-contrast="high"] .dropdown-item.active,
+[data-ihymns-contrast="high"] .dropdown-item:active {
+    background: #ffff00 !important;
+    color: #000 !important;
+}
+
+/* Same problem for the other "currently chosen" controls that are LINKS: the
+   active tab pill and the current page number are <a> elements, and the
+   `[data-ihymns-contrast="high"] a` rule near the top forces every link's text
+   yellow — which would now be yellow text on a yellow fill (invisible). A
+   chosen list row was also painted plain black by the .list-group-item rule,
+   so it did not stand out at all. All three get yellow-with-black-text, the
+   same pairing the primary button and the admin sidebar's current page use. */
+[data-ihymns-contrast="high"] .nav-pills .nav-link.active,
+[data-ihymns-contrast="high"] .nav-pills .show > .nav-link,
+[data-ihymns-contrast="high"] .page-item.active .page-link,
+[data-ihymns-contrast="high"] .list-group-item.active {
+    background: #ffff00 !important;
+    color: #000 !important;
+    border-color: #ffff00 !important;
 }
 
 [data-ihymns-contrast="high"] .modal-header,
