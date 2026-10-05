@@ -1062,10 +1062,23 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   `function_exists()` and the like, which calls nothing); a closure or arrow function written there; `$name(...)`
   (every closure or arrow function assigned to `$name` in the same file — this is what replaced round 7's
   hand-placed `$persistWorkExtraFields`); and `require`/`include` (the included file's top-level code, found by
-  its path). Those last four are the widenings the seventh review's own audit made over round 7's tool. **What
-  it cannot see:** a function name built at run time, a callable kept in an array or object property, a closure
-  handed in from another file, a transaction in a file none of the audited ones can reach, and code that runs
-  after the last `commit()` in a block on a path that skipped that commit. It proves the shape of the code; the
+  its path). Those last four are the widenings the seventh review's own audit made over round 7's tool. **Round 9
+  (the eighth review's L4, the lead's decision 4) widened it to the eighth review's planted shapes:** a begin
+  whose own block has no commit after it (`if ($own) { $db->begin_transaction(); }`, then the work, then `if
+  ($own) { $db->commit(); }` — the `songCopyrightHoldersReplace()` shape) now runs on to the last commit in the
+  whole function (or to its end); a name or a first-class callable assigned to a variable anywhere in the same
+  file (`$fn = 'x';`, `$fn = x(...);`, `$fn = $box->run(...);`, `$fn = [$box, 'run'];`) is followed when `$fn()`
+  is called inside; a parameter called inside a function (`$work()`) is followed to every closure or arrow
+  function written straight into a call of that function in the same file; a name in a string with a leading
+  backslash or a namespace (`'\x'`) counts; and the second item of a two-item list (`[$box, 'run']`,
+  `array($box, 'run')`) is a method's name however short (elsewhere a string counts as a method's name only above
+  three letters). Each turned the test red when the eighth review's planted catch was added through it (AU02,
+  AU03, AU06, AU07, AU10, AU12); the real tree still has the same 101 catches. **What it cannot see (each planted
+  by the eighth review, and still unseen):** a class's `__call()` / `__callStatic()` (AU04), `require $path` with
+  the whole path in a variable (AU05), a callable kept in an object property (AU18), `new $class()` (AU19); also a
+  function or class name built at run time, a method named in a string of three letters or fewer outside a
+  two-item list, a closure handed in from another file, a transaction in a file none of the audited ones can
+  reach, and code that runs after the last `commit()` in a block on a path that skipped that commit. It proves the shape of the code; the
   all-or-nothing behaviour is proven by running the save (`test-song-save-whole-rollback.php`). **Proven:** each
   of the eight guards the seventh review removed without any test noticing (`slideAuthTokenExpiry()`,
   `publisherResolvePickedOrCreate()`, `ed2_touchRevision()`, `workMedleyReplace()`, `songRedirectsTableReady()`,

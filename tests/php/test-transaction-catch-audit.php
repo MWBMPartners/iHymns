@@ -43,35 +43,60 @@ declare(strict_types=1);
  * ----------------------------------
  * A transaction runs from its `begin_transaction()` to the last `commit()`
  * after it in the same block (stopping at the next `begin_transaction()` in
- * that block); with no `commit()` there, to the end of the block. Every catch
- * written inside that stretch counts. So does every catch in anything the
- * stretch can call, followed as far as it goes:
+ * that block). When that block has no `commit()` after the begin — the
+ * `if ($own) { $db->begin_transaction(); }` shape, with the work and the
+ * commit after it — it runs on to the last `commit()` after it in the whole
+ * function (or file), stopping at the next begin there, or to the function's
+ * end (round 9). Every catch written inside that stretch counts. So does every
+ * catch in anything the stretch can call, followed as far as it goes:
  *   - a function, by its name;
  *   - a method, by its method name, in EVERY class that has one (this
  *     over-counts rather than misses);
  *   - `new Something` — that class's constructor;
  *   - a function or method named in a string ('workPersistExtraFields',
- *     [$this, 'save'], 'Class::method') — a string that is the name of a
- *     function defined in this code base counts as a call to it;
+ *     'Class::method', '\\workSave' — only the part after the last `::` or
+ *     backslash counts) — a string that is the name of a function defined in
+ *     this code base counts as a call to it, and so does one that is the name
+ *     of a method longer than three letters (shorter ones are too often
+ *     ordinary words); the second item of a two-item list, `[$this, 'save']`
+ *     or `array($box, 'run')`, is a method's name whatever its length;
  *   - a closure (`function () use (...) {}`) or an arrow function
  *     (`fn () => ...`) written in a reachable piece of code;
  *   - `$name(...)` — every closure or arrow function assigned to `$name` in
- *     the same file;
+ *     the same file; and (round 9) whatever else is assigned to `$name` in
+ *     the same file that names something to call: a function or method named
+ *     in a string, a two-item list naming a method, or a first-class callable
+ *     (`workSave(...)`, `$box->run(...)`, `Box::run(...)`); and, when `$name`
+ *     is a parameter of a function in that file, every closure or arrow
+ *     function written straight into a call of that function in the same file
+ *     (`withTransaction($db, function () { … })`);
  *   - `require` / `include` — the included file's top-level code.
- * These are the widenings the seventh independent review's own audit made over
- * round 7's (round 7 followed names only and placed one closure by hand); they
- * are kept here so that this test sees at least what that audit saw.
+ * Most of these are the widenings the seventh independent review's own audit
+ * made over round 7's (round 7 followed names only and placed one closure by
+ * hand); the round-9 ones are the eighth review's planted shapes (its L4). All
+ * are kept here so that this test sees at least what those audits saw.
  *
  * WHAT THIS CANNOT SEE
  * --------------------
- * A call it cannot resolve from the text alone: a function whose name is built
- * at run time ("save" . $kind), a callable held in an array or an object
- * property, or a closure passed in from another file. A transaction opened in
- * a file that none of the files above can reach is not checked. It does not
- * judge whether an allow-listed catch's reason is still true — that is what
- * the reason is written down for. It proves the shape of the code; the
- * all-or-nothing behaviour itself is proven by running the save, in
- * test-song-save-whole-rollback.php.
+ * A call it cannot resolve from the text alone, each a known blind spot:
+ *   - a function or class whose name is built at run time ("save" . $kind);
+ *   - `new $class()` — a class named in a variable (the eighth review's AU19);
+ *   - a class's `__call()` or `__callStatic()`, reached by calling a method
+ *     the class does not have (AU04);
+ *   - `require $path` with the whole path in a variable (AU05; a require
+ *     whose own statement names the file in quoted text, `$dir . '/x.php'`,
+ *     is followed to every file of that name);
+ *   - a callable kept in an object property (`($box->cb)()`, AU18) or in an
+ *     array other than a two-item list assigned straight to a variable;
+ *   - a method named in a string of three letters or fewer, outside a
+ *     two-item list;
+ *   - a closure handed in from another file.
+ * Each was planted by the eighth review and stays unseen; the ones it caught
+ * are listed above. A transaction opened in a file that none of the files
+ * above can reach is not checked. It does not judge whether an allow-listed
+ * catch's reason is still true — that is what the reason is written down for.
+ * It proves the shape of the code; the all-or-nothing behaviour itself is
+ * proven by running the save, in test-song-save-whole-rollback.php.
  *
  * HOW IT WAS PROVEN TO WORK (#2137 review round 8)
  * ------------------------------------------------
@@ -83,6 +108,12 @@ declare(strict_types=1);
  * file red, and so does a new catch with no guard added to a helper the save
  * calls. (Since round 9 `slideAuthTokenExpiry()`'s catch has no guard and is
  * on the allow-list instead: it now writes only when no transaction is open.)
+ * Round 9: each of the eighth review's planted catches reached through a
+ * shape listed above turns it red — a name or a first-class callable
+ * assigned to a variable before the begin and called inside, a two-item list
+ * with a three-letter method name, a leading backslash, a closure passed
+ * inline to a function that runs it inside its own transaction, and work
+ * after `if ($own) { begin }`; the blind spots listed above stay green.
  *
  *   php tests/php/test-transaction-catch-audit.php
  *
@@ -124,15 +155,13 @@ const TCA_ENTRY_FILES = [
     'appWeb/public_html/includes/lyrics_ingest.php',
 ];
 
-/**
- * The only exception types that can be (or carry, as their cause) a database
- * error. `mysqli_sql_exception` is a final class extending RuntimeException,
- * so catching any of these four can catch one. A catch of anything else is
- * still checked (it needs the guard or an allow-list entry): an app could
- * wrap a database error in, say, an InvalidArgumentException, and the shared
- * check looks down the whole chain of causes.
- */
-const TCA_DB_CATCHERS = ['throwable', 'exception', 'runtimeexception', 'mysqli_sql_exception'];
+/* A catch is checked whatever exception type it names: any exception can carry
+   a database error as its cause (an app could wrap one in, say, an
+   InvalidArgumentException), and the shared check looks down the whole chain
+   of causes. (#2137 review round 9, the eighth review's L11: a constant
+   listing "the only exception types that can be or carry a database error"
+   used to stand here; nothing read it, and its first sentence contradicted
+   this one.) */
 
 /**
  * THE ALLOW-LIST — catches that may run inside an audited transaction and do
@@ -327,6 +356,35 @@ function tcaIncludePath(array $parts, string $dir): ?string
 }
 
 /**
+ * Is the quoted text at token $i the second item of a list of exactly two
+ * items — `[$x, 'name']` or `array($x, 'name')` — PHP's way of naming a
+ * method to call (#2137 review round 9, the eighth review's L4)?
+ */
+function tcaIsArrayCallableName(array $t, int $i): bool
+{
+    $p = tcaSig($t, $i, -1);
+    $q = tcaSig($t, $i);
+    if ($p < 0 || $q < 0 || $t[$p]->text !== ',' || !in_array($t[$q]->text, [']', ')'], true)) { return false; }
+    /* Back from the comma to the bracket that opens the list, with no other comma at that depth. */
+    $depth = 0;
+    for ($j = tcaSig($t, $p, -1); $j >= 0; $j = tcaSig($t, $j, -1)) {
+        $x = $t[$j]->text;
+        if ($x === ')' || $x === ']' || $x === '}') { $depth++; continue; }
+        if ($x === '(' || $x === '[' || tcaOpens($t[$j])) {
+            if ($depth > 0) { $depth--; continue; }
+            if ($x === '[') { return $t[$q]->text === ']'; }
+            if ($x === '(') {
+                $b = tcaSig($t, $j, -1);
+                return $t[$q]->text === ')' && $b >= 0 && $t[$b]->id === T_ARRAY;
+            }
+            return false;
+        }
+        if ($depth === 0 && ($x === ',' || $x === ';')) { return false; }
+    }
+    return false;
+}
+
+/**
  * What token $i calls, if anything, as an edge key:
  *   f:name, m:name, ctor:class, s:string (a string that may name a function),
  *   inc:file.php, var:FILE|$name, node:ID (a closure or arrow function written here).
@@ -369,7 +427,19 @@ function tcaEdgeAt(array $t, int $i, string $rel, ?string $class, array $fnAt): 
             $s = strtolower(trim(substr($tok->text, 1, -1)));
             $pos = strrpos($s, '::');
             if ($pos !== false) { $s = substr($s, $pos + 2); }
-            return preg_match('/^[a-z_][a-z0-9_]*$/', $s) === 1 ? 's:' . $s : null;
+            /* #2137 review round 9 (the eighth review's L4) — a name written with
+               its namespace or a leading backslash ('\\workSave', 'App\\workSave')
+               is the same function: only the part after the last backslash
+               counts. */
+            $pos = strrpos($s, '\\');
+            if ($pos !== false) { $s = substr($s, $pos + 1); }
+            if (preg_match('/^[a-z_][a-z0-9_]*$/', $s) !== 1) { return null; }
+            /* …and the second item of a two-item list (`[$box, 'run']`,
+               `array(new Box(), 'run')`) is a method's name, however short:
+               `m:`, followed in every class that has one, not `s:`, which
+               follows a method only when its name is longer than three
+               letters. */
+            return (tcaIsArrayCallableName($t, $i) ? 'm:' : 's:') . $s;
         case T_REQUIRE:
         case T_REQUIRE_ONCE:
         case T_INCLUDE:
@@ -450,6 +520,29 @@ function tcaScanFile(string $rel, string $src): array
     $top = 'top|' . $rel;
     $nodes = [$top => ['kind' => 'top', 'name' => '{top}', 'line' => 1, 'a' => 0, 'b' => $n - 1, 'class' => null, 'var' => null]];
     $fnAt = [];
+    /* #2137 review round 9 (the eighth review's L4): each named function's
+       parameters, and each closure or arrow function written straight into a
+       call's argument list, by the name of the function called — so that a
+       parameter called as `$work()` can be followed to the closures handed to
+       that function in this file (see $varEdges below). */
+    $paramsOf = [];
+    $argClosures = [];
+    $calleeOfArgument = static function (int $p) use ($t): ?string {
+        if ($p < 0 || ($t[$p]->text !== '(' && $t[$p]->text !== ',')) { return null; }
+        $depth = 0;
+        for ($j = $p; $j >= 0; $j = tcaSig($t, $j, -1)) {
+            $x = $t[$j]->text;
+            if ($x === ')' || $x === ']' || $x === '}') { $depth++; continue; }
+            if ($x === '(' || $x === '[' || tcaOpens($t[$j])) {
+                if ($depth > 0) { $depth--; continue; }
+                if ($x !== '(') { return null; }
+                $c = tcaSig($t, $j, -1);
+                return ($c >= 0 && in_array($t[$c]->id, [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true)) ? tcaShort($t[$c]->text) : null;
+            }
+            if ($depth === 0 && $x === ';') { return null; }
+        }
+        return null;
+    };
     for ($i = 0; $i < $n; $i++) {
         if ($t[$i]->id !== T_FUNCTION && $t[$i]->id !== T_FN) { continue; }
         $j = tcaSig($t, $i);
@@ -486,6 +579,7 @@ function tcaScanFile(string $rel, string $src): array
             $id = "a|{$rel}|{$t[$i]->line}|{$i}";
             $nodes[$id] = ['kind' => 'arrow', 'name' => 'fn', 'line' => $t[$i]->line, 'a' => $k + 1, 'b' => $e - 1, 'class' => $class, 'var' => $var];
             $fnAt[$i] = $id;
+            if (($callee = $calleeOfArgument($p)) !== null) { $argClosures[$callee][] = $id; }
             continue;
         }
         if ($t[$k]->text !== '{' || !isset($match[$k])) { continue; }   // an abstract or interface method
@@ -494,10 +588,14 @@ function tcaScanFile(string $rel, string $src): array
             $id = ($class !== null ? 'm|' . $class . '::' : 'f|') . strtolower($name) . "|{$rel}|{$t[$i]->line}";
             $nodes[$id] = ['kind' => $class !== null ? 'method' : 'function', 'name' => $class !== null ? "{$class}::{$name}" : $name,
                 'line' => $t[$i]->line, 'a' => $k, 'b' => $match[$k], 'class' => $class, 'var' => null, 'short' => strtolower($name)];
+            for ($v = $j + 1; $v < $k; $v++) {
+                if ($t[$v]->id === T_VARIABLE) { $paramsOf[strtolower($name)][] = $t[$v]->text; }
+            }
         } else {
             $id = "c|{$rel}|{$t[$i]->line}|{$i}";
             $nodes[$id] = ['kind' => 'closure', 'name' => 'closure', 'line' => $t[$i]->line, 'a' => $k, 'b' => $match[$k], 'class' => $class, 'var' => $var];
             $fnAt[$i] = $id;
+            if (($callee = $calleeOfArgument($p)) !== null) { $argClosures[$callee][] = $id; }
         }
     }
 
@@ -538,6 +636,56 @@ function tcaScanFile(string $rel, string $src): array
         if ($nd['kind'] !== 'arrow') { continue; }
         $parent = $owner[max(0, $nd['a'] - 1)];
         if ($parent !== $id) { $edges[$parent]['node:' . $id] = true; }
+    }
+
+    /* #2137 review round 9 (the eighth review's L4) — what a variable called
+       as `$name()` can hold, beyond a closure assigned to it (closuresByVar,
+       below). Keyed "file|$name", as a list of edge keys, for:
+         - `$name = 'workSave';` — a function named in a string (and
+           `$name = [$box, 'run'];`, a method named in a two-item list);
+         - `$name = workSave(...);` / `$box->run(...)` / `Box::run(...)` — a
+           first-class callable;
+         - a parameter of a function in this file, called inside it — every
+           closure or arrow function written straight into a call of that
+           function in this file (`withTransaction($db, function () {…})`).
+       Assigned anywhere in the file, before the transaction or not: this
+       over-counts rather than misses, as the rest of this test does. */
+    $varEdges = [];
+    for ($i = 0; $i < $n; $i++) {
+        if ($t[$i]->id !== T_VARIABLE) { continue; }
+        $eq = tcaSig($t, $i);
+        if ($eq < 0 || $t[$eq]->text !== '=') { continue; }
+        $r = tcaSig($t, $eq);
+        if ($r < 0) { continue; }
+        $end = $r;
+        for ($d = 0; $end < $n; $end++) {
+            $x = $t[$end]->text;
+            if ($x === '(' || $x === '[' || tcaOpens($t[$end])) { $d++; }
+            elseif ($x === ')' || $x === ']' || $x === '}') { if ($d === 0) { break; } $d--; }
+            elseif ($d === 0 && ($x === ';' || $x === ',')) { break; }
+        }
+        $last = tcaSig($t, $end, -1);
+        $edge = null;
+        if ($t[$r]->id === T_CONSTANT_ENCAPSED_STRING && $last === $r) {
+            $edge = tcaEdgeAt($t, $r, $rel, null, $fnAt);
+        } elseif ($t[$r]->text === '[' && $last > $r && $t[$last]->text === ']' && $t[tcaSig($t, $last, -1)]->id === T_CONSTANT_ENCAPSED_STRING) {
+            $edge = tcaEdgeAt($t, tcaSig($t, $last, -1), $rel, null, $fnAt);
+            $edge = ($edge !== null && str_starts_with($edge, 'm:')) ? $edge : null;
+        } elseif ($last > $r && $t[$last]->text === ')') {
+            $dots = tcaSig($t, $last, -1);
+            $open = $dots >= 0 ? tcaSig($t, $dots, -1) : -1;
+            if ($dots >= 0 && $t[$dots]->id === T_ELLIPSIS && $open >= 0 && $t[$open]->text === '(') {
+                $edge = tcaEdgeAt($t, tcaSig($t, $open, -1), $rel, $nodes[$owner[$i]]['class'], $fnAt);
+            }
+        }
+        if ($edge !== null) { $varEdges[$rel . '|' . $t[$i]->text][] = $edge; }
+    }
+    foreach ($paramsOf as $fname => $params) {
+        foreach ($params as $param) {
+            foreach ($argClosures[$fname] ?? [] as $closureId) {
+                $varEdges[$rel . '|' . $param][] = 'node:' . $closureId;
+            }
+        }
     }
 
     /* Catch blocks. */
@@ -622,6 +770,24 @@ function tcaScanFile(string $rel, string $src): array
         foreach ($commits as $ci) {
             if ($ci > $bi && $ci < $stop) { $end = $ci; }
         }
+        /* #2137 review round 9 (the eighth review's L4) — a begin whose own
+           block has no commit after it (`if ($own) { $db->begin_transaction(); }`
+           then the work, then `if ($own) { $db->commit(); }`) runs on past
+           that block: to the last commit after it in the whole function (or
+           file), stopping at the next begin there, or to the function's end. */
+        if ($end === $stop && $stop === $blockEnd) {
+            $nodeEnd = $nodes[$owner[$bi]]['b'];
+            if ($nodeEnd > $stop) {
+                $stop = $nodeEnd;
+                foreach ($begins as $other) {
+                    if ($other > $bi && $other < $stop) { $stop = $other; }
+                }
+                $end = $stop;
+                foreach ($commits as $ci) {
+                    if ($ci > $bi && $ci < $stop) { $end = $ci; }
+                }
+            }
+        }
         $seeds = [];
         $inside = [];
         for ($i = $bi; $i <= $end; $i++) {
@@ -637,7 +803,7 @@ function tcaScanFile(string $rel, string $src): array
 
     foreach ($nodes as $id => &$nd) { unset($nd['a'], $nd['b']); $nd['file'] = $rel; }
     unset($nd);
-    return ['nodes' => $nodes, 'edges' => array_map('array_keys', $edges), 'catches' => $catches, 'regions' => $regions];
+    return ['nodes' => $nodes, 'edges' => array_map('array_keys', $edges), 'catches' => $catches, 'regions' => $regions, 'varEdges' => $varEdges];
 }
 
 /* ------------------------------------------------------------------ read every file */
@@ -652,6 +818,7 @@ $ctorByClass = [];
 $topByBase = [];
 $topByPath = [];
 $closuresByVar = [];
+$varEdges = [];
 $fileCount = 0;
 $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($repoRoot . '/appWeb', FilesystemIterator::SKIP_DOTS));
 $paths = [];
@@ -677,11 +844,12 @@ foreach ($paths as $p) {
         if ($nd['var'] !== null) { $closuresByVar[$rel . '|' . $nd['var']][] = $id; }
     }
     $catches += $r['catches'];
+    foreach ($r['varEdges'] as $k => $list) { foreach ($list as $e) { $varEdges[$k][] = $e; } }
     foreach ($r['regions'] as $rg) { $regions[] = $rg; }
 }
 
 /** Turn an edge key into the nodes it reaches. */
-$resolve = static function (string $e) use ($byFunc, $byMethod, $ctorByClass, $topByBase, $topByPath, $closuresByVar): array {
+$resolve = static function (string $e) use (&$resolve, $byFunc, $byMethod, $ctorByClass, $topByBase, $topByPath, $closuresByVar, $varEdges): array {
     [$kind, $what] = explode(':', $e, 2);
     return match ($kind) {
         'f'    => $byFunc[$what] ?? [],
@@ -689,7 +857,10 @@ $resolve = static function (string $e) use ($byFunc, $byMethod, $ctorByClass, $t
         'ctor' => $ctorByClass[$what] ?? [],
         'inc'  => $topByPath[$what] ?? [],
         'incb' => $topByBase[$what] ?? [],
-        'var'  => $closuresByVar[$what] ?? [],
+        /* A closure assigned to the variable, and (round 9) a name or callable
+           assigned to it, or a closure handed to the function whose parameter
+           it is ($varEdges — never itself a `var:` edge, so this ends). */
+        'var'  => array_merge($closuresByVar[$what] ?? [], ...array_map($resolve, $varEdges[$what] ?? [])),
         'node' => [$what],
         /* A string counts as a call when it is the name of a function, or of a method (longer than three
            letters — shorter method names are too often ordinary words in strings). */
