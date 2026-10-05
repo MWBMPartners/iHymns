@@ -138,6 +138,7 @@ const EXPECTED_TOP_LEVEL_DIRS = new Map([
     ['.claude',     'Claude Code project context, rules, plans and session history'],
     ['.github',     'GitHub Actions workflows and repository configuration'],
     ['.importers',  'the song-scraper and importer scripts'],
+    ['.OpenAI',     'Codex\'s own memory and context notes (standing-directives §3)'],
     ['.vscode',     'the shared VS Code settings that travel with the project'],
     ['appAndroid',  'the Android app (and Amazon FireOS, which is a target of it)'],
     ['appApple',    'the iOS / iPadOS / tvOS apps and their shared Swift code'],
