@@ -139,21 +139,34 @@ function markdownLiteRender(string $md): string
         $lines = [$escaped];
     }
 
-    $html      = '';
-    $paragraph = [];
-    $listItems = [];
+    $html       = '';
+    $paragraph  = [];
+    $listItems  = [];
+    /* True when the previous line was blank AND a list is still open — see
+       the blank-line branch just below. */
+    $afterBlank = false;
 
     foreach ($lines as $line) {
         $trimmed = trim($line);
 
         if ($trimmed === '') {
-            /* A blank line ends whichever block is currently open —
-               mirrors how a real markdown parser treats blank lines as
-               block separators. */
+            /* A blank line ends an open paragraph — mirrors how a real
+               markdown parser treats blank lines as block separators.
+               An open LIST is not closed yet, though: a blank line between
+               two "- " bullets is a "loose" list in CommonMark — still ONE
+               list (https://spec.commonmark.org/0.31.2/#loose). WHATS-NEW.md
+               puts a blank line between every bullet, so closing the list
+               here rendered each bullet as its own one-item <ul>: uneven
+               spacing, and a screen reader announcing "list, 1 item" before
+               every entry. Whether the list really ends is decided by the
+               NEXT non-blank line: another bullet continues it; anything
+               else (a heading, a paragraph) closes it first. */
             $html = _markdownLiteFlushParagraph($html, $paragraph);
-            $html = _markdownLiteFlushList($html, $listItems);
+            $afterBlank = ($listItems !== []);
             continue;
         }
+        $wasBlank   = $afterBlank;
+        $afterBlank = false;
 
         /* `### Heading` → <h3>. Checked BEFORE the `##` rule below purely
            for readability (H3-before-H2, most-specific-first) — it isn't
@@ -198,12 +211,14 @@ function markdownLiteRender(string $md): string
            already gone by here because $trimmed = trim($line)). Mirrors the
            paragraph soft-wrap directly below — CommonMark "lazy continuation
            lines" (https://spec.commonmark.org/0.31.2/#lazy-continuation-line).
-           A blank line or a heading still flushes the list above, so this only
-           ever fires on a genuine wrapped continuation, never merges two
-           logically-separate blocks. Each segment is independently
-           inline-processed then space-joined, exactly as the paragraph path
-           does — the escape-first guarantee is unchanged. */
-        if (!empty($listItems) && empty($paragraph)) {
+           A heading still flushes the list above, and a line straight after a
+           blank line is never treated as a continuation ($wasBlank — the list
+           is left open across a blank line only so that a following BULLET can
+           join it), so this only ever fires on a genuine wrapped continuation,
+           never merges two logically-separate blocks. Each segment is
+           independently inline-processed then space-joined, exactly as the
+           paragraph path does — the escape-first guarantee is unchanged. */
+        if (!empty($listItems) && empty($paragraph) && !$wasBlank) {
             $listItems[count($listItems) - 1] .= ' ' . _markdownLiteInline($trimmed);
             continue;
         }
