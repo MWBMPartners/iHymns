@@ -51,4 +51,23 @@ Where possible, have a **different** AI tool review the work from the one that w
 Claude writes it and Codex reviews it, or the other way round). Fix what the review finds and review
 again, until a review finds nothing. An empty review output is not a clean review. Check the tool
 actually ran.
+### Polish check for anything people can see
+Before calling work on a website or app done, and as a full pass at least once a month, check for
+the details that make it look unfinished, and fix what you find:
+- **Addresses and previews:** no preview or default hosts (vercel.app, netlify.app, localhost,
+  example.com) in anything public. Each page has its own title, description, canonical URL, favicon
+  and share image. Check the no-JavaScript view that link previews see.
+- **Pages people skip:** a real 404 with a way back, loading, empty and error states, and messages
+  that say what happened and what to do next.
+- **Structure:** one main heading per page, no skipped heading levels, alt text on every image,
+  and a sensible site map.
+- **Leftovers:** no console errors or stray logs, no developer notes, placeholder text or test
+  files reachable from the web, and no large libraries loaded but unused.
+- **Every size:** phone, tablet, desktop and an odd landscape size, with very long text, empty
+  data and error states. No sideways scrolling.
+- **Consistency:** one set of colours, corner radii, fonts, button styles and icons.
+- **Dead controls:** every button and link does something.
+
+If the project can run an automatic check for any of this on every change, add one. In the report,
+list what you did **not** check and why. A clean result you didn't actually look for is not a pass.
 <!-- END DEVICE RULES -->

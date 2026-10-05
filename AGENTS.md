@@ -57,6 +57,9 @@ every AI tool working here, not only Claude. The parts you need most:
   as it returns, and have it do a full review of the fallback work. Record every switch in the
   handoff (§14).
 - **Progress updates are a table** of the queued tasks and the state of each one (§12).
+- **Polish check.** Before calling user-facing web work done, and as a full pass at least monthly,
+  work through `.claude/polish-checklist.md` and say which items you did not check.
+  `tests/test-polish-guard.js` checks the mechanical items on every pull request.
 - **Only stop to ask** when the owner has to make the decision. Ask everything you can foresee at
   the start, in one go, and carry on with the rest of the work meanwhile (§5, §10).
 

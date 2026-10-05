@@ -178,6 +178,12 @@ and one agent asked to "find bugs" defaults to whichever lens it thought of firs
 - **History** — do NOT copy the handoff here. Both tools read the one handoff in
   `.claude/sessions/`, so there is nothing to drift.
 
+### 8. Polish check (added 2026-10-05, #2142)
+- For any change a visitor can see, work through `.claude/polish-checklist.md` before calling it
+  done; do a full pass of the whole site at least once a month.
+- Report which items were not checked and why. `tests/test-polish-guard.js` already enforces the
+  mechanical items on every pull request, so this step is about what needs eyes.
+
 ## Annotation standard
 
 Comments serve **maintenance, learning, and debugging** — write for a future

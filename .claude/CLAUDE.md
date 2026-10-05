@@ -218,6 +218,7 @@ much cheaper than I claimed.
 5. **Markdown docs** — `README.md`, `CHANGELOG.md` (technical), **`WHATS-NEW.md`** (plain-language user release notes feeding `/whats-new` — every user-visible push/PR adds a bullet under the current `## <MAJOR.MINOR> — <date>` heading, NO internals ever; house style `.claude/whats-new-style.md`, rule #46), `DEV_NOTES.md`, `PROJECT_STATUS.md`, `SECURITY.md`, `LICENSING.md`.
 6. **Claude `.claude/`** — Memory (auto-memory + `MEMORY.md`), Context (`ProjectBrief.md` + this file), History (`sessions/<date>-HANDOFF.md`).
 7. **Codex `.OpenAI/`** (added 2026-09-23) — `.OpenAI/MEMORY.md` + `.OpenAI/CONTEXT.md` (and `AGENTS.md` if a rule changed), so Codex never works from an older picture than Claude. The handoff is NOT copied there; both tools read the one in `.claude/sessions/`.
+8. **Polish check** (owner-stated 2026-10-05, #2142) — before calling user-facing web work done, and as a full pass at least monthly, work through [.claude/polish-checklist.md](polish-checklist.md) and report what was not checked. `tests/test-polish-guard.js` enforces the mechanical half on every PR.
 
 If an item can't be completed (network for a Wiki push, an owner decision for a milestone), **say so explicitly** in the handoff and leave a tracked task — never silently skip, never claim it was done.
 
