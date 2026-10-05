@@ -3756,6 +3756,32 @@ body.reduce-motion .song-list-item.alphabet-highlight {
 }
 
 /* ==========================================================================
+   NEUTRAL GREY BADGES — readable text in every theme
+   ========================================================================== */
+
+/* ELI5: the small grey labels (a songbook's short code such as "CP", a
+   recent-search chip, the font-size readout in Settings) were white text on
+   a pale grey background in the light theme — almost invisible.
+
+   DETAILED: Bootstrap's `.badge` paints its text white
+   (`--bs-badge-color: #fff`), and `.bg-body-secondary` only sets the
+   BACKGROUND, to the theme's secondary surface colour. In the dark theme
+   that surface is dark grey (#343a40), so white text works; in the light
+   theme it is #e9ecef, and white on #e9ecef is about 1.2:1 against the
+   4.5:1 that WCAG 1.4.3 asks for. About two dozen places across the public
+   site and the admin pages use this pairing, so it is fixed once here
+   rather than in each template. Using the theme's own body text colour keeps
+   it right in both themes: #212529 on #e9ecef (light) and #dee2e6 on
+   #343a40 (dark). High-contrast mode gets its own rule in accessibility.css,
+   because that mode changes the page colours but not the variable this
+   background is built from.
+   https://getbootstrap.com/docs/5.3/components/badge/#background-colors
+   https://www.w3.org/WAI/WCAG21/Understanding/contrast-minimum.html */
+.badge.bg-body-secondary {
+    color: var(--bs-body-color);
+}
+
+/* ==========================================================================
    SEARCH HISTORY CHIPS (#110)
    ========================================================================== */
 
