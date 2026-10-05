@@ -106,34 +106,14 @@
 // ============================================================================
 
 import { test, expect } from '@playwright/test';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
-
-/**
- * See the "THIRD-PARTY CDN NOTE" above. Writes a syntactically-valid, inert
- * stub ONLY when the real (tools/download-vendor.sh-generated) file isn't
- * already there — never overwrites a real vendor asset.
- */
-function ensureVendorStubs() {
-    const stubs = [
-        [
-            'appWeb/public_html/vendor/bootstrap/bootstrap.bundle.min.js',
-            '/* smoke-test stub — real Bootstrap JS is fetched by tools/download-vendor.sh at deploy\n'
-            + '   time. This file exists only so an unreachable CDN falls back to a harmless no-op\n'
-            + '   script instead of index.php\'s own HTML (see smoke.spec.js header). */\n',
-        ],
-    ];
-    for (const [rel, content] of stubs) {
-        const abs = path.join(REPO_ROOT, rel);
-        if (fs.existsSync(abs)) { continue; }
-        fs.mkdirSync(path.dirname(abs), { recursive: true });
-        fs.writeFileSync(abs, content);
-    }
-}
+/* The vendor-stub writer, the CSP host parser and the two third-party
+   predicates live once in browser-helpers.js, shared with polish.spec.js. */
+import {
+    ensureVendorStubs,
+    thirdPartyHostsFromCsp,
+    isThirdPartyLoadFailure,
+    isBootstrapMissingConsequence,
+} from './browser-helpers.js';
 
 /**
  * Is this console `error` message one of a SHORT, individually-justified
@@ -160,7 +140,7 @@ function isKnownBenignConsoleError(msg, thirdPartyHosts) {
        "THIRD-PARTY CDN NOTE" above. Scoped to those exact hosts (not "any
        net::ERR_*"), so an unexpected SAME-origin network failure still
        fails the test. */
-    if (/^Failed to load resource:/.test(text) && thirdPartyHosts.some((h) => url.includes(h))) {
+    if (isThirdPartyLoadFailure(msg, thirdPartyHosts)) {
         return true;
     }
 
@@ -171,7 +151,7 @@ function isKnownBenignConsoleError(msg, thirdPartyHosts) {
        non-fatal console.error — confirmed there is never a matching
        `pageerror` for it, i.e. the app keeps running. A third-party-global-
        missing symptom, not a first-party module/CSP boot failure. */
-    if (text.includes('[iHymns] Initialisation error') && text.includes('bootstrap is not defined')) {
+    if (isBootstrapMissingConsequence(msg)) {
         return true;
     }
 
@@ -204,22 +184,16 @@ function isKnownBenignConsoleError(msg, thirdPartyHosts) {
        (a future authenticated smoke would be its own test). Scoped to the
        user_settings endpoint AND status 401 specifically, so a 401 on any
        OTHER endpoint — a genuine auth/session regression — still fails.
+       Now DORMANT like #3: list-sort.js no longer sends this request when
+       no sign-in token is stored, so an anonymous load should never see it
+       (polish.spec.js deliberately does NOT allow it, as the guard for that
+       fix). Kept here defensively, unchanged.
        https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401 */
     if (/Failed to load resource:.*\b401\b/.test(text) && /[?&]action=user_settings\b/.test(url)) {
         return true;
     }
 
     return false;
-}
-
-/** Parse `https://host` origins out of a CSP directive value string. */
-function thirdPartyHostsFromCsp(cspHeader) {
-    if (!cspHeader) { return []; }
-    const hosts = new Set();
-    for (const m of cspHeader.matchAll(/https:\/\/([a-z0-9.-]+)/gi)) {
-        hosts.add(m[1]);
-    }
-    return [...hosts];
 }
 
 test.beforeAll(() => {
