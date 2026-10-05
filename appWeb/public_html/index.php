@@ -1227,11 +1227,17 @@ if (!empty($breadcrumbItems)) {
          the old per-<link> onerror fallback silently never fired when a CDN was
          down — the /vendor copy never loaded. A render-blocking
          <link rel="stylesheet"> blocks the following <script> until it has
-         loaded or failed, so by the time THIS runs each CDN sheet is resolved:
-         link.sheet is a CSSStyleSheet on success and null on failure (404 /
-         network / SRI mismatch). This mirrors the Bootstrap-JS
-         `typeof … === 'undefined'` fallback already used lower in this file.
+         loaded or failed, so by the time THIS runs each CDN sheet is resolved.
+         A FAILED load is NOT always `link.sheet === null`: Chromium keeps an
+         empty stylesheet object whose cssRules throw a SecurityError, so a
+         `!link.sheet` test alone never fired there and, with the CDN
+         unreachable, Bootstrap and Font Awesome never loaded at all. Because
+         every one of these <link>s is crossorigin="anonymous", a sheet that
+         really loaded always has READABLE rules, so "no sheet, unreadable
+         rules, or zero rules" is the failure test. This mirrors the
+         Bootstrap-JS `typeof … === 'undefined'` fallback lower in this file.
          https://developer.mozilla.org/docs/Web/API/HTMLLinkElement/sheet
+         https://developer.mozilla.org/docs/Web/API/CSSStyleSheet/cssRules
          ================================================================ -->
     <script nonce="<?= $cspNonce ?>">
         (function () {
@@ -1245,9 +1251,15 @@ if (!empty($breadcrumbItems)) {
             ];
             for (var i = 0; i < fb.length; i++) {
                 var el = document.getElementById(fb[i].id);
-                /* Skip when the <link> is absent, no vendored copy is configured
-                   (local resolves to a bare '/'), or the CDN sheet loaded fine. */
-                if (!el || fb[i].local === '/' || el.sheet) { continue; }
+                /* Skip when the <link> is absent or no vendored copy is
+                   configured (local resolves to a bare '/'). */
+                if (!el || fb[i].local === '/') { continue; }
+                /* Skip when the CDN sheet really loaded: it exists AND its rules
+                   can be read and are not empty (see the comment above for why
+                   a non-null sheet is not enough on its own). */
+                var cdnLoaded = false;
+                try { cdnLoaded = !!el.sheet && el.sheet.cssRules.length > 0; } catch (e) { cdnLoaded = false; }
+                if (cdnLoaded) { continue; }
                 /* The same-origin copy has no CORS headers and a different
                    byte-for-byte build, so its own hash would fail — strip both
                    before re-pointing (same as the old onerror did). */
