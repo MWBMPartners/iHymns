@@ -12,6 +12,26 @@ with none of the behind-the-scenes technical detail.
 
 ## 1.3.0 — 30 August 2026
 
+- **Searching from a link shows each song once** — Opening a search link,
+  such as one someone shared with you, listed every matching song twice. It
+  now lists each song once, says "Searching…" while it works, and tells you
+  plainly when search isn't working right now instead of blaming your
+  connection.
+
+- **Clearer messages when something goes wrong** — If a page can't load, you
+  now see what happened in plain words, with a **Try again** button. A shared
+  set list that can't load on a weak signal now offers to try again instead
+  of saying the link is broken, and pages with nothing to show yet say so
+  instead of sitting blank.
+
+- **Shared links show the right name** — When you share a song, songbook,
+  writer or tune, the preview now shows its proper name, apostrophes and all,
+  instead of the app's general title.
+
+- **Easier to read and tap on a phone** — Very long song titles now wrap
+  instead of running off the edge of the screen, the menu and song buttons
+  are bigger to tap, and buttons use the iHymns purple throughout.
+
 - **Your set lists and favourites now open with no signal** — If you'd
   already saved a set list or your favourites to your device, the pages that
   show them still would not open when you were offline. The information was
