@@ -21,13 +21,16 @@ declare(strict_types=1);
 <section class="page-setlist" aria-label="Set lists">
 
     <!-- Page header -->
-    <div class="d-flex justify-content-between align-items-center mb-4">
+    <?php /* flex-wrap + gap, and buttons that keep their labels on one line: at
+             320-375px the "New Set List" button used to squeeze to a sliver and
+             stack its words one per line. */ ?>
+    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
         <h1 class="h4 mb-0">
             <i class="fa-solid fa-list-ol me-2" aria-hidden="true"></i>
             Set Lists
         </h1>
-        <div class="d-flex gap-2 align-items-center">
-            <button type="button" class="btn btn-primary btn-sm" id="create-setlist-btn">
+        <div class="d-flex flex-wrap gap-2 align-items-center">
+            <button type="button" class="btn btn-primary btn-sm text-nowrap" id="create-setlist-btn">
                 <i class="fa-solid fa-plus me-1" aria-hidden="true"></i>
                 New Set List
             </button>

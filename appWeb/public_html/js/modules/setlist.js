@@ -30,7 +30,7 @@ import { announce } from '../utils/announce.js';
    (Deliberately not naming those two methods here WITH their parentheses —
    see the caution note above the class constructor, below, for why.) */
 import { acquireWakeLock, releaseWakeLock } from '../utils/wake-lock.js';
-import { loadTemplates, pickPrintTemplate, fetchSong, renderTemplateBodyHtml, printCss, applyCustomLayout, downloadPrintPdf, printUsageContextFor, promptForCopies, pdfFilenameFor } from './print.js';
+import { loadTemplates, pickPrintTemplate, fetchSong, renderTemplateBodyHtml, printCss, applyCustomLayout, downloadPrintPdf, printUsageContextFor, promptForCopies, pdfFilenameFor, hideBrokenPrintImages } from './print.js';
 /* #2073 commit 8 — "who sings this line" (voice parts + echo). The song_detail
    payload already carries each component's sparse `voices`/`voiceSpans` keys
    (includes/lyric_lines_read.php, commit 4) with no extra fetch/include needed
@@ -972,13 +972,15 @@ export class SetList {
                 this.renderSetListOverview();
             });
         } else {
-            bar.className = 'alert alert-info py-2 px-3 d-flex align-items-center justify-content-between mb-3';
+            /* flex-wrap + gap, and a button that never breaks its own label:
+               on a narrow phone "Sign In" used to stack as "Sign / In". */
+            bar.className = 'alert alert-info py-2 px-3 d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3';
             bar.innerHTML = `
                 <small>
                     <i class="fa-solid fa-user me-1" aria-hidden="true"></i>
                     Sign in to sync set lists across devices
                 </small>
-                <button type="button" class="btn btn-sm btn-outline-primary" id="setlist-login-btn">
+                <button type="button" class="btn btn-sm btn-outline-primary text-nowrap" id="setlist-login-btn">
                     Sign In
                 </button>`;
 
@@ -3560,8 +3562,13 @@ export class SetList {
     /**
      * Fetch shared setlist data from the server by short ID.
      *
+     * Three kinds of answer: the set list's data; `{ unavailable: true }` for a
+     * share its owner has removed (410); `{ failed: true }` when the request
+     * could not be completed for a reason that may pass (no connection, the
+     * server busy or failing); and `null` for a link that is genuinely broken.
+     *
      * @param {string} shareId 8-character hex ID
-     * @returns {Promise<{ name: string, songIds: string[] }|null>}
+     * @returns {Promise<{ name: string, songIds: string[] }|{ unavailable: true }|{ failed: true }|null>}
      */
     async fetchSharedSetlist(shareId) {
         try {
@@ -3584,6 +3591,11 @@ export class SetList {
             if (response.status === 410) {
                 return { unavailable: true };
             }
+
+            /* Busy (429) or the server failing (5xx) is not the link's fault —
+               report it as "try again", not "broken link". (Status codes, not
+               message text — rule #35.) */
+            if (response.status === 429 || response.status >= 500) return { failed: true };
 
             if (!response.ok) return null;
 
@@ -3619,8 +3631,11 @@ export class SetList {
                    without N per-song fetches. */
                 songsDetailed: Array.isArray(data.songsDetailed) ? data.songsDetailed : null,
             };
-        } catch {
-            return null;
+        } catch (err) {
+            /* An answer we could not read (bad JSON) means a broken link; a
+               request that never got an answer (offline, dropped) is worth a
+               retry. */
+            return err instanceof SyntaxError ? null : { failed: true };
         }
     }
 
@@ -3689,6 +3704,10 @@ export class SetList {
         /* #1380 — distinct "no longer shared" state (a revoked LIVE link), so a
            deleted-by-owner share reads as intentional, not as a broken link. */
         const unavailableEl = document.getElementById('shared-setlist-unavailable');
+        /* A temporary failure (no connection, server busy) gets its own state
+           with a "Try again" button, so a good link on bad wifi is not
+           reported as broken. */
+        const retryEl = document.getElementById('shared-setlist-retry');
 
         if (!loadingEl || !errorEl || !contentEl) return;
 
@@ -3719,6 +3738,21 @@ export class SetList {
             loadingEl.classList.add('d-none');
             if (unavailableEl) {
                 unavailableEl.classList.remove('d-none');
+            } else {
+                errorEl.classList.remove('d-none');
+            }
+            return;
+        }
+
+        if (sharedData && sharedData.failed) {
+            loadingEl.classList.add('d-none');
+            if (retryEl) {
+                retryEl.classList.remove('d-none');
+                retryEl.querySelector('#shared-setlist-retry-btn')?.addEventListener('click', () => {
+                    retryEl.classList.add('d-none');
+                    loadingEl.classList.remove('d-none');
+                    this.initSharedSetListPage(shareData);
+                }, { once: true });
             } else {
                 errorEl.classList.remove('d-none');
             }
@@ -3841,6 +3875,9 @@ export class SetList {
         /* Show content, hide loading */
         loadingEl.classList.add('d-none');
         contentEl.classList.remove('d-none');
+        /* The Start button lives beside the page heading (outside the content
+           block) and stays hidden until there is a list to start. */
+        document.getElementById('shared-setlist-start-btn')?.classList.remove('d-none');
 
         /* Enrich song items with metadata from the API — skipped for the edit
            surface, which already has full metadata from `songsDetailed`. */
@@ -4242,7 +4279,11 @@ export class SetList {
     formatSetListText(list) {
         let text = `${list.name}\n${'='.repeat(list.name.length)}\n\n`;
         list.songs.forEach((song, i) => {
-            text += `${i + 1}. ${toTitleCase(song.title)} (${song.songbook} #${song.number})\n`;
+            /* Only add "#N" for a real number — an unnumbered song would
+               otherwise read "#null" or "#0". */
+            const num = Number(song.number) > 0 ? ` #${Number(song.number)}` : '';
+            const where = `${song.songbook || ''}${num}`.trim();
+            text += `${i + 1}. ${toTitleCase(song.title)}${where ? ` (${where})` : ''}\n`;
         });
         text += `\n— Generated by iHymns`;
         return text;
@@ -4272,6 +4313,10 @@ export class SetList {
         /* Remove any previous render so we don't stack. */
         document.getElementById('setlist-upcoming-card')?.remove();
 
+        /* Signed-out visitors have no schedule, and asking only earns a 401
+           (a red line in the browser console on every visit). */
+        if (!this.app?.userAuth?.isLoggedIn?.()) return;
+
         apiFetch('/api?action=setlist_schedule_upcoming', { credentials: 'same-origin' })
             .then(r => r.ok ? r.json() : Promise.reject(r.status))
             .then(data => {
@@ -4282,7 +4327,7 @@ export class SetList {
                 node.className = 'card mb-3';
                 node.innerHTML = `
                     <div class="card-body">
-                        <h6 class="mb-2"><i class="fa-solid fa-calendar-days me-2"></i>Up next</h6>
+                        <h2 class="h6 mb-2"><i class="fa-solid fa-calendar-days me-2" aria-hidden="true"></i>Up next</h2>
                         <ul class="list-group list-group-flush">
                             ${upcoming.slice(0, 5).map(u => `
                                 <li class="list-group-item d-flex justify-content-between align-items-center"
@@ -4435,7 +4480,7 @@ export class SetList {
         section.innerHTML = `
             <div class="card-body">
                 <div class="d-flex align-items-center justify-content-between mb-2">
-                    <h6 class="mb-0"><i class="fa-solid fa-users me-2"></i>Collaborators</h6>
+                    <h2 class="h6 mb-0"><i class="fa-solid fa-users me-2" aria-hidden="true"></i>Collaborators</h2>
                     <button type="button" class="btn btn-sm btn-outline-primary" id="btn-invite-collaborator">
                         <i class="fa-solid fa-user-plus me-1"></i>Invite
                     </button>
@@ -4722,7 +4767,7 @@ export class SetList {
            `songs` array), so a song whose structured-data fetch failed still
            appears in the order. */
         const orderSummary = list.songs.map((song, i) =>
-            `<tr><td class="pe-3 text-muted">${i + 1}.</td><td>${escapeHtml(toTitleCase(song.title))}</td><td class="text-muted">${escapeHtml(SONGBOOK_NAMES[song.songbook] || song.songbook)}${song.number != null ? ' #' + song.number : ''}</td></tr>`
+            `<tr><td class="pe-3 text-muted">${i + 1}.</td><td>${escapeHtml(toTitleCase(song.title))}</td><td class="text-muted">${escapeHtml(SONGBOOK_NAMES[song.songbook] || song.songbook)}${Number(song.number) > 0 ? ' #' + Number(song.number) : ''}</td></tr>`
         ).join('');
 
         /* Build individual song pages — each rendered through the SAME
@@ -4796,6 +4841,9 @@ export class SetList {
 </html>`);
 
         printWindow.document.close();
+        /* Hide any QR/logo image that fails to load (an inline onerror would
+           be blocked by the site's Content-Security-Policy). */
+        hideBrokenPrintImages(printWindow.document);
 
         /* Wait for content to load then trigger print */
         printWindow.onload = () => {

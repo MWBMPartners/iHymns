@@ -640,8 +640,7 @@ export class Favorites {
                    data-tags="${tagsData}">
                     <input type="checkbox" class="form-check-input fav-select-check d-none me-2"
                            data-song-id="${escapeHtml(fav.id)}"
-                           aria-label="Select ${escapeHtml(toTitleCase(fav.title))}"
-                           onclick="event.stopPropagation()">
+                           aria-label="Select ${escapeHtml(toTitleCase(fav.title))}">
                     <span class="song-number-badge" data-songbook="${escapeHtml(fav.songbook)}">${escapeHtml(String(fav.number ?? ''))}</span>
                     <div class="song-info flex-grow-1">
                         <span class="song-title">${escapeHtml(toTitleCase(fav.title))}${verifiedBadge(fav)}</span>
@@ -650,8 +649,7 @@ export class Favorites {
                     <button type="button" class="btn btn-sm btn-link text-muted fav-edit-tags p-0 me-2"
                             data-song-id="${escapeHtml(fav.id)}"
                             data-song-title="${escapeHtml(fav.title)}"
-                            aria-label="Edit tags"
-                            onclick="event.preventDefault(); event.stopPropagation();">
+                            aria-label="Edit tags">
                         <i class="fa-solid fa-tags" aria-hidden="true"></i>
                     </button>
                     <i class="fa-solid fa-heart text-danger me-2 fav-heart-icon" aria-hidden="true"></i>
@@ -659,9 +657,21 @@ export class Favorites {
                 </a>`;
             }).join('');
 
+            /* The select checkbox sits inside the row's link: a click on it
+               must not bubble up and open the song. (Wired here, not as an
+               inline onclick — the site's Content-Security-Policy blocks
+               inline handlers silently.) */
+            listEl.querySelectorAll('.fav-select-check').forEach(box => {
+                box.addEventListener('click', (e) => e.stopPropagation());
+            });
+
             /* Bind tag edit buttons */
             listEl.querySelectorAll('.fav-edit-tags').forEach(btn => {
-                btn.addEventListener('click', async () => {
+                btn.addEventListener('click', async (e) => {
+                    /* The button also sits inside the row's link: stop the
+                       click following the link or reaching the router. */
+                    e.preventDefault();
+                    e.stopPropagation();
                     await this.editTags(btn.dataset.songId, btn.dataset.songTitle);
                     this.loadFavoritesList();
                 });

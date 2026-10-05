@@ -104,9 +104,19 @@ export class Share {
                     if (copyConfirm) copyConfirm.classList.remove('d-none');
                     setTimeout(() => copyConfirm?.classList.add('d-none'), 3000);
                 } catch {
+                    /* The clipboard API said no (older browser, or no
+                       permission). Try the old select-and-copy way, and tell
+                       the visitor how it went either way — it used to fail
+                       without a word. */
+                    let copied = false;
                     if (urlInput) {
                         urlInput.select();
-                        document.execCommand('copy');
+                        try { copied = document.execCommand('copy'); } catch { copied = false; }
+                    }
+                    if (copied) {
+                        this.app.showToast('Copied', 'success', 2000);
+                    } else {
+                        this.app.showToast("Couldn't copy — select the text and copy it yourself", 'warning', 4000);
                     }
                 }
             };
@@ -121,6 +131,7 @@ export class Share {
                     this.app.showToast('Song details copied', 'success', 2000);
                 } catch {
                     console.warn('[Share] Failed to copy text');
+                    this.app.showToast("Couldn't copy — select the text and copy it yourself", 'warning', 4000);
                 }
             };
         }
@@ -152,7 +163,12 @@ export class Share {
         const number = songPage.dataset.songNumber || '';
         meta.songbook = songbook;
         meta.number = number;
-        meta.fullTitle = `${fallbackTitle} — ${songbook} #${number}`;
+        /* Only add "#N" for a real number — an unnumbered song would
+           otherwise read "#" or "#0" in the share title. */
+        const numberPart = Number(number) > 0 ? ` #${Number(number)}` : '';
+        meta.fullTitle = songbook
+            ? `${fallbackTitle} — ${songbook}${numberPart}`
+            : fallbackTitle + ' — iHymns';
 
         /* Extract writers/composers */
         const writersEl = songPage.querySelector('.song-meta p:first-child');
@@ -184,8 +200,11 @@ export class Share {
      */
     buildShareText(meta, permalink) {
         let text = `"${toTitleCase(meta.title || '')}"`;
-        if (meta.songbook && meta.number) {
-            text += ` (${meta.songbook} #${meta.number})`;
+        if (meta.songbook) {
+            /* "#N" only for a real number (never "#0" / "#null"). */
+            text += Number(meta.number) > 0
+                ? ` (${meta.songbook} #${Number(meta.number)})`
+                : ` (${meta.songbook})`;
         }
         if (meta.writers) text += `\nWords: ${meta.writers}`;
         if (meta.composers) text += `\nMusic: ${meta.composers}`;

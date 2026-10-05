@@ -403,9 +403,10 @@ function renderBlock(song, block) {
                The URL caption is ALWAYS shown, so if /qr can't produce a code
                (CueRCode not yet configured / unreachable → 503 → the <img> fails)
                the reader still has the link (the "typed fallback always shows"
-               principle). onerror hides the broken-image glyph in the print
-               window (which carries no CSP); if a page's CSP blocks the handler
-               it degrades harmlessly to a hidden-by-nothing image beside the URL.
+               principle). A broken-image glyph is hidden by hideBrokenPrintImages()
+               below, which the print windows call — NOT by an inline onerror
+               attribute: a window opened from the app inherits its
+               Content-Security-Policy, which blocks inline handlers silently.
                ELI5: the picture's address is "/qr", not "/qr.php" — the trailing
                ".php" would make the server refuse the request outright before
                qr.php's own PHP code ever runs (the .htaccess "block direct PHP
@@ -421,8 +422,7 @@ function renderBlock(song, block) {
             const src = origin + '/qr?data=' + encodeURIComponent(url) + '&format=svg&size=512';
             return `<div class="print-qr">`
                 + `<img class="print-qr-img" src="${esc(src)}" alt="QR code linking to this song online"`
-                + ` width="${px}" height="${px}" style="width:${px}px;height:${px}px"`
-                + ` onerror="this.style.display='none'">`
+                + ` width="${px}" height="${px}" style="width:${px}px;height:${px}px">`
                 + `<div class="print-qr-caption">${esc(url)}</div></div>`;
         }
         case 'logo': {
@@ -466,8 +466,7 @@ function renderBlock(song, block) {
             const alt = meta.alt || (stash.name ? stash.name + ' logo' : 'Organisation logo');
             return `<div class="print-logo" style="text-align:${align}">`
                 + `<img class="print-logo-img" src="${esc(src)}" alt="${esc(alt)}"`
-                + ` style="max-height:${px}px;max-width:100%"`
-                + ` onerror="this.style.display='none'"></div>`;
+                + ` style="max-height:${px}px;max-width:100%"></div>`;
         }
         case 'spacer': {
             const h = block.size === 'lg' ? '2.5em' : block.size === 'sm' ? '0.6em' : '1.2em';
@@ -608,12 +607,40 @@ ${bodyHtml}${noticeHtml}
 </html>`;
 }
 
+/**
+ * Hide a QR code or organisation logo that fails to load, inside a print
+ * window.
+ *
+ * ELI5: if the QR picture can't be fetched, don't print an ugly "broken
+ * picture" icon — the web address printed beside it still tells the reader
+ * where to go.
+ *
+ * Detail: this replaces an inline `onerror="…"` attribute, which the site's
+ * Content-Security-Policy blocks (a window opened from the app inherits that
+ * policy). Image "error" events do not bubble, but a listener in the CAPTURE
+ * phase on the document still sees them. Call it once per print window,
+ * right after the document has been written.
+ *
+ * @param {Document} doc The print window's document
+ */
+export function hideBrokenPrintImages(doc) {
+    if (!doc || typeof doc.addEventListener !== 'function') { return; }
+    doc.addEventListener('error', (e) => {
+        const el = e && e.target;
+        if (el && el.tagName === 'IMG' && el.classList
+            && (el.classList.contains('print-qr-img') || el.classList.contains('print-logo-img'))) {
+            el.style.display = 'none';
+        }
+    }, true);
+}
+
 function printDoc(html) {
     const w = window.open('', '_blank');
     if (!w) { return false; }
     w.document.open();
     w.document.write(html);
     w.document.close();
+    hideBrokenPrintImages(w.document);
     w.onload = () => { try { w.focus(); w.print(); } catch (_e) { /* user can print manually */ } };
     return true;
 }

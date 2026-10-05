@@ -173,8 +173,8 @@ ok('a handled status IGNORES the server prose (the status is the contract)',
    'if these differ, the client is being steered by a sentence somebody can reword');
 ok('an UNHANDLED status prefers the server prose, which knows more than we do',
    devices.signOutMessageForStatus(418, 'I am a teapot.') === 'I am a teapot.');
-ok('…and falls back to a message naming the status when there is no prose',
-   devices.signOutMessageForStatus(418).includes('418'));
+ok('…and falls back to a plain sentence when there is no prose (no bare status number — visitors can\'t act on "HTTP 418")',
+   /\S/.test(devices.signOutMessageForStatus(418)) && !/\d/.test(devices.signOutMessageForStatus(418)));
 ok('a non-string serverMessage cannot crash the chooser',
    typeof devices.signOutMessageForStatus(500, null) === 'string');
 
@@ -228,8 +228,8 @@ ok('renameMessageForStatus 409 is the "not available here" case',
    devices.renameMessageForStatus(409) !== devices.renameMessageForStatus(404));
 ok('renameMessageForStatus 404 says the device is gone',
    /no longer signed in/i.test(devices.renameMessageForStatus(404)));
-ok('renameMessageForStatus 403 is the cross-origin case, not "access denied"',
-   /cross-origin/i.test(devices.renameMessageForStatus(403)));
+ok('renameMessageForStatus 403 is the stale-page case (reload), not "access denied"',
+   /reload/i.test(devices.renameMessageForStatus(403)) && !/denied|permission/i.test(devices.renameMessageForStatus(403)));
 ok('renameMessageForStatus falls back to the server prose on an unknown status',
    devices.renameMessageForStatus(418, 'I am a teapot.') === 'I am a teapot.');
 ok('renameMessageForStatus always returns a string',

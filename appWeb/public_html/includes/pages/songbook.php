@@ -199,7 +199,8 @@ if (!empty($songs)) {
     <!-- Songbook header -->
     <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
         <div>
-            <h1 class="h4 mb-1">
+            <?php /* data-doc-title = the browser-tab title (read by the router; same text index.php uses). */ ?>
+            <h1 class="h4 mb-1" data-doc-title="<?= htmlspecialchars((string)$book['name'] . ' — ' . ($app["Application"]["Name"] ?? 'iHymns')) ?>">
                 <i class="fa-solid fa-book me-2" aria-hidden="true"></i>
                 <?= htmlspecialchars($book['name']) ?>
                 <?php $sbAbbr = ihymns_songbook_abbr_label($book['id'] ?? '', $book['displayAbbr'] ?? null); ?>
@@ -391,6 +392,15 @@ if (!empty($songs)) {
         </div>
     <?php endif; ?>
 
+    <?php if (empty($songs)): ?>
+        <!-- A songbook with no songs (yet, or none the visitor may see): say so
+             in a sentence rather than leaving a blank area under the header. -->
+        <p class="text-muted my-4" role="status">
+            <i class="fa-solid fa-circle-info me-1" aria-hidden="true"></i>
+            There are no songs in this songbook yet.
+        </p>
+    <?php else: ?>
+
     <!-- Sort control (#1786) — Number / Title / Writer. `number` is an
          explicit option (only an explicit level can be direction-flipped;
          the server default is ALSO number-first, so Default and "Number ↑"
@@ -471,5 +481,6 @@ if (!empty($songs)) {
             </a>
         <?php endforeach; ?>
     </div>
+    <?php endif; /* empty($songs) */ ?>
 
 </section>

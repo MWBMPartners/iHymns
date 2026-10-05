@@ -33,7 +33,9 @@ export class Numpad {
      * Initialise — bind events for the modal numpad.
      */
     init() {
-        /* Populate songbook dropdown in modal and pre-select default */
+        /* Populate songbook dropdown in modal and pre-select default.
+           Quiet at start-up: a failure here is shown when the visitor opens
+           the keypad (openModal), not as a surprise toast on every page load. */
         this.populateSongbookDropdown('numpad-songbook');
 
         /* Modal numpad button clicks */
@@ -52,6 +54,13 @@ export class Numpad {
     openModal(songbookId) {
         this.currentNumber = '';
         this.updateModalDisplay();
+
+        /* The list may have failed to load at start-up (offline) — try again
+           now that the visitor actually wants it, and say so if it fails. */
+        const bookSelect = document.getElementById('numpad-songbook');
+        if (bookSelect && !Array.from(bookSelect.options).some((o) => !o.disabled && o.value !== '')) {
+            this.populateSongbookDropdown('numpad-songbook', { notify: true });
+        }
 
         /* Pre-select songbook: explicit param > default setting */
         const bookId = songbookId || localStorage.getItem(STORAGE_DEFAULT_SONGBOOK) || '';
@@ -157,7 +166,7 @@ export class Numpad {
     initSearchPageNumpad() {
         this.pageNumber = '';
         /* Populate and pre-select default songbook */
-        this.populateSongbookDropdown('page-numpad-songbook');
+        this.populateSongbookDropdown('page-numpad-songbook', { notify: true });
 
         /* Page numpad button clicks */
         document.querySelectorAll('#panel-number-search [data-page-num]').forEach(btn => {
@@ -291,8 +300,16 @@ export class Numpad {
 
     /**
      * Populate a songbook dropdown from the API.
+     *
+     * If the list cannot be loaded, the dropdown shows a single disabled
+     * "Couldn't load songbooks" entry (so it never looks empty or broken),
+     * and — when `notify` is true, i.e. the visitor is actively using the
+     * keypad — a toast says so too.
+     *
+     * @param {string} selectId
+     * @param {{notify?: boolean}} [opts]
      */
-    async populateSongbookDropdown(selectId) {
+    async populateSongbookDropdown(selectId, { notify = false } = {}) {
         const select = document.getElementById(selectId);
         if (!select || select.options.length > 1) return;
 
@@ -317,6 +334,16 @@ export class Numpad {
             }
         } catch (error) {
             console.error('[Numpad] Failed to load songbooks:', error);
+            /* Keep any songbooks the page already carries (the search page
+               renders its own list); only an empty dropdown gets the
+               "couldn't load" entry. */
+            const hasRealOption = Array.from(select.options).some((o) => !o.disabled && o.value !== '');
+            if (!hasRealOption) {
+                select.innerHTML = `<option value="" disabled selected>Couldn't load songbooks</option>`;
+            }
+            if (notify) {
+                this.app.showToast("Couldn't load the songbooks. Please try again.", 'warning', 4000);
+            }
         }
     }
 }

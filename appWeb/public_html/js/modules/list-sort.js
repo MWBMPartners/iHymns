@@ -75,7 +75,7 @@
 
 import { announce } from '../utils/announce.js';
 import { multiKeyCompareMissingLast, normalizeSortSpec } from '../utils/sort-compare.js';
-import { STORAGE_LIST_SORT, EVT_LIST_SORT_CHANGED, EVT_AUTH_CHANGED } from '../constants.js';
+import { STORAGE_LIST_SORT, EVT_LIST_SORT_CHANGED, EVT_AUTH_CHANGED, STORAGE_AUTH_TOKEN } from '../constants.js';
 /* #1786 Option B §7 — account sync rides the EXISTING namespaced
    `user_settings` endpoint (#1671 F5), namespace `list_sorts`. No new
    endpoint, no schema, no migration — `tblUsers.Settings` already exists
@@ -110,6 +110,22 @@ let _accountMap = null;
 /** The in-flight/most-recent primeAccountListSorts() promise — memoised so
  *  a fetch runs at most once per session until EVT_AUTH_CHANGED resets it. */
 let _accountPrimePromise = null;
+
+/**
+ * Is anyone signed in on this device? Same check the rest of the app uses
+ * (a stored sign-in token). Anonymous visitors have no saved account sorts,
+ * and asking the server anyway only earns a 401 — a red error line in the
+ * browser console on every page — so the account calls below are skipped
+ * for them.
+ * @returns {boolean}
+ */
+function _hasSignedInToken() {
+    try {
+        return !!localStorage.getItem(STORAGE_AUTH_TOKEN);
+    } catch (_e) {
+        return false; /* private-mode throw — treat as signed out */
+    }
+}
 
 /** @returns {Object<string,unknown>} the raw stored map, or {} if absent/corrupt. */
 function _readLocalMap() {
@@ -207,6 +223,9 @@ export function getListSort(surface, allowedKeys) {
  * @param {Object<string,unknown>} map
  */
 async function _pushAccountListSorts(map) {
+    /* Nobody signed in: the choice is already saved on this device, and there
+       is no account to send it to. */
+    if (!_hasSignedInToken()) return;
     try {
         const res = await apiFetch('/api?action=user_settings', {
             method: 'POST',
@@ -280,6 +299,9 @@ function _reapplyWiredFromAccount(accountSettings) {
 export function primeAccountListSorts() {
     if (_accountPrimePromise) return _accountPrimePromise;
     _accountPrimePromise = (async () => {
+        /* Signed out: nothing to fetch (see _hasSignedInToken). Signing in
+           fires EVT_AUTH_CHANGED, which re-primes below. */
+        if (!_hasSignedInToken()) return null;
         try {
             const res = await apiFetch('/api?action=user_settings&namespace=list_sorts', { auth: true });
             if (!res.ok) return null; /* 401 (anonymous) / network-adjacent failure — device-local only */

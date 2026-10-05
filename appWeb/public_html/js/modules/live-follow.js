@@ -203,7 +203,10 @@ export class LiveFollow {
                 body,
             });
             if (!r.httpOk || !r.data.ok || !r.data.code) {
-                this.app.showToast('Could not start the session: ' + (r.data.error || ('HTTP ' + r.status)), 'danger');
+                this.app.showToast(
+                    r.data.error ? 'Could not start the session: ' + r.data.error : 'Could not start the session. Please try again.',
+                    'danger'
+                );
                 return;
             }
             this.hostCode = r.data.code;
@@ -533,11 +536,11 @@ export class LiveFollow {
         if (this.hostCode) {
             const badge = document.createElement('span');
             badge.className = 'badge bg-danger d-inline-flex align-items-center gap-1';
-            badge.innerHTML = '<i class="bi bi-broadcast" aria-hidden="true"></i> LIVE · <strong>' + this._esc(this.hostCode) + '</strong>';
+            badge.innerHTML = '<i class="fa-solid fa-tower-broadcast" aria-hidden="true"></i> LIVE · <strong>' + this._esc(this.hostCode) + '</strong>';
             const end = document.createElement('button');
             end.type = 'button';
             end.className = 'btn btn-sm btn-outline-danger';
-            end.innerHTML = '<i class="bi bi-stop-circle me-1" aria-hidden="true"></i>End';
+            end.innerHTML = '<i class="fa-solid fa-circle-stop me-1" aria-hidden="true"></i>End';
             end.addEventListener('click', () => this.endHost(false));
             host.appendChild(badge);
             host.appendChild(end);
@@ -551,7 +554,7 @@ export class LiveFollow {
             go.type = 'button';
             go.className = 'btn btn-sm btn-outline-primary';
             go.title = 'Broadcast this song to congregants’ devices in real time';
-            go.innerHTML = '<i class="bi bi-broadcast me-1" aria-hidden="true"></i>Go Live';
+            go.innerHTML = '<i class="fa-solid fa-tower-broadcast me-1" aria-hidden="true"></i>Go Live';
             go.addEventListener('click', () => this.goLive(songId));
             host.appendChild(go);
         }
@@ -559,7 +562,7 @@ export class LiveFollow {
         join.type = 'button';
         join.className = 'btn btn-sm btn-outline-secondary';
         join.title = 'Follow a worship leader’s live session by code';
-        join.innerHTML = '<i class="bi bi-people me-1" aria-hidden="true"></i>Join Live';
+        join.innerHTML = '<i class="fa-solid fa-users me-1" aria-hidden="true"></i>Join Live';
         join.addEventListener('click', () => this.joinFollow());
         host.appendChild(join);
     }
@@ -579,7 +582,7 @@ export class LiveFollow {
         }
         bar.innerHTML = '';
         const label = document.createElement('span');
-        label.innerHTML = '<i class="bi bi-eye-fill me-1" aria-hidden="true"></i>Following '
+        label.innerHTML = '<i class="fa-solid fa-eye me-1" aria-hidden="true"></i>Following '
             + (this.followHost ? ('<strong>' + this._esc(this.followHost) + '</strong>') : 'the leader')
             + ' live ';
         const leave = document.createElement('button');
@@ -632,7 +635,7 @@ export class LiveFollow {
             + 'display:flex;flex-wrap:wrap;gap:0.4rem;align-items:center;justify-content:center;';
 
         const label = document.createElement('span');
-        label.innerHTML = '<i class="bi bi-broadcast-pin me-1" aria-hidden="true"></i>LIVE · <strong>' + this._esc(this.hostCode) + '</strong>';
+        label.innerHTML = '<i class="fa-solid fa-tower-broadcast me-1" aria-hidden="true"></i>LIVE · <strong>' + this._esc(this.hostCode) + '</strong>';
 
         const codeBtn = this._hostBarButton('Show code', () => this._toggleCodeView());
         const consoleBtn = this._hostBarButton('Console', () => this._openConsole());

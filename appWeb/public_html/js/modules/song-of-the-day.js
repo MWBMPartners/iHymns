@@ -151,6 +151,10 @@ export class SongOfTheDay {
         const themeLabel = data.themeLabel || 'Song of the Day';
         const firstLine = data.firstLine || '';
 
+        /* Heading levels: the small theme label above the title is a plain
+           paragraph (it is not a section of its own — a lone <h6> there sat
+           between the page's <h1> and its first <h2>), and the song title is
+           an <h2> styled at the old <h5> size. */
         container.innerHTML = `
             <div class="card card-song-of-the-day mb-4">
                 <div class="card-body">
@@ -159,14 +163,14 @@ export class SongOfTheDay {
                             <i class="fa-solid fa-sun fa-lg" aria-hidden="true"></i>
                         </div>
                         <div class="flex-grow-1">
-                            <h6 class="text-muted mb-1 fw-semibold text-uppercase" style="font-size: 0.7rem; letter-spacing: 0.05em;">
+                            <p class="text-muted mb-1 fw-semibold text-uppercase" style="font-size: 0.7rem; letter-spacing: 0.05em; line-height: 1.2;">
                                 ${escapeHtml(themeLabel)}
-                            </h6>
+                            </p>
                             <a href="/song/${escapeHtml(song.id)}"
                                class="text-decoration-none"
                                data-navigate="song"
                                data-song-id="${escapeHtml(song.id)}">
-                                <h5 class="card-title mb-1">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</h5>
+                                <h2 class="card-title h5 mb-1">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</h2>
                             </a>
                             <p class="text-muted small mb-1">
                                 <span class="badge bg-body-secondary" data-songbook="${escapeHtml(song.songbook || '')}">${escapeHtml(song.songbook || '')}</span>

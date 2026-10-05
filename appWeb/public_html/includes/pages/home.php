@@ -70,7 +70,7 @@ $homeCard = static function (string $cardId): string {
        reach the (only-visible-in-edit-mode) strip. */
     return '<div class="card-layout-item" data-card-id="' . $id . '">'
          . '<div class="card-layout-handle">'
-         . '<i class="bi bi-grip-vertical" aria-hidden="true"></i><span class="ms-1">Drag to reorder</span>'
+         . '<i class="fa-solid fa-grip-vertical" aria-hidden="true"></i><span class="ms-1">Drag to reorder</span>'
          . '</div>';
 };
 $homeCardEnd = '</div>';
@@ -92,16 +92,27 @@ $homeCardEnd = '</div>';
             <p class="hero-subtitle">
                 Your library of Christian hymns &amp; worship songs
             </p>
+            <?php /* The count chips only appear once there is something to count — a
+                     brand-new catalogue would otherwise read "0 Songs / 0 Songbooks". */
+                $heroSongCount     = (int)($stats['totalSongs'] ?? 0);
+                $heroSongbookCount = (int)($stats['totalSongbooks'] ?? 0);
+            ?>
+            <?php if ($heroSongCount > 0 || $heroSongbookCount > 0): ?>
             <p class="hero-stats">
+                <?php if ($heroSongCount > 0): ?>
                 <span class="badge bg-primary bg-gradient rounded-pill px-3 py-2">
                     <i class="fa-solid fa-music me-1" aria-hidden="true"></i>
-                    <?= number_format($stats['totalSongs']) ?> Songs
+                    <?= number_format($heroSongCount) ?> Songs
                 </span>
-                <span class="badge bg-secondary bg-gradient rounded-pill px-3 py-2 ms-2">
+                <?php endif; ?>
+                <?php if ($heroSongbookCount > 0): ?>
+                <span class="badge bg-secondary bg-gradient rounded-pill px-3 py-2<?= $heroSongCount > 0 ? ' ms-2' : '' ?>">
                     <i class="fa-solid fa-book me-1" aria-hidden="true"></i>
-                    <?= $stats['totalSongbooks'] ?> Songbooks
+                    <?= $heroSongbookCount ?> Songbooks
                 </span>
+                <?php endif; ?>
             </p>
+            <?php endif; ?>
         </div>
     </div>
 
@@ -111,7 +122,7 @@ $homeCardEnd = '</div>';
          [data-action="join-service"] click. -->
     <div class="text-center mb-4">
         <button type="button" class="btn btn-outline-success" data-action="join-service">
-            <i class="bi bi-broadcast-pin me-1" aria-hidden="true"></i>Join a live service
+            <i class="fa-solid fa-tower-broadcast me-1" aria-hidden="true"></i>Join a live service
         </button>
         <div class="small text-muted mt-1">Enter the code shown on your church’s screen to follow along.</div>
     </div>
@@ -121,17 +132,17 @@ $homeCardEnd = '</div>';
          so the logged-out majority never sees a dead "Customise" button. -->
     <div class="d-flex align-items-center flex-wrap gap-2 mb-3 d-none" id="card-layout-toolbar">
         <button type="button" class="btn btn-sm btn-outline-info" id="btn-card-layout-edit">
-            <i class="bi bi-grid-3x3-gap me-1" aria-hidden="true"></i>Customise home
+            <i class="fa-solid fa-table-cells me-1" aria-hidden="true"></i>Customise home
         </button>
         <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="btn-card-layout-done">
-            <i class="bi bi-check2 me-1" aria-hidden="true"></i>Done
+            <i class="fa-solid fa-check me-1" aria-hidden="true"></i>Done
         </button>
         <button type="button" class="btn btn-sm btn-outline-warning d-none" id="btn-card-layout-reset">
-            <i class="bi bi-arrow-counterclockwise me-1" aria-hidden="true"></i>Reset to default
+            <i class="fa-solid fa-rotate-left me-1" aria-hidden="true"></i>Reset to default
         </button>
         <button type="button" class="btn btn-sm btn-outline-danger d-none" id="btn-card-layout-save-default"
                 title="Save the current order as the home default for all users">
-            <i class="bi bi-save me-1" aria-hidden="true"></i>Save as site default
+            <i class="fa-solid fa-floppy-disk me-1" aria-hidden="true"></i>Save as site default
         </button>
         <span class="small text-muted d-none" id="card-layout-help">
             Drag a section's handle to reorder; click &times; to hide it. Hidden sections reappear from
@@ -243,6 +254,20 @@ $homeCardEnd = '</div>';
         <!-- `row-cols-*` ladders the column count with the viewport so
              cards stop stretching on xl/xxl monitors: 2 → 3 → 4 → 5 → 6
              as the breakpoints unlock. Each child is just `.col`. -->
+        <?php
+            /* Songbooks that hold songs — the only ones the grid shows. None at
+               all gets a short friendly line instead of a blank gap. */
+            $homeHasSongbooks = false;
+            foreach ($songbooks as $_homeSb) {
+                if (($_homeSb['songCount'] ?? 0) > 0) { $homeHasSongbooks = true; break; }
+            }
+        ?>
+        <?php if (!$homeHasSongbooks): ?>
+        <p class="text-muted mb-4" role="status">
+            <i class="fa-solid fa-circle-info me-1" aria-hidden="true"></i>
+            There are no songbooks here yet. Please check back soon.
+        </p>
+        <?php else: ?>
         <div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 row-cols-xl-5 row-cols-xxl-6 g-3 mb-4">
             <?php foreach ($songbooks as $index => $book): ?>
                 <?php if (($book['songCount'] ?? 0) > 0): ?>
@@ -381,6 +406,7 @@ $homeCardEnd = '</div>';
                 <?php endif; ?>
             <?php endforeach; ?>
         </div>
+        <?php endif; /* $homeHasSongbooks */ ?>
     </section>
     <?= $homeCardEnd ?>
 

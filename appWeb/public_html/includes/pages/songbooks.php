@@ -24,6 +24,12 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'sort_helpers.php';
 
 $songbooks = $songData->getSongbooks();
 $stats = $songData->getStats();
+/* Songbooks that actually hold songs — the grid below only shows these. When
+   there are none, the page says so instead of showing an empty grid. */
+$hasListedSongbooks = false;
+foreach ($songbooks as $_sbCheck) {
+    if (($_sbCheck['songCount'] ?? 0) > 0) { $hasListedSongbooks = true; break; }
+}
 
 ?>
 
@@ -38,15 +44,26 @@ $stats = $songData->getStats();
             <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i>
             Songbooks
         </h1>
+        <?php if (($stats['totalSongs'] ?? 0) > 0): ?>
         <span class="badge bg-primary bg-gradient rounded-pill">
             <?= number_format($stats['totalSongs']) ?> songs total
         </span>
+        <?php endif; ?>
     </div>
 
     <!-- Language filter (#679) — same partial as the home-page
          Songbooks section. Silently returns early when the catalogue
          spans only one language. -->
     <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'songbook-language-filter.php'; ?>
+
+    <?php if (!$hasListedSongbooks): ?>
+        <!-- No songbooks to show yet: say so in a sentence rather than leaving
+             a blank area under the heading. -->
+        <p class="text-muted my-4" role="status">
+            <i class="fa-solid fa-circle-info me-1" aria-hidden="true"></i>
+            There are no songbooks here yet. Please check back soon.
+        </p>
+    <?php else: ?>
 
     <!-- Sort control (#1786) — Name / Abbreviation / Song count. Server
          markup is identical for every viewer (shared-cache fragment, rule
@@ -254,5 +271,6 @@ $stats = $songData->getStats();
             <?php endif; ?>
         <?php endforeach; ?>
     </div>
+    <?php endif; /* $hasListedSongbooks */ ?>
 
 </section>

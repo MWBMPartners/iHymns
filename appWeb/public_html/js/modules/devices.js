@@ -193,14 +193,14 @@ export function signOutMessageForStatus(status, serverMessage = '') {
             /* validateCsrfRequest() refused — this is the same-origin gate, not
                a permissions problem, and telling the user "access denied" would
                send them looking for the wrong thing. */
-            return 'That request was rejected as cross-origin. Reload the page and try again.';
+            return 'That change couldn\'t be made from this page. Reload the page and try again.';
         case 404:
             return 'That device is already signed out.';
         case 429:
             return 'Too many sign-out attempts. Please wait a while and try again.';
         default:
             if (msg !== '') return msg;
-            return 'Could not sign that device out (HTTP ' + status + '). Please try again.';
+            return 'Could not sign that device out. Please try again.';
     }
 }
 
@@ -285,7 +285,7 @@ export function renameMessageForStatus(status, serverMessage = '') {
         case 401:
             return 'You are no longer signed in. Sign in again, then retry.';
         case 403:
-            return 'That request was rejected as cross-origin. Reload the page and try again.';
+            return 'That change couldn\'t be made from this page. Reload the page and try again.';
         case 404:
             return 'That device is no longer signed in.';
         case 409:
@@ -294,7 +294,7 @@ export function renameMessageForStatus(status, serverMessage = '') {
             return 'Too many rename attempts. Please wait a while and try again.';
         default:
             if (msg !== '') return msg;
-            return 'Could not rename that device (HTTP ' + status + '). Please try again.';
+            return 'Could not rename that device. Please try again.';
     }
 }
 

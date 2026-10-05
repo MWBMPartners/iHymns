@@ -160,7 +160,7 @@ $languageCount = count($languageList);
                 class="btn btn-outline-secondary btn-sm dropdown-toggle js-lang-filter-trigger"
                 data-bs-toggle="dropdown" data-bs-auto-close="outside"
                 aria-haspopup="true" aria-expanded="false">
-            <i class="bi bi-translate me-1" aria-hidden="true"></i>
+            <i class="fa-solid fa-language me-1" aria-hidden="true"></i>
             <span class="js-lang-filter-trigger-label">Languages: All</span>
             <span class="badge rounded-pill text-bg-info ms-1 d-none js-lang-filter-count"
                   aria-hidden="true">0</span>

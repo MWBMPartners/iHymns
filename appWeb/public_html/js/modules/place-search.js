@@ -639,7 +639,7 @@
                     if (errBody && errBody.detail) { detail = ' — ' + errBody.detail; }
                 } catch (_e) { /* no JSON body */ }
                 setStatus('idle');
-                renderHint(capitalise(noun.singular) + ' lookup unavailable (HTTP ' + resp.status + ')' + detail + '. Your text is saved as typed.');
+                renderHint(capitalise(noun.singular) + ' lookup unavailable' + detail + '. Your text is saved as typed.');
                 return;
             }
             const data = await resp.json().catch(() => null);

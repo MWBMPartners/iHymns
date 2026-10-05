@@ -112,6 +112,17 @@ $songNumber    = ($rawSongNumber === null || $rawSongNumber === '' || (int)$rawS
 $songTitle   = toTitleCase($song['title'] ?? 'Untitled');
 $songbook    = $song['songbook'] ?? '';
 $bookName    = $song['songbookName'] ?? '';
+/* Browser-tab title, read by the router (applyDynamicRecordTitle) from the
+   <h1>'s data-doc-title: "<title> — <songbook name> #<number>", the same shape
+   index.php gives a fresh load of this page. "#N" only when there is a real
+   number (never "#0"). */
+$songDocTitle = $songTitle;
+if (($bookName !== '' ? $bookName : $songbook) !== '') {
+    $songDocTitle .= ' — ' . ($bookName !== '' ? $bookName : $songbook);
+}
+if ($songNumber !== null) {
+    $songDocTitle .= ' #' . $songNumber;
+}
 /* Songbook colour for the reading-progress bar (#109). Fetched here
    instead of leaving it to a CSS variable lookup so custom songbooks
    created via /manage/songbooks (whose abbreviation isn't in the
@@ -666,7 +677,7 @@ try {
                 </span>
                 <?php endif; ?>
                 <div class="flex-grow-1">
-                    <h1 class="h4 mb-1"<?php if ($songPrimaryLang !== ''): ?> lang="<?= htmlspecialchars($songPrimaryLang) ?>"<?php if ($songLangDir === 'rtl'): ?> dir="rtl"<?php endif; ?><?php endif; ?>><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" role="img" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?><?php /* #1750 — disambiguation parenthetical (mirrors work.php:142-144); short curator string, inherits the h1's song-language lang/dir (accepted, not worth a nested lang reset — see build spec §2.2). */ ?><?php if ($songDisambig !== ''): ?><small class="text-muted fw-normal"> (<?= htmlspecialchars($songDisambig) ?>)</small><?php endif; ?></h1>
+                    <h1 class="h4 mb-1" data-doc-title="<?= htmlspecialchars($songDocTitle) ?>"<?php if ($songPrimaryLang !== ''): ?> lang="<?= htmlspecialchars($songPrimaryLang) ?>"<?php if ($songLangDir === 'rtl'): ?> dir="rtl"<?php endif; ?><?php endif; ?>><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" role="img" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?><?php /* #1750 — disambiguation parenthetical (mirrors work.php:142-144); short curator string, inherits the h1's song-language lang/dir (accepted, not worth a nested lang reset — see build spec §2.2). */ ?><?php if ($songDisambig !== ''): ?><small class="text-muted fw-normal"> (<?= htmlspecialchars($songDisambig) ?>)</small><?php endif; ?></h1>
                     <?php /* #1750 — subtitle, muted, directly under the title (mirrors work.php:146-148). Song-content, so it carries the song's own lang/dir like the title does (#1200 convention). */ ?>
                     <?php if ($songSubtitle !== ''): ?>
                         <p class="text-muted mb-1"<?php if ($songPrimaryLang !== ''): ?> lang="<?= htmlspecialchars($songPrimaryLang) ?>"<?php if ($songLangDir === 'rtl'): ?> dir="rtl"<?php endif; ?><?php endif; ?>><?= htmlspecialchars($songSubtitle) ?></p>
@@ -711,7 +722,7 @@ try {
                     </p>
                     <?php if ($serviceCcliNumber !== null): /* #1335 — CCL copyright notice for a present congregant riding the org licence. */ ?>
                         <p class="small text-muted fst-italic mb-0 mt-1">
-                            <i class="bi bi-shield-check me-1" aria-hidden="true"></i>
+                            <i class="fa-solid fa-shield-halved me-1" aria-hidden="true"></i>
                             Shown under your church’s CCLI Copyright Licence<?= $serviceCcliNumber !== '' ? ' #' . htmlspecialchars($serviceCcliNumber) : '' ?> while you follow the service.
                         </p>
                     <?php endif; ?>
@@ -1848,10 +1859,14 @@ try {
         <?php if (!empty($mediaByKind['image'])): ?>
             <div class="song-media-image mb-3 d-flex flex-wrap gap-2">
                 <?php foreach ($mediaByKind['image'] as $m): ?>
+                    <?php /* Alt text: with a visible caption the picture is described right
+                             beside it, so alt="" (a screen reader would otherwise read the
+                             caption twice); without one, say what it is for. The file name
+                             is never a useful alt. */ ?>
                     <figure class="mb-0">
                         <img loading="lazy" class="rounded" style="max-width: 100%; max-height: 280px;"
                              src="<?= htmlspecialchars($m['streamUrl']) ?>"
-                             alt="<?= htmlspecialchars(($m['annotation'] ?? '') !== '' ? $m['annotation'] : $m['fileName']) ?>">
+                             alt="<?= ($m['annotation'] ?? '') !== '' ? '' : htmlspecialchars('Illustration for ' . $songTitle) ?>">
                         <?php if (!empty($m['annotation'])): ?>
                             <figcaption class="small text-muted mt-1"><?= htmlspecialchars($m['annotation']) ?></figcaption>
                         <?php endif; ?>

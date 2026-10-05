@@ -674,7 +674,8 @@ $personDisambiguation = trim((string)($person['Disambiguation'] ?? ''));
                  the language badge before it) — so a screen reader's
                  accessible name for the heading includes e.g. "Hillsong
                  United Group", not just the bare name. -->
-            <h1 class="h4 mb-1 d-flex flex-wrap align-items-center gap-2">
+            <?php /* data-doc-title = the browser-tab title (read by the router; same text index.php uses). */ ?>
+            <h1 class="h4 mb-1 d-flex flex-wrap align-items-center gap-2" data-doc-title="<?= htmlspecialchars((string)$personName . ' — ' . ($app["Application"]["Name"] ?? 'iHymns')) ?>">
                 <i class="fa-solid <?= htmlspecialchars($personTypePresentation['icon']) ?><?= $personTypePresentation['badge'] === null && $personType === 'person' ? '' : ' text-info' ?>" aria-hidden="true" title="<?= htmlspecialchars(MUSICIAN_TYPES[$personType] ?? 'Person') ?>"></i>
                 <span class="<?= $personTypePresentation['italic'] ? 'fst-italic' : '' ?>"><?= htmlspecialchars($personName) ?></span>
                 <?php if ($personDisambiguation !== ''): ?>

@@ -748,7 +748,7 @@ declare(strict_types=1);
                         <option value="crossfade">Crossfade — pure opacity, no motion</option>
                         <option value="slide">Slide — directional horizontal slide</option>
                     </optgroup>
-                    <optgroup label="Modern (#865)">
+                    <optgroup label="Modern">
                         <option value="scale">Scale — gentle zoom with fade</option>
                         <option value="lift">Lift — page rises from below</option>
                         <option value="depth">Depth — cinematic recede &amp; emerge</option>

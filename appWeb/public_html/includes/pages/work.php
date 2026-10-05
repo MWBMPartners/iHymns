@@ -61,6 +61,7 @@ if ($work === null) {
             'fa'      => 'fa-layer-group',
             'actions' => [
                 ['label' => 'Go Home',   'href' => '/',          'navigate' => 'home',      'primary' => true, 'fa' => 'fa-house'],
+                ['label' => 'Search',    'href' => '/search',    'navigate' => 'search',    'fa' => 'fa-magnifying-glass'],
                 ['label' => 'Songbooks', 'href' => '/songbooks', 'navigate' => 'songbooks', 'fa' => 'fa-book-open'],
             ],
         ]);
@@ -144,7 +145,8 @@ foreach ($workCreditGroups as $workCreditGroup) {
     </nav>
 
     <header class="mb-3">
-        <h1 class="h3 mb-1">
+        <?php /* data-doc-title = the browser-tab title (read by the router; same text index.php uses). */ ?>
+        <h1 class="h3 mb-1" data-doc-title="<?= htmlspecialchars((string)$work['title'] . ' — Work — ' . ($app["Application"]["Name"] ?? 'iHymns')) ?>">
             <?= htmlspecialchars($work['title']) ?>
             <?php if (!empty($work['disambiguation'])): ?>
                 <small class="text-muted fw-normal">(<?= htmlspecialchars($work['disambiguation']) ?>)</small>

@@ -49,6 +49,30 @@ const DYNAMIC_TITLE_PAGES = new Set([
     'song', 'songbook', 'tag', 'musician', 'publisher', 'tune', 'work', 'setlist-shared',
 ]);
 
+/**
+ * Build the `.catch()` handler for a page-module import that failed.
+ *
+ * ELI5: if one of a page's helper scripts fails to load, we still want the
+ * error log to hear about it — not just the browser console where nobody
+ * looks.
+ *
+ * Detail: these imports used to end in `.catch(err => console.error(…))`,
+ * which swallowed the failure — the page looked fine, only that one feature
+ * was dead, and the error monitor (js/modules/error-monitor.js, which
+ * listens for window "error" events) never heard about it. Logging and then
+ * re-throwing on the next tick (outside the promise chain, so nothing else
+ * is disturbed) gets it reported.
+ *
+ * @param {string} name Short module name for the log line
+ * @returns {(err: unknown) => void}
+ */
+function reportInitFailure(name) {
+    return (err) => {
+        console.error(`[Router] ${name} init failed:`, err);
+        setTimeout(() => { throw err; });
+    };
+}
+
 export class Router {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -526,6 +550,9 @@ export class Router {
         }
         this.abortController = new AbortController();
 
+        /** HTTP status of a failed answer (0 = none, e.g. no connection). */
+        let failedStatus = 0;
+
         try {
             /* #864 — fetch FIRST, animate the swap second, so old and
                new content animate simultaneously via the View
@@ -578,6 +605,9 @@ export class Router {
                     /* Nothing usable came back — fall through to the generic
                        alert, which for a genuine network or empty-body failure
                        is the honest answer. */
+                    /* Remember the status so the failure card below can pick
+                       its wording by status, never by message text (rule #35). */
+                    failedStatus = response.status;
                     throw new Error(`HTTP ${response.status}`);
                 }
                 this.app.transitions.completeLoading();
@@ -643,13 +673,59 @@ export class Router {
 
             console.error('[Router] Failed to load page:', error);
             this.app.transitions.completeLoading();
-            content.innerHTML = `
-                <div class="alert alert-danger mt-4" role="alert">
-                    <i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>
-                    Failed to load page. Please check your connection and try again.
-                </div>`;
+            this._renderLoadFailure(content, failedStatus);
             this.app.transitions.pageIn(content);
         }
+    }
+
+    /**
+     * Show the "this page would not load" card, with plain wording for the
+     * kind of failure and two ways out.
+     *
+     * ELI5: tells you what went wrong in everyday words, lets you try again,
+     * or takes you home.
+     *
+     * Detail: the wording depends on what we know — no connection, the server
+     * saying "slow down" (429), a server fault (5xx), or anything else. The
+     * HTTP status is passed in by loadPage(); a network failure has none (0). "Try again" re-runs the whole load for the current
+     * address; "Go to Home" is an ordinary `data-navigate` link handled by
+     * app.js. Both are wired without inline handlers (the site's
+     * Content-Security-Policy blocks those).
+     *
+     * @param {HTMLElement} content The `#page-content` element
+     * @param {number} status HTTP status of the failed answer, or 0 if none arrived
+     */
+    _renderLoadFailure(content, status) {
+        let message;
+        if (navigator.onLine === false) {
+            message = "You're offline right now. Check your connection and try again.";
+        } else if (status === 429) {
+            message = "You're going a bit fast — wait a moment and try again.";
+        } else if (status >= 500) {
+            message = 'Something went wrong on our side. Please try again.';
+        } else {
+            message = "We couldn't load this page. Check your connection and try again.";
+        }
+
+        content.innerHTML = `
+            <div class="alert alert-danger mt-4" role="alert">
+                <h1 class="h5 alert-heading">
+                    <i class="fa-solid fa-triangle-exclamation me-2" aria-hidden="true"></i>This page didn't load
+                </h1>
+                <p class="mb-3">${message}</p>
+                <div class="d-flex flex-wrap gap-2">
+                    <button type="button" class="btn btn-primary btn-sm" id="page-load-retry">
+                        <i class="fa-solid fa-rotate-right me-1" aria-hidden="true"></i>Try again
+                    </button>
+                    <a href="/" class="btn btn-outline-secondary btn-sm" data-navigate="home">
+                        <i class="fa-solid fa-house me-1" aria-hidden="true"></i>Go to Home
+                    </a>
+                </div>
+            </div>`;
+
+        content.querySelector('#page-load-retry')?.addEventListener('click', () => {
+            this.refresh();
+        }, { once: true });
     }
 
     /**
@@ -757,7 +833,26 @@ export class Router {
      */
     applyDynamicRecordTitle(page, heading) {
         if (!DYNAMIC_TITLE_PAGES.has(page)) { return; }
-        const name = (heading?.textContent || '').trim();
+
+        /* First choice: a title the page spells out itself, in a
+           `data-doc-title` attribute (on the <h1>). It is used exactly as
+           written, so a song can read "Title — Songbook #12" the same way
+           index.php titles it on a fresh load. */
+        const marked = document.querySelector('#page-content [data-doc-title]');
+        const explicit = (marked?.getAttribute('data-doc-title') || '').replace(/\s+/g, ' ').trim();
+        if (explicit) {
+            document.title = explicit;
+            return;
+        }
+
+        /* Otherwise read the heading — but without its decoration. A heading
+           can hold badge text ("Unofficial", a musician's type and dates),
+           icons and screen-reader-only words, none of which belong in a tab
+           title. */
+        if (!heading) { return; }
+        const clone = heading.cloneNode(true);
+        clone.querySelectorAll('.badge, small, .visually-hidden, svg, i').forEach((el) => el.remove());
+        const name = (clone.textContent || '').replace(/\s+/g, ' ').trim();
         if (!name) { return; }
         const appName = this.config.appName || 'iHymns';
         document.title = `${name} — ${appName}`;
@@ -785,7 +880,7 @@ export class Router {
            is skipped by construction — those modules wire themselves via
            wireListSortControl(). */
         import('./list-sort.js').then(m => m.initListSort())
-            .catch(err => console.error('[Router] list-sort init failed:', err));
+            .catch(reportInitFailure('list-sort'));
 
         /* Reading-progress bar on every scrollable page (#751). Was
            song-only originally (#109); the module's short-page
@@ -921,10 +1016,10 @@ export class Router {
             const exportSongId = document.querySelector('.page-song')?.dataset.songId || params.id || '';
             import('./export-ui.js')
                 .then(m => m.initSongExport(exportSongId))
-                .catch(err => console.error('[Router] export-ui init failed:', err));
+                .catch(reportInitFailure('export-ui'));
             import('./present-mode.js')
                 .then(m => m.initPresentMode())
-                .catch(err => console.error('[Router] present-mode init failed:', err));
+                .catch(reportInitFailure('present-mode'));
             /* #1089/#1100 P1 — per-line translation "Show translation" toggle.
                Same CSP/shared-cache-fragment reasoning as Export/Present above:
                song.php only emits the button (and the hidden translation rows
@@ -932,7 +1027,7 @@ export class Router {
                translations, so this is a cheap no-op on every other song. */
             import('./song-translations.js')
                 .then(m => m.initLineTranslations())
-                .catch(err => console.error('[Router] song-translations init failed:', err));
+                .catch(reportInitFailure('song-translations'));
             /* #1266 Phase 2 — per-user song highlights & notes. DOM-first
                (rule #33): the module reads SongId from `.page-song[data-song-id]`
                and lines from `[data-line-id]` itself rather than taking them as
@@ -942,7 +1037,7 @@ export class Router {
                window.iHymnsApp.userAuth.getUser() and no-ops for a guest. */
             import('./song-markup.js')
                 .then(m => m.initSongMarkup())
-                .catch(err => console.error('[Router] song-markup init failed:', err));
+                .catch(reportInitFailure('song-markup'));
             /* Musical key / tempo / time signature (#298, wired #1671 F3).
                Runs AFTER this.app.transpose.initSongPage() above deliberately:
                transpose.js reads `dataset.key` once at init, and `data-key` has
@@ -954,7 +1049,7 @@ export class Router {
                treats as "nothing to show" rather than as an error. */
             import('./song-key.js')
                 .then(m => m.initSongKey(exportSongId))
-                .catch(err => console.error('[Router] song-key init failed:', err));
+                .catch(reportInitFailure('song-key'));
             /* readingProgress.initOnAnyPage() already ran at the top
                of afterPageLoad — covers every page including song.
                Removing the song-specific re-call avoids a redundant
@@ -1042,7 +1137,7 @@ export class Router {
                whenever the home page is shown. */
             import('./home-page.js')
                 .then(m => m.initHomePage())
-                .catch(err => console.error('[Router] home-page init failed:', err));
+                .catch(reportInitFailure('home-page'));
         }
 
         /* #1148 — the /themes A–Z index: filter + letter jump bar, wired as a
@@ -1051,7 +1146,7 @@ export class Router {
         if (page === 'themes') {
             import('./themes-page.js')
                 .then(m => m.initThemesPage())
-                .catch(err => console.error('[Router] themes-page init failed:', err));
+                .catch(reportInitFailure('themes-page'));
         }
 
         /* Songbook language filter (#679). Booted on both /home and
@@ -1065,7 +1160,7 @@ export class Router {
         if (page === 'home' || page === 'songbooks') {
             import('./songbook-language-filter.js')
                 .then(m => m.bootSongbookLanguageFilter())
-                .catch(err => console.error('[Router] songbook-language-filter init failed:', err));
+                .catch(reportInitFailure('songbook-language-filter'));
         }
 
         /* Per-tile "Export songbook ▾" dropdowns on the /songbooks LIST
@@ -1081,7 +1176,7 @@ export class Router {
         if (page === 'songbooks') {
             import('./export-ui.js')
                 .then(m => m.initSongbookListExport())
-                .catch(err => console.error('[Router] export-ui init failed:', err));
+                .catch(reportInitFailure('export-ui'));
         }
 
         /* Settings page — language preferences picker (#736). The
@@ -1092,7 +1187,7 @@ export class Router {
         if (page === 'settings') {
             import('./settings-language-filter.js')
                 .then(m => m.bootSettingsLanguageFilter())
-                .catch(err => console.error('[Router] settings-language-filter init failed:', err));
+                .catch(reportInitFailure('settings-language-filter'));
             /* Also boot the songbook-filter module so the global
                fetch-header patch + saved subtag list propagation
                applies even when the home grid isn't on screen. */
@@ -1109,7 +1204,7 @@ export class Router {
            renders nothing if there's no in-flight import. */
         import('./bulk-import-progress.js')
             .then(m => m.bootBulkImportProgressWidget())
-            .catch(err => console.error('[Router] bulk-import-progress init failed:', err));
+            .catch(reportInitFailure('bulk-import-progress'));
 
         /* Initialise favourites list on favorites page */
         if (page === 'favorites') {
@@ -1134,18 +1229,18 @@ export class Router {
                and no hardcoded copy of the kind list. */
             import('./push-notifications.js')
                 .then(m => m.bootPushCard())
-                .catch(err => console.error('[Router] push-notifications init failed:', err));
+                .catch(reportInitFailure('push-notifications'));
 
             import('./devices.js')
                 .then(m => m.bootDevicesCard())
-                .catch(err => console.error('[Router] devices init failed:', err));
+                .catch(reportInitFailure('devices'));
         }
 
         /* Device-code pairing "Link a device" page (#1407). */
         if (page === 'link') {
             import('./device-link.js')
                 .then(m => m.bootDeviceLinkPage())
-                .catch(err => console.error('[Router] device-link init failed:', err));
+                .catch(reportInitFailure('device-link'));
         }
 
         /* ELI5: hook up the Request-a-Song form (fetch submit, offline
@@ -1170,7 +1265,7 @@ export class Router {
         if (page === 'request') {
             import('./request-a-song.js')
                 .then(m => m.initRequestASong(params))
-                .catch(err => console.error('[Router] request-a-song init failed:', err));
+                .catch(reportInitFailure('request-a-song'));
 
             /* "Your requests" (#1671 F2) — the outcome side of the form above.
                Same rule-#30 wiring, and for the same reason: `request` is in
@@ -1180,7 +1275,7 @@ export class Router {
                [data-my-requests] and no-ops when it is absent. */
             import('./my-song-requests.js')
                 .then(m => m.initMySongRequests())
-                .catch(err => console.error('[Router] my-song-requests init failed:', err));
+                .catch(reportInitFailure('my-song-requests'));
         }
 
         /* After the new page HTML is in the DOM, broadcast the current auth
@@ -1214,7 +1309,7 @@ export class Router {
                again be visible without something behind it. */
             import('./setlist-templates.js')
                 .then(m => m.bootSetlistTemplates(this.app.setList))
-                .catch(err => console.error('[Router] setlist-templates init failed:', err));
+                .catch(reportInitFailure('setlist-templates'));
         }
 
         /* Initialise shared set list page (#147) */
@@ -1237,7 +1332,7 @@ export class Router {
             const sbAbbr = document.querySelector('.page-songbook')?.dataset.songbookAbbr || params.id || '';
             import('./export-ui.js')
                 .then(m => m.initSongbookExport(sbAbbr))
-                .catch(err => console.error('[Router] export-ui init failed:', err));
+                .catch(reportInitFailure('export-ui'));
         }
 
         /* Initialise search page controls */

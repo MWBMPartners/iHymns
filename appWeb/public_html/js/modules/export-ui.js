@@ -183,8 +183,31 @@ function makeExportProgressToast(total) {
 
 async function fetchJson(url) {
     const r = await apiFetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
-    if (!r.ok) { throw new Error('HTTP ' + r.status); }
+    if (!r.ok) {
+        const err = new Error('HTTP ' + r.status);
+        /* Keep the status on the error so exportFailureMessage() can pick the
+           wording by number, never by message text (rule #35). */
+        err.status = r.status;
+        throw err;
+    }
     return r.json();
+}
+
+/**
+ * Plain-words message for a failed export, chosen by HTTP status.
+ *
+ * ELI5: tells the visitor what happened without showing them a status number
+ * or a raw error sentence.
+ *
+ * @param {unknown} err The error caught from the export attempt
+ * @param {'song'|'songbook'} what What was being exported
+ * @returns {string}
+ */
+function exportFailureMessage(err, what) {
+    const status = (err && typeof err.status === 'number') ? err.status : 0;
+    if (status === 403) { return 'Sign in to export this ' + what + '.'; }
+    if (status === 429) { return 'Please wait a moment and try again.'; }
+    return "We couldn't create that file. Please try again.";
 }
 
 /**
@@ -272,7 +295,8 @@ export function initSongExport(songId) {
                 if (!fmt || typeof fmt.exportSong !== 'function') { throw new Error('format unavailable'); }
                 fmt.exportSong(data.song, options);
             } catch (err) {
-                toast('Export failed: ' + (err && err.message ? err.message : 'unknown error'), 'danger');
+                console.error('[Export] song export failed:', err);
+                toast(exportFailureMessage(err, 'song'), 'danger');
             }
         });
     });
@@ -298,7 +322,8 @@ export function initSongExport(songId) {
  *   comes back from the server.
  * @returns {Promise<void>} Resolves once the download has been triggered (or
  *   the user declined the post-fetch belt's confirm — a QUIET return, no
- *   error); rejects with an Error whose message is fit to show the user.
+ *   error); rejects with an Error (carrying `.status` for an HTTP failure) —
+ *   the caller turns that into plain words with exportFailureMessage().
  */
 async function exportSongbookAs(abbr, fmtKey, linesPerSlide, knownSongCount) {
     const data = await fetchJson('/api?action=songbook_export&abbr=' + encodeURIComponent(abbr));
@@ -372,7 +397,8 @@ function wireSongbookExportMenu(menu, abbr, songCount) {
                 toast('Preparing songbook export…', 'info');
                 await exportSongbookAs(abbr, fmtKey, linesPerSlide, songCount);
             } catch (err) {
-                toast('Songbook export failed: ' + (err && err.message ? err.message : 'unknown error'), 'danger');
+                console.error('[Export] songbook export failed:', err);
+                toast(exportFailureMessage(err, 'songbook'), 'danger');
             }
         });
     });

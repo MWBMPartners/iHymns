@@ -70,6 +70,30 @@ $pubKindLabel = ($publisher !== null && isset(IHYMNS_PUBLISHER_KINDS[$publisher[
     ? IHYMNS_PUBLISHER_KINDS[$publisher['Kind']]
     : ($publisher['Kind'] ?? '');
 $pubRoleLabels = IHYMNS_PUBLISHER_ROLES;
+
+/* A slug that matches no publisher: send HTTP 404 with the shared "not found"
+   card (the same helper work.php uses) instead of an ad-hoc warning box, so the
+   reader gets a proper heading and ways to carry on (Search / Songbooks). The
+   router shows an error-status body as-is. */
+if ($pubSlug !== '' && $publisher === null) {
+    http_response_code(404);
+    if (function_exists('renderErrorFragment')) {
+        echo renderErrorFragment(404, [
+            'title'   => 'Publisher not found',
+            'message' => 'We couldn\'t find a publisher matching "' . $pubSlug . '". It may have been renamed or removed, or the link is out of date.',
+            'fa'      => 'fa-building',
+            'actions' => [
+                ['label' => 'Go Home',   'href' => '/',          'navigate' => 'home',      'primary' => true, 'fa' => 'fa-house'],
+                ['label' => 'Search',    'href' => '/search',    'navigate' => 'search',    'fa' => 'fa-magnifying-glass'],
+                ['label' => 'Songbooks', 'href' => '/songbooks', 'navigate' => 'songbooks', 'fa' => 'fa-book-open'],
+            ],
+        ]);
+    } else {
+        echo '<div class="alert alert-warning" role="alert">Publisher not found: <strong>'
+           . htmlspecialchars($pubSlug) . '</strong></div>';
+    }
+    return;
+}
 ?>
 
 <nav aria-label="Breadcrumb" class="mb-3">
@@ -89,21 +113,10 @@ $pubRoleLabels = IHYMNS_PUBLISHER_ROLES;
     <a href="/" class="btn btn-primary" data-navigate="home">
         <i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>Back to Home
     </a>
-<?php elseif ($publisher === null): ?>
-    <div class="alert alert-warning" role="alert">
-        <i class="fa-solid fa-circle-exclamation me-2" aria-hidden="true"></i>
-        No publisher named <strong><?= htmlspecialchars($pubSlug) ?></strong> in the catalogue.
-    </div>
-    <p class="text-muted small">
-        Publishers are curated from songbook metadata; if you expected this one, it may not have been
-        catalogued under that exact spelling yet.
-    </p>
-    <a href="/" class="btn btn-primary" data-navigate="home">
-        <i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>Back to Home
-    </a>
 <?php else: ?>
     <header class="mb-4">
-        <h1 class="h3 d-flex align-items-baseline gap-2 flex-wrap">
+        <?php /* data-doc-title = the browser-tab title (read by the router; same text index.php uses). */ ?>
+        <h1 class="h3 d-flex align-items-baseline gap-2 flex-wrap" data-doc-title="<?= htmlspecialchars((string)$publisher['Name'] . ' — ' . ($app["Application"]["Name"] ?? 'iHymns')) ?>">
             <i class="fa-solid fa-building text-muted" aria-hidden="true"></i>
             <span><?= htmlspecialchars((string)$publisher['Name']) ?></span>
             <?php if (!empty($publisher['Disambiguation'])): ?>

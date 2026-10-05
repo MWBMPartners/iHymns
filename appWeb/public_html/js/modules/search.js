@@ -84,6 +84,11 @@ const SEARCH_SORT_TYPES = { title: 'text', number: 'text' };
 /** Results fetched per page (and per "Load more" click). */
 const PAGE_SIZE = 50;
 
+/** Shortest query the search page will send. A single letter matches far
+ *  too much to be useful, so the page asks the visitor to type a little
+ *  more instead (every "q.length >= 2" check below uses this one number). */
+const MIN_QUERY_LENGTH = 2;
+
 export class Search {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -102,6 +107,12 @@ export class Search {
 
         /** @type {object|null} Current search-page pagination state */
         this._search = null;
+
+        /** @type {number} Counts fresh searches. A slow answer to an OLD
+         *  search compares its number to this one and is thrown away if a
+         *  newer search has started since, so the same results can never be
+         *  drawn twice or an old answer can never overwrite a newer one. */
+        this._searchSeq = 0;
 
         /** @type {object|null} #1936 — the live typeahead suggestion dropdown
          *  state, created lazily by `_initSuggest()` on the first /search
@@ -221,8 +232,10 @@ export class Search {
                 /* Re-run current search with the new mode (server decides
                    whether lyrics participate — no client index to build). */
                 const q = input.value.trim();
-                if (q.length >= 2) {
+                if (q.length >= MIN_QUERY_LENGTH) {
                     this.performSearch(q, filter?.value || '', results);
+                } else if (q.length > 0) {
+                    this._showShortQueryHint(results);
                 }
             });
         }
@@ -280,8 +293,12 @@ export class Search {
                    combobox-a11y preventDefault()s it and navigates.) */
                 this._closeSuggest();
                 const q = input.value.trim();
-                if (q.length >= 2) {
+                if (q.length >= MIN_QUERY_LENGTH) {
                     this.performSearch(q, filter?.value || '', results);
+                } else if (q.length > 0) {
+                    /* One letter is too little to search on — say so rather
+                       than leaving Enter looking like it did nothing. */
+                    this._showShortQueryHint(results);
                 }
             });
         }
@@ -300,10 +317,10 @@ export class Search {
             /* #1936 — collapse the quick-jump dropdown IMMEDIATELY when the box
                is cleared or drops below the 2-char floor, rather than leaving a
                stale suggestion list up for the whole debounce window. */
-            if (input.value.trim().length < 2) this._closeSuggest();
+            if (input.value.trim().length < MIN_QUERY_LENGTH) this._closeSuggest();
             this.debounceTimer = setTimeout(() => {
                 const q = input.value.trim();
-                if (q.length >= 2) {
+                if (q.length >= MIN_QUERY_LENGTH) {
                     this.performSearch(q, filter?.value || '', results);
                     /* #1936 — same debounce, same query: refresh the top-N
                        title suggestions for the floating quick-jump dropdown.
@@ -312,11 +329,16 @@ export class Search {
                        heavier paginated results fetch above. */
                     this._fetchSuggestions(q);
                 } else if (q.length === 0) {
+                    /* Box emptied: a search still on its way must not paint
+                       results over the placeholder when it lands. */
+                    this._searchSeq++;
                     results.innerHTML = `
                         <div class="text-center text-muted py-5" id="search-placeholder">
                             <i class="fa-solid fa-magnifying-glass fa-3x mb-3 opacity-25" aria-hidden="true"></i>
                             <p>Start typing to search across all songs</p>
                         </div>`;
+                } else {
+                    this._showShortQueryHint(results);
                 }
             }, this.debounceDelay);
         });
@@ -325,8 +347,10 @@ export class Search {
         if (filter) {
             filter.addEventListener('change', () => {
                 const q = input.value.trim();
-                if (q.length >= 2) {
+                if (q.length >= MIN_QUERY_LENGTH) {
                     this.performSearch(q, filter.value, results);
+                } else if (q.length > 0) {
+                    this._showShortQueryHint(results);
                 }
             });
         }
@@ -441,12 +465,45 @@ export class Search {
            apiSearch() below for how the spec becomes a `sort=` param). No
            query yet ⇒ nothing to re-sort, so this is a silent no-op until
            the visitor has actually searched for something. */
+        /* The control calls this once straight away when it is wired (the
+           "initial apply"), as well as on every real change. The prefill
+           search above has ALREADY run with the saved sort, so that first
+           call is skipped — otherwise ?q=river searched twice and drew the
+           results twice (the request counter in performSearch() is the
+           second line of defence). */
+        let sortFirstCall = true;
         wireListSortControl('search', () => {
+            if (sortFirstCall) {
+                sortFirstCall = false;
+                return;
+            }
             const q = input.value.trim();
-            if (q.length >= 2) {
+            if (q.length >= MIN_QUERY_LENGTH) {
                 this.performSearch(q, filter?.value || '', results);
             }
         });
+    }
+
+    /**
+     * Tell the visitor a one-letter search is too short to run.
+     *
+     * ELI5: if you type just one letter we do not search; this says why, so
+     * the page does not look broken.
+     *
+     * @param {HTMLElement} results Results container element
+     */
+    _showShortQueryHint(results) {
+        /* Cancel any search already in flight so its answer cannot replace
+           this message. */
+        this._searchSeq++;
+        results.innerHTML = `
+            <div class="text-center text-muted py-5" id="search-placeholder">
+                <i class="fa-solid fa-magnifying-glass fa-3x mb-3 opacity-25" aria-hidden="true"></i>
+                <p class="mb-0">Type at least ${MIN_QUERY_LENGTH} characters to search</p>
+            </div>`;
+        /* Said through the shared live region: text that is already in the
+           page when it is inserted is often not read out. */
+        announce(`Type at least ${MIN_QUERY_LENGTH} characters to search`);
     }
 
     /* =====================================================================
@@ -708,6 +765,11 @@ export class Search {
      * @param {boolean} [append] True when fetching the next page ("Load more")
      */
     async performSearch(query, songbook, container, append = false) {
+        /* A fresh search takes the next number; "Load more" keeps the number
+           of the search it continues. After each wait below, a number that no
+           longer matches means a newer search has taken over, so this one
+           stays quiet and leaves the page alone. */
+        const seq = append ? this._searchSeq : ++this._searchSeq;
         try {
             if (!append) {
                 /* Fresh search — reset pagination + scaffold the container. */
@@ -718,14 +780,21 @@ export class Search {
                    filled below (after the awaited fetch) so the mutation happens
                    to a region assistive tech is already watching — the same
                    "empty now, fill next tick" shape announce.js documents. */
+                /* While the answer is on its way this line shows a spinner and
+                   "Searching…"; it is swapped for the result count below. The
+                   spinner is decoration (aria-hidden) — the words carry the
+                   meaning. */
                 container.innerHTML = `
-                    <p class="text-muted small mb-2" id="search-count" role="status"></p>
+                    <p class="text-muted small mb-2" id="search-count" role="status"><span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Searching…</p>
                     <div class="list-group" id="search-results-list"></div>
                     <div id="search-loadmore" class="text-center mt-3"></div>`;
             }
 
             const state = this._search;
             const { results, hasMore } = await this.apiSearch(state.query, state.songbook, state.offset);
+
+            /* A newer search started while this one was waiting. */
+            if (seq !== this._searchSeq) return;
 
             /* No results on a fresh search → friendly empty state. */
             if (!append && (!results || results.length === 0)) {
@@ -765,16 +834,7 @@ export class Search {
             /* "Load more" button when the server reports another page. */
             if (moreEl) {
                 if (hasMore) {
-                    moreEl.innerHTML = `
-                        <button type="button" class="btn btn-outline-secondary btn-sm" id="search-loadmore-btn">
-                            <i class="fa-solid fa-chevron-down me-1" aria-hidden="true"></i>Load more
-                        </button>`;
-                    const btn = moreEl.querySelector('#search-loadmore-btn');
-                    btn?.addEventListener('click', () => {
-                        btn.disabled = true;
-                        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Loading…`;
-                        this.performSearch(state.query, state.songbook, container, true);
-                    }, { once: true });
+                    this._renderLoadMore(moreEl, container, state);
                 } else {
                     moreEl.innerHTML = '';
                 }
@@ -786,6 +846,9 @@ export class Search {
                 if (this.app.analytics) this.app.analytics.trackSearch(query, state.loaded);
             }
         } catch (error) {
+            /* A failure belonging to a search that has since been replaced
+               is of no interest to anyone. */
+            if (seq !== this._searchSeq) return;
             console.error('[Search] Error:', error);
             /* Live search failed (offline / server error). apiFetch already
                dispatched EVT_FETCH_FAILED for the offline indicator (#112) —
@@ -796,20 +859,56 @@ export class Search {
                titles. */
             if (!append) {
                 const handled = await this._offlineSearchFallback(query, songbook, container);
+                /* The fallback waited on the network too — check again. */
+                if (seq !== this._searchSeq) return;
                 if (!handled) {
+                    /* Only blame the connection when the browser says there is
+                       none; an online visitor whose search failed gets the
+                       plain "not working" wording instead. */
+                    const offline = navigator.onLine === false;
+                    const text = offline
+                        ? `Search is unavailable offline and the song index hasn't been cached yet. Reconnect to search.`
+                        : (error && error.status === 429
+                            ? `You're searching a bit fast — wait a moment and try again.`
+                            : `Search isn't working right now. Please try again.`);
                     container.innerHTML = `
-                        <div class="alert alert-warning">
-                            <i class="fa-solid fa-wifi-slash me-2" aria-hidden="true"></i>
-                            Search is unavailable offline and the song index hasn't been
-                            cached yet. Reconnect to search.
+                        <div class="alert alert-warning" role="alert">
+                            <i class="fa-solid ${offline ? 'fa-wifi-slash' : 'fa-triangle-exclamation'} me-2" aria-hidden="true"></i>${escapeHtml(text)}
                         </div>`;
                 }
             } else {
-                /* Keep the existing results; just reset the Load-more button. */
+                /* Keep the existing results; put the Load more button back
+                   (with a short note) so the visitor can try again. */
                 const moreEl = container.querySelector('#search-loadmore');
-                if (moreEl) moreEl.innerHTML = `<span class="text-muted small">Couldn't load more — try again.</span>`;
+                if (moreEl) this._renderLoadMore(moreEl, container, this._search, true);
             }
         }
+    }
+
+    /**
+     * Draw the "Load more" button (and wire it) inside `moreEl`.
+     *
+     * ELI5: the button that fetches the next page of results. If the last
+     * attempt failed it comes back with a short note, so the visitor can
+     * simply press it again.
+     *
+     * @param {HTMLElement} moreEl `#search-loadmore`
+     * @param {HTMLElement} container Results container element
+     * @param {object} state The search-page pagination state
+     * @param {boolean} [failed] True when the previous attempt failed
+     */
+    _renderLoadMore(moreEl, container, state, failed = false) {
+        moreEl.innerHTML = `
+            ${failed ? `<p class="text-muted small mb-2" role="status">Couldn't load more results. Please try again.</p>` : ''}
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="search-loadmore-btn">
+                <i class="fa-solid fa-chevron-down me-1" aria-hidden="true"></i>Load more
+            </button>`;
+        const btn = moreEl.querySelector('#search-loadmore-btn');
+        btn?.addEventListener('click', () => {
+            btn.disabled = true;
+            btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Loading…`;
+            this.performSearch(state.query, state.songbook, container, true);
+        }, { once: true });
     }
 
     /**
@@ -840,7 +939,13 @@ export class Search {
         }
 
         const response = await apiFetch(url);
-        if (!response.ok) throw new Error(`Search API: HTTP ${response.status}`);
+        if (!response.ok) {
+            /* Keep the HTTP status on the error so callers branch on it, not
+               on the wording of the message (rule #35). */
+            const err = new Error(`Search API: HTTP ${response.status}`);
+            err.status = response.status;
+            throw err;
+        }
         const data = await response.json();
         /* EVT_FETCH_SUCCEEDED is dispatched by apiFetch (#1031), which clears
            the offline indicator's banner (#112 / WS-I) for EVERY request now,
@@ -948,17 +1053,22 @@ export class Search {
             results = decorated.map((d) => d.row);
         }
 
+        /* Only say "offline" when the browser says so. If the visitor is
+           online and the search server simply failed, say that instead. */
+        const offlineNow = navigator.onLine === false;
+        const fallbackNote = offlineNow
+            ? `You're offline — searching cached song titles only. Songs you've opened before will still open; others need a connection.`
+            : `Search isn't working right now — showing matches from cached song titles only. Try again in a moment for full results.`;
         container.innerHTML = `
             <div class="alert alert-warning py-2 small mb-2" role="status">
-                <i class="fa-solid fa-wifi-slash me-1" aria-hidden="true"></i>
-                You're offline — searching cached song titles only. Songs you've
-                opened before will still open; others need a connection.
+                <i class="fa-solid ${offlineNow ? 'fa-wifi-slash' : 'fa-triangle-exclamation'} me-1" aria-hidden="true"></i>
+                ${fallbackNote}
             </div>
             <p class="text-muted small mb-2" role="status">${results.length} match${results.length !== 1 ? 'es' : ''} in the offline index</p>
             <div class="list-group">${this._renderResultItems(results)}</div>`;
 
         /* a11y audit L3 (WCAG 4.1.3) — see the import comment above. */
-        announce(`Offline — ${results.length} match${results.length !== 1 ? 'es' : ''} in the cached index`);
+        announce(`${offlineNow ? 'Offline' : 'Search is not working'} — ${results.length} match${results.length !== 1 ? 'es' : ''} in the cached index`);
         return true;
     }
 

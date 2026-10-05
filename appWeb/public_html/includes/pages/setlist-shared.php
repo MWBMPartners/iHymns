@@ -24,6 +24,27 @@ declare(strict_types=1);
      ================================================================ -->
 <section class="page-setlist-shared" aria-label="Shared set list">
 
+    <!-- The page's ONE heading, present in every state (loading, error,
+         "no longer shared", the list itself) so the page always has an h1.
+         It says "Shared set list" until JS has the real name and swaps it in.
+         The Start button sits beside it but stays hidden until the list has
+         loaded (JS un-hides it). -->
+    <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+        <h1 class="h4 mb-0" id="shared-setlist-name">
+            <i class="fa-solid fa-list-ol me-2" aria-hidden="true"></i>
+            <span id="shared-setlist-title">Shared set list</span>
+        </h1>
+        <!-- #1790 — primary action is now PLAY, not Import. Arms the Prev/Next
+             bar from this list and jumps to song 1 (wired in setlist.js
+             initSharedSetListPage). Shown to everyone, owner included — you can
+             play your own shared list. Import is demoted to a secondary
+             "Save a copy" below. -->
+        <button type="button" class="btn btn-primary btn-sm d-none" id="shared-setlist-start-btn">
+            <i class="fa-solid fa-play me-1" aria-hidden="true"></i>
+            Start set list
+        </button>
+    </div>
+
     <!-- Loading state (replaced by JS) -->
     <div id="shared-setlist-loading" class="text-center py-5">
         <div class="spinner-border text-primary mb-3" role="status">
@@ -39,6 +60,25 @@ declare(strict_types=1);
             <strong>Invalid link</strong> — This shared set list link appears to be broken or expired.
         </div>
         <a href="/setlist" class="btn btn-outline-primary btn-sm" data-navigate="setlist">
+            <i class="fa-solid fa-arrow-left me-1" aria-hidden="true"></i>
+            Go to My Set Lists
+        </a>
+    </div>
+
+    <!-- Temporary-failure state — the link may be perfectly good but the
+         request did not get through (no connection, server busy or failing).
+         Shown by JS with a "Try again" button instead of calling the link
+         broken. -->
+    <div id="shared-setlist-retry" class="d-none">
+        <div class="alert alert-warning" role="alert">
+            <i class="fa-solid fa-wifi me-2" aria-hidden="true"></i>
+            Couldn&rsquo;t load this set list. Check your connection and try again.
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" id="shared-setlist-retry-btn">
+            <i class="fa-solid fa-rotate-right me-1" aria-hidden="true"></i>
+            Try again
+        </button>
+        <a href="/setlist" class="btn btn-outline-secondary btn-sm ms-1" data-navigate="setlist">
             <i class="fa-solid fa-arrow-left me-1" aria-hidden="true"></i>
             Go to My Set Lists
         </a>
@@ -93,23 +133,6 @@ declare(strict_types=1);
                 <strong>This is your set list</strong>
                 <small class="d-block">You&rsquo;re viewing your own shared link — there&rsquo;s nothing to import. Anyone you shared it with always sees your latest changes.</small>
             </div>
-        </div>
-
-        <!-- Set list header -->
-        <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-            <h1 class="h4 mb-0" id="shared-setlist-name">
-                <i class="fa-solid fa-list-ol me-2" aria-hidden="true"></i>
-                <span id="shared-setlist-title"></span>
-            </h1>
-            <!-- #1790 — primary action is now PLAY, not Import. Arms the Prev/Next
-                 bar from this list and jumps to song 1 (wired in setlist.js
-                 initSharedSetListPage). Shown to everyone, owner included — you can
-                 play your own shared list. Import is demoted to a secondary
-                 "Save a copy" below. -->
-            <button type="button" class="btn btn-primary btn-sm" id="shared-setlist-start-btn">
-                <i class="fa-solid fa-play me-1" aria-hidden="true"></i>
-                Start set list
-            </button>
         </div>
 
         <p class="text-muted small mb-3">

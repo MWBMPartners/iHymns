@@ -278,13 +278,13 @@ export class UserAuth {
         }
 
         if (parseFailed) {
-            let snippet = '';
-            try { snippet = (await res.text()).slice(0, 200).trim(); } catch { /* ignore */ }
-            const detail = snippet ? ` Server said: "${snippet.replace(/\s+/g, ' ')}"` : '';
+            /* The visitor gets plain words; the status number stays in the
+               console (and in `status` on the result) for whoever is
+               debugging. */
+            console.warn('[Auth] Server sent an unreadable response, HTTP', res.status);
             return {
                 ok:     false,
-                error:  `Server returned an unreadable response (HTTP ${res.status} ${res.statusText}).${detail} `
-                      + 'This is a server bug — please report it.',
+                error:  'Something went wrong on our side. Please try again.',
                 status: res.status,
                 data:   null,
             };
@@ -298,7 +298,7 @@ export class UserAuth {
                `status` + `data` (#947/#340) let a caller branch on
                isCaptchaRefusal(status, data) — status + the machine
                `reason` field, NEVER this `friendly` prose (rule #35). */
-            const friendly = (data && data.error) ? data.error : (defaultMsg + ` (HTTP ${res.status})`);
+            const friendly = (data && data.error) ? data.error : defaultMsg;
             const rid      = data && data.request_id ? ` [ref ${data.request_id}]` : '';
             return { ok: false, error: friendly + rid, status: res.status, data };
         }
@@ -554,7 +554,8 @@ export class UserAuth {
         try {
             data = await res.json();
         } catch {
-            return { success: false, error: `Server returned an unreadable response (HTTP ${res.status}).` };
+            console.warn('[Auth] Server sent an unreadable response, HTTP', res.status);
+            return { success: false, error: 'Something went wrong on our side. Please try again.' };
         }
 
         if (!res.ok) {
@@ -1758,7 +1759,7 @@ export class UserAuth {
                             <button type="button" class="btn btn-dark w-100" id="auth-apple-signin-btn">
                                 <i class="fa-brands fa-apple me-2" aria-hidden="true"></i>
                                 <span id="auth-apple-signin-text">Sign in with Apple</span>
-                                <span id="auth-apple-signin-spinner" class="spinner-border spinner-border-sm ms-2 d-none" role="status"></span>
+                                <span id="auth-apple-signin-spinner" class="spinner-border spinner-border-sm ms-2 d-none" role="status"><span class="visually-hidden">Signing in with Apple…</span></span>
                             </button>
                             <div class="text-center text-muted small mt-2">or</div>
                         </div>
@@ -1799,7 +1800,7 @@ export class UserAuth {
                             <div id="auth-captcha-host" class="mb-3"></div>
                             <button type="submit" class="btn btn-primary w-100" id="auth-submit-btn">
                                 <span id="auth-submit-text">${mode === 'register' ? 'Create Account' : 'Sign In'}</span>
-                                <span id="auth-submit-spinner" class="spinner-border spinner-border-sm ms-2 d-none" role="status"></span>
+                                <span id="auth-submit-spinner" class="spinner-border spinner-border-sm ms-2 d-none" role="status"><span class="visually-hidden">${mode === 'register' ? 'Creating your account…' : 'Signing in…'}</span></span>
                             </button>
                         </form>
 
@@ -1841,7 +1842,7 @@ export class UserAuth {
                                     <div id="auth-email-captcha-host" class="mb-2"></div>
                                     <button type="submit" class="btn btn-sm btn-primary w-100 mt-2" id="auth-email-submit">
                                         <span id="auth-email-submit-text">Send Login Code</span>
-                                        <span id="auth-email-submit-spinner" class="spinner-border spinner-border-sm ms-2 d-none" role="status"></span>
+                                        <span id="auth-email-submit-spinner" class="spinner-border spinner-border-sm ms-2 d-none" role="status"><span class="visually-hidden">Sending your login code…</span></span>
                                     </button>
                                 </div>
                             </form>
@@ -1855,7 +1856,7 @@ export class UserAuth {
                                     </div>
                                     <button type="submit" class="btn btn-sm btn-primary w-100" id="auth-email-code-submit">
                                         <span id="auth-email-code-submit-text">Verify Code</span>
-                                        <span id="auth-email-code-spinner" class="spinner-border spinner-border-sm ms-2 d-none" role="status"></span>
+                                        <span id="auth-email-code-spinner" class="spinner-border spinner-border-sm ms-2 d-none" role="status"><span class="visually-hidden">Checking your code…</span></span>
                                     </button>
                                 </form>
                             </div>
@@ -2020,6 +2021,10 @@ export class UserAuth {
             const isReg = currentMode === 'register';
             modal.querySelector('#auth-modal-title').textContent = isReg ? 'Create Account' : 'Sign In';
             modal.querySelector('#auth-submit-text').textContent = isReg ? 'Create Account' : 'Sign In';
+            /* The spinner's hidden words follow the mode too, so a screen
+               reader hears what is actually happening. */
+            const spinnerWords = modal.querySelector('#auth-submit-spinner .visually-hidden');
+            if (spinnerWords) spinnerWords.textContent = isReg ? 'Creating your account…' : 'Signing in…';
             modal.querySelector('#auth-display-name-group').style.display = isReg ? '' : 'none';
             const emailGroup = modal.querySelector('#auth-email-group');
             if (emailGroup) emailGroup.style.display = isReg ? '' : 'none';

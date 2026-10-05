@@ -25,6 +25,7 @@ if (function_exists('renderErrorFragment')) {
         'fa'      => 'fa-map-signs',
         'actions' => [
             ['label' => 'Go Home',         'href' => '/',          'navigate' => 'home',      'primary' => true, 'fa' => 'fa-house'],
+            ['label' => 'Search',          'href' => '/search',    'navigate' => 'search',    'fa' => 'fa-magnifying-glass'],
             ['label' => 'Browse Songbooks', 'href' => '/songbooks', 'navigate' => 'songbooks', 'fa' => 'fa-book-open'],
         ],
     ]) . '</div>';
@@ -39,6 +40,8 @@ if (function_exists('renderErrorFragment')) {
     <div class="d-flex justify-content-center gap-3 flex-wrap">
         <a href="/" class="btn btn-primary" data-navigate="home">
             <i class="fa-solid fa-house me-2" aria-hidden="true"></i>Go Home</a>
+        <a href="/search" class="btn btn-outline-secondary" data-navigate="search">
+            <i class="fa-solid fa-magnifying-glass me-2" aria-hidden="true"></i>Search</a>
         <a href="/songbooks" class="btn btn-outline-secondary" data-navigate="songbooks">
             <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i>Browse Songbooks</a>
     </div>

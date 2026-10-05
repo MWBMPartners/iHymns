@@ -178,7 +178,7 @@ export function loadMessageForStatus(status) {
         case 401: return 'Sign in to see the requests you have sent.';
         case 429: return 'Too many requests just now. Please try again shortly.';
         case 503: return 'The server is briefly unavailable. Please try again in a moment.';
-        default:  return 'Could not load your requests (HTTP ' + status + '). Please try again.';
+        default:  return 'Could not load your requests. Please try again.';
     }
 }
 

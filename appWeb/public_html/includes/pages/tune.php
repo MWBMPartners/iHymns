@@ -124,6 +124,30 @@ $tuneLinks         = $_tuneResolved['tuneLinks'];
    IHYMNS_TUNE_CREDIT_ROLES's own doc-block for why a central const fixes
    that for real. */
 
+/* A slug that matches no tune: send HTTP 404 with the shared "not found" card
+   (the same helper work.php uses) instead of an ad-hoc warning box, so the
+   reader gets a proper heading and ways to carry on (Search / Songbooks). The
+   router shows an error-status body as-is. */
+if ($tuneSlug !== '' && $canonicalTune === '') {
+    http_response_code(404);
+    if (function_exists('renderErrorFragment')) {
+        echo renderErrorFragment(404, [
+            'title'   => 'Tune not found',
+            'message' => 'We couldn\'t find a tune matching "' . $tuneSlug . '". It may have been renamed or removed, or the link is out of date.',
+            'fa'      => 'fa-music',
+            'actions' => [
+                ['label' => 'Go Home',   'href' => '/',          'navigate' => 'home',      'primary' => true, 'fa' => 'fa-house'],
+                ['label' => 'Search',    'href' => '/search',    'navigate' => 'search',    'fa' => 'fa-magnifying-glass'],
+                ['label' => 'Songbooks', 'href' => '/songbooks', 'navigate' => 'songbooks', 'fa' => 'fa-book-open'],
+            ],
+        ]);
+    } else {
+        echo '<div class="alert alert-warning" role="alert">Tune not found: <strong>'
+           . htmlspecialchars($tuneSlug) . '</strong></div>';
+    }
+    return;
+}
+
 ?>
 
 <nav aria-label="Breadcrumb" class="mb-3">
@@ -144,20 +168,10 @@ $tuneLinks         = $_tuneResolved['tuneLinks'];
     <a href="/" class="btn btn-primary" data-navigate="home">
         <i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>Back to Home
     </a>
-<?php elseif ($canonicalTune === ''): ?>
-    <div class="alert alert-warning" role="alert">
-        <i class="fa-solid fa-circle-exclamation me-2" aria-hidden="true"></i>
-        No tune named <strong><?= htmlspecialchars($tuneSlug) ?></strong> in the catalogue.
-    </div>
-    <p class="text-muted small">
-        Tune names are imported from songbook metadata; if you expected this tune to be present, it may not have been catalogued under that exact spelling.
-    </p>
-    <a href="/" class="btn btn-primary" data-navigate="home">
-        <i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>Back to Home
-    </a>
 <?php else: ?>
     <header class="mb-4">
-        <h1 class="h3 d-flex align-items-baseline gap-2 flex-wrap">
+        <?php /* data-doc-title = the browser-tab title (read by the router; same text index.php uses). */ ?>
+        <h1 class="h3 d-flex align-items-baseline gap-2 flex-wrap" data-doc-title="<?= htmlspecialchars($canonicalTune . ' — ' . ($app["Application"]["Name"] ?? 'iHymns')) ?>">
             <i class="fa-solid fa-music text-muted" aria-hidden="true"></i>
             <span><?= htmlspecialchars($canonicalTune) ?></span>
             <?php if ($tune !== null && !empty($tune['Disambiguation'])): ?>

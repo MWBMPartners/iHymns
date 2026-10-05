@@ -947,7 +947,7 @@ try {
     /* Fixed pages get their own title and description, so a shared link or a
        search result says what the page is instead of repeating the home page.
        The titles match the ones router.js sets after the page loads
-       (Router.updateTitle); keep the two in step. */
+       (Router.updateTitle) — tests/test-polish-guard.js checks the two agree. */
     $_ogStaticPages = [
         '/songbooks' => ['Songbooks',        'Browse every hymnal and worship songbook on ' . $app["Application"]["Name"] . '.'],
         '/search'    => ['Search',           'Search hymns and worship songs by title, first line, words, number or writer.'],
@@ -1844,7 +1844,9 @@ if (!empty($breadcrumbItems)) {
          Provides a touch-friendly number pad on all devices.
          ================================================================ -->
     <div class="modal fade" id="numpad-modal" tabindex="-1" role="dialog" aria-labelledby="numpad-modal-label" aria-hidden="true">
-        <div class="modal-dialog modal-dialog-centered modal-sm">
+        <?php /* modal-dialog-scrollable: on a phone turned sideways the keypad is taller
+                 than the window; this keeps every key reachable. */ ?>
+        <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-sm">
             <div class="modal-content numpad-modal-content">
                 <div class="modal-header">
                     <h5 class="modal-title" id="numpad-modal-label">

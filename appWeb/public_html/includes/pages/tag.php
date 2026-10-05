@@ -155,7 +155,8 @@ $tagTotalSongs = count($tagSongs);
     <!-- Theme header -->
     <div class="card card-song-header mb-4">
         <div class="card-body">
-            <h1 class="h4 mb-2">
+            <?php /* data-doc-title = the browser-tab title (read by the router; same text index.php uses). */ ?>
+            <h1 class="h4 mb-2" data-doc-title="<?= htmlspecialchars((string)$tagInfo['name'] . ' — songs by theme — ' . ($app["Application"]["Name"] ?? 'iHymns')) ?>">
                 <i class="fa-solid fa-tag me-2" aria-hidden="true"></i>
                 <?= htmlspecialchars($tagInfo['name']) ?>
             </h1>
