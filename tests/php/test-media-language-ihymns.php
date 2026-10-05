@@ -330,12 +330,32 @@ mliCheck("JSON-LD inLanguage no longer falls back to the page's own interface la
    is not `.`, `[`, `->`, `::`, a comparison or `&&`; and bare English counts
    only when it is not compared. The rest of the list after English is read in
    one go (an atomic group), so the check cannot be dodged by stopping early. */
+/* #2137 review round 9 (the eighth review's L5 and L6, the lead's decision
+   5) — two more corrections. (1) Round 8 let through ANY member after a
+   list's closing bracket, so a fallback list that is kept and then changed
+   got through: `(x || ['en']).map(f)`, `.join(',')`, `.slice()`,
+   `['en'].concat(more)`, `(… ?? ['en'])->toArray()` — each is still English.
+   Now only members that LOOK IN the list are let through: `.includes(`,
+   `.indexOf(`, `.lastIndexOf(`, `.some(`, `.every(`, `.has(`, `.length`,
+   `->contains(`, `->has(` — besides an index `[…]`, a comparison and `&&`
+   (`x || ['en'] && y` is `x || (['en'] && y)`, which never gives the list:
+   `&&` binds tighter than `||` and `??`). (2) A map from a language code to
+   a language NAME is not a fallback (`['en' => 'English', 'cy' => 'Welsh']`,
+   `[$code => 'English']`), but round 8's keyed values flagged it. Now a
+   value under a key that is a quoted language code or a variable ($LANGKEY)
+   counts only when it is itself a code (`'en'`, `'en-GB'`, `'eng'` —
+   $ENCODE), never the name; under any other key (`'default' => 'en'`,
+   `0 => 'en'`) any spelling still counts. */
 $ENWORD = '[\'"](?:en(?:[-_][A-Za-z0-9]{1,8})*|eng|english)[\'"]';
+$ENCODE = '[\'"](?:en(?:[-_][A-Za-z0-9]{1,8})*|eng)[\'"]';
+$LANGKEY = '(?:[\'"][A-Za-z]{2,3}(?:[-_][A-Za-z0-9]{1,8})*[\'"]|\$[A-Za-z_]\w*(?:\??->[A-Za-z_]\w*|\[[^\]\n]*\])*)';
 $ENV = '(?:[\'"][^\'"\n]{0,40}[\'"]|\d+|(?:\.\.\.\s*)?\$?[A-Za-z_][\w$]*(?:(?:->|\.)[A-Za-z_]\w*)*)';
 $ENITEM = $ENV . '(?:\s*=>\s*' . $ENV . ')?';
 $EN = '(?:'
-    . '(?:(?:array\s*\(|[\[(])\s*(?:' . $ENITEM . '\s*,\s*){0,8})+(?:' . $ENV . '\s*=>\s*)?' . $ENWORD
-    . '(?>(?:\s*,\s*' . $ENITEM . '){0,8}\s*,?\s*[\])]+)(?!\s*(?:\.|\[|->|::|[=!]==?|<=?>?|>=?|&&))'
+    . '(?:(?:array\s*\(|[\[(])\s*(?:' . $ENITEM . '\s*,\s*){0,8})+'
+    . '(?:(?:(?!' . $LANGKEY . '\s*=>)' . $ENV . '\s*=>\s*)?' . $ENWORD . '|' . $LANGKEY . '\s*=>\s*' . $ENCODE . ')'
+    . '(?>(?:\s*,\s*' . $ENITEM . '){0,8}\s*,?\s*[\])]+)'
+    . '(?!\s*(?:\.(?:includes|indexOf|lastIndexOf|some|every|has)\s*\(|\.length\b|->(?:contains|has)\s*\(|\[|::|[=!]==?|<=?>?|>=?|&&))'
     . '|' . $ENWORD . '(?!\s*(?:[=!]==?|<=?>?|>=?))'
     . ')';
 /* …except inside a `match`: there an arm giving 'English' or 'eng' is
@@ -425,7 +445,40 @@ $enExempt = [
    `x.language || /* fallback *\/ 'en'` used to be cut off at the comment and
    got through. Then a line that starts as a comment is skipped (null), and a
    trailing block or line comment is cut off. */
-$enCodeOf = static function (string $line, string $kind = 'php'): ?string {
+/* #2137 review round 9 (carry-over 2, the lead's decision 5) — a single
+   English word used only as a display LABEL is not a language falling back to
+   English: `$label = $lang ? $names[$lang] : ('English');` was flagged. So,
+   statement by statement (split at `;`), when a statement assigns to
+   something whose name says it is display text (it contains label, name,
+   title, text, caption, heading or display) and does not contain lang or
+   language, a lone 'English' in it — on its own or in round brackets, not an
+   item of a list (no `[` or `,` before it, no `,` or `]` after it) — is read as
+   a label and blanked before the patterns run. A language code ('en', 'eng',
+   'en-GB') is never blanked, nor is a list holding the name, nor 'English'
+   assigned to a language (`$language = … : 'English'`) or to anything else
+   (`$x = $row['language'] ?? 'English'`). */
+$enBlankLabels = static function (string $code): string {
+    $out = [];
+    foreach (explode(';', $code) as $stmt) {
+        if (preg_match('~^\s*(?:(?:var|let|const)\s+)?([$#]?[\w$]+(?:(?:\??->|\.)[\w$]+|\[[^\]\n]*\])*)\s*(?:\?\?|\|\||&&)?=(?![=>])~', $stmt, $m) === 1
+            && preg_match('~label|name|title|text|caption|heading|display~i', $m[1]) === 1
+            && preg_match('~lang~i', $m[1]) !== 1) {
+            $stmt = (string)preg_replace_callback('~([\'"])english\1~i', static function (array $w) use ($stmt): string {
+                [$word, $at] = $w[0];
+                /* The nearest code before and after it, past one round bracket. */
+                $before = rtrim(substr($stmt, 0, $at));
+                if (str_ends_with($before, '(')) { $before = rtrim(substr($before, 0, -1)); }
+                $after = ltrim(substr($stmt, $at + strlen($word)));
+                if (str_starts_with($after, ')')) { $after = ltrim(substr($after, 1)); }
+                $inList = in_array(substr($before, -1), ['[', ','], true) || in_array(substr($after, 0, 1), [',', ']'], true);
+                return $inList ? $word : $word[0] . 'label' . $word[0];
+            }, $stmt, -1, $count, PREG_OFFSET_CAPTURE);
+        }
+        $out[] = $stmt;
+    }
+    return implode(';', $out);
+};
+$enCodeOf = static function (string $line, string $kind = 'php') use ($enBlankLabels): ?string {
     $code = (string)preg_replace('~/\\*.*?\\*/~', ' ', $line);
     /* #2137 review round 7 (the sixth review's decision 5) — only a REAL
        comment line is skipped. A line starting `#` used to be skipped in every
@@ -437,7 +490,8 @@ $enCodeOf = static function (string $line, string $kind = 'php'): ?string {
         || ($kind === 'php' && preg_match('~^\\s*#(?!\\[)~', $code) === 1)) {
         return null;
     }
-    return (string)preg_replace('~\\s(?://|/\\*).*$~', '', $code);
+    /* …and (round 9) a lone English label blanked — see $enBlankLabels above. */
+    return $enBlankLabels((string)preg_replace('~\\s(?://|/\\*).*$~', '', $code));
 };
 $enIsExempt = static fn(string $rel, string $line): bool => isset($enExempt[$rel]) && trim($line) === $enExempt[$rel];
 /* One file, read as the tree scan reads it: JavaScript or PHP by its own
@@ -625,6 +679,20 @@ $enMustCatch = [
     "var lang = (song.lang || 'en').toLowerCase();",
     "\$langs = \$row['languages'] ?? ['fr', 'en'];  // then [0] on another line",
     "var lang = song.lang || 'en' + suffix;",
+    /* the eighth review's shapes (round 9, decision 5): a fallback list kept and then changed is still English */
+    "var langs = (song.languages || ['en']).map(normalise);",
+    "const tags = (song.languages || ['en']).join(',');",
+    "var langs = (song.languages || ['en', 'cy']).slice();",
+    "\$langs = (\$row['languages'] ?? ['en'])->toArray();",
+    "var langs = song.languages || ['en'].concat(extra);",
+    /* …a code under a language-code or variable key still counts (only the NAME there is a label) */
+    "\$langs = \$row['languages'] ?? [\$primary => 'en'];",
+    /* …and the English name assigned to a language, or to something that is not display text, is still a fallback */
+    "\$language = \$lang ? \$names[\$lang] : ('English');",
+    "\$x = \$row['language'] ?? 'English';",
+    "\$label = \$row['language'] ?? 'en';",
+    "\$label = \$x; \$language = \$row['language'] ?? 'English';",
+    "\$labels = \$row['languages'] ?? ['English'];",
 ];
 $enMustPass = ['<html lang="en">', "if (\$lang === 'en') {", "\$language = mediaLanguageOrUnknown(\$valid);", "\$locale = 'en';",
     "'lang'  => 'en',   /* a geocoder's result language, not a song's */", "\$isEnglish = \$lang === 'en' ? 1 : 0;",
@@ -651,12 +719,27 @@ $enMustPass = ['<html lang="en">', "if (\$lang === 'en') {", "\$language = media
     "define('DEFAULT_FONT', 'en-dash');",
     /* English straight after the operator but compared (`lang || ('en' === other)` by precedence), and a
        list inside brackets that is then looked in — the second is why the rest of the list is read in one go */
-    "var same = lang || 'en' === other;", "if (lang || (['fr', 'en']).includes(x)) {"];
+    "var same = lang || 'en' === other;", "if (lang || (['fr', 'en']).includes(x)) {",
+    /* round 9 (decision 5) — lists that are only looked in, a map from language code to language NAME, and a
+       lone English name used as a display label (the line the seventh review called a false alarm) */
+    "var n = song.lang || ['fr', 'en'].length;", "var has = song.langs || ['fr', 'en'].lastIndexOf(x) >= 0;",
+    "if (\$lang === 'cy' || ['fr', 'en']->has(\$lang)) {",
+    "\$languageNames = \$cached ?? ['en' => 'English', 'cy' => 'Welsh'];",
+    "'languages' => ['en' => 'English', 'cy' => 'Welsh'],",
+    "define('LANGUAGE_NAMES', ['en' => 'English', 'fr' => 'French']);",
+    "\$labels = \$languageLabels ?? [\$code => 'English'];",
+    "\$label = \$lang ? \$names[\$lang] : ('English');",
+    "\$label = \$lang ? 'English' : 'Other';",
+    "\$title = \$names[\$lang] ?? 'English';",
+    /* `&&` binds tighter than `||` and `??`, so these give `x` / true-or-false, never the list (checked in PHP 8.5
+       and Node: `null ?? ['en'] && true` is true, `undefined || ['en'] && 'x'` is 'x') */
+    "var langs = song.languages || ['en'] && x;", "\$ok = \$row['languages'] ?? ['en'] && \$ok;"];
 /* The multi-line `match` shape, on its own. */
 mliCheck("the 'en' guard catches a `match` over several lines giving 'en' for a language",
     preg_match($fallbackMatchWhole, "\$lang = match (\$raw) {\n    '' => 'en',\n    default => \$raw,\n};") === 1
     && preg_match($fallbackMatchWhole, "\$lang = match (\$raw) {\n    'en' => 'English',\n};\n\$x = ['a' => 'en'];") !== 1);
-$enMatches = static function (string $code) use ($fallbackPatterns): bool {
+$enMatches = static function (string $code) use ($fallbackPatterns, $enBlankLabels): bool {
+    $code = $enBlankLabels($code);   /* round 9: as the scan reads it (a lone English label is not a fallback) */
     foreach ($fallbackPatterns as $re) { if (preg_match($re, $code) === 1) { return true; } }
     return false;
 };

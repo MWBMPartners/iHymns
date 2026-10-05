@@ -764,10 +764,34 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   gives round 7's answers) and nine planted faults, each red on both servers (the file scan reading every file as
   PHP, its language decided wrongly, the `match` scan blanking `#[` again, list items quoted-only again, no key
   before English, no check after a list, bare English counted when compared, the rest of a list read without the
-  atomic group, the `define()` pattern removed); the whole tree still scans clean.
+  atomic group, the `define()` pattern removed); the whole tree still scans clean. **Round 9 (the eighth review's L5
+  and L6 and carry-over 2, the lead's decision 5):** round 8 let ANY member through after a list's closing bracket,
+  so a fallback list kept and then changed got through — `(x || ['en']).map(f)`, `.join(',')`, `.slice()`,
+  `['en'].concat(more)`, `(… ?? ['en'])->toArray()`; now only members that look in the list are let through
+  (`.includes(`, `.indexOf(`, `.lastIndexOf(`, `.some(`, `.every(`, `.has(`, `.length`, `->contains(`, `->has(`),
+  besides an index, a comparison and `&&` (`x || ['en'] && y` is `x || (['en'] && y)` — `&&` binds tighter than
+  `||` and `??`, so the list is never the value; checked in PHP 8.5 and Node). A map from a language code to a
+  language NAME is no longer flagged (`['en' => 'English', …]`, `?? [$code => 'English']`,
+  `define('LANGUAGE_NAMES', ['en' => 'English', …])`): under a key that is a quoted language code or a variable, a
+  value counts only when it is itself a code (`'en'`, `'en-GB'`, `'eng'`), never the name; under any other key
+  (`'default' => 'en'`, `0 => 'en'`) any spelling still counts. And a lone English NAME used only as a display label
+  is no longer flagged (`$label = $lang ? $names[$lang] : ('English');`, the line the seventh review called a false
+  alarm): in a statement that assigns to something named as display text (label, name, title, text, caption,
+  heading or display, and not lang/language), a lone 'English' — not an item of a list — is blanked before the
+  patterns run. Still flagged: a code (`$label = … ?? 'en'`), a list (`?? ['English']`), and the name assigned to a
+  language or to anything else (`$language = … : ('English')`, `$x = $row['language'] ?? 'English'`). Proven with
+  the eighth review's `enguard-rv8.php` (every shape the decision names now answers as it should) and six planted
+  faults on the guard (round 8's look-in rule back, round 8's keyed rule back, the label rule removed, the label rule
+  blanking whatever is assigned to — all red; a real fallback in the label's shape planted in the tree — red; the
+  label line itself planted in the tree — green); the eighth review's G1 and G2 stay red; the whole tree still scans
+  clean, with `manage/songbooks.php`'s list of choices still a deliberate exception (it holds the code `'en'` under
+  the key `'Code'`; removing that unused list is a separate issue).
   **What it still cannot see (its blind spots), so reviewers still look:** English passed through a call or a cast
   (`?? strtolower('EN')`, `?? mediaLanguageTagForStorage('en')`, `|| String('en')`, `?? (string) 'en'`,
-  `?? \trim('en')` — round 8, listed by the lead); a list with more than eight items before English, at any one
+  `?? \trim('en')`, `?? collect(['en'])->all()` — round 8, listed by the lead); a value under a variable or
+  language-code key that is the English NAME (`[$code => 'English']` — read as a code-to-name map, round 9); a lone
+  'English' assigned to something named as display text (read as a label, round 9) — so `$title = $song['language']
+  ?? 'English'` is not flagged; a list with more than eight items before English, at any one
   level (`['a', …, 'i', 'en']`); an item before English that is itself a call, an index or an expression
   (`[f(x), 'en']`, `[$row['x'], 'en']`); English picked out of a list by its index (`['en', 'fr'][0]` is
   English, but every index on a list is let through); a destructuring default under a new name
