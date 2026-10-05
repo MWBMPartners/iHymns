@@ -82,6 +82,7 @@ function jsWithoutComments(src) {
 
 /* The public surface: page templates, partials and the public JavaScript. */
 const TEMPLATE_FILES = [
+    path.join(WEB, 'index.php'),   /* the page shell, where the strict policy applies */
     ...walk(path.join(WEB, 'includes/pages'), /\.php$/),
     ...walk(path.join(WEB, 'includes/partials'), /\.php$/),
 ];
@@ -181,7 +182,10 @@ console.log('5 — fixed-page titles agree between index.php and router.js');
     for (const row of routerSrc.matchAll(/'([a-z-]+)':\s*(['"])(.*?)\2\s*\+\s*appName/g)) {
         routerTitles[row[1]] = row[3].replace(/\s+—\s*$/, '');
     }
-    const routerPage = { favorites: 'favorites', setlist: 'setlist' };
+    /* The router accepts a few alternative spellings of the same page
+       (its switch lets them fall through to one case); map those to the page
+       name its title table uses. */
+    const routerPage = { favourites: 'favorites', setlists: 'setlist', statistics: 'stats' };
     const keys = Object.keys(serverTitles);
     if (keys.length < 8) { fail(`expected the server title maps to list the fixed pages (found ${keys.length})`); }
     let mismatches = 0;

@@ -858,7 +858,7 @@ export class Search {
                Fall back to the precached slim index so the user can still find
                titles. */
             if (!append) {
-                const handled = await this._offlineSearchFallback(query, songbook, container);
+                const handled = await this._offlineSearchFallback(query, songbook, container, seq);
                 /* The fallback waited on the network too — check again. */
                 if (seq !== this._searchSeq) return;
                 if (!handled) {
@@ -1018,13 +1018,17 @@ export class Search {
      * @param {HTMLElement} container
      * @returns {Promise<boolean>}
      */
-    async _offlineSearchFallback(query, songbook, container) {
+    async _offlineSearchFallback(query, songbook, container, seq) {
         let index;
         try {
             index = await this._getSlimIndex();
         } catch (_e) {
             return false;
         }
+        /* A newer search started while the cached index was loading: leave the
+           page to it rather than painting stale matches over its results.
+           Returning true stops the caller drawing its own message too. */
+        if (seq !== undefined && seq !== this._searchSeq) return true;
         if (!Array.isArray(index) || index.length === 0) return false;
 
         let results = this._filterSlimIndex(index, query, songbook);

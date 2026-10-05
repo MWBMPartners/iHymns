@@ -50,7 +50,10 @@ if (!function_exists('ihymnsStripHtmlComments')) {
            comment's text can't be mistaken for a real one, and a "<!--" inside
            a real script stays put. */
         $out = preg_replace_callback(
-            '#<(script|style|pre|textarea)\b[^>]*>.*?</\1\s*>|<!--(?!\[if\b).*?-->#is',
+            /* "<!-->" and "<!--->" are complete (empty) comments in HTML; they
+               are matched on their own first, so the general pattern can't
+               run on from them to the NEXT "-->" and swallow real content. */
+            '#<(script|style|pre|textarea)\b[^>]*>.*?</\1\s*>|<!--(?:>|->)|<!--(?!\[if\b).*?-->#is',
             static fn(array $m): string => (($m[1] ?? '') !== '') ? $m[0] : '',
             $html
         );

@@ -33,7 +33,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
     </h1>
 
     <p class="text-muted small mb-4">
-        Last updated: 10 July 2026
+        Last updated: 5 October 2026
     </p>
 
     <!-- Overview -->
@@ -273,7 +273,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 each governed by their own privacy policies:
             </p>
             <ul>
-                <li><strong>CDN providers</strong> (jsDelivr, cdnjs) — for loading libraries including Bootstrap, jQuery, Font Awesome, Animate.css, Tone.js, and PDF.js. These providers may log access in their server logs.</li>
+                <li><strong>CDN providers</strong> (jsDelivr, cdnjs) — for loading libraries including Bootstrap, Font Awesome, Bootstrap Icons, Tone.js, and PDF.js. These providers may log access in their server logs.</li>
                 <li>
                     <strong>Apple — Sign in with Apple</strong> (if you use it) — authentication only.
                     Signing in with Apple on the web loads Apple's own JavaScript SDK from

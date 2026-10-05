@@ -149,7 +149,10 @@ function adminEntitlementPhrase(string $key): string
  */
 function adminRequestWantsJson(): bool
 {
-    if (!empty($_SERVER['HTTP_X_REQUESTED_WITH'])) {
+    /* Only the exact value our own scripts send. Some Android in-app
+       browsers (Gmail, Facebook…) put their app name in this header on
+       ordinary page visits, and those people should still get the page. */
+    if (strcasecmp((string)($_SERVER['HTTP_X_REQUESTED_WITH'] ?? ''), 'XMLHttpRequest') === 0) {
         return true;
     }
     /* A request that asks ONLY for JSON (no text/html in its Accept list) is

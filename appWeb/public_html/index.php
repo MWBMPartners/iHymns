@@ -427,8 +427,13 @@ try {
             /* #85 — a song with no number must NOT read "#0" in the share title:
                (int)null === 0, so only append "#N" when there is a real number. */
             $_ogNum  = (int)($ogSong['number'] ?? 0);
-            $ogTitle = $ogSong['title'] . ' — '
-                     . $ogSong['songbookName']
+            /* Same shape and capitalisation as the song page's own tab title
+               (includes/pages/song.php, $songDocTitle), so the title doesn't
+               change once the page has loaded; no " — " when there is no
+               songbook name. */
+            $_ogBook = (string)($ogSong['songbookName'] ?? '');
+            $ogTitle = toTitleCase((string)$ogSong['title'])
+                     . ($_ogBook !== '' ? ' — ' . $_ogBook : '')
                      . ($_ogNum > 0 ? ' #' . $_ogNum : '');
             $ogDescription = 'View lyrics for "' . $ogSong['title']
                            . '" from ' . $ogSong['songbookName']
@@ -913,7 +918,10 @@ try {
         $pageType = 'other';
         try {
             $_ogTable = $matches[1] === 'publisher' ? 'tblPublishers' : 'tblTunes'; /* fixed table names, never user input */
-            $stmt = getDbMysqli()->prepare('SELECT Name FROM ' . $_ogTable . ' WHERE Slug = ? LIMIT 1');
+            /* Inactive publishers are "not found" on their own page, so they
+               don't get a title here either. */
+            $_ogActive = $matches[1] === 'publisher' ? ' AND IsActive = 1' : '';
+            $stmt = getDbMysqli()->prepare('SELECT Name FROM ' . $_ogTable . ' WHERE Slug = ?' . $_ogActive . ' LIMIT 1');
             $_ogSlug = strtolower($matches[2]);
             $stmt->bind_param('s', $_ogSlug);
             $stmt->execute();
@@ -944,36 +952,6 @@ try {
         $pageType = 'other';
     }
 
-    /* Fixed pages get their own title and description, so a shared link or a
-       search result says what the page is instead of repeating the home page.
-       The titles match the ones router.js sets after the page loads
-       (Router.updateTitle) — tests/test-polish-guard.js checks the two agree. */
-    $_ogStaticPages = [
-        '/songbooks' => ['Songbooks',        'Browse every hymnal and worship songbook on ' . $app["Application"]["Name"] . '.'],
-        '/search'    => ['Search',           'Search hymns and worship songs by title, first line, words, number or writer.'],
-        '/help'      => ['Help',             'How to find songs, save favourites, build set lists and use ' . $app["Application"]["Name"] . ' offline.'],
-        '/whats-new' => ["What's New",       'The latest improvements to ' . $app["Application"]["Name"] . '.'],
-        '/terms'     => ['Terms of Use',     'The terms for using ' . $app["Application"]["Name"] . '.'],
-        '/privacy'   => ['Privacy Policy',   'How ' . $app["Application"]["Name"] . ' looks after your information.'],
-        '/request'   => ['Request a Song',   "Can't find a song? Ask for it to be added to " . $app["Application"]["Name"] . '.'],
-    ];
-    /* Pages that only make sense for the person using them (their own
-       favourites, set lists, settings…): titled, and kept out of search results. */
-    $_ogPrivatePages = [
-        '/favorites' => 'Favourites',
-        '/setlist'   => 'Set Lists',
-        '/settings'  => 'Settings',
-        '/link'      => 'Link a Device',
-        '/stats'     => 'Usage Statistics',
-    ];
-    if (isset($_ogStaticPages[$requestPath])) {
-        [$_ogT, $_ogD] = $_ogStaticPages[$requestPath];
-        $ogTitle       = $_ogT . ' — ' . $app["Application"]["Name"];
-        $ogDescription = $_ogD;
-    } elseif (isset($_ogPrivatePages[$requestPath])) {
-        $ogTitle   = $_ogPrivatePages[$requestPath] . ' — ' . $app["Application"]["Name"];
-        $ogNoindex = true;
-    }
 } catch (\Throwable $e) {
     /* If song data isn't available, use defaults — no fatal error.
        Widened from \RuntimeException → \Throwable (#811) so a fresh
@@ -981,6 +959,42 @@ try {
        run still renders the page; the metadata block falls back to
        the static defaults rather than blanking the site. */
     error_log('[index.php] OG/route detection failed: ' . $e->getMessage());
+}
+
+/* Fixed pages get their own title and description, so a shared link or a
+   search result says what the page is instead of repeating the home page.
+   The titles match the ones router.js sets after the page loads
+   (Router.updateTitle) — tests/test-polish-guard.js checks the two agree.
+   Outside the database try/catch above on purpose: these need no database,
+   so they still apply when it is down. */
+$_ogStaticPages = [
+    '/songbooks' => ['Songbooks',        'Browse every hymnal and worship songbook on ' . $app["Application"]["Name"] . '.'],
+    '/search'    => ['Search',           'Search hymns and worship songs by title, first line, words, number or writer.'],
+    '/help'      => ['Help',             'How to find songs, save favourites, build set lists and use ' . $app["Application"]["Name"] . ' offline.'],
+    '/whats-new' => ["What's New",       'The latest improvements to ' . $app["Application"]["Name"] . '.'],
+    '/terms'     => ['Terms of Use',     'The terms for using ' . $app["Application"]["Name"] . '.'],
+    '/privacy'   => ['Privacy Policy',   'How ' . $app["Application"]["Name"] . ' looks after your information.'],
+    '/request'   => ['Request a Song',   "Can't find a song? Ask for it to be added to " . $app["Application"]["Name"] . '.'],
+];
+/* Pages that only make sense for the person using them (their own
+   favourites, set lists, settings…): titled, and kept out of search results. */
+$_ogPrivatePages = [
+    '/favorites'  => 'Favourites',
+    '/favourites' => 'Favourites',
+    '/setlist'    => 'Set Lists',
+    '/setlists'   => 'Set Lists',
+    '/settings'   => 'Settings',
+    '/link'       => 'Link a Device',
+    '/stats'      => 'Usage Statistics',
+    '/statistics' => 'Usage Statistics',
+];
+if (isset($_ogStaticPages[$requestPath])) {
+    [$_ogT, $_ogD] = $_ogStaticPages[$requestPath];
+    $ogTitle       = $_ogT . ' — ' . $app["Application"]["Name"];
+    $ogDescription = $_ogD;
+} elseif (isset($_ogPrivatePages[$requestPath])) {
+    $ogTitle   = $_ogPrivatePages[$requestPath] . ' — ' . $app["Application"]["Name"];
+    $ogNoindex = true;
 }
 
 /* #1905 — HARD 404 for an unknown top-level route. The .htaccess SPA catch-all

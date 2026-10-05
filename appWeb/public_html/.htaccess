@@ -585,24 +585,6 @@ RewriteRule ^ index.php [QSA,L]
     Header always set Cross-Origin-Resource-Policy "same-origin"
 </IfModule>
 
-# ==========================================================================
-# STORAGE BRIDGE — the one page other iHymns sites may show in a frame
-#
-# bridge.html is loaded, hidden, inside a frame by every iHymns site so their
-# settings can be shared (js/modules/storage-bridge.js; config 'storage_bridge'
-# points at sync.ihymns.app/bridge.html). The clickjacking header above says
-# "only my own domain may frame me", which stops ihymns.app, dev.ihymns.app and
-# the rest from loading it, so the bridge timed out on every page and fell back
-# to local storage. For this one file only, replace that rule with a list of
-# iHymns domains. The page itself also checks every message's origin.
-# https://developer.mozilla.org/docs/Web/HTTP/Headers/Content-Security-Policy/frame-ancestors
-# ==========================================================================
-<IfModule mod_headers.c>
-    <Files "bridge.html">
-        Header always unset X-Frame-Options
-        Header always set Content-Security-Policy "frame-ancestors https://ihymns.app https://*.ihymns.app https://ihymns.net https://*.ihymns.net"
-    </Files>
-</IfModule>
 
 # ==========================================================================
 # ERROR HANDLING

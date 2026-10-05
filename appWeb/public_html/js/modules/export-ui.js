@@ -205,7 +205,10 @@ async function fetchJson(url) {
  */
 function exportFailureMessage(err, what) {
     const status = (err && typeof err.status === 'number') ? err.status : 0;
-    if (status === 403) { return 'Sign in to export this ' + what + '.'; }
+    /* 401 = not signed in. 403 can also reach someone who IS signed in
+       (an access rule, an expired page), so it must not tell them to sign in. */
+    if (status === 401) { return 'Sign in to export this ' + what + '.'; }
+    if (status === 403) { return "You don't have access to export this " + what + '.'; }
     if (status === 429) { return 'Please wait a moment and try again.'; }
     return "We couldn't create that file. Please try again.";
 }

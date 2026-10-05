@@ -31,7 +31,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
     </h1>
 
     <p class="text-muted small mb-4">
-        Last updated: 10 July 2026
+        Last updated: 5 October 2026
     </p>
 
     <!-- Introduction -->
@@ -177,7 +177,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
             <h2 class="h6 mb-3">7. Third-Party Libraries &amp; Open Source</h2>
             <p>
                 <?= htmlspecialchars($appName) ?> incorporates open-source software libraries
-                (including Bootstrap, jQuery, Font Awesome, Fuse.js, and others) which are used
+                (including Bootstrap, Font Awesome, Tone.js, PDF.js, and others) which are used
                 under their respective licences. These libraries are the property of their
                 respective authors and are not claimed as part of <?= htmlspecialchars($appName) ?>.
             </p>

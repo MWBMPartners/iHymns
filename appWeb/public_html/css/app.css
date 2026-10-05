@@ -2902,9 +2902,11 @@ body.reduce-transparency .pwa-install-banner {
     /* Song page buttons are btn-sm (about 31px tall) — a bit small for a
        thumb. Lift them to 40px on phones only; the extra padding keeps the
        label centred without turning every button into a flex box. Covers the
-       action buttons, the font-size +/- pair and the spacing select. */
-    .page-song .btn-sm,
-    .page-song .btn-group-sm > .btn,
+       action buttons, the font-size +/- pair and the spacing select. Inline
+       text links styled as buttons (.btn-link, e.g. "Edit note") are left
+       alone so they don't stretch the rows they sit in. */
+    .page-song .btn-sm:not(.btn-link),
+    .page-song .btn-group-sm > .btn:not(.btn-link),
     .page-song .form-select-sm {
         --bs-btn-padding-y: 0.5rem;
         min-height: 40px;

@@ -721,12 +721,16 @@ if ($hasSchema) {
     <script type="module">
         // The renderer + registry + sample song come from the SAME module the
         // print path uses, so the preview is byte-identical to the printout.
-        import { PRINT_BLOCK_TYPES, PRINT_PAGE_OPTIONS, PRINT_SHOWIF_CONDITIONS, PRINT_SAMPLE_SONG, ORG_LOGO_KINDS, renderTemplateBodyHtml, printCss, applyCustomLayout }
+        import { PRINT_BLOCK_TYPES, PRINT_PAGE_OPTIONS, PRINT_SHOWIF_CONDITIONS, PRINT_SAMPLE_SONG, ORG_LOGO_KINDS, renderTemplateBodyHtml, printCss, applyCustomLayout, hideBrokenPrintImages }
             from '/js/modules/print.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/print.js') ?>';
         import { bootSortableTables }
             from '/js/modules/admin-table-sort.js?v=<?= filemtime(dirname(__DIR__) . '/js/modules/admin-table-sort.js') ?>';
 
         bootSortableTables(); // sortable list headers (#844)
+        // The live preview uses the same renderer as printing, so a QR code or
+        // logo that can't load (QR codes answer 503 until the QR service is
+        // set up) is hidden here too, instead of showing a broken-image icon.
+        hideBrokenPrintImages(document);
 
         // #1767 R — a `qr` block previews as an image element pointing at the
         // same-origin /qr.php (CueRCode-backed) endpoint, emitted client-side by

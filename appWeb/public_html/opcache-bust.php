@@ -17,8 +17,10 @@
  * app bootstrap — so nothing can interfere with (or be interfered by) the reset.
  *
  * SECURITY
- *   - Requires a shared secret, supplied via the `X-OPcache-Key` request header
- *     (preferred) or `?key=`, matched with hash_equals() against the expected
+ *   - Requires a shared secret, supplied ONLY via the `X-OPcache-Key` request
+ *     header (a `?key=` in the address was accepted until 2026-10-05; addresses
+ *     end up in server and proxy logs, so it no longer is), matched with
+ *     hash_equals() against the expected
  *     key resolved from `IHYMNS_OPCACHE_KEY` (env) or `../.auth/opcache_bust_key.php`.
  *   - #1466 P4 — this endpoint only ever VERIFIES the key, it never needs to hand
  *     the plaintext back to anyone (the one sender, deploy.yml, keeps its own copy
@@ -80,7 +82,7 @@ if ($expected === '') {
  * the `OPCACHE_BUST_KEY` GitHub secret) in the `X-OPcache-Key` header — it
  * never sees or needs to know which form the server has stored.
  * Ref: #1466 P4, `.claude/secret-encryption-strategy.md` §3. */
-$provided = (string) ($_SERVER['HTTP_X_OPCACHE_KEY'] ?? ($_GET['key'] ?? ''));
+$provided = (string) ($_SERVER['HTTP_X_OPCACHE_KEY'] ?? '');
 $ok = false;
 if ($provided !== '' && $expected !== '') {
     if (strncmp($expected, 'sha256:', 7) === 0) {

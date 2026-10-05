@@ -69,6 +69,9 @@ const DYNAMIC_TITLE_PAGES = new Set([
 function reportInitFailure(name) {
     return (err) => {
         console.error(`[Router] ${name} init failed:`, err);
+        /* Offline, a page script that isn't cached yet simply can't load;
+           that's expected, not a bug, so don't trigger the error popup. */
+        if (navigator.onLine === false) { return; }
         setTimeout(() => { throw err; });
     };
 }
@@ -703,6 +706,9 @@ export class Router {
             message = "You're going a bit fast — wait a moment and try again.";
         } else if (status >= 500) {
             message = 'Something went wrong on our side. Please try again.';
+        } else if (status >= 400) {
+            /* The server answered, so the connection is fine; don't blame it. */
+            message = "We couldn't load this page. Please try again, or go back to the home page.";
         } else {
             message = "We couldn't load this page. Check your connection and try again.";
         }

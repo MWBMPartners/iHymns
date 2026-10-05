@@ -57,17 +57,20 @@ export class Numpad {
 
         /* The list may have failed to load at start-up (offline) — try again
            now that the visitor actually wants it, and say so if it fails. */
-        const bookSelect = document.getElementById('numpad-songbook');
-        if (bookSelect && !Array.from(bookSelect.options).some((o) => !o.disabled && o.value !== '')) {
-            this.populateSongbookDropdown('numpad-songbook', { notify: true });
-        }
-
         /* Pre-select songbook: explicit param > default setting */
         const bookId = songbookId || localStorage.getItem(STORAGE_DEFAULT_SONGBOOK) || '';
-        if (bookId) {
+        const applyBook = () => {
+            if (!bookId) return;
             const select = document.getElementById('numpad-songbook');
             if (select) select.value = bookId;
+        };
+        const bookSelect = document.getElementById('numpad-songbook');
+        if (bookSelect && !Array.from(bookSelect.options).some((o) => !o.disabled && o.value !== '')) {
+            /* The retry finishes after the dialog opens, and refilling the list
+               resets its choice, so pick the songbook again once it's done. */
+            this.populateSongbookDropdown('numpad-songbook', { notify: true }).then(applyBook).catch(() => {});
         }
+        applyBook();
 
         /* Clear previous results */
         const results = document.getElementById('numpad-results');
