@@ -1021,7 +1021,7 @@ $personDisambiguation = trim((string)($person['Disambiguation'] ?? ''));
                                 <small class="text-muted"><?= htmlspecialchars($b['note']) ?></small>
                             <?php endif; ?>
                         </div>
-                        <small class="text-muted"><?= number_format((int)$b['songCount']) ?> songs</small>
+                        <small class="text-muted"><?= number_format((int)$b['songCount']) ?> <?= (int)$b['songCount'] === 1 ? 'song' : 'songs' ?></small>
                         <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
                     </a>
                 <?php endforeach; ?>

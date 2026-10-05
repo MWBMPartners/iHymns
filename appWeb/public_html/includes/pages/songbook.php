@@ -217,7 +217,7 @@ if (!empty($songs)) {
                           title="Unofficial songbook">Unofficial</span>
                 <?php endif; ?>
             </h1>
-            <p class="text-muted mb-0"><?= number_format($book['songCount']) ?> songs</p>
+            <p class="text-muted mb-0"><?= number_format($book['songCount']) ?> <?= (int)$book['songCount'] === 1 ? 'song' : 'songs' ?></p>
             <?php
                 /* Feature 2 (#1765) — informational Public Domain line for
                    the songbook itself (as a published work). Gated on the

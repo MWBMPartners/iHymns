@@ -583,7 +583,8 @@ try {
             $pageType = 'songbook';
             $ogTitle = $ogBook['name'] . ' — ' . $app["Application"]["Name"];
             $ogDescription = 'Browse ' . number_format($ogBook['songCount'])
-                           . ' songs from ' . $ogBook['name'] . ' on ' . $app["Application"]["Name"];
+                           . ((int)$ogBook['songCount'] === 1 ? ' song' : ' songs')
+                           . ' from ' . $ogBook['name'] . ' on ' . $app["Application"]["Name"];
             /* #832 — append "Also known as: …" to social previews when
                alt names are present, so a Twitter/Facebook share card
                surfaces vernacular names too. Capped at 3 alts to keep
