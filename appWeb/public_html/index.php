@@ -44,6 +44,12 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'debug_mode.php';
 enableDebugModeIfRequested();
 
+/* Remove HTML comments (developer notes) from everything this page sends.
+   Whole-page buffer, so a comment can never be split between two chunks.
+   See includes/html_comment_strip.php for what is left alone and why. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'html_comment_strip.php';
+ob_start('ihymnsStripHtmlComments');
+
 /* Themed error-page renderer — loaded BEFORE the bootstrap safety net below so
    it's available even if a later require fails. Self-contained, no deps. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'error_page.php';
@@ -350,7 +356,11 @@ $requestPath = getRequestPath();
 $canonicalUrl = getCanonicalUrl();
 
 /* Default OG values (used for generic pages) */
+/* $ogTitle / $ogDescription hold PLAIN text. They are escaped once, where
+   they are printed into the <head> below. Escaping them here as well made
+   share previews show "I&#039;ll Fly Away" instead of "I'll Fly Away". */
 $ogTitle       = $app["Application"]["Name"] . ' — Christian Hymns & Worship Songs';
+$ogNoindex     = false; /* set for personal pages (favourites, settings…) below */
 $ogDescription = $app["Application"]["Description"]["Synopsis"];
 $ogType        = 'website';
 $ogImage       = getCanonicalUrl('/og-image');
@@ -373,6 +383,18 @@ try {
     /* Song page: /song/CP-0001 OR /song/<PublicId> (#1343-B — widen-only; getSongById resolves either). */
     if (preg_match('#^/song/([A-Za-z0-9_-]{1,32})$#', $requestPath, $matches)) {
         $ogSong = $songData->getSongById($matches[1]);
+        if ($ogSong === null) {
+            /* Unknown song: answer with an honest status so search engines and
+               link checkers don't treat it as a real page. A merged or renamed
+               song is still a working link (the page forwards the visitor), so
+               it keeps 200; a removed one is "gone" (410), anything else 404.
+               Same redirect lookup the song page itself uses. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
+            $_ogRd = songRedirectResolve(getDbMysqli(), (string)$matches[1]);
+            if (!$_ogRd['redirected']) {
+                http_response_code(!empty($_ogRd['tombstone']) ? 410 : 404);
+            }
+        }
         if ($ogSong !== null) {
             $pageType = 'song';
 
@@ -405,8 +427,8 @@ try {
             /* #85 — a song with no number must NOT read "#0" in the share title:
                (int)null === 0, so only append "#N" when there is a real number. */
             $_ogNum  = (int)($ogSong['number'] ?? 0);
-            $ogTitle = htmlspecialchars($ogSong['title']) . ' — '
-                     . htmlspecialchars($ogSong['songbookName'])
+            $ogTitle = $ogSong['title'] . ' — '
+                     . $ogSong['songbookName']
                      . ($_ogNum > 0 ? ' #' . $_ogNum : '');
             $ogDescription = 'View lyrics for "' . $ogSong['title']
                            . '" from ' . $ogSong['songbookName']
@@ -546,11 +568,15 @@ try {
         }
     }
     /* Songbook page: /songbook/CP */
-    elseif (preg_match('#^/songbook/([A-Za-z]+)$#', $requestPath, $matches)) {
+    elseif (preg_match('#^/songbook/([A-Za-z0-9]{1,10})$#', $requestPath, $matches)) {
+        /* Abbreviations may contain digits (letters and digits, up to 10). */
         $ogBook = $songData->getSongbook($matches[1]);
+        if ($ogBook === null) {
+            http_response_code(404); /* unknown songbook — see the song branch above */
+        }
         if ($ogBook !== null) {
             $pageType = 'songbook';
-            $ogTitle = htmlspecialchars($ogBook['name']) . ' — ' . $app["Application"]["Name"];
+            $ogTitle = $ogBook['name'] . ' — ' . $app["Application"]["Name"];
             $ogDescription = 'Browse ' . number_format($ogBook['songCount'])
                            . ' songs from ' . $ogBook['name'] . ' on ' . $app["Application"]["Name"];
             /* #832 — append "Also known as: …" to social previews when
@@ -693,6 +719,9 @@ try {
             $personRow = $stmt->get_result()->fetch_assoc();
             $stmt->close();
             if ($personRow) {
+                $ogTitle       = (string)$personRow['Name'] . ' — ' . $app["Application"]["Name"];
+                $ogDescription = 'Hymns and worship songs by ' . (string)$personRow['Name']
+                               . ' on ' . $app["Application"]["Name"] . '.';
                 $personJsonLd = [
                     '@context' => 'https://schema.org',
                     '@type'    => 'Person',
@@ -764,9 +793,9 @@ try {
                 $workRow = $stmt->get_result()->fetch_assoc();
                 $stmt->close();
                 if ($workRow) {
-                    $ogTitle       = htmlspecialchars((string)$workRow['Title']) . ' — Work — ' . $app["Application"]["Name"];
+                    $ogTitle       = (string)$workRow['Title'] . ' — Work — ' . $app["Application"]["Name"];
                     $ogDescription = 'Work record on ' . $app["Application"]["Name"]
-                                   . (!empty($workRow['Iswc']) ? ' — ISWC ' . htmlspecialchars((string)$workRow['Iswc']) : '');
+                                   . (!empty($workRow['Iswc']) ? ' — ISWC ' . (string)$workRow['Iswc'] : '');
                     $breadcrumbItems = [
                         ['name' => 'Home',  'url' => getCanonicalUrl('/')],
                         ['name' => 'Works', 'url' => getCanonicalUrl('/works')],
@@ -826,7 +855,7 @@ try {
         if (is_array($shareData) && empty($shareData['unavailable'])) {
             $setlistName = $shareData['name'] ?? 'Shared Set List';
             $setlistSongCount = count($shareData['songs'] ?? []);
-            $ogTitle = htmlspecialchars($setlistName) . ' — Shared Set List — ' . $app["Application"]["Name"];
+            $ogTitle = $setlistName . ' — Shared Set List — ' . $app["Application"]["Name"];
             $ogDescription = 'A curated set list with ' . $setlistSongCount
                            . ' ' . ($setlistSongCount === 1 ? 'song' : 'songs')
                            . ' on ' . $app["Application"]["Name"];
@@ -864,10 +893,10 @@ try {
             $ogTag = themeIndexOne(getDbMysqli(), $matches[1]);
         } catch (\Throwable $_e) { /* pre-#1152 / outage — generic OG */ }
         if ($ogTag) {
-            $ogTitle = htmlspecialchars($ogTag['name']) . ' — songs by theme — ' . $app["Application"]["Name"];
+            $ogTitle = $ogTag['name'] . ' — songs by theme — ' . $app["Application"]["Name"];
             $ogDescription = number_format($ogTag['useCount']) . ' '
                            . ($ogTag['useCount'] === 1 ? 'song' : 'songs')
-                           . ' tagged "' . htmlspecialchars($ogTag['name']) . '" on '
+                           . ' tagged "' . $ogTag['name'] . '" on '
                            . $app["Application"]["Name"] . '.';
             $breadcrumbItems = [
                 ['name' => 'Home',            'url' => getCanonicalUrl('/')],
@@ -875,6 +904,29 @@ try {
                 ['name' => $ogTag['name'],    'url' => $canonicalUrl],
             ];
         }
+    }
+    /* Publisher and tune pages: their own name in the tab and in link previews.
+       Only an exact address match is looked up here. Any other spelling keeps
+       the generic title (the page itself still finds it through its aliases),
+       and a miss never changes the status code, for the same reason. */
+    elseif (preg_match('#^/(publisher|tune)/([A-Za-z0-9\-]{1,140})$#', $requestPath, $matches)) {
+        $pageType = 'other';
+        try {
+            $_ogTable = $matches[1] === 'publisher' ? 'tblPublishers' : 'tblTunes'; /* fixed table names, never user input */
+            $stmt = getDbMysqli()->prepare('SELECT Name FROM ' . $_ogTable . ' WHERE Slug = ? LIMIT 1');
+            $_ogSlug = strtolower($matches[2]);
+            $stmt->bind_param('s', $_ogSlug);
+            $stmt->execute();
+            $_ogRow = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if ($_ogRow) {
+                $_ogName       = (string)$_ogRow['Name'];
+                $ogTitle       = $_ogName . ' — ' . $app["Application"]["Name"];
+                $ogDescription = $matches[1] === 'publisher'
+                    ? 'Songbooks published by ' . $_ogName . ' on ' . $app["Application"]["Name"] . '.'
+                    : 'Hymns sung to the tune ' . $_ogName . ' on ' . $app["Application"]["Name"] . '.';
+            }
+        } catch (\Throwable $_e) { /* registry not migrated yet — keep the generic title */ }
     }
     /* Songbooks listing page */
     elseif ($requestPath === '/songbooks') {
@@ -890,6 +942,37 @@ try {
     }
     else {
         $pageType = 'other';
+    }
+
+    /* Fixed pages get their own title and description, so a shared link or a
+       search result says what the page is instead of repeating the home page.
+       The titles match the ones router.js sets after the page loads
+       (Router.updateTitle); keep the two in step. */
+    $_ogStaticPages = [
+        '/songbooks' => ['Songbooks',        'Browse every hymnal and worship songbook on ' . $app["Application"]["Name"] . '.'],
+        '/search'    => ['Search',           'Search hymns and worship songs by title, first line, words, number or writer.'],
+        '/help'      => ['Help',             'How to find songs, save favourites, build set lists and use ' . $app["Application"]["Name"] . ' offline.'],
+        '/whats-new' => ["What's New",       'The latest improvements to ' . $app["Application"]["Name"] . '.'],
+        '/terms'     => ['Terms of Use',     'The terms for using ' . $app["Application"]["Name"] . '.'],
+        '/privacy'   => ['Privacy Policy',   'How ' . $app["Application"]["Name"] . ' looks after your information.'],
+        '/request'   => ['Request a Song',   "Can't find a song? Ask for it to be added to " . $app["Application"]["Name"] . '.'],
+    ];
+    /* Pages that only make sense for the person using them (their own
+       favourites, set lists, settings…): titled, and kept out of search results. */
+    $_ogPrivatePages = [
+        '/favorites' => 'Favourites',
+        '/setlist'   => 'Set Lists',
+        '/settings'  => 'Settings',
+        '/link'      => 'Link a Device',
+        '/stats'     => 'Usage Statistics',
+    ];
+    if (isset($_ogStaticPages[$requestPath])) {
+        [$_ogT, $_ogD] = $_ogStaticPages[$requestPath];
+        $ogTitle       = $_ogT . ' — ' . $app["Application"]["Name"];
+        $ogDescription = $_ogD;
+    } elseif (isset($_ogPrivatePages[$requestPath])) {
+        $ogTitle   = $_ogPrivatePages[$requestPath] . ' — ' . $app["Application"]["Name"];
+        $ogNoindex = true;
     }
 } catch (\Throwable $e) {
     /* If song data isn't available, use defaults — no fatal error.
@@ -971,7 +1054,7 @@ if (!empty($breadcrumbItems)) {
     <!-- ================================================================
          SEO & SOCIAL META TAGS — Dynamic per-page for share previews
          ================================================================ -->
-    <title><?= $ogTitle ?></title>
+    <title><?= htmlspecialchars($ogTitle) ?></title>
     <meta name="description" content="<?= htmlspecialchars($ogDescription) ?>">
     <meta name="keywords" content="<?= htmlspecialchars($app["Application"]["Description"]["Keywords"]) ?>">
     <?php /* #2024/#2025 — mirrors the X-Robots-Tag header set earlier in this
@@ -979,7 +1062,9 @@ if (!empty($breadcrumbItems)) {
              disagree): this channel has been switched off from search
              engines by an admin. Absent entirely on a visible channel —
              never an empty/false-y meta tag. */ ?>
-    <?php if ($searchEngineHidden): ?>
+    <?php /* Also on personal pages (favourites, set lists, settings…),
+             which have nothing for a search engine to show anyone else. */ ?>
+    <?php if ($searchEngineHidden || $ogNoindex): ?>
     <meta name="robots" content="noindex">
     <?php endif; ?>
     <meta name="author" content="<?= htmlspecialchars($app["Application"]["Vendor"]["Name"]) ?>">
@@ -1102,20 +1187,15 @@ if (!empty($breadcrumbItems)) {
          song / person / work external-link buttons. CDN (jsdelivr is in the CSP style-src
          + font-src); decorative, so it degrades to text-only labels if the CDN is offline.
          #1676 — was the ONE external load in this shell not sourced from APP_CONFIG,
-         and the only one with no `integrity`. Its neighbours (Font Awesome above,
-         Animate.css below) were already pinned + hashed + fallback-backed, which is
+         and the only one with no `integrity`. Its neighbour (Font Awesome above)
+         was already pinned + hashed + fallback-backed, which is
          exactly why nobody spotted this line: it sits in a block that looks handled.
          Now emitted by the shared helper, same registry. #1832 — passes false so
          the helper does NOT emit its inline onerror= fallback (the enforcing nonce
          CSP would refuse it); the nonce'd script below covers #bootstrap-icons-css. -->
     <?= ihymns_bootstrap_icons_css_link(false) ?>
 
-    <!-- Animate.css — CDN with local fallback (see the nonce'd script below, #1832) -->
-    <link rel="stylesheet"
-          href="<?= $libs['animatecss']['css_cdn'] ?>"
-          integrity="<?= $libs['animatecss']['css_sri'] ?>"
-          crossorigin="anonymous"
-          id="animatecss">
+    <noscript><style>.page-loader { display: none !important; }</style></noscript>
 
     <!-- iHymns Application Stylesheet -->
     <link rel="stylesheet" href="/css/app.css?v=<?= urlencode($assetVersion) ?>">
@@ -1135,7 +1215,7 @@ if (!empty($breadcrumbItems)) {
          <link rel="stylesheet"> blocks the following <script> until it has
          loaded or failed, so by the time THIS runs each CDN sheet is resolved:
          link.sheet is a CSSStyleSheet on success and null on failure (404 /
-         network / SRI mismatch). This mirrors the jQuery / Bootstrap-JS
+         network / SRI mismatch). This mirrors the Bootstrap-JS
          `typeof … === 'undefined'` fallback already used lower in this file.
          https://developer.mozilla.org/docs/Web/API/HTMLLinkElement/sheet
          ================================================================ -->
@@ -1147,8 +1227,7 @@ if (!empty($breadcrumbItems)) {
             var fb = [
                 { id: 'bootstrap-css',       local: '/<?= $libs['bootstrap']['css_local'] ?>' },
                 { id: 'fontawesome-css',     local: '/<?= $libs['fontawesome']['css_local'] ?>' },
-                { id: 'bootstrap-icons-css', local: '/<?= $libs['bootstrap_icons']['css_local'] ?? '' ?>' },
-                { id: 'animatecss',          local: '/<?= $libs['animatecss']['css_local'] ?>' }
+                { id: 'bootstrap-icons-css', local: '/<?= $libs['bootstrap_icons']['css_local'] ?? '' ?>' }
             ];
             for (var i = 0; i < fb.length; i++) {
                 var el = document.getElementById(fb[i].id);
@@ -1655,6 +1734,16 @@ if (!empty($breadcrumbItems)) {
           role="main"
           tabindex="-1">
 
+        <?php /* Without JavaScript the page would spin on "Loading…" forever,
+                 so say plainly what's needed instead (the spinner is hidden by
+                 the matching <noscript> rule in the <head>). */ ?>
+        <noscript>
+            <div class="container py-5 text-center">
+                <h1 class="h4"><?= htmlspecialchars($app["Application"]["Name"]) ?> needs JavaScript</h1>
+                <p class="text-muted mb-0">Please turn JavaScript on in your browser's settings, or try a different browser, to search and read the songs.</p>
+            </div>
+        </noscript>
+
         <!-- Loading spinner — shown during initial load and transitions -->
         <div id="page-loader" class="page-loader" role="status" aria-label="Loading content">
             <div class="spinner-container">
@@ -2014,21 +2103,6 @@ if (!empty($breadcrumbItems)) {
     <!-- ================================================================
          SCRIPTS — CDN with local fallback
          ================================================================ -->
-
-    <!-- jQuery -->
-    <script src="<?= $libs['jquery']['js_cdn'] ?>"
-            integrity="<?= $libs['jquery']['js_sri'] ?>"
-            crossorigin="anonymous"
-            id="jquery-js"></script>
-    <script nonce="<?= $cspNonce ?>">
-        /* Fallback: load jQuery locally if CDN fails or SRI check fails (#117) */
-        if (typeof jQuery === 'undefined') {
-            var s = document.createElement('script');
-            s.src = '/<?= $libs['jquery']['js_local'] ?>';
-            s.async = false;
-            document.head.appendChild(s);
-        }
-    </script>
 
     <!-- Bootstrap Bundle (includes Popper.js) -->
     <script src="<?= $libs['bootstrap']['js_cdn'] ?>"

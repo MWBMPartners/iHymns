@@ -6,7 +6,7 @@
 #
 # PURPOSE:
 # Downloads pinned versions of CDN-hosted libraries (Bootstrap, Font Awesome,
-# jQuery, Animate.css, Tone.js, PDF.js, Swagger UI, QR Code Generator) into
+# Bootstrap Icons, Tone.js, PDF.js, Swagger UI, SortableJS, protobuf.js) into
 # the vendor/ directory under public_html/. These local copies serve as
 # fallbacks when the CDN is unreachable (e.g., offline PWA usage).
 #
@@ -169,7 +169,7 @@ download() {
 # ---------------------------------------------------------------------------
 # Bootstrap 5.3.6
 # ---------------------------------------------------------------------------
-echo "[1/10] Bootstrap 5.3.6"
+echo "[1/7] Bootstrap 5.3.6"
 download "https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css" \
          "$VENDOR_DIR/bootstrap/bootstrap.min.css" \
          "bootstrap.min.css"
@@ -180,7 +180,7 @@ download "https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/js/bootstrap.bundle.
 # ---------------------------------------------------------------------------
 # Font Awesome 6.7.2
 # ---------------------------------------------------------------------------
-echo "[2/10] Font Awesome 6.7.2"
+echo "[2/7] Font Awesome 6.7.2"
 download "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css" \
          "$VENDOR_DIR/fontawesome/css/all.min.css" \
          "all.min.css"
@@ -205,33 +205,9 @@ if [ -f "$VENDOR_DIR/fontawesome/css/all.min.css" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# jQuery 3.7.1
-# ---------------------------------------------------------------------------
-echo "[3/10] jQuery 3.7.1"
-download "https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js" \
-         "$VENDOR_DIR/jquery/jquery.min.js" \
-         "jquery.min.js"
-
-# ---------------------------------------------------------------------------
-# Animate.css 4.1.1
-# ---------------------------------------------------------------------------
-echo "[4/10] Animate.css 4.1.1"
-download "https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" \
-         "$VENDOR_DIR/animate/animate.min.css" \
-         "animate.min.css"
-
-# ---------------------------------------------------------------------------
-# Fuse.js 7.1.0
-# ---------------------------------------------------------------------------
-echo "[5/10] Fuse.js 7.1.0"
-download "https://cdn.jsdelivr.net/npm/fuse.js@7.1.0/dist/fuse.min.mjs" \
-         "$VENDOR_DIR/fuse/fuse.min.mjs" \
-         "fuse.min.mjs"
-
-# ---------------------------------------------------------------------------
 # Tone.js 15.1.22
 # ---------------------------------------------------------------------------
-echo "[6/10] Tone.js 15.1.22"
+echo "[3/7] Tone.js 15.1.22"
 download "https://cdn.jsdelivr.net/npm/tone@15.1.22/build/Tone.js" \
          "$VENDOR_DIR/tone/Tone.min.js" \
          "Tone.min.js"
@@ -239,7 +215,7 @@ download "https://cdn.jsdelivr.net/npm/tone@15.1.22/build/Tone.js" \
 # ---------------------------------------------------------------------------
 # PDF.js 4.9.124
 # ---------------------------------------------------------------------------
-echo "[7/10] PDF.js 4.9.124"
+echo "[4/7] PDF.js 4.9.124"
 download "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.124/build/pdf.min.mjs" \
          "$VENDOR_DIR/pdfjs/pdf.min.mjs" \
          "pdf.min.mjs"
@@ -256,7 +232,7 @@ download "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.124/build/pdf.worker.min.m
 # blank pane with only a console message. api-docs.php now pins the exact
 # version with an integrity hash and falls back to these local copies.
 # ---------------------------------------------------------------------------
-echo "[8/10] Swagger UI 5.32.11"
+echo "[5/7] Swagger UI 5.32.11"
 download "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui.css" \
          "$VENDOR_DIR/swagger-ui/swagger-ui.css" \
          "swagger-ui.css"
@@ -287,7 +263,7 @@ download "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui-standa
 # rather than compute the right hash. With a local fallback in place, a hash
 # mismatch now degrades to this file instead of to a dead feature.
 # ---------------------------------------------------------------------------
-echo "[10/11] SortableJS 1.15.2"
+echo "[6/7] SortableJS 1.15.2"
 download "https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js" \
          "$VENDOR_DIR/sortablejs/Sortable.min.js" \
          "Sortable.min.js"
@@ -337,7 +313,7 @@ download "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/fonts/bootstr
 #
 # Keep the version below in step with package.json's protobufjs pin.
 # ---------------------------------------------------------------------------
-echo "[11/11] protobuf.js 8.8.0 (ProPresenter 7 runtime)"
+echo "[7/7] protobuf.js 8.8.0 (ProPresenter 7 runtime)"
 mkdir -p "$PUB_DIR/manage/editor/vendor"
 download "https://cdn.jsdelivr.net/npm/protobufjs@8.8.0/dist/protobuf.min.js" \
          "$PUB_DIR/manage/editor/vendor/protobuf.min.js" \

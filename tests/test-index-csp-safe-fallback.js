@@ -1,8 +1,8 @@
 /**
  * tests/test-index-csp-safe-fallback.js — public-shell CDN fallback must be CSP-safe (#1832)
  *
- * ELI5: the public site loads Bootstrap / Font Awesome / Bootstrap-Icons /
- * Animate.css from a CDN, and if the CDN is down it's supposed to quietly load
+ * ELI5: the public site loads Bootstrap / Font Awesome / Bootstrap-Icons
+ * from a CDN, and if the CDN is down it's supposed to quietly load
  * a copy we host ourselves instead. That "load our copy" rescue used to be
  * written as an inline `onerror="…"` on the <link> tag. But index.php sends a
  * strict Content-Security-Policy (`script-src 'self' 'nonce-…'`, no
@@ -10,7 +10,7 @@
  * policy — so the rescue silently never ran and, on a CDN outage, the page
  * loaded unstyled. The fix moves the rescue into a nonce'd <script> that checks
  * each stylesheet's `.sheet` (null ⇒ it failed) and swaps to the local copy —
- * the same shape the jQuery/Bootstrap-JS fallbacks in the same file already use.
+ * the same shape the Bootstrap-JS fallback in the same file already use.
  * This guard makes sure the CSP-refused inline-handler pattern never comes back
  * to the public shell, and that the CSP-safe replacement stays wired.
  *
@@ -33,7 +33,7 @@
  *      CSP-refused pattern.
  *   2. FIX PRESENT + NON-VACUOUS: index.php has a `<script nonce=…>` block that
  *      reads each CDN <link>'s `.sheet` and swaps `.href` to the local copy,
- *      covering all four CDN stylesheet ids.
+ *      covering all three CDN stylesheet ids.
  *   3. ICONS HELPER OPTED OUT ON THE SHELL: index.php calls
  *      `ihymns_bootstrap_icons_css_link(false)` so the shared helper does not
  *      emit its (CSP-dead) inline onerror on the public shell.
@@ -56,11 +56,11 @@ const ROOT = path.resolve(__dirname, '..');
 const INDEX_PHP = path.join(ROOT, 'appWeb/public_html/index.php');
 const HELPER_PHP = path.join(ROOT, 'appWeb/public_html/includes/bootstrap_assets.php');
 
-/* The four CDN stylesheets that carry a CDN→/vendor fallback in the shell. The
+/* The three CDN stylesheets that carry a CDN→/vendor fallback in the shell. The
    first three ids are literal <link id="…"> in index.php; bootstrap-icons-css
    comes from the shared helper, but its id must still be addressed by the
-   nonce'd fallback script, so all four are expected in that script. */
-const CDN_CSS_IDS = ['bootstrap-css', 'fontawesome-css', 'bootstrap-icons-css', 'animatecss'];
+   nonce'd fallback script, so all three are expected in that script. */
+const CDN_CSS_IDS = ['bootstrap-css', 'fontawesome-css', 'bootstrap-icons-css'];
 
 let failures = 0;
 const fail = (msg) => { console.log(`  ❌ ${msg}`); failures++; };

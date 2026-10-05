@@ -703,7 +703,11 @@ jobs:
             # top-level bindings mangle safely as module scope rather than
             # being left untouched under the conservative could-be-global
             # assumption it makes for a plain <script>. #1574.
-            TERSER_ARGS=(--compress --mangle)
+            # pure_funcs drops routine console.log / .debug / .info calls from
+            # what ships, so a visitor who opens the browser console doesn't see
+            # development chatter. console.warn and console.error are kept:
+            # those report real problems.
+            TERSER_ARGS=(--compress 'pure_funcs=["console.log","console.debug","console.info"]' --mangle)
             case "$file" in
               */js/modules/*) TERSER_ARGS+=(--module) ;;
             esac
@@ -817,24 +821,34 @@ jobs:
           if [[ -f "$VERFILE" && -f "$MANIFEST" ]]; then
             APP_NAME=$(grep -oP '\["Name"\] = "\K[^"]+' "$VERFILE" | head -1)
             APP_DESC=$(grep -oP '\["Synopsis"\] = "\K[^"]+' "$VERFILE")
-            if [[ -n "$APP_NAME" ]]; then
-              sed -i "s|\"name\": \"[^\"]*\"|\"name\": \"${APP_NAME}\"|" "$MANIFEST"
-              sed -i "s|\"short_name\": \"[^\"]*\"|\"short_name\": \"${APP_NAME}\"|" "$MANIFEST"
-              echo "Manifest name set to: ${APP_NAME}"
-            fi
-            if [[ -n "$APP_DESC" ]]; then
-              sed -i "s|\"description\": \"[^\"]*\"|\"description\": \"${APP_DESC}\"|" "$MANIFEST"
-              echo "Manifest description synced from infoAppVer.php"
-            fi
-            # Sync manifest version (#1899): read back what was actually injected
-            # into Version.Number above (the marketing version injected by the
-            # "Inject build info" step) — never recompute (rule #35). Closes the
-            # manifest.json:8 gap where the hardcoded version was never synced.
             APP_VER=$(grep -oP '\["Version"\]\["Number"\] = "\K[^"]+' "$VERFILE" | head -1)
-            if [[ -n "$APP_VER" ]]; then
-              sed -i "s|\"version\": \"[^\"]*\"|\"version\": \"${APP_VER}\"|" "$MANIFEST"
-              echo "Manifest version synced: ${APP_VER}"
-            fi
+            # Edit only the manifest's OWN top-level fields. This used to be
+            # three `sed` substitutions, and sed works line by line: the home-
+            # screen shortcuts (Search, Favourites, Songbooks, Help) each have
+            # their own "name" / "short_name" / "description" line, so every
+            # shortcut was renamed "iHymns" and given the whole-app description.
+            # Reading the file as JSON and setting the three keys by name cannot
+            # touch anything nested inside "shortcuts".
+            APP_NAME="$APP_NAME" APP_DESC="$APP_DESC" APP_VER="$APP_VER" python3 - "$MANIFEST" <<'PY'
+          import json, os, sys
+          path = sys.argv[1]
+          with open(path, encoding="utf-8") as f:
+              manifest = json.load(f)
+          name, desc, ver = (os.environ.get(k, "") for k in ("APP_NAME", "APP_DESC", "APP_VER"))
+          if name:
+              manifest["name"] = name
+              manifest["short_name"] = name
+              print("Manifest name set to: " + name)
+          if desc:
+              manifest["description"] = desc
+              print("Manifest description synced from infoAppVer.php")
+          if ver and "version" in manifest:
+              manifest["version"] = ver
+              print("Manifest version synced: " + ver)
+          with open(path, "w", encoding="utf-8") as f:
+              json.dump(manifest, f, ensure_ascii=False, indent=4)
+              f.write("\n")
+          PY
           fi
 
       # -- Install lftp for SFTP mirroring --
@@ -1129,7 +1143,7 @@ jobs:
       # deploy even with opcache.validate_timestamps=on, so freshly-uploaded
       # PHP doesn't run until the cache is reset (this caused the songs_json
       # 's.SongbookName' flood + the editor CSRF mismatch). Curl the token-
-      # guarded /opcache-bust.php so new code goes live immediately.
+      # guarded /opcache-bust (served by opcache-bust.php) so new code goes live immediately.
       # No-op (logs a notice, never fails the deploy) until OPCACHE_BUST_KEY
       # is set AND the matching ../.auth/opcache_bust_key.php exists on the host.
       # ================================================================
@@ -1149,10 +1163,10 @@ jobs:
             live)  BASE="https://ihymns.app" ;;
             *)     echo "::notice::Unknown channel '$CHANNEL' — skipping OPcache bust."; exit 0 ;;
           esac
-          echo "Busting OPcache at ${BASE}/opcache-bust.php"
+          echo "Busting OPcache at ${BASE}/opcache-bust"
           HTTP=$(curl -fsS -o /tmp/opcache_resp.json -w '%{http_code}' \
             -H "X-OPcache-Key: ${OPCACHE_KEY}" \
-            --max-time 30 "${BASE}/opcache-bust.php" || true)
+            --max-time 30 "${BASE}/opcache-bust" || true)
           echo "HTTP ${HTTP}"
           cat /tmp/opcache_resp.json 2>/dev/null || true
           echo

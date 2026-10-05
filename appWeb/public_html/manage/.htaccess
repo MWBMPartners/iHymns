@@ -20,6 +20,22 @@
 RewriteEngine On
 RewriteBase /manage/
 
+# ---- Keep the admin area out of search results ----
+# Nothing under /manage/ is meant for the public, but the sign-in page could
+# still be found and listed by a search engine. This header asks them not to.
+<IfModule mod_headers.c>
+    Header always set X-Robots-Tag "noindex, nofollow"
+</IfModule>
+
+# ---- Don't serve build-only source files ----
+# The ProPresenter format definitions (manage/editor/protos/proto-7.16/*.proto,
+# about 600 KB) are only read when the bundle is rebuilt at development time;
+# the editor loads the compiled protos/proto-bundle.json instead. Refuse them
+# rather than hand them to anyone who asks.
+<FilesMatch "\.proto$">
+    Require all denied
+</FilesMatch>
+
 # ---- DirectoryIndex for /manage/ and /manage/editor/ ----
 DirectoryIndex index.php
 

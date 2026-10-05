@@ -1,0 +1,12 @@
+[
+    {
+        "relation": ["delegate_permission/common.handle_all_urls"],
+        "target": {
+            "namespace": "android_app",
+            "package_name": "ltd.mwbmpartners.ihymns",
+            "sha256_cert_fingerprints": [
+                "TODO:REPLACE_WITH_ACTUAL_SHA256_FINGERPRINT_WHEN_APP_IS_PUBLISHED"
+            ]
+        }
+    }
+]

@@ -347,21 +347,8 @@ define('APP_CONFIG', [
             'js_local'   => 'vendor/sortablejs/Sortable.min.js',
         ],
 
-        /* jQuery 3.7 — DOM manipulation & AJAX */
-        'jquery' => [
-            'version'    => '3.7.1',
-            'js_cdn'     => 'https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js',
-            'js_sri'     => 'sha384-1H217gwSVyLSIfaLxHbE7dRb3v4mYCKbpQvzx0cegeju1MVsGrX5xXxAvs/HgeFs',
-            'js_local'   => 'vendor/jquery/jquery.min.js',
-        ],
-
-        /* Animate.css 4.1 — CSS animation library */
-        'animatecss' => [
-            'version'    => '4.1.1',
-            'css_cdn'    => 'https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css',
-            'css_sri'    => 'sha384-Gu3KVV2H9d+yA4QDpVB7VcOyhJlAVrcXd0thEjr4KznfaFPLe0xQJyonVxONa4ZC',
-            'css_local'  => 'vendor/animate/animate.min.css',
-        ],
+        /* jQuery and Animate.css were removed (2026-10-05): nothing in the app
+           used either, yet every visitor downloaded both on every page. */
 
         /* Fuse.js removed in WS-J #1020 — there is no client-side corpus or
            Fuse.js index any more; search is live MySQL FULLTEXT server-side

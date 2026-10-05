@@ -214,6 +214,11 @@ function renderErrorPage(int $status, array $opts = []): void
        . '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
        . '<meta name="robots" content="noindex">'
        . '<title>iHymns &mdash; ' . $eTitle . '</title>'
+       /* Tab and home-screen icons, so an error or maintenance page doesn't
+          show a blank browser tab (same files as index.php's <head>). */
+       . '<link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">'
+       . '<link rel="icon" type="image/png" sizes="32x32" href="/assets/icon-32.png">'
+       . '<link rel="apple-touch-icon" sizes="180x180" href="/assets/apple-touch-icon.png">'
        . errorPageThemeScript()
        . errorPageStyles()
        . ($opts['extraHead'] ?? '')

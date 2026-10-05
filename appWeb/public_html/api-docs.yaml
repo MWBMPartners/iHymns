@@ -610,9 +610,7 @@ tags:
       `manage/print-pdf.php`. Gated on `manage_songbooks`.
   - name: Admin — API Keys
     description: |
-      Machine-to-machine API-key administration (#1064 Phase D, API-coverage
-      batch 6a A18, owner decision Q5 — `.claude/api-coverage-2026-08-28.md`
-      §4.3). Mirrors `/manage/api-keys`'s management actions (mint / toggle /
+      Machine-to-machine API-key administration (#1064 Phase D). Mirrors `/manage/api-keys`'s management actions (mint / toggle /
       delete / set rate limits / approve / reject a self-serve request) plus
       the self-serve `api_key_request` action. Both surfaces call the SAME
       shared core, `includes/api_keys.php`'s Admin CRUD section (extracted
@@ -631,9 +629,7 @@ tags:
       after the mint response — there is no column to read it back from.
   - name: Admin — Webhooks
     description: |
-      Outbound partner-event webhook administration (#1909, API-coverage
-      batch 6a A19, owner decision Q5 — `.claude/api-coverage-2026-08-28.md`
-      §4.3). Mirrors `/manage/webhooks`'s action set — create / update /
+      Outbound partner-event webhook administration (#1909). Mirrors `/manage/webhooks`'s action set — create / update /
       verify / pause / resume / rotate the signing secret / send a test
       delivery / delete / re-drive a failed delivery. Both surfaces call
       the SAME shared core, the pre-existing `includes/webhook_admin.php`
@@ -12205,8 +12201,7 @@ paths:
           description: The report query failed (logged server-side)
 
   # ===========================================================================
-  # ORG-ADMIN SELF-SERVICE PARITY — API-coverage batch 3 (O1-O4, #1969,
-  # .claude/api-coverage-2026-08-28.md §4.2). Native/API twins of
+  # ORG-ADMIN SELF-SERVICE PARITY (#1969). Native/API twins of
   # manage/my-organisations.php's own-org POST handlers and the WRITE half
   # of manage/venues.php. Same row-level userCanActOnOrg() gate as the
   # Org-admin family above — system admin/global_admin, OR an admin/owner
@@ -16451,8 +16446,7 @@ paths:
                 error: Editor access required.
 
   # ===========================================================================
-  # API-COVERAGE BATCH 5 — curator workflows (#1969)
-  # .claude/api-coverage-2026-08-28.md §4.3/§9 A10/A11/A13/A14/A15/A16.
+  # Curator workflows (#1969)
   # Every gate below matches the sibling manage/*.php page's OWN gate; every
   # write delegates to a shared includes/*.php core the sibling page was
   # re-pointed onto in the same commit (rule #22).
@@ -17245,8 +17239,7 @@ paths:
           description: Activity-log observability columns not migrated on this install
 
   # ===========================================================================
-  # API-COVERAGE BATCH 6a — API-key + webhook administration (#1064/#1909,
-  # `.claude/api-coverage-2026-08-28.md` §4.3 A18/A19, owner decision Q5).
+  # API-key + webhook administration (#1064/#1909).
   # See the "Admin — API Keys" / "Admin — Webhooks" tag descriptions above
   # for the show-once secret discipline that applies to every path item
   # below — repeated per-action here only where the response actually
@@ -21242,7 +21235,7 @@ paths:
         including ones with zero songs) so a brand-new empty songbook is a
         reachable move target (#1679 A2) — it is NOT derived from the song
         index. `songs` reuses `SongData::getSongsSlimIndex()`, never a
-        whole-corpus materialisation (CLAUDE.md rule #17).
+        whole-corpus materialisation.
       parameters:
         - name: action
           in: query
@@ -22336,7 +22329,7 @@ paths:
         `suggest_song_links` (#1608). Reads the PRE-SCORED
         `tblSongLinkSuggestions` table the offline batch
         `build-song-link-suggestions.php` fills — the ONE consumer of
-        `includes/song_similarity.php`'s scorer (CLAUDE.md rule #22); this
+        `includes/song_similarity.php`'s scorer; this
         endpoint never scores live. `tableMissing:true` (empty list, not a
         500) on an install that hasn't run that later migration.
       parameters:
@@ -22389,8 +22382,8 @@ paths:
         (`songIdA < songIdB` lexicographically) server-side and writes
         `tblSongLinkSuggestionsDismissed` — the SAME table
         `/manage/duplicate-songs`'s dismiss action writes, so a dismissal
-        from either surface suppresses the pair on both (CLAUDE.md rule
-        #22). Drops the matching pending suggestion row too.
+        from either surface suppresses the pair on both.
+        Drops the matching pending suggestion row too.
       requestBody:
         required: true
         content:
@@ -22575,7 +22568,7 @@ paths:
         `SortOrder ASC, Title ASC` — the same ordering the public read path
         uses. `tableMissing:true` (empty list, not a 500) on an un-migrated
         install. Alt titles are per-song FREE TEXT, not a reference to a
-        registry entity (CLAUDE.md rule #43 does not apply).
+        registry entity.
       parameters:
         - name: action
           in: query
@@ -23901,7 +23894,7 @@ paths:
         POST, editor role only. Delegates to the SAME shared
         `editorSaveSongCore()` (#1200) the legacy `manage/editor/api.php`
         save uses — one save implementation, no forked logic, no drift
-        between v1 and v2 (CLAUDE.md modularity rule). Body is the whole
+        between v1 and v2. Body is the whole
         song object (scalars + components + credits + …); `id` and `title`
         are the only hard requirements, everything else is optional and
         defaulted (songbook defaults to the song's own book, or `Misc` for
@@ -23966,8 +23959,8 @@ paths:
       summary: Create or update a per-line translation/transliteration (#1235 P3/#1088)
       description: |
         POST, editor role only. `translation.lineId` anchors to
-        `tblLyricLines.Id`, the normalized-line read/write path (CLAUDE.md
-        rule #21). Not a component-content change, so no revision row is
+        `tblLyricLines.Id`, the normalized-line read/write path.
+        Not a component-content change, so no revision row is
         written. `translation` shape:
         `{id?, lineId, kind, targetLanguage, text, translationType?,
         isPrimary?, sortOrder?, status?}`.
@@ -24057,7 +24050,7 @@ paths:
       description: |
         POST, editor role only. `annotation.startLineId` anchors to
         `tblLyricLines.Id`; `startOffset`/`endOffset` are UTF-8 CODE-POINT
-        indices, never byte or UTF-16 offsets (CLAUDE.md rule #21).
+        indices, never byte or UTF-16 offsets.
         `annotation` shape: `{id?, startLineId, endLineId?, startOffset?,
         endOffset?, annotationType, body, bodyFormat?, languageCode?,
         sortOrder?, status?}`.
@@ -24149,7 +24142,7 @@ paths:
       description: |
         POST, editor role only (`edit_songs` entitlement). `part.kind` is
         validated against the served `IHYMNS_VOCAL_PART_KINDS` vocabulary —
-        never free text (CLAUDE.md rule #43). Omitting `part.id` creates a
+        never free text. Omitting `part.id` creates a
         new part; `Source`/`ttmlAgentId` (machine provenance) can never be
         set through this curator-facing action. The response's `vocalParts`
         key is the WHOLE song's voice-parts payload, read back fresh (rule
@@ -24345,8 +24338,8 @@ paths:
       summary: Mark only part of a line as a different or echoed voice (#2073)
       description: |
         POST, editor role only. `start`/`end` are 0-based, end-exclusive
-        UTF-8 CODE-POINT offsets into the line's text (CLAUDE.md rule #21 —
-        never a byte or UTF-16 index). Gated on BOTH the #1137 trio AND
+        UTF-8 CODE-POINT offsets into the line's text (never a
+        byte or UTF-16 index). Gated on BOTH the #1137 trio AND
         `tblLyricLineVocalSpans`, a SEPARATE, LATER #2073 migration an
         install can be missing even once the trio exists.
       requestBody:

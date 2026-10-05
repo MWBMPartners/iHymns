@@ -65,7 +65,7 @@
 //
 // THIRD-PARTY CDN NOTE (also investigated, not assumed)
 // --------------------------------------------------------------------------
-// index.php loads Bootstrap/Font Awesome/jQuery/Animate.css from CDN hosts
+// index.php loads Bootstrap/Font Awesome from CDN hosts
 // declared in the CSP `script-src`/`style-src` (rule #36's registry), with a
 // same-origin `/vendor/...` fallback for exactly the "CDN unreachable"
 // case (rule #36's onerror mechanism) — but `appWeb/public_html/vendor/` is
@@ -81,7 +81,7 @@
 // written ONLY if the real vendor files aren't already present) so this
 // smoke's pass/fail never depends on `tools/download-vendor.sh` having been
 // run. It does NOT fix CDN unreachability itself: when the CDN genuinely
-// can't be reached, `bootstrap`/`jQuery` stay undefined (Bootstrap-dependent
+// can't be reached, `bootstrap` stays undefined (Bootstrap-dependent
 // UI silently doesn't work), which is why that path is out of scope above.
 // `isKnownBenignConsoleError()` allow-lists the resulting noise narrowly —
 // see its own comments for exactly what and why. In ordinary CI (GitHub
@@ -95,7 +95,7 @@
 // rule #36 documents was itself silent-broken in that exact scenario (the
 // #1565-shaped failure mode: no error the user sees, console-only). Filed as
 // #1832 and NOW FIXED: index.php's CSS fallbacks are a nonce'd <script> that
-// checks each <link>'s `.sheet` and swaps to /vendor/ (the jQuery/Bootstrap
+// checks each <link>'s `.sheet` and swaps to /vendor/ (the Bootstrap
 // JS fallbacks were already CSP-safe). Branch 3 of isKnownBenignConsoleError()
 // below is kept defensively but should no longer match.
 //
@@ -121,15 +121,10 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 function ensureVendorStubs() {
     const stubs = [
         [
-            'appWeb/public_html/vendor/jquery/jquery.min.js',
-            '/* smoke-test stub — real jQuery is fetched by tools/download-vendor.sh at deploy time.\n'
-            + '   This file exists only so an unreachable CDN falls back to a harmless no-op\n'
-            + '   script instead of index.php\'s own HTML (see smoke.spec.js header). */\n',
-        ],
-        [
             'appWeb/public_html/vendor/bootstrap/bootstrap.bundle.min.js',
             '/* smoke-test stub — real Bootstrap JS is fetched by tools/download-vendor.sh at deploy\n'
-            + '   time. Same rationale as the jquery.min.js stub above. */\n',
+            + '   time. This file exists only so an unreachable CDN falls back to a harmless no-op\n'
+            + '   script instead of index.php\'s own HTML (see smoke.spec.js header). */\n',
         ],
     ];
     for (const [rel, content] of stubs) {
@@ -157,8 +152,8 @@ function isKnownBenignConsoleError(msg, thirdPartyHosts) {
     const text = msg.text();
     const url = msg.location().url || '';
 
-    /* 1. A THIRD-PARTY CDN resource (Bootstrap/jQuery/Font Awesome/
-       Animate.css/analytics — exactly the hosts THIS page's own CSP
+    /* 1. A THIRD-PARTY CDN resource (Bootstrap/Font Awesome/
+       analytics — exactly the hosts THIS page's own CSP
        script-src/style-src allow-lists, read from the live response, never
        hand-copied) failed to load. That is a network fact about a host we
        don't control, not a defect in this app's own module graph — see the

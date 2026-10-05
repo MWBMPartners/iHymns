@@ -151,6 +151,14 @@ RewriteRule ^webhook-drain$ webhook-drain.php [QSA,L]
 # @see appWeb/public_html/language-registry-refresh.php  the endpoint (+ its own doc-block)
 RewriteRule ^language-registry-refresh$ language-registry-refresh.php [QSA,L]
 
+# /opcache-bust → opcache-bust.php (the post-deploy cache clear in deploy.yml).
+# The fifth instance of the same lesson: deploy.yml asked for the .php address,
+# which the "block direct .php" rule answers with 404, so every deploy logged
+# "OPcache bust returned HTTP 404" and new code could lag until the cache aged
+# out. The endpoint still checks its own secret header.
+# @see appWeb/public_html/opcache-bust.php
+RewriteRule ^opcache-bust$ opcache-bust.php [QSA,L]
+
 # /song-media/<id> → song-media.php?id=<id>  (#853)
 # Gated streaming endpoint for tblSongMedia rows. The handler does
 # checkContentAccess('song', <SongId>) so this URL is safe to expose
@@ -249,6 +257,19 @@ RewriteRule ^sitemap-([a-z]+)(?:-([0-9]+))?\.xml$ sitemap.xml.php?section=$1&pag
 # ==========================================================================
 
 RewriteRule ^robots\.txt$ robots.txt.php [L]
+
+# ==========================================================================
+# ROOT ICONS — /favicon.ico and /apple-touch-icon(-precomposed).png
+#
+# Browsers, iPhones and link-preview tools ask for these at the site root
+# without reading the page's <link rel="icon"> tags. No file lives at those
+# addresses, so the requests used to fall through to the app itself (the
+# whole page, sent back with a 404). Point them at the real icons instead.
+# A PNG at a .ico address is fine: browsers read the file, not the name.
+# ==========================================================================
+
+RewriteRule ^favicon\.ico$ assets/icon-32.png [L]
+RewriteRule ^apple-touch-icon(-precomposed)?\.png$ assets/apple-touch-icon.png [L]
 
 # ==========================================================================
 # APPLE APP SITE ASSOCIATION ROUTING (#1401)
@@ -447,6 +468,8 @@ RewriteRule ^ index.php [QSA,L]
     # never on this list — every /sitemap*.xml hit shipped uncompressed
     # (2026-08-30 hardening).
     AddOutputFilterByType DEFLATE application/xml
+    # /api-docs.yaml (over 1 MB of text) was also sent uncompressed.
+    AddOutputFilterByType DEFLATE application/yaml
 </IfModule>
 
 # ==========================================================================
@@ -560,6 +583,25 @@ RewriteRule ^ index.php [QSA,L]
     # Cross-Origin policies
     Header always set Cross-Origin-Opener-Policy "same-origin"
     Header always set Cross-Origin-Resource-Policy "same-origin"
+</IfModule>
+
+# ==========================================================================
+# STORAGE BRIDGE — the one page other iHymns sites may show in a frame
+#
+# bridge.html is loaded, hidden, inside a frame by every iHymns site so their
+# settings can be shared (js/modules/storage-bridge.js; config 'storage_bridge'
+# points at sync.ihymns.app/bridge.html). The clickjacking header above says
+# "only my own domain may frame me", which stops ihymns.app, dev.ihymns.app and
+# the rest from loading it, so the bridge timed out on every page and fell back
+# to local storage. For this one file only, replace that rule with a list of
+# iHymns domains. The page itself also checks every message's origin.
+# https://developer.mozilla.org/docs/Web/HTTP/Headers/Content-Security-Policy/frame-ancestors
+# ==========================================================================
+<IfModule mod_headers.c>
+    <Files "bridge.html">
+        Header always unset X-Frame-Options
+        Header always set Content-Security-Policy "frame-ancestors https://ihymns.app https://*.ihymns.app https://ihymns.net https://*.ihymns.net"
+    </Files>
 </IfModule>
 
 # ==========================================================================

@@ -787,9 +787,12 @@ if ($page !== null) {
        consumers today use it only as a boolean (settings.php). Guarded by
        tests/php/test-fragment-viewer-contract.php. */
     $currentUser = $_shouldCachePage ? null : getAuthenticatedUser();
-    if ($_shouldCachePage) {
-        ob_start();
-    }
+    /* Every fragment is gathered in full before it is sent, so the developer
+       notes in its HTML comments can be removed first (the page shell does the
+       same — includes/html_comment_strip.php). Cacheable fragments also need
+       the whole body for their ETag below. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'html_comment_strip.php';
+    ob_start();
 
     /* Route to the appropriate page template */
     switch ($page) {
@@ -1014,8 +1017,8 @@ if ($page !== null) {
             break;
     }
 
+    $body = ihymnsStripHtmlComments((string)ob_get_clean());
     if ($_shouldCachePage) {
-        $body = (string)ob_get_clean();
         /* Include the query string so /api?page=song&id=CP-0001 and
            /api?page=song&id=CP-0002 hash to different ETags. */
         $etag = '"' . hash('xxh64', $page . '|' . ($_SERVER['QUERY_STRING'] ?? '') . '|' . $body) . '"';
@@ -1026,8 +1029,8 @@ if ($page !== null) {
             http_response_code(304);
             exit;
         }
-        echo $body;
     }
+    echo $body;
 
     exit;
 }

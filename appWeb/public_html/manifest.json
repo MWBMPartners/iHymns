@@ -1,26 +1,34 @@
 {
-    "_comment": "iHymns — PWA Web App Manifest. Comprehensive configuration using all available parameters including experimental ones.",
-
     "id": "ltd.mwbmpartners.ihymns.pwa",
+
     "name": "iHymns — Christian Hymns & Worship Songs",
+
     "short_name": "iHymns",
-    "description": "A multiplatform Christian lyrics application providing searchable hymn and worship song lyrics from multiple songbooks, designed to enhance worship. Features 5 songbooks with over 3,600 songs, full-text search, favourites, dark mode, high-contrast mode, and offline support.",
+
+    "description": "Search and sing from thousands of Christian hymns and worship songs across dozens of songbooks, with favourites, set lists, dark mode and offline use.",
+
     "version": "1.3.0",
 
     "start_url": "/",
+
     "scope": "/",
+
     "display": "standalone",
+
     "display_override": [
         "window-controls-overlay",
         "standalone",
         "minimal-ui"
     ],
+
     "orientation": "any",
 
     "theme_color": "#4f46e5",
+
     "background_color": "#f8fafc",
 
     "lang": "en",
+
     "dir": "ltr",
 
     "categories": [
@@ -32,9 +40,8 @@
         "utilities"
     ],
 
-    "iarc_rating_id": "",
-
     "prefer_related_applications": false,
+
     "related_applications": [
         {
             "platform": "webapp",
@@ -123,37 +130,6 @@
         }
     ],
 
-    "screenshots": [
-        {
-            "src": "/assets/screenshots/home-wide.png",
-            "type": "image/png",
-            "sizes": "1280x720",
-            "form_factor": "wide",
-            "label": "iHymns home screen on desktop"
-        },
-        {
-            "src": "/assets/screenshots/song-detail-wide.png",
-            "type": "image/png",
-            "sizes": "1280x720",
-            "form_factor": "wide",
-            "label": "Song lyrics view on desktop"
-        },
-        {
-            "src": "/assets/screenshots/home-narrow.png",
-            "type": "image/png",
-            "sizes": "390x844",
-            "form_factor": "narrow",
-            "label": "iHymns home screen on mobile"
-        },
-        {
-            "src": "/assets/screenshots/song-detail-narrow.png",
-            "type": "image/png",
-            "sizes": "390x844",
-            "form_factor": "narrow",
-            "label": "Song lyrics view on mobile"
-        }
-    ],
-
     "shortcuts": [
         {
             "name": "Search Songs",
@@ -220,31 +196,13 @@
         }
     },
 
-    "protocol_handlers": [
-        {
-            "protocol": "web+ihymns",
-            "url": "/song/%s"
-        }
-    ],
-
-    "file_handlers": [
-        {
-            "action": "/",
-            "accept": {
-                "application/json": [".json"],
-                "text/plain": [".txt"]
-            }
-        }
-    ],
-
-    "note_taking": {
-        "new_note_url": "/favorites"
-    },
-
     "handle_links": "preferred",
 
     "launch_handler": {
-        "client_mode": ["navigate-existing", "auto"]
+        "client_mode": [
+            "navigate-existing",
+            "auto"
+        ]
     },
 
     "scope_extensions": [
@@ -260,12 +218,5 @@
 
     "edge_side_panel": {
         "preferred_width": 400
-    },
-
-    "serviceworker": {
-        "src": "/service-worker.js",
-        "scope": "/",
-        "type": "classic",
-        "update_via_cache": "none"
     }
 }

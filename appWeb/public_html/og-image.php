@@ -143,7 +143,7 @@ try {
     if ($songId !== null && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $songId)) {
         $songInfo = $songData->getSongById($songId);
         if ($songInfo !== null) $mode = 'song';
-    } elseif ($songbookId !== null && preg_match('/^[A-Za-z]+$/', $songbookId)) {
+    } elseif ($songbookId !== null && preg_match('/^[A-Za-z0-9]{1,10}$/', $songbookId)) { /* abbreviations may include digits */
         $bookInfo = $songData->getSongbook($songbookId);
         if ($bookInfo !== null) $mode = 'songbook';
     } elseif ($setlistId !== null) {

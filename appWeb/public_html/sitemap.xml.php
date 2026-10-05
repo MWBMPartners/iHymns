@@ -539,8 +539,17 @@ function sitemapSectionSongs(\mysqli $db, string $baseUrl, int $page): array
         $pdOnly   = (APP_CONFIG['features']['public_domain_only'] ?? false) ? ' AND s.LyricsPublicDomain = 1' : '';
         $limit    = IHYMNS_SITEMAP_PAGE_SIZE;
         $offset   = ($page - 1) * IHYMNS_SITEMAP_PAGE_SIZE;
+        /* List each song under the SAME address its page names as preferred
+           (index.php's <link rel="canonical">): the short public id when the
+           song has one, else the SongId. Listing a different address than the
+           page declares makes search engines treat every song as a mismatch.
+           Older databases without the PublicId column keep using the SongId. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+        $idExpr = songPublicId_columnReady($db)
+            ? "COALESCE(NULLIF(s.PublicId, ''), s.SongId)"
+            : 's.SongId';
         $stmt = $db->prepare(
-            "SELECT s.SongId AS id, s.UpdatedAt AS updated
+            "SELECT {$idExpr} AS id, s.UpdatedAt AS updated
                FROM tblSongs s
               WHERE {$visible} AND {$servable}{$pdOnly}
               ORDER BY s.SongId

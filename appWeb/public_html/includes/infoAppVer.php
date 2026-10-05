@@ -78,8 +78,13 @@ $app["Application"]["Name"] = "iHymns";
 /* Application website URL (NULL if not yet live) */
 $app["Application"]["Website"]["URL"] = "https://ihymns.app";
 
-/* Synopsis: a brief description of the application's purpose */
-$app["Application"]["Description"]["Synopsis"] = "A multiplatform Christian lyrics application providing searchable hymn and worship song lyrics from multiple songbooks, designed to enhance worship. Features 5 songbooks with over 3,600 songs, full-text search, favourites, dark mode, colourblind-friendly mode, and offline support via PWA.";
+/* Synopsis: a brief description of the application's purpose.
+   It becomes the home page's search snippet, its link-preview text and the
+   install-dialog text (deploy copies it into manifest.json). Keep it under
+   about 160 characters so previews don't cut it off, keep it free of double
+   quotes (the deploy step stops reading at the first one), and leave out
+   song or songbook counts: they go out of date. */
+$app["Application"]["Description"]["Synopsis"] = "Search and sing from thousands of Christian hymns and worship songs across dozens of songbooks, with favourites, set lists, dark mode and offline use.";
 
 /* Keywords: comma-separated keywords for discoverability and SEO */
 $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbook, Christian, church, praise, songs, PWA, offline, search, favourites";

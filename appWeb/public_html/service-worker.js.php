@@ -900,6 +900,16 @@ const PRECACHE_BEST_EFFORT_ASSETS = [
  * These CDNs serve CORS headers (Access-Control-Allow-Origin: *)
  * so responses can be cached and later served with SRI verification.
  */
+/**
+ * Routine progress messages ("installing", "deleting old cache"…) only help
+ * whoever is working on this file, so they stay quiet unless this is switched
+ * on. Problems still use console.warn / console.error, which always show.
+ */
+const SW_DEBUG = false;
+function swLog(...args) {
+    if (SW_DEBUG) { console.log(...args); }
+}
+
 const TRUSTED_CDN_ORIGINS = [
     'https://cdn.jsdelivr.net',
     'https://cdnjs.cloudflare.com',
@@ -915,8 +925,6 @@ const PRECACHE_CDN_ASSETS = [
     'https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css',
     'https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/js/bootstrap.bundle.min.js',
     'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css',
-    'https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js',
-    'https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css',
 ];
 
 /**
@@ -928,8 +936,6 @@ const PRECACHE_VENDOR_ASSETS = [
     '/vendor/bootstrap/bootstrap.min.css',
     '/vendor/bootstrap/bootstrap.bundle.min.js',
     '/vendor/fontawesome/css/all.min.css',
-    '/vendor/jquery/jquery.min.js',
-    '/vendor/animate/animate.min.css',
 ];
 
 /**
@@ -963,12 +969,12 @@ async function notifyClients(data) {
  * ========================================================================= */
 
 self.addEventListener('install', (event) => {
-    console.log('[SW] Installing service worker:', CACHE_VERSION);
+    swLog('[SW] Installing service worker:', CACHE_VERSION);
 
     event.waitUntil(
         caches.open(CACHE_VERSION)
             .then(cache => {
-                console.log('[SW] Pre-caching app shell assets');
+                swLog('[SW] Pre-caching app shell assets');
 
                 /* Local assets — must all succeed for install to complete */
                 const localPromise = cache.addAll(PRECACHE_ASSETS);
@@ -1082,10 +1088,10 @@ self.addEventListener('install', (event) => {
                  * first install, populated on updates.
                  */
                 if (self.registration.active === null) {
-                    console.log('[SW] First install; calling skipWaiting() to activate immediately');
+                    swLog('[SW] First install; calling skipWaiting() to activate immediately');
                     return self.skipWaiting();
                 }
-                console.log('[SW] Update installed; awaiting user confirmation to activate');
+                swLog('[SW] Update installed; awaiting user confirmation to activate');
             })
     );
 });
@@ -1136,7 +1142,7 @@ async function swMigrateLegacyBulkDownloads() {
             headers: { 'Content-Type': 'text/plain' },
         }));
         if (moved > 0) {
-            console.log('[SW] Promoted', moved, 'legacy bulk-downloaded songs to', SAVED_CACHE);
+            swLog('[SW] Promoted', moved, 'legacy bulk-downloaded songs to', SAVED_CACHE);
         }
     } catch (error) {
         console.warn('[SW] Legacy download migration skipped:', error && error.message);
@@ -1199,7 +1205,7 @@ async function swRewarmSavedSongbookPages() {
 }
 
 self.addEventListener('activate', (event) => {
-    console.log('[SW] Activating service worker:', CACHE_VERSION);
+    swLog('[SW] Activating service worker:', CACHE_VERSION);
 
     event.waitUntil(
         caches.keys()
@@ -1213,7 +1219,7 @@ self.addEventListener('activate', (event) => {
                     cacheNames
                         .filter(name => !swIsCacheKept(name))
                         .map(name => {
-                            console.log('[SW] Deleting old cache:', name);
+                            swLog('[SW] Deleting old cache:', name);
                             return caches.delete(name);
                         })
                 );
@@ -1237,7 +1243,7 @@ self.addEventListener('activate', (event) => {
  * FETCH EVENT — Network-first strategy with offline fallback
  *
  * Strategy per resource type:
- *   1. Trusted CDNs  → Network-first, cache for offline (Bootstrap, FA, jQuery)
+ *   1. Trusted CDNs  → Network-first, cache for offline (Bootstrap, Font Awesome)
  *   2. Other CDNs    → Network-only (analytics, third-party scripts)
  *   3. API requests  → Network-first, cache song pages for offline (#105)
  *   4. Local assets  → Network-first, cache on success, serve cache if offline
@@ -1263,7 +1269,7 @@ self.addEventListener('fetch', (event) => {
     /* --- CDN / Third-party resources --- */
     if (url.origin !== self.location.origin) {
         /*
-         * Trusted CDN resources (Bootstrap, Font Awesome, jQuery, etc.)
+         * Trusted CDN resources (Bootstrap, Font Awesome, etc.)
          * are cached with network-first strategy so the app shell renders
          * offline. These CDNs serve CORS headers, so cached responses
          * remain readable for SRI verification.
@@ -1990,7 +1996,7 @@ self.addEventListener('message', (event) => {
     if (!event.data) return;
 
     if (event.data.type === 'SKIP_WAITING') {
-        console.log('[SW] Received SKIP_WAITING — activating now');
+        swLog('[SW] Received SKIP_WAITING — activating now');
         self.skipWaiting();
     }
 
@@ -2028,7 +2034,7 @@ self.addEventListener('message', (event) => {
                     console.warn('[SW] CLEAR_USER_CACHES failed for', name, err);
                 }
             }
-            console.log('[SW] Per-user caches cleared on logout');
+            swLog('[SW] Per-user caches cleared on logout');
         })());
     }
 
@@ -2238,7 +2244,7 @@ self.addEventListener('message', (event) => {
     /* Set auto-update preference (#132) */
     if (event.data.type === 'SET_AUTO_UPDATE') {
         autoUpdateOfflineSongs = !!event.data.enabled;
-        console.log('[SW] Auto-update offline songs:', autoUpdateOfflineSongs);
+        swLog('[SW] Auto-update offline songs:', autoUpdateOfflineSongs);
     }
 
     /* Accept a pending song update — cache the fresh version (#131) */
