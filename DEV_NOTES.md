@@ -1224,7 +1224,13 @@ any other `run-conformance.php`. Never edit them: change the master, then run
   transaction gets the session's mode instead (the server shows a pending one-off nowhere it can be read back;
   nothing in iHymns sets one). Proven on MariaDB 11.8.9, MySQL 8.4.11 and MariaDB 10.11.19 by
   `test-activity-log-outside-transaction.php` A8–A12 (A12 pins what is not kept), and on MySQL 5.7.44 with the
-  eighth review's own probe. It now costs two round trips. Rejected: MariaDB's
+  eighth review's own probe. It now costs two round trips. **"Could not tell" counts as open, and is tested
+  (round 9, the eighth review's L3, the lead's decision 3).** When the server's answer cannot be read the question
+  says null, never "not open", and every caller treats null as "maybe open"; no test checked that before (the
+  eighth review planted four faults against it and all stayed green). `test-activity-log-outside-transaction.php`
+  Part E: a connection with an unread result pending, and one killed just before the question's SET, each with
+  error reporting on and off, all get null (E1); with the question unanswerable, `logActivity()` passes a deadlock
+  on its row back (E2), and neither the geo cache (E3) nor the token's sliding expiry (E4) writes. Rejected: MariaDB's
   `@@in_transaction` (MySQL lacks it — 1193); `information_schema.INNODB_TRX` (MySQL needs the PROCESS
   privilege, which a shared host's account usually lacks); counting `begin_transaction()`/`commit()` in PHP (all
   ~146 places that open one would have to take part, and one that did not would make the answer "not open"

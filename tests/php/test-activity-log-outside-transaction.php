@@ -53,6 +53,11 @@ declare(strict_types=1);
  *            logActivity() its row (D2); inside one it writes nothing (D3),
  *            and the next check outside one slides the token (D4); when the
  *            slide is not due, nothing is sent for it at all (D5).
+ *   Part E — "could not tell" counts as open (round 9, the eighth review's
+ *            L3): a connection that cannot answer gets null, never false
+ *            (E1); and with the question unanswerable, logActivity() passes
+ *            a deadlock back (E2), and neither the geo cache (E3) nor the
+ *            token's sliding expiry (E4) writes.
  *
  * HOW THE FAILURES ARE MADE
  * -------------------------
@@ -694,6 +699,68 @@ try {
     $check('D5: when the slide is not due, the sign-in check sends no UPDATE for it at all (so asking "is a transaction open?" costs nothing on those days)',
         ($answer['Id'] ?? null) === 7 && $tokenWrites === 0, "updates sent: {$tokenWrites}");
     unset($_SERVER['HTTP_AUTHORIZATION']);
+
+    /* ------------------------------------------------------------------ Part E */
+    echo "\nPart E — \"could not tell\" counts as open\n";
+    /* #2137 review round 9 (the eighth review's L3, the lead's decision 3) —
+       the safety rule in transaction_fatal.php, activity_log.php,
+       ip_geolocation.php and api.php: when dbTransactionIsOpen() cannot read
+       the server's answer it says null, never "not open", and every caller
+       treats null as "maybe open". The eighth review planted four faults
+       against that rule (logActivity() taking null as "not open"; the
+       question answering false instead of null on an error other than 1568,
+       thrown or set quietly; the geo cache writing when it cannot tell) and
+       no test noticed. First the question itself, on a connection that really
+       cannot answer: one with an unread result still pending (the server is
+       still sending it, "commands out of sync"), and one killed just before
+       the question's SET — each with error reporting on (it throws) and off
+       (it sets errno). */
+    $cannotTell = [];
+    foreach (['on' => MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT, 'off' => MYSQLI_REPORT_OFF] as $mode => $report) {
+        mysqli_report($report);
+        $pending = new AlogTestConnection($host, $user, $pass, $name, $port);
+        $pending->real_query('SELECT Id FROM r8_probe');
+        $unread = $pending->use_result();
+        $cannotTell["pending result, reporting {$mode}"] = dbTransactionIsOpen($pending);
+        $unread->free();
+        $pending->close();
+        $killed = new AlogTestConnection($host, $user, $pass, $name, $port);
+        $killed->hooks[] = ['/^\s*SET\s+TRANSACTION\b/i', static function () use ($admin, $killed): void {
+            $admin->query('KILL ' . $killed->thread_id);
+            usleep(300000);
+        }];
+        $cannotTell["killed before the SET, reporting {$mode}"] = dbTransactionIsOpen($killed);
+    }
+    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+    $check('E1: a connection that cannot answer gets null ("could not tell"), never false — an unread result pending (the session\'s mode cannot be read) or the connection killed just before the SET, with error reporting on and off',
+        count($cannotTell) === 4 && array_filter($cannotTell, static fn($v): bool => $v !== null) === [],
+        json_encode($cannotTell));
+
+    /* Then the three callers, each with the question made unanswerable by a
+       stand-in error on its SET (the connection itself keeps working, so what
+       the caller does next can be seen). */
+    $unanswerable = static function (): never {
+        throw new \mysqli_sql_exception('Lost connection to server during query (a stand-in: the question cannot be answered)', 2013);
+    };
+    $conn->hooks[] = ['/^\s*SET\s+TRANSACTION\b/i', $unanswerable];
+    $conn->hooks[] = ['/^\s*INSERT\s+INTO\s+tblActivityLog\b/i', $deadlock];
+    [$e] = $run(static fn() => logActivity('r9.cannot_tell', 'test', 'E2'));
+    $conn->hooks = [];
+    $check('E2: logActivity() when the question cannot be answered: a deadlock on its row is passed back, as inside a transaction (B4 shows the same deadlock swallowed when the answer is "not open")',
+        $e instanceof \mysqli_sql_exception && (int)$e->getCode() === 1213, $describe($e));
+
+    $conn->hooks[] = ['/^\s*SET\s+TRANSACTION\b/i', $unanswerable];
+    [$e] = $run(static fn() => ihymnsGeoCachePut($conn, '203.0.113.26', 'GB', 'United Kingdom', 'maxmind'));
+    $conn->hooks = [];
+    $check('E3: the geo cache when the question cannot be answered writes nothing', $e === null && $cacheRow('203.0.113.26') === null,
+        $describe($e) . ' | ' . json_encode($cacheRow('203.0.113.26')));
+
+    $tokenExpiresIn(1);
+    $conn->hooks[] = ['/^\s*SET\s+TRANSACTION\b/i', $unanswerable];
+    [$e] = $run(static fn() => slideAuthTokenExpiry($rawToken));
+    $conn->hooks = [];
+    $check('E4: the sign-in token\'s sliding expiry when the question cannot be answered writes nothing', $e === null && !$tokenSlid(),
+        $describe($e) . ' | slid=' . var_export($tokenSlid(), true));
 } finally {
     try { $admin->query("DROP DATABASE IF EXISTS `{$name}`"); } catch (\Throwable $_) {}
 }
