@@ -245,7 +245,7 @@ dependencies {
     // classes. This is a compile-time code generation approach (no reflection)
     // which provides excellent performance and small APK size.
     // =========================================================================
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.12.0")
 
     // =========================================================================
     // ANDROID TV — Leanback Library
