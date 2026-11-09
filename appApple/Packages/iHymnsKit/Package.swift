@@ -79,7 +79,7 @@ let package = Package(
         // EXACT version (not a range) so a Kit build is fully reproducible
         // — an upstream GRDB release can't silently change our behaviour
         // between CI runs.
-        .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1")
+        .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.12.0")
     ],
 
     targets: [
