@@ -65,6 +65,16 @@ Other deploy behaviour:
 - **Build info injection** — alongside the pre-existing SHA/date injection, `Version.Build.Number` in `infoAppVer.php` is set to `git rev-list --count HEAD` — a monotonic per-commit build number, distinct from the semver `Version.Number` (which only changes on a bump). `NULL` in the source tree; only ever set on a deployed copy. Shown as its own row in Settings → About (the commit-SHA row is separately labelled "Commit").
 - `[skip ci]` in commit message skips all workflows
 - Kill switch: `vars.SFTP_ENABLED` must be `true`
+- **Only runs when a push changes `appWeb/**` or `deploy.yml` itself.** A push that only changes documentation (for example `.claude/`, `.importers/`, `wiki/`) runs no deploy at all. When a deploy does start but finds no deployable files changed, the run still shows green, with every upload step "skipped". Both are expected, not failures.
+- **The version commit can be refused.** The branch rules on `alpha` require three checks (*Lint & Validate*, *PHP 8.4*, *PHP 8.5*), and the bot's version commit cannot satisfy them. The deploy shows the warning *Failed to push version bump after 5 attempts*. The site still deploys fine; the visible version just stays put until the owner lets the bump commit through (#2143).
+
+### Pull requests opened by our own workflows are held (#2127)
+
+The monthly audit (`maintenance-ha-integrity-audit.yml`) and the security-backport workflow open pull requests using GitHub's built-in token. GitHub holds the checks on those pull requests ("action_required") until a person approves them or pushes to the branch, and until then the pull request cannot merge. Releasing them takes a person's approval in the Actions tab, or a push of a real change to the pull request's branch. An empty commit, or closing and reopening the pull request, is against the project's rules. Dependabot pull requests are not affected. The fix (a small GitHub App, or a personal token) is waiting on an owner decision in #2127.
+
+### CI checks (`test.yml`)
+
+`test.yml` runs on every pull request, and not on direct pushes to `alpha`. It includes a "looks unfinished" polish check (`tests/test-polish-guard.js`; the checklist is `.claude/polish-checklist.md`, #2142). Do not remove or skip a check to get a pull request green.
 
 ### Versioning pipeline (tag-free, #1963 → #1965 → the 2026-08-30 marketing-version/build-number split)
 

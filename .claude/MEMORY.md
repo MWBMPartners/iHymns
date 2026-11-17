@@ -10,8 +10,15 @@ _Last updated: 2026-08-28 (branch `claude/dormant-features-settings-1sdw4t` — 
 
 ## Where things stand
 - **⚠️ THIS SECTION IS OLD (2026-08-28).** The current picture is always the "Current state" section
-  of the newest `.claude/sessions/*-HANDOFF.md` — as of 2026-09-23 that is
-  `sessions/2026-09-23-HANDOFF.md`. Read that first; it wins wherever the two disagree.
+  of the newest `.claude/sessions/*-HANDOFF.md` — as of 2026-11-17 that is
+  `sessions/2026-11-17-HANDOFF.md`. Read that first; it wins wherever the two disagree. It holds the whole
+  queue (the HTTP2Shell security review #2157 is first; PR #2165 is held waiting for a person; #2127 and
+  #2143 wait on the owner).
+- **Lasting facts added 2026-11-17:** a cloud session cannot push to the GitHub wiki, so edit the repo's
+  `wiki/` folder (the maintained copy) and have the owner publish it; the `gh` command's token is invalid in
+  cloud sessions (use the GitHub tools; they can set an issue's milestone but cannot edit milestones or
+  the Project board); pull requests our own workflows open have their checks held until a person acts
+  (#2127); the refused version commit is a warning, not a failure (#2143).
 - **Active branch — `claude/dormant-features-settings-1sdw4t`** (2026-08-28): the ProPresenter 7+
   interoperability program (epic #1968) — import `.pro`/`.probundle`/`.proplaylist`, export, media
   ingest into `tblSongMedia`, the **chord round-trip** (positioned `custom_attributes` over CLEAN

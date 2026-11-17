@@ -3,9 +3,20 @@
 Short, lasting facts. Newest first within each section. Where this file and the newest handoff in
 `.claude/sessions/` disagree, the handoff wins. Fix this file when that happens.
 
-_Last updated: 2026-09-23._
+_Last updated: 2026-11-17._
 
 ## Working pitfalls
+
+- **Pull requests that our own workflows open have their checks held** until a person approves them or
+  pushes a real change to the branch (#2127). The monthly audit pull request does this (#2154, #2165).
+  No empty commits, and no closing and reopening.
+- **There are two wikis.** The repo's `wiki/` folder is the maintained copy. The GitHub wiki
+  (`iHymns.wiki`) is a separate repository that cloud sessions cannot push to, and it is months behind.
+  Edit `wiki/`, and have the owner publish it.
+- **The deploy's "Failed to push version bump" warning is expected for now** (#2143). The site still
+  deploys. Documentation-only pushes run no deploy at all.
+- **A security review for CVE-2026-111497 (a flaw in the Brotli decoder) is open as #2157** and is the
+  first item in the handoff's queue.
 
 - **An empty review is not a clean review.** When Codex has hit its usage limit it can print nothing
   on its normal output at all. Check the error output, and check the review file actually has

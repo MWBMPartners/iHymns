@@ -1,6 +1,6 @@
 # iHymns — context for Codex
 
-_Last updated: 2026-09-23._
+_Last updated: 2026-11-17._
 
 ## What iHymns is
 

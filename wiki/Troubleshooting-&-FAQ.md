@@ -140,6 +140,19 @@ iHymns is **MySQL-only** — there is no SQLite fallback and no runtime JSON cop
 - **Cause:** Historically, deploys could wipe `data/audio/` and `data/music/` — fixed in #1584, which excludes both from the docroot mirror
 - **Fix:** Confirm you're on a build after #1584. If media is still missing, it's a data problem, not a deploy-exclusion problem
 
+### Deployment and pull requests
+
+#### A pull request opened by a workflow shows its checks as "waiting" or "action required"
+- **Cause:** GitHub holds the checks on pull requests opened with a workflow's built-in token until a person approves them or pushes to the branch (#2127)
+- **Fix:** A person approves the run in the Actions tab, or pushes a real change to that pull request's branch. Do not push an empty commit
+
+#### The deploy shows "Failed to push version bump after 5 attempts"
+- **Cause:** The branch rules on `alpha` refuse the bot's version commit (#2143)
+- **Effect:** None on the site. The deploy itself succeeded; the displayed version number just does not move
+
+#### A push to `alpha` ran no deploy
+- **Cause:** Deploys only run when the push changes `appWeb/**` or `deploy.yml`. Documentation-only pushes do not
+
 ### Native Apps (iOS / Android)
 
 #### App shows no songs
