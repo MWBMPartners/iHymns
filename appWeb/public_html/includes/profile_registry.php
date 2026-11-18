@@ -359,7 +359,24 @@ function profileRegistryPublic(): array
     $entries = [];
     foreach (profileRegistry() as $e) {
         foreach (PROFILE_SERVER_ONLY_FIELDS as $f) { unset($e[$f]); }
+        /* An open object (no listed keys) must travel as `{}` (a map), never `[]`
+           (a list): a native client decodes `shape` as a dictionary. */
+        if (array_key_exists('shape', $e) && $e['shape'] === []) { $e['shape'] = new \stdClass(); }
         $entries[] = $e;
     }
     return ['schemaVersion' => profileRegistryVersion(), 'entries' => $entries, 'aliases' => profileRegistryAliases()];
+}
+
+/**
+ * The ETag for the public answer (step C5). It covers the whole answer AND the
+ * response-shape version (a v2 client gets an envelope, so two shapes must never
+ * share a tag). Defined here, once, so the endpoint and its test cannot disagree.
+ *
+ * @param array<string,mixed> $publicData as returned by profileRegistryPublic(), after the
+ *                                        empty alias map has been turned into an object
+ */
+function profileRegistryEtag(array $publicData, int $apiVersion): string
+{
+    $json = json_encode($publicData, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    return '"' . substr(hash('sha256', $json . '|v' . $apiVersion), 0, 32) . '"';
 }

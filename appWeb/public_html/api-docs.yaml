@@ -7636,6 +7636,102 @@ paths:
   # filter applies to anonymous requests too).
   # ===========================================================================
 
+  /api.php?action=profile_schema:
+    get:
+      operationId: getProfileSchema
+      tags: [Preferences]
+      summary: The list of every personal setting and its rules (account/profile rewrite C5)
+      description: |
+        The ONE written-down list of what iHymns remembers about a person and
+        the rules for each item: its platform-neutral id (`appearance.theme`),
+        type and allowed values, default, whether it stays on the device or
+        follows the account, which kinds of app use it, whether an anonymous
+        visitor's value is claimed at first sign-in, whether it is cleared at
+        sign-out, whether it travels in the shared cross-site cookie, and the
+        old web storage key it came from.
+
+        **Public** (no sign-in: it describes rules and holds nobody's data) and
+        **cacheable**: `Cache-Control: public, max-age=300, must-revalidate`
+        plus an `ETag`. Send the tag back as `If-None-Match` and an unchanged
+        list is answered `304` with no body. The server's own fields (how it
+        stores the item, whether it is exported, what erasure does) are never
+        included.
+
+        Native apps bundle a snapshot of this answer for their first offline
+        launch and refresh it from here later. The list only ever grows:
+        entries are added, never removed or renamed (a rename is a new entry
+        plus a row in `aliases`). A client must ignore entries and fields it
+        does not know, and must never write back a value it could only show as
+        a fallback.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [profile_schema] }
+        - name: If-None-Match
+          in: header
+          required: false
+          description: The `ETag` of the copy the client already holds.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The list
+          headers:
+            ETag:
+              description: A tag for this exact answer. Send it back as `If-None-Match`.
+              schema: { type: string }
+            Cache-Control:
+              description: "`public, max-age=300, must-revalidate`"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schemaVersion:
+                    type: integer
+                    description: Goes up when entries are ADDED. Compare it with the snapshot bundled in the app.
+                    example: 1
+                  aliases:
+                    type: object
+                    additionalProperties: { type: string }
+                    description: Old id to new id, for renamed entries. Empty today.
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, section, key, type, default, scope, platforms, sync, cap, claim, clearAtSignOut, cookie, legacyWebKey, since]
+                      properties:
+                        id:        { type: string, example: appearance.theme, description: "Always `section.key`." }
+                        section:   { type: string, example: appearance }
+                        key:       { type: string, example: theme }
+                        type:      { type: string, enum: [bool, int, float, enum, string, json, list] }
+                        default:   { description: The value when nothing was chosen. Null means none. }
+                        scope:     { type: string, enum: [device, account, shared], description: "`device` never leaves the device; `account` follows the signed-in person; `shared` is visible to others (for example through shares)." }
+                        platforms: { type: array, items: { type: string }, description: "Any of `web`, `apple`, `android`, `tv`, or just `all`." }
+                        sync:      { type: string, enum: [profile_sync, content_sync, none], description: "How it travels: small items through `profile_sync`; favourites and set lists through their own content sync; `none` for device entries." }
+                        cap:       { type: integer, nullable: true, description: Largest number of items, if any. }
+                        claim:     { type: boolean, description: An anonymous visitor's local value is claimed by the account at first sign-in. }
+                        clearAtSignOut: { type: boolean, description: The browser clears it when the person signs out (saved content only). }
+                        cookie:    { type: boolean, description: Travels in the shared cross-site settings cookie (web only). }
+                        legacyWebKey: { type: string, nullable: true, description: The old web storage key, for the one-time import. }
+                        since:     { type: integer, description: The schema version the entry first appeared in. }
+                        allowed:   { type: array, items: { type: string }, description: "For `enum`: the allowed values." }
+                        min:       { type: number, description: "For `int` and `float`." }
+                        max:       { type: number }
+                        step:      { type: integer, description: "For `int`: only values `from + n * step` are allowed." }
+                        from:      { type: integer }
+                        pattern:   { type: string, description: "For `string`: a regular expression written without delimiters, matched against the whole value." }
+                        maxLength: { type: integer }
+                        shape:     { type: object, description: "For `json`: allowed keys, each with its own spec. An empty shape means any object." }
+                        item:      { type: object, description: "For `list`: the spec each item must meet." }
+                        maxItems:  { type: integer, nullable: true }
+        "304":
+          description: The client's copy (`If-None-Match`) is current. No body.
+        "405":
+          description: Not a GET (or HEAD) request
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   /api.php?action=user_preferred_languages:
     get:
       operationId: getUserPreferredLanguages

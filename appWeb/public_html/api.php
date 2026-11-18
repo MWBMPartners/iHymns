@@ -2168,6 +2168,39 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * profile_schema (account/profile rewrite C5, epic #2180) - the list of
+         * every personal setting and its rules, for any client to download.
+         *
+         * GET only, PUBLIC (no sign-in: it describes rules, holds nobody's data),
+         * cacheable (`public, max-age=300`) with an ETag so a client that already
+         * has the current list is answered 304 with no body. The three
+         * server-only fields (storage, export, erase) never leave the server
+         * (profileRegistryPublic()). Apps bundle a snapshot for their first
+         * offline launch and refresh from here later (tests keep the snapshot
+         * equal to this answer, step C6).
+         * ----------------------------------------------------------------- */
+        case 'profile_schema':
+            if ($_SERVER['REQUEST_METHOD'] !== 'GET' && $_SERVER['REQUEST_METHOD'] !== 'HEAD') {
+                sendJson(['error' => 'GET method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_registry.php';
+            $psData = profileRegistryPublic();
+            /* An empty alias map must travel as `{}` (a map), not `[]` (a list). */
+            if ($psData['aliases'] === []) { $psData['aliases'] = new \stdClass(); }
+            /* The ETag covers the answer AND the response shape version (a v2 client
+               gets an envelope), so two shapes never share a tag. */
+            $psEtag = profileRegistryEtag($psData, apiContractVersion());
+            header('ETag: ' . $psEtag);
+            header('Cache-Control: public, max-age=300, must-revalidate');
+            if (trim((string)($_SERVER['HTTP_IF_NONE_MATCH'] ?? '')) === $psEtag) {
+                http_response_code(304);
+                exit;
+            }
+            sendJson($psData, 200, 'public, max-age=300, must-revalidate');
+            break;
+
+        /* -----------------------------------------------------------------
          * Get collection statistics
          * ----------------------------------------------------------------- */
         case 'stats':
@@ -27072,12 +27105,15 @@ sendJson(['error' => 'Missing required parameter: page or action'], 400);
  * @param array $data       Data to encode as JSON
  * @param int   $statusCode HTTP status code (default: 200)
  */
-function sendJson(array $data, int $statusCode = 200): void
+function sendJson(array $data, int $statusCode = 200, ?string $cacheControl = null): void
 {
     http_response_code($statusCode);
     header('Content-Type: application/json; charset=UTF-8');
     header('X-Content-Type-Options: nosniff');
-    header('Cache-Control: no-cache, must-revalidate');
+    /* Every answer is "check with me first" unless the caller says otherwise. The
+       one caller that does (C5, `profile_schema`, a public list that changes only
+       when the code does) asks for a short shared cache plus an ETag. */
+    header('Cache-Control: ' . ($cacheControl ?? 'no-cache, must-revalidate'));
 
     $version = apiContractVersion();
     if ($version >= 2) {
