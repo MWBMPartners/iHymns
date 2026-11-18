@@ -75,9 +75,10 @@ final class FakeStmt
     public function get_result() { return $this->db->answer($this->sql, $this->bound); }
     public function close() {}
 }
-final class FakeDb extends \mysqli
+class FakeDb extends \mysqli
 {
     public array $log = [];
+    public bool $throwOnQuery = false;
     public array $userAudit = [];   /* user id => audit rows still holding personal details */
     public function __construct(public array $tables, public array $cols, public int $search, public int $audit) {}
     public function prepare(string $q): mixed { $this->log[] = ['prepare', $q]; return new FakeStmt($this, $q); }
@@ -85,6 +86,9 @@ final class FakeDb extends \mysqli
         $this->log[] = ['query', $q];
         if (str_starts_with($q, 'SELECT COUNT(*) FROM tblSearchQueries')) { return new FakeRes([[$this->search]]); }
         if (str_starts_with($q, 'SELECT COUNT(*) FROM tblActivityLog')) { return new FakeRes([[$this->audit]]); }
+        if (str_starts_with($q, 'SELECT 1 FROM tblSearchQueries') && str_ends_with($q, 'LIMIT 1')) { return new FakeRes($this->search > 0 ? [[1]] : []); }
+        if (str_starts_with($q, 'SELECT 1 FROM tblActivityLog') && str_ends_with($q, 'LIMIT 1')) { return new FakeRes($this->audit > 0 ? [[1]] : []); }
+        if ($this->throwOnQuery) { throw new \mysqli_sql_exception('simulated failure'); }
         throw new \LogicException("unrecognised query: $q");
     }
     public function answer(string $sql, array $b): FakeRes {
@@ -145,6 +149,26 @@ $eraseBody = $eraseAt === false ? '' : substr($life, $eraseAt);
 chk('accountErase() blanks the person\'s audit rows through the shared function', str_contains($eraseBody, 'privacyLegacyBlankUserAuditRows($db, $userId)'));
 chk('...before it writes the tombstone, in the same transaction', strpos($eraseBody, 'privacyLegacyBlankUserAuditRows(') < strpos($eraseBody, "Status                 = 'deleted'"));
 chk('...and account_lifecycle.php does not carry its own audit SET list', !str_contains($life, 'JSON_REMOVE') && !str_contains($life, 'UPDATE tblActivityLog'));
+
+/* The probe asks "is there any?" (LIMIT 1), never COUNT(*), and a failure is reported, not hidden. */
+$probeDb = new FakeDb(['tblSearchQueries', 'tblActivityLog', 'tblUsers'],
+    ['tblSearchQueries' => ['Id', 'Query', 'UserId'], 'tblActivityLog' => $auditCols, 'tblUsers' => ['Id', 'Status']], 5, 5);
+$probeErr = 'x';
+chk('probe: pending is true with rows waiting, and no error', privacyLegacyPending($probeDb, $probeErr) === true && $probeErr === null);
+$probeQueries = array_values(array_filter($probeDb->log, fn($e) => $e[0] === 'query'));
+chk('probe: it used LIMIT 1 existence checks, never COUNT(*)', count($probeQueries) >= 1 && count(array_filter($probeQueries, fn($e) => str_contains($e[1], 'COUNT(*)') || !str_ends_with($e[1], 'LIMIT 1'))) === 0);
+$prevLog = ini_set('error_log', sys_get_temp_dir() . '/ihymns-probe-test.log');
+@unlink(sys_get_temp_dir() . '/ihymns-probe-test.log');
+$errOut = null;
+$brokenProbe = new class(['tblSearchQueries', 'tblActivityLog', 'tblUsers'], ['tblSearchQueries' => ['Id', 'Query', 'UserId'], 'tblActivityLog' => $auditCols, 'tblUsers' => ['Id', 'Status']]) extends FakeDb {
+    public function __construct(array $t, array $c) { parent::__construct($t, $c, 1, 1); }
+    public function query(string $q, int $m = 0): mixed { throw new \mysqli_sql_exception('table is broken'); }
+};
+chk('probe: a failing check reads as not pending (dashboard still loads)', privacyLegacyPending($brokenProbe, $errOut) === false);
+chk('probe: ...but the failure is handed back, not swallowed', is_string($errOut) && str_contains($errOut, 'table is broken'));
+chk('probe: ...and written to the error log', is_file(sys_get_temp_dir() . '/ihymns-probe-test.log') && str_contains((string)file_get_contents(sys_get_temp_dir() . '/ihymns-probe-test.log'), 'table is broken'));
+@unlink(sys_get_temp_dir() . '/ihymns-probe-test.log');
+ini_set('error_log', $prevLog === false ? '' : $prevLog);
 
 /* An install that lacks the tables: skipped quietly, no throw. */
 $bare = new FakeDb(['tblUsers'], ['tblUsers' => ['Id', 'Status']], 0, 0);

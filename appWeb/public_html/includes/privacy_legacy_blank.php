@@ -204,13 +204,49 @@ function privacyLegacyBlankUserAuditRows(\mysqli $db, int $userId, int $limit = 
     return $total;
 }
 
-/** The dashboard probe: is anything still waiting to be blanked? */
-function privacyLegacyPending(\mysqli $db): bool
+/** Is at least one search row still linked to a person? (a cheap "is there any?", not a count) */
+function privacyLegacySearchAnyPending(\mysqli $db): bool
 {
+    if (!privacyLegacySearchReady($db)) { return false; }
+    $r = $db->query('SELECT 1 FROM tblSearchQueries WHERE UserId IS NOT NULL LIMIT 1');
+    $any = $r->fetch_row() !== null;
+    $r->close();
+    return $any;
+}
+
+/** Does at least one audit row of an erased account still hold personal details? (cheap, not a count) */
+function privacyLegacyAuditAnyPending(\mysqli $db): bool
+{
+    if (!privacyLegacyAuditReady($db)) { return false; }
+    $sql = privacyLegacyAuditSqlForDb($db);
+    $r = $db->query('SELECT 1 FROM tblActivityLog WHERE ' . $sql['where'] . ' LIMIT 1');   /* fixed column names, no input */
+    $any = $r->fetch_row() !== null;
+    $r->close();
+    return $any;
+}
+
+/**
+ * The dashboard probe: is anything still waiting to be blanked?
+ *
+ * Uses "is there at least one row?" checks (LIMIT 1), not COUNT(*), because the
+ * dashboard runs this on every load and the audit log can be huge.
+ *
+ * A failure (for example a missing table on an install that has not migrated)
+ * still reads as "not pending", so the dashboard does not break, but it is no
+ * longer silent: it is written to the error log and, if the caller passes
+ * `$error`, handed back so it can be shown.
+ *
+ * @param ?string $error set to the failure message, or null when the check ran
+ */
+function privacyLegacyPending(\mysqli $db, ?string &$error = null): bool
+{
+    $error = null;
     try {
-        return privacyLegacySearchPendingCount($db) > 0 || privacyLegacyAuditPendingCount($db) > 0;
-    } catch (\Throwable $_e) {
-        return false;   /* un-migrated install: not pending, not a STRICT throw */
+        return privacyLegacySearchAnyPending($db) || privacyLegacyAuditAnyPending($db);
+    } catch (\Throwable $e) {
+        $error = $e->getMessage();
+        error_log('[privacy-blank-legacy-links] could not check what is pending: ' . $error);
+        return false;   /* not pending, and not a STRICT throw out of the dashboard */
     }
 }
 
