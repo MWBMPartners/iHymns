@@ -125,6 +125,34 @@ function _migProbe_columnComment(\mysqli $db, string $table, string $column): st
     return $row ? (string)$row['COLUMN_COMMENT'] : '';
 }
 
+/**
+ * A column's current DEFAULT as plain text, or null when the column does not
+ * exist. Used by the 'song-language-default-und' probe (#2132).
+ *
+ * ELI5: "what does this column fill in when a row gives no value?"
+ *
+ * Detail: MariaDB (10.2.7 and later) reports a string default WITH its quotes
+ * (`'en'`) while MySQL reports it bare (`en`), so the quotes are stripped here
+ * and both answer `en`. A NULL default comes back as ''. Names are bound, never
+ * interpolated (rule #5).
+ * https://mariadb.com/kb/en/information-schema-columns-table/
+ */
+function _migProbe_columnDefaultValue(\mysqli $db, string $table, string $column): ?string
+{
+    $stmt = $db->prepare(
+        'SELECT COLUMN_DEFAULT FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('ss', $table, $column);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    if ($row === null) {
+        return null;
+    }
+    return trim((string)($row[0] ?? ''), "'");
+}
+
 return [
     'account-sync' => [
         'script' => 'migrate-account-sync.php',
@@ -551,67 +579,84 @@ return [
     ],
     'backfill-song-language-from-songbook' => [
         'script' => 'migrate-backfill-song-language-from-songbook.php',
+        /* #2137 reviews — MANUAL: EXCLUDED from "Apply all" (the JS bulk runner, the
+           no-JS apply-all loop, the pending counter) and from the setup wizard, and
+           FILL-ONLY. The first version ran from "Apply all" and overwrote `und`,
+           `zxx` and `mul`; the second still rewrote songs in a different ordinary
+           language (`yue` and `cmn-Hans` in a `zh` book became `zh`, `de` in an
+           `hr` book became `hr`) with no record. Now it only ever fills a song
+           with NO language, lists the rest for review, and records every fill.
+           `dryRunnable`: a web run without &confirm=1 only reports. */
+        'manual'      => true,
+        'dryRunnable' => true,
         'card' => [
-            'title'  => 'Backfill song language from songbook (audit follow-up)',
-            'body'   => 'Several bulk-import passes landed every song in a non-English songbook'
-                      . ' tagged <code>language=\'en\'</code> — HAC is the documented example: the'
-                      . ' songbook itself was correctly marked Croatian, but every member song'
-                      . ' carries the English tag. This walks every songbook that DECLARES a'
-                      . ' single primary language (<code>tblSongbooks.Language</code> non-empty)'
-                      . ' and rewrites any member song whose primary language subtag disagrees.'
-                      . ' Conservative: songbooks with no Language declared are left alone'
-                      . ' (multi-language books like Misc), and a song already carrying a more'
-                      . ' specific tag whose primary matches (<code>en-GB</code> inside an'
-                      . ' <code>en</code> songbook) is preserved. Re-runnable.'
-                      . ' Nothing to regenerate afterwards — song reads are DB-direct'
-                      . ' (WS-J #1020), so the public PWA picks up the new tags on its'
-                      . ' next fetch.',
-            'button' => 'Run Song Language Backfill',
+            'title'  => 'Fill in a missing song language from its songbook (curator\'s decision)',
+            'body'   => 'For every songbook that declares ONE language, this gives that language'
+                      . ' to member songs that have <strong>no language at all</strong> (empty) —'
+                      . ' a curator\'s decision, not a fact the site knows. It <strong>never'
+                      . ' changes a song that already has any value</strong>: a real language,'
+                      . ' <code>und</code> (not known), <code>mul</code>, <code>zxx</code>, or a'
+                      . ' malformed value. Songs whose language differs from their songbook\'s'
+                      . ' are <strong>listed</strong> (song, its language, the songbook\'s) for you'
+                      . ' to review by hand, never changed. Songbooks with no language, or with'
+                      . ' one of those codes, are skipped. Run the <strong>dry run</strong> first:'
+                      . ' it lists every song it would fill and every song it leaves for review,'
+                      . ' and changes nothing. A confirmed run records each filled song in the'
+                      . ' activity log (<code>migration.song_language_backfill</code>, with the old'
+                      . ' and new value), so any fill can be traced and undone. Not part of'
+                      . ' &ldquo;Apply all&rdquo;. Re-runnable: a filled song is not filled twice.',
+            'button' => 'Fill Missing Song Languages (dry-run unless confirmed)',
         ],
+        /* Pending while at least one song has NO language in a songbook that
+           declares one ordinary language — the only thing the script changes.
+           #2137 review round 4: decided with the card's OWN tests
+           (mediaLanguageIsBlank() for the song, the tidy-and-ordinary test
+           for the songbook), in PHP. It used to ask the database whether
+           TRIM(Language) = '', and the column's collation answered
+           differently from the card: a tab-only song was "not empty" (so the
+           card could fill it while this said "done") and a no-break-space
+           song was "empty" (so this said "pending" for ever while the card
+           rightly left it alone). The query below only narrows the rows to a
+           generous superset — NULL, or no ASCII letter or digit at all, which
+           every blank value is — and PHP makes the decision. */
         'probe' => static function (\mysqli $db): bool {
             try {
-                $colS = $db->query(
-                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-                      WHERE TABLE_SCHEMA = DATABASE()
-                        AND TABLE_NAME = 'tblSongs'
-                        AND COLUMN_NAME = 'Language' LIMIT 1"
-                );
-                if (!$colS || $colS->fetch_row() === null) {
-                    if ($colS) $colS->close();
+                if (!_migProbe_columnExists($db, 'tblSongs', 'Language')
+                    || !_migProbe_columnExists($db, 'tblSongbooks', 'Language')) {
                     return false;
                 }
-                $colS->close();
-                $colB = $db->query(
-                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-                      WHERE TABLE_SCHEMA = DATABASE()
-                        AND TABLE_NAME = 'tblSongbooks'
-                        AND COLUMN_NAME = 'Language' LIMIT 1"
-                );
-                if (!$colB || $colB->fetch_row() === null) {
-                    if ($colB) $colB->close();
-                    return false;
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_language.php';
+                if (!mediaLanguageReady()) {
+                    return false;   // cannot tell `mul` from a language → never claim work is pending
                 }
-                $colB->close();
-                /* Detect any single-language songbook with at least one
-                   member whose primary language subtag differs. */
                 /* @deleted-visible: migration probe (#1694) — language
                    backfill is PHYSICAL; a hidden row still needs the tag.
                    @disabled-visible: same reasoning, one predicate over
                    (#1765) — a row in a disabled songbook still needs the tag. */
                 $res = $db->query(
-                    "SELECT 1
+                    "SELECT b.Language AS bookLang, s.Language AS songLang
                        FROM tblSongs s
                        JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
                       WHERE b.Language IS NOT NULL AND b.Language <> ''
-                        AND (
-                              s.Language IS NULL OR s.Language = ''
-                           OR LOWER(SUBSTRING_INDEX(s.Language, '-', 1))
-                              <> LOWER(SUBSTRING_INDEX(b.Language, '-', 1))
-                        )
-                      LIMIT 1"
+                        AND (s.Language IS NULL OR s.Language NOT REGEXP '[A-Za-z0-9]')"
                 );
-                $needs = $res && $res->fetch_row() !== null;
-                if ($res) $res->close();
+                $needs = false;
+                $bookFillable = [];   /* songbook language → can the card fill from it? */
+                while ($res && ($row = $res->fetch_assoc())) {
+                    if (!mediaLanguageIsBlank($row['songLang'] === null ? null : (string)$row['songLang'])) {
+                        continue;   /* a value — the card lists it, it never fills it */
+                    }
+                    $bookLang = (string)$row['bookLang'];
+                    if (!isset($bookFillable[$bookLang])) {
+                        $bookTag = mediaLanguageTagForStorage($bookLang);
+                        $bookFillable[$bookLang] = is_string($bookTag) && mediaLanguageIsOrdinaryLanguage($bookTag);
+                    }
+                    if ($bookFillable[$bookLang]) {
+                        $needs = true;
+                        break;
+                    }
+                }
+                if ($res) $res->free();
                 return $needs;
             } catch (\Throwable $_e) {
                 return false;
@@ -5101,5 +5146,61 @@ return [
                 return false;   /* tblAppSettings absent on a fresh pre-install DB → not pending. */
             }
         },
+    ],
+    /* #2132 (part of #2137, the shared language policy) — a song whose
+       language nobody gave is "not known" (und), never English. Changes ONLY
+       the column default; no existing song is rewritten (a stored 'en' cannot
+       be told apart from a real English song — policy COMPAT-040). Schema-only,
+       additive in effect, idempotent: safe in "Apply all". */
+    'song-language-default-und' => [
+        'script' => 'migrate-song-language-default-und.php',
+        'card' => [
+            'title'  => 'Song language: default to &ldquo;not known&rdquo; (und), not English (#2132)',
+            'body'   => 'Changes the default of <code>tblSongs.Language</code> from'
+                      . ' <code>en</code> to <code>und</code> (the standard code for'
+                      . ' &ldquo;language not known&rdquo;), as the shared language policy'
+                      . ' requires. A song saved without a language is no longer recorded'
+                      . ' as English. <strong>No existing song is changed:</strong> a song'
+                      . ' stored as <code>en</code> by the old default looks exactly like a'
+                      . ' real English song, so rewriting them would be a guess. Only the'
+                      . ' column&rsquo;s description changes, not its data. Idempotent &mdash;'
+                      . ' safe to re-run.',
+            'button' => 'Run Song Language Default Migration',
+        ],
+        /* Single-object probe (rule #19), read from the live schema — never
+           `=> true`. Pending while the column exists and still defaults to
+           anything other than 'und'. */
+        'probe' => static function (\mysqli $db): bool {
+            $default = _migProbe_columnDefaultValue($db, 'tblSongs', 'Language');
+            return $default !== null && $default !== 'und';
+        },
+    ],
+    /* #2131 (part of #2137, the shared language policy) — whole-song
+       translations may use regional and script languages (pt-BR, zh-Hans).
+       Drops the one hard link from tblSongTranslations.TargetLanguage to
+       tblLanguages (bare codes only) plus the index MariaDB/MySQL created for
+       it, so a migrated database matches a fresh schema.sql install. No data
+       is changed; uq_Translation stays. Idempotent: safe in "Apply all". */
+    'drop-song-translations-language-fk' => [
+        'script' => 'migrate-drop-song-translations-language-fk.php',
+        'card' => [
+            'title'  => 'Translations: allow regional and script languages (#2131)',
+            'body'   => 'Removes the <code>fk_Trans_Lang</code> link from'
+                      . ' <code>tblSongTranslations.TargetLanguage</code> to'
+                      . ' <code>tblLanguages</code>, which holds bare language codes only.'
+                      . ' Until this runs, a whole-song translation in a regional or script'
+                      . ' form (<code>pt-BR</code>, <code>zh-Hans</code>) cannot be linked; the'
+                      . ' song editor skips it with a warning that points here. Also removes'
+                      . ' the index the database created for that link, so this server matches'
+                      . ' a fresh install. No data is changed, and the one-translation-per-language'
+                      . ' rule stays. Idempotent &mdash; safe to re-run.',
+            'button' => 'Run Translation Languages Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending while EITHER the link or
+           its leftover index still exists, so a partial apply never shows the
+           card as done. Read from the live schema — never `=> true`. */
+        'probe' => static fn(\mysqli $db): bool =>
+               _migProbe_constraintExists($db, 'tblSongTranslations', 'fk_Trans_Lang')
+            || _migProbe_indexExists($db, 'tblSongTranslations', 'fk_Trans_Lang'),
     ],
 ];

@@ -234,15 +234,22 @@ function languageAdminToggleActive(\mysqli $db, string $code, int $isActive): in
 }
 
 /**
- * Pre-flight cite count across `tblSongs.Language` and
- * `tblSongbooks.Language` — the delete confirmation count AND the
- * 409-requires-force gate (decided by the CALLER, not this file, mirroring
- * `tagAdminUsageCount()`/`tagAdminDelete()`'s split). The picker normalises
- * tags to lowercase on the BCP 47 primary subtag, so we match against that
- * prefix as well as the exact code so a row 'en' surfaces every 'en',
- * 'en-GB', 'en-US' that uses it.
+ * Pre-flight cite count across `tblSongs.Language`,
+ * `tblSongbooks.Language` and `tblSongTranslations.TargetLanguage` — the
+ * delete confirmation count AND the 409-requires-force gate (decided by the
+ * CALLER, not this file, mirroring `tagAdminUsageCount()`/`tagAdminDelete()`'s
+ * split). The picker normalises tags to lowercase on the BCP 47 primary
+ * subtag, so we match against that prefix as well as the exact code so a row
+ * 'en' surfaces every 'en', 'en-GB', 'en-US' that uses it.
  *
- * @return array{songs:int,songbooks:int}
+ * #2137 review — whole-song translation links are counted too. They were
+ * left out, so a language used only by translations looked unused: on a
+ * server that has not run the #2131 card the delete then failed on the
+ * database's own link (a bare "could not delete"), and on one that has, the
+ * links silently kept a language the registry no longer names. A server
+ * without the translations table counts 0 for it.
+ *
+ * @return array{songs:int,songbooks:int,translations:int}
  */
 function languageAdminUsageCounts(\mysqli $db, string $code): array
 {
@@ -263,7 +270,26 @@ function languageAdminUsageCounts(\mysqli $db, string $code): array
     $stmt->execute();
     $usage = $stmt->get_result()->fetch_assoc();
     $stmt->close();
-    return ['songs' => (int)($usage['songs'] ?? 0), 'songbooks' => (int)($usage['songbooks'] ?? 0)];
+
+    $translations = 0;
+    $probe = $db->query(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongTranslations' LIMIT 1"
+    );
+    $hasTable = $probe && $probe->fetch_row() !== null;
+    if ($probe) { $probe->close(); }
+    if ($hasTable) {
+        $t = $db->prepare('SELECT COUNT(*) FROM tblSongTranslations WHERE TargetLanguage = ? OR TargetLanguage LIKE ?');
+        $t->bind_param('ss', $code, $likePrefix);
+        $t->execute();
+        $translations = (int)($t->get_result()->fetch_row()[0] ?? 0);
+        $t->close();
+    }
+    return [
+        'songs'        => (int)($usage['songs'] ?? 0),
+        'songbooks'    => (int)($usage['songbooks'] ?? 0),
+        'translations' => $translations,
+    ];
 }
 
 /** Delete a language row. Caller has already resolved the force-required

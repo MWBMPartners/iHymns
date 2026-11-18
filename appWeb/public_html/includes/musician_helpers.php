@@ -32,6 +32,17 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that a song save, the v2 editor, the works or songbooks admin page
+   or an importer can reach from inside its transaction starts by passing those
+   back to its caller (the full list is in DEV_NOTES.md). Loaded here, at the
+   top, so that check can always be a catch's first line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 /* Partial-date parser/formatter (the ONE place that turns a curator's
    YYYY / MM/YYYY / DD/MM/YYYY input into a normalised (date, precision)
    pair and back). The musician save + load paths below delegate to
@@ -653,6 +664,7 @@ function musicianNamePartsColumnsExist(\mysqli $db): bool
         $cached = $stmt->get_result()->fetch_row() !== null;
         $stmt->close();
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $cached = false;
     }
     return $cached;
@@ -682,6 +694,7 @@ function musicianMaidenSurnameColumnExists(\mysqli $db): bool
         $cached = $stmt->get_result()->fetch_row() !== null;
         $stmt->close();
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $cached = false;
     }
     return $cached;
@@ -742,6 +755,7 @@ function musicianMbidColumnExists(\mysqli $db): bool
         $cached = $stmt->get_result()->fetch_row() !== null;
         $stmt->close();
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $cached = false;
     }
     return $cached;
@@ -1313,6 +1327,7 @@ function generateUniqueMusicianSlug(\mysqli $db, string $name, ?int $excludeId =
             $hasSlugCol = $probe->get_result()->fetch_row() !== null;
             $probe->close();
         } catch (\Throwable $_e) {
+            if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
             $hasSlugCol = false;
         }
     }
@@ -3142,7 +3157,7 @@ function musicianProfileColumnsExist(\mysqli $db): array
             $out[(string)$row['COLUMN_NAME']] = true;
         }
         $stmt->close();
-    } catch (\Throwable $_e) { /* leave every column false */ }
+    } catch (\Throwable $_e) { if (songRelocateIsTransactionFatal($_e)) { throw $_e; } /* #2137 review round 7: never swallow an error that has ended the transaction */ /* leave every column false */ }
     $cached = $out;
     return $cached;
 }

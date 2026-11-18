@@ -65,11 +65,10 @@
  * never fail ingest) but is never SILENT: `updateUnknownWarning()` below
  * renders an inline amber note the moment a subtag was neither picked nor
  * matched exactly against the last search results, and additionally warns
- * BEFORE the server ever rejects a grammatically-malformed tag (mirroring
- * `includes/song_importers.php`'s `_ietfBcp47Validate()` regex — see
- * `isGrammaticallyValidBcp47()` below; kept byte-identical to the PHP
- * source by `tests/test-ietf-picker-live-dom.js`, never just a "keep these
- * in sync" comment, rule #35).
+ * BEFORE the server refuses a grammatically-malformed tag (see
+ * `isGrammaticallyValidBcp47()` below — an EARLY WARNING only; the server's
+ * shared language rule, `includes/media_language.php`, is the one that
+ * decides, #2137).
  *
  * Markup contract — caller renders something like:
  *
@@ -157,22 +156,26 @@ const NOUNS = {
 };
 
 /**
- * Grammar-only BCP 47 validity check — a CLIENT-SIDE MIRROR of
- * `includes/song_importers.php`'s `_ietfBcp47Validate()` regex, used ONLY
- * to warn a curator BEFORE they hit the server's real rejection (M3 — the
- * plan's §4.4). This is never itself the authority: the server keeps
- * enforcing the real check on save; a mismatch here would only ever
- * produce a wrong WARNING, never a wrong SAVE. Kept byte-identical to the
- * PHP source (not just "similar") by a CI assertion in
- * tests/test-ietf-picker-live-dom.js, which is the MECHANISM rule #35
- * asks for in place of a "keep these two in sync" comment — a regex is
- * one of the few shapes that genuinely cannot be shared verbatim across a
- * PHP/JS boundary without a network round-trip, so a guarded mirror is the
- * pragmatic middle ground, not a violation of the rule.
+ * Grammar-only BCP 47 validity check, used ONLY to warn a curator BEFORE they
+ * hit the server's real refusal (M3 — the plan's §4.4). It is never the
+ * authority: the server's ONE shared language rule (`includes/media_language.php`,
+ * which follows the MWBM-MEDIA-LANG policy, #2137) decides on save, and a
+ * mismatch here can only ever produce a wrong WARNING, never a wrong SAVE.
+ *
+ * #2137 — corrected claim. This comment used to say the pattern below was
+ * "kept byte-identical to the PHP source by a CI assertion in
+ * tests/test-ietf-picker-live-dom.js". No such assertion existed, and the PHP
+ * pattern it named has now been replaced by the shared policy code, which
+ * accepts more than this does (extensions, private use, any letter case — it
+ * tidies case rather than refusing). That is safe here because this check only
+ * ever sees tags built by composeTag() below, which already writes the letter
+ * case in standard form and only ever joins a language, script, region and
+ * variants. The one known gap: a repeated variant (`de-1996-1996`) passes this
+ * check but is refused by the server.
  *
  * @param {string} tag
  * @returns {boolean} true when EMPTY (nothing to validate yet) or grammar-valid.
- * @see includes/song_importers.php::_ietfBcp47Validate()
+ * @see includes/media_language.php::mediaLanguageTagForStorage()
  */
 export function isGrammaticallyValidBcp47(tag) {
     const t = (tag || '').trim();
@@ -260,6 +263,42 @@ export function composeTag(lang, script, region, variants) {
         region ? (/^[0-9]+$/.test(region) ? region : region.toUpperCase()) : '',
         ...variantList,
     ].filter(Boolean).join('-');
+}
+
+/**
+ * The tag the picker's boxes would save for `tag`: split it with
+ * decomposeTag(), then rebuild it with composeTag() from what the boxes can
+ * hold — a language, a script, a region and at most `maxVariants` variants
+ * (the one variant box, or none when the markup has no variant box).
+ *
+ *   pickerRebuildTag("en-GB")            → "en-GB"
+ *   pickerRebuildTag("en-u-ca-gregory")  → "en-CA-gregory"   (not the same tag!)
+ *   pickerRebuildTag("x-hymnal")         → ""
+ */
+export function pickerRebuildTag(tag, maxVariants = 1) {
+    const { lang, script, region, variants } = decomposeTag(tag);
+    return composeTag(lang, script, region, variants.slice(0, Math.max(0, maxVariants)));
+}
+
+/**
+ * Can the picker's boxes hold `tag` without changing it (#2137 review)?
+ *
+ * ELI5: split the tag into the boxes and put it back together; if the result
+ * is not the tag we started with (ignoring letter case, which the server
+ * tidies anyway), the boxes would quietly save a DIFFERENT tag.
+ *
+ * Why it matters: the boxes know about a language, a script, a region and
+ * one variant — nothing else. Before this check, opening a song whose tag
+ * had more than that rewrote it the moment a box lost focus, and the editors
+ * save on blur: `en-u-ca-gregory` became `en-CA-gregory` (a Canadian
+ * variant), `en-x-hymnal` became `en-hymnal`, and `x-hymnal` or `i-default`
+ * became empty — which the song save stores as `und`, "not known". A tag
+ * that fails this check is kept exactly as it is (see setTag()).
+ */
+export function pickerCanHold(tag, maxVariants = 1) {
+    const original = String(tag || '').trim();
+    if (original === '') return true;
+    return pickerRebuildTag(original, maxVariants).toLowerCase() === original.toLowerCase();
 }
 
 /* ---------------------------------------------------------------------------
@@ -433,9 +472,33 @@ export function bootIetfLanguagePicker(rootEl) {
         warningEl.classList.remove('d-none');
     }
 
+    /* #2137 review — a saved tag the boxes cannot hold (pickerCanHold()) is
+       kept here, exactly as saved. While it is set, the hidden output keeps
+       it, the preview shows it read-only, and a plain note explains why; a
+       box losing focus changes nothing, so an editor that saves on blur
+       saves the tag unchanged (the v2 editor compares with the stored value
+       and saves nothing at all). Only a real edit — typing in, or picking
+       from, a box (the 'input' listener below) — clears it. */
+    let preservedTag = null;
+
+    function showPreservedTag() {
+        tagOutput.value = preservedTag;
+        if (tagPreview) tagPreview.textContent = preservedTag;
+        if (tagDisplay) tagDisplay.textContent = '';
+        if (warningEl) {
+            warningEl.textContent = `This language tag (${preservedTag}) has parts these boxes cannot show, `
+                + 'so it is kept exactly as it was saved. It only changes if you type in the boxes to replace it.';
+            warningEl.classList.remove('d-none');
+        }
+    }
+
     /* Update the live preview + hidden form field whenever any of
        the four inputs change. */
     const refreshTag = () => {
+        if (preservedTag !== null) {
+            showPreservedTag();
+            return;
+        }
         const l = resolveCode(langInput, langCodeIn, 'language');
         const s = resolveCode(scriptInput, scriptCodeIn, 'script');
         const r = resolveCode(regionInput, regionCodeIn, 'region');
@@ -468,7 +531,10 @@ export function bootIetfLanguagePicker(rootEl) {
     [langInput, scriptInput, regionInput, variantInput]
         .filter(Boolean)
         .forEach((input) => {
-            input.addEventListener('input', refreshTag);
+            input.addEventListener('input', () => {
+                preservedTag = null;   /* a real edit: the curator is replacing a kept tag */
+                refreshTag();
+            });
             input.addEventListener('blur',  refreshTag);
         });
 
@@ -559,6 +625,18 @@ export function bootIetfLanguagePicker(rootEl) {
      * row — the partial/markup is shared between instances.
      */
     const setTag = async (tag) => {
+        const original = String(tag || '').trim();
+        if (!pickerCanHold(original, variantInput ? 1 : 0)) {
+            /* Kept exactly as saved (see pickerCanHold()): the boxes start
+               empty rather than showing a half-truth such as "English,
+               Canada" for `en-u-ca-gregory`. */
+            preservedTag = original;
+            [langInput, scriptInput, regionInput, variantInput].filter(Boolean).forEach((el) => { el.value = ''; });
+            [langCodeIn, scriptCodeIn, regionCodeIn, variantCodeIn].filter(Boolean).forEach((el) => { el.value = ''; });
+            refreshTag();
+            return;
+        }
+        preservedTag = null;
         const { lang, script, region, variants } = decomposeTag(tag);
 
         if (lang) {

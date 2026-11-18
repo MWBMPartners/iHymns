@@ -140,9 +140,12 @@ if ($mode === '') {
 
     /* ---- guard 6: api2.php create_song calls the shared helper ---------- */
     $window = scr_extractCaseWindow($api2Src, "case 'create_song':");
+    /* #2137 review — the row is created through songInsertNewRow()
+       (includes/song_create.php) rather than an inline INSERT, so that call
+       is the landmark proving the right window was captured. */
     ok('the create_song window was actually captured (sanity check on the extraction itself)',
-       $window !== null && strpos($window, 'INSERT INTO tblSongs') !== false,
-       'window ' . ($window === null ? 'not found' : ('length ' . strlen($window) . ', no INSERT INTO tblSongs inside it'))
+       $window !== null && strpos($window, 'songInsertNewRow(') !== false,
+       'window ' . ($window === null ? 'not found' : ('length ' . strlen($window) . ', no songInsertNewRow( inside it'))
        . ' — the extraction logic itself is broken, not the code under test');
     ok('api2.php create_song calls songbookRecomputeSongCount() (#1742)',
        $window !== null && strpos($window, 'songbookRecomputeSongCount') !== false,

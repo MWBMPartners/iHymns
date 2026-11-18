@@ -276,7 +276,7 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     Subtitle            VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Optional song subtitle (#1741 P1)',
     Disambiguation      VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named songs (#1741 P1)',
     SongbookAbbr        VARCHAR(10)     NOT NULL COMMENT 'FK to tblSongbooks.Abbreviation; the songbook NAME is read live via JOIN to tblSongbooks.Name (de-normalised SongbookName dropped in WS-E #1013 ph2)',
-    Language            VARCHAR(35)     NOT NULL DEFAULT 'en' COMMENT 'IETF BCP 47 tag (language[-script][-region]); widened from VARCHAR(10) to fit script + region subtags (#681)',
+    Language            VARCHAR(35)     NOT NULL DEFAULT 'und' COMMENT 'IETF BCP 47 tag in canonical form (language[-script][-region]…); und = not known. Never defaults to a real language: und replaced en as the default in #2132, and songs stored as en before then were left as they were (MWBM-MEDIA-LANG LANG-003, COMPAT-040). Widened from VARCHAR(10) to fit script + region subtags (#681)',
     Copyright           VARCHAR(500)    NOT NULL DEFAULT '',
     CopyrightYears      VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'As-printed copyright year(s), free text e.g. "1978, 1987, 2011" (#1741 P1); Copyright stays as the legacy as-printed denorm string and is NOT auto-parsed into this + CopyrightHolder',
     CopyrightHolder     VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Copyright holder name (#1741 P1); see CopyrightYears comment re: the legacy Copyright column',
@@ -951,7 +951,7 @@ CREATE TABLE IF NOT EXISTS tblUsers (
     LoginCount      INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Total successful login count',
     Settings        JSON            NULL DEFAULT NULL COMMENT 'Synced per-user app preferences (theme, font, accessibility, etc.)',
     AvatarService   VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Avatar resolver: gravatar, libravatar, dicebear, none. NULL = use site default. (#616)',
-    PreferredLanguagesJson JSON     NULL DEFAULT NULL COMMENT 'Synced per-user language-filter choice — JSON array of IETF BCP 47 primary subtags (e.g. ["en","es"]). NULL / [] = show all languages (#736)',
+    PreferredLanguagesJson JSON     NULL DEFAULT NULL COMMENT 'Synced per-user language-filter choice — JSON array of canonical IETF BCP 47 tags, highest priority first (e.g. ["pt-BR","en"]; #2137). Lists saved before #2137 hold base codes only and stay valid. Filtering matches by language group. NULL / [] = show all languages (#736)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -1662,28 +1662,28 @@ CREATE TABLE IF NOT EXISTS tblSongTranslations (
         ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT fk_Trans_Target
         FOREIGN KEY (TranslatedSongId) REFERENCES tblSongs(SongId)
-        ON DELETE CASCADE ON UPDATE CASCADE,
+        ON DELETE CASCADE ON UPDATE CASCADE
     /* uq_Translation is (SourceSongId, TargetLanguage): ONE translation per
        language per source song. A second Spanish rendering of the same hymn
        is not an additional row here — it is a separate tblSongs record, and
-       which one is "the" Spanish counterpart is a curatorial choice.
+       which one is "the" Spanish counterpart is a curatorial choice. Because
+       TargetLanguage is a full tag, `pt-BR` and `pt-PT` are two different
+       languages here, as the shared language policy requires (TEXT-050).
 
-       fk_Trans_Lang is the ONLY hard foreign key to tblLanguages in this
-       file, and it is the outlier: every other language column in the schema
-       (tblSongs.Language, tblLyricLines.LanguageCode, tblSongLanguages
-       .Language, the whole #1088 pair) is deliberately free-text with NO FK,
-       precisely so a BCP 47 tag carrying a script or region subtag can never
-       RESTRICT-fail an import (rule #21). tblLanguages is seeded from the
-       IANA registry's `Type: language` records only — bare primary subtags —
-       so a translation tagged zh-Hans or pt-BR cannot be recorded through
-       this constraint even though the column is VARCHAR(35) and shaped for
-       exactly those tags. Do not "fix" that by widening the seed — it would
-       turn tblLanguages from a subtag registry into a tag table. Dropping
-       this one constraint to match the rest of the schema is the change that
-       would need discussing. */
-    CONSTRAINT fk_Trans_Lang
-        FOREIGN KEY (TargetLanguage) REFERENCES tblLanguages(Code)
-        ON DELETE RESTRICT ON UPDATE CASCADE
+       #2131 — there is deliberately NO foreign key from TargetLanguage to
+       tblLanguages any more. There used to be one, `fk_Trans_Lang`, the only
+       hard link to tblLanguages in this file. tblLanguages is seeded from the
+       IANA registry's `Type: language` records only (bare codes: `pt`, `zh`),
+       so that link made a translation tagged `pt-BR` or `zh-Hans` impossible
+       to record, even though the column is VARCHAR(35) and shaped for exactly
+       those tags. It now matches every other language column in the schema
+       (tblSongs.Language, tblLyricLines.LanguageCode, the #1088 pair): free
+       text, checked by the application with the shared language policy's rule
+       (includes/media_language.php) before it is saved (rule #21). Do not
+       "fix" it the other way by widening the registry seed — that would turn
+       tblLanguages from a registry of language codes into a table of every
+       combination anybody might use. Existing databases drop the link with
+       migrate-drop-song-translations-language-fk.php. */
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 

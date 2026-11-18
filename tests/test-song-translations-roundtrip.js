@@ -40,11 +40,16 @@ const SAVE_CORE = join(WEB, 'manage', 'editor', 'save_song_core.php');
 const EDITOR_JS = join(WEB, 'manage', 'editor', 'editor.js');
 const SONG_DATA = join(WEB, 'includes', 'SongData.php');
 const SCHEMA_SQL = join(__dirname, '..', 'appWeb', '.sql', 'schema.sql');
+/* #2137 review — steps 1–4 of the save moved into songTranslationsSaveLinks()
+   in this file, so they can be tested against a real database
+   (tests/php/test-song-translations-sync.php); the save core calls it. */
+const SYNC_PHP = join(WEB, 'includes', 'song_translations_sync.php');
 
 const saveSrc = readFileSync(SAVE_CORE, 'utf8');
 const editorSrc = readFileSync(EDITOR_JS, 'utf8');
 const songDataSrc = readFileSync(SONG_DATA, 'utf8');
 const schemaSrc = readFileSync(SCHEMA_SQL, 'utf8');
+const syncSrc = readFileSync(SYNC_PHP, 'utf8');
 
 let passed = 0;
 let failed = 0;
@@ -59,8 +64,9 @@ function check(label, cond, detail = '') {
    accidentally match some unrelated statement elsewhere in a 1400-line file. */
 const blockStart = saveSrc.indexOf('Translation links (#352)');
 const blockEnd = saveSrc.indexOf('$db->commit();', blockStart);
-const transBlock = blockStart > -1 && blockEnd > blockStart
-    ? saveSrc.slice(blockStart, blockEnd)
+const saveLinksAt = syncSrc.indexOf('function songTranslationsSaveLinks');
+const transBlock = blockStart > -1 && blockEnd > blockStart && saveLinksAt > -1
+    ? saveSrc.slice(blockStart, blockEnd) + '\n' + syncSrc.slice(saveLinksAt)
     : '';
 
 /* ---------------------------------------------------------------------- */
@@ -97,6 +103,109 @@ check('the whole-song save core references tblSongTranslations at all',
 check('the translations block was located for inspection',
     transBlock.length > 0);
 
+/* #2137 review round 5 (L2) — through the all-or-nothing wrapper, which undoes
+   every link write if one fails; never the bare steps, whose partial writes the
+   old catch used to commit. */
+check('the save core hands the links to songTranslationsSaveLinksAllOrNothing() (the code tested against a database)',
+    /songTranslationsSaveLinksAllOrNothing\(\$db, \$songId, \$song\['translations'\]\)/.test(saveSrc)
+    && !/songTranslationsSaveLinks\(\$db/.test(saveSrc));
+
+/* #2137 review round 6 (the fifth review's finding 7) — and the call sits in
+   NO try of its own: the only try around it may be the one holding the whole
+   transaction (begin_transaction() … commit()), whose catch rolls back. The
+   wrapper lets through only an error that has already ended the transaction
+   and a failed undo; both must stop the save. The review planted
+   `try { … } catch (\Throwable $_x) { … }` around the call and every check
+   stayed green. Comments and strings are blanked first, so a "try {" in either
+   cannot confuse the count. (tests/php/test-song-translations-sync.php, Part
+   A7, checks the same with PHP's own tokenizer.) */
+function blankPhpCommentsAndStrings(src) {
+    let out = '';
+    let i = 0;
+    while (i < src.length) {
+        const c = src[i];
+        const two = src.slice(i, i + 2);
+        if (two === '/*') {
+            const end = src.indexOf('*/', i + 2);
+            const stop = end === -1 ? src.length : end + 2;
+            out += src.slice(i, stop).replace(/[^\n]/g, ' ');
+            i = stop;
+        } else if (two === '//' || (c === '#' && src[i + 1] !== '[')) {
+            let stop = src.indexOf('\n', i);
+            if (stop === -1) stop = src.length;
+            out += ' '.repeat(stop - i);
+            i = stop;
+        } else if (c === '\'' || c === '"') {
+            let j = i + 1;
+            while (j < src.length && src[j] !== c) { j += src[j] === '\\' ? 2 : 1; }
+            out += c + src.slice(i + 1, j).replace(/[^\n]/g, ' ') + c;
+            i = j + 1;
+        } else if (two === '<<' && src[i + 2] === '<') {
+            throw new Error('a heredoc in the song save: this check cannot read it — teach blankPhpCommentsAndStrings() first');
+        } else {
+            out += c;
+            i++;
+        }
+    }
+    return out;
+}
+function tryBlocks(code) {
+    /* every `try {` with the index of its matching `}` */
+    const blocks = [];
+    const re = /\btry\s*\{/g;
+    let m;
+    while ((m = re.exec(code)) !== null) {
+        const open = m.index + m[0].length - 1;
+        let depth = 0;
+        let close = -1;
+        for (let k = open; k < code.length; k++) {
+            if (code[k] === '{') depth++;
+            else if (code[k] === '}') { depth--; if (depth === 0) { close = k; break; } }
+        }
+        blocks.push({ start: m.index, open, close });
+    }
+    return blocks;
+}
+function linksCallOutsideOwnTry(phpSrc) {
+    const code = blankPhpCommentsAndStrings(phpSrc);
+    const calls = [...code.matchAll(/\bsongTranslationsSaveLinksAllOrNothing\s*\(/g)].map((m) => m.index);
+    const begins = [...code.matchAll(/->\s*begin_transaction\s*\(/g)].map((m) => m.index);
+    if (calls.length !== 1) return `expected one call, found ${calls.length}`;
+    if (begins.length !== 1) return `expected one begin_transaction(), found ${begins.length}`;
+    const blocks = tryBlocks(code);
+    const around = (at) => blocks.filter((b) => b.open < at && at < b.close);
+    const tx = around(begins[0]);
+    const mine = around(calls[0]);
+    if (tx.length === 0) return 'begin_transaction() is not inside a try';
+    if (mine.length !== tx.length || mine.some((b, n) => b !== tx[n])) {
+        return `the call is inside ${mine.length} try block(s); only the transaction's (${tx.length}) is allowed`;
+    }
+    const outer = tx[tx.length - 1];
+    const after = code.slice(outer.close + 1);
+    const catchMatch = /^\s*catch\s*\([^)]*\)\s*\{/.exec(after);
+    if (!catchMatch) return 'the transaction\'s try has no catch';
+    let depth = 0;
+    let body = '';
+    for (let k = catchMatch[0].length - 1; k < after.length; k++) {
+        if (after[k] === '{') depth++;
+        else if (after[k] === '}') { depth--; if (depth === 0) { body = after.slice(catchMatch[0].length, k); break; } }
+    }
+    return /->\s*rollback\s*\(/.test(body) ? '' : 'the transaction\'s catch does not roll back';
+}
+{
+    const why = linksCallOutsideOwnTry(saveSrc);
+    check('the links are saved in no try of the save\'s own — only the transaction\'s, whose catch rolls back', why === '', why);
+    const callLine = "foreach (songTranslationsSaveLinksAllOrNothing($db, $songId, $song['translations']) as $w) { $translationWarnings[] = $w; }";
+    const frame = (body) => `<?php\nfunction f() {\n    try {\n        $db->begin_transaction();\n        if ($x) {\n            ${body}\n        }\n        $db->commit();\n    } catch (\\Throwable $e) {\n        try { $db->rollback(); } catch (\\Throwable $_) {}\n    }\n}\n`;
+    check('…the check accepts the call in the transaction\'s try, with "try {" in a comment and a string beside it',
+        linksCallOutsideOwnTry(frame(`/* try { */ $s = 'try {'; // try {\n ${callLine}`)) === '');
+    check('…and refuses the review\'s planted try { … } catch (\\Throwable) {} around the call',
+        linksCallOutsideOwnTry(frame(`try { ${callLine} } catch (\\Throwable $_x) { $translationWarnings[] = 'x'; }`)) !== '');
+    check('…a try … finally around it, and a try inside a closure called at once',
+        linksCallOutsideOwnTry(frame(`try { ${callLine} } finally { }`)) !== ''
+        && linksCallOutsideOwnTry(frame(`(function () { try { ${callLine} } catch (\\Throwable $_x) {} })();`)) !== '');
+}
+
 check('the write is gated on the table existing (un-migrated env degrades)',
     /_songTranslationsTableExists\(\$db\)/.test(transBlock)
     && /function _songTranslationsTableExists/.test(saveSrc));
@@ -111,8 +220,10 @@ check('it DIFFS — no blanket "DELETE ... WHERE SourceSongId" wipe',
     !/DELETE FROM tblSongTranslations WHERE SourceSongId/.test(saveSrc),
     'a wipe+reinsert would reset the curator-owned Translator / Verified columns');
 
-check('a re-pointed link UPDATEs in place, preserving Translator / Verified',
-    /UPDATE tblSongTranslations SET TranslatedSongId = \? WHERE Id = \?/.test(transBlock));
+/* #2137 review — the same in-place UPDATE now also carries the tidied
+   language (a link stored as `iw` becomes `he` without losing its row). */
+check('a re-pointed link (or a tidied language) UPDATEs in place, preserving Translator / Verified',
+    /UPDATE tblSongTranslations SET TranslatedSongId = \?, TargetLanguage = \? WHERE Id = \?/.test(transBlock));
 
 check('removals DELETE by primary key',
     /DELETE FROM tblSongTranslations WHERE Id = \?/.test(transBlock));
@@ -134,15 +245,28 @@ check('IN-list placeholders are built from a count, never from user data',
 check('no string concatenation of values into any translation SQL',
     !/(SELECT|INSERT|UPDATE|DELETE)[^;]{0,400}?tblSongTranslations[^;]{0,400}?['"]\s*\.\s*\$/.test(transBlock));
 
-/* Both FK parents are pre-validated. tblSongs.Language is a free-text BCP-47
-   tag ("pt-BR") while tblLanguages.Code holds IANA subtags, so a composite tag
-   copied off the target song would violate fk_Trans_Lang and — inside the save
-   transaction — could cost the curator their lyrics edit. */
-check('schema really does constrain TargetLanguage to tblLanguages.Code',
-    /fk_Trans_Lang[\s\S]{0,160}?REFERENCES tblLanguages\(Code\)/.test(schemaSrc));
+/* #2131 — the language is no longer tied to tblLanguages. That link
+   (fk_Trans_Lang) held bare codes only, so a `pt-BR` or `zh-Hans` translation
+   could never be recorded. schema.sql drops it (existing servers run
+   migrate-drop-song-translations-language-fk.php); the one-translation-per-
+   language rule stays. */
+check('schema no longer ties TargetLanguage to tblLanguages, and keeps uq_Translation (#2131)',
+    !/CONSTRAINT fk_Trans_Lang/.test(schemaSrc)
+    && !/REFERENCES tblLanguages\(Code\)/.test(schemaSrc)
+    && /UNIQUE KEY uq_Translation \(SourceSongId, TargetLanguage\)/.test(schemaSrc));
 
-check('the language tag is validated against tblLanguages before insert',
-    /SELECT Code FROM tblLanguages WHERE Code IN \(\$lp\)/.test(transBlock));
+/* The language is tidied by the ONE shared rule before anything else, and the
+   old registry lookup survives ONLY for a server that has not run the migration
+   yet — there the link still exists, and a `pt-BR` INSERT inside the save
+   transaction could cost the curator their lyrics edit. */
+check('the language is tidied by the shared rule before it is used (#2131 / #2137)',
+    /\$tidyLang = mediaLanguageTagForStorage\(\$tLang\)/.test(transBlock));
+
+check('the tblLanguages lookup runs only while the old link still exists on the server',
+    /\$langFkPresent = songTranslationsLanguageFkPresent\(\$db\)/.test(transBlock)
+    && /if \(\$langFkPresent\) \{\s*\$lp/.test(transBlock)
+    && /SELECT Code FROM tblLanguages WHERE Code IN \(\$lp\)/.test(transBlock)
+    && /if \(\$langFkPresent && !isset\(\$langOk/.test(transBlock));
 
 check('the target song is validated against tblSongs before insert',
     /SELECT SongId FROM tblSongs WHERE SongId IN \(\$ip\)/.test(transBlock));
@@ -184,15 +308,39 @@ check('the UI mirrors the (SourceSongId, TargetLanguage) UNIQUE key',
 /* ---------------------------------------------------------------------- */
 
 /**
- * Mirrors the PHP diff in editorSaveSongCore(): keyed on TargetLanguage
- * (case-insensitively, matching the utf8mb4_unicode_ci UNIQUE key), returning
- * the writes it would issue. `payload === null` models an ABSENT key.
+ * A deliberately small stand-in for the shared language rule
+ * (mediaLanguageTagForStorage(), includes/media_language.php) covering only the
+ * shapes the cases below use — language, optional script, optional region —
+ * with its letter-case tidying. The structural check above pins that the real
+ * code calls the shared rule; the rule itself is tested against the policy's
+ * own cases by tests/php/test-media-language-conformance.php.
  */
-function diffTranslations(payload, existingRows, sourceId, knownLangs, knownSongs) {
+function tidyTag(tag) {
+    const m = /^([A-Za-z]{2,3})(?:-([A-Za-z]{4}))?(?:-([A-Za-z]{2}|\d{3}))?$/.exec(tag);
+    if (!m) return null;
+    return [
+        m[1].toLowerCase(),
+        m[2] ? m[2][0].toUpperCase() + m[2].slice(1).toLowerCase() : '',
+        m[3] ? m[3].toUpperCase() : '',
+    ].filter(Boolean).join('-');
+}
+
+/**
+ * Mirrors the PHP diff in editorSaveSongCore(): keyed on the TIDIED
+ * TargetLanguage (case-insensitively, matching the utf8mb4_unicode_ci UNIQUE
+ * key), returning the writes it would issue. `payload === null` models an
+ * ABSENT key. `fkPresent` models whether the server has run the #2131
+ * migration yet (true = not yet: the old tblLanguages link still exists).
+ */
+function diffTranslations(payload, existingRows, sourceId, knownLangs, knownSongs, fkPresent = true) {
     if (!Array.isArray(payload)) return { skipped: true, deletes: [], updates: [], inserts: [], warnings: [] };
 
     const warnings = [];
     const desired = new Map();
+    /* #2137 review — two links SENT for one language (not the same link
+       twice): nothing changes for that language (keep), and a warning. */
+    const sentByKey = new Map();
+    const keep = new Set();
     for (const t of payload) {
         if (!t) continue;
         const id = String(t.songId || '').trim();
@@ -202,22 +350,41 @@ function diffTranslations(payload, existingRows, sourceId, knownLangs, knownSong
             warnings.push('self');
             continue;
         }
-        desired.set(lang.toLowerCase(), { songId: id, language: lang }); /* last wins */
+        const tidy = tidyTag(lang);
+        if (!tidy) { warnings.push('lang'); keep.add(lang.toLowerCase()); continue; }
+        const k = tidy.toLowerCase();
+        const list = sentByKey.get(k) || [];
+        if (!list.some((e) => e.raw === lang.toLowerCase() && e.songId.toLowerCase() === id.toLowerCase())) {
+            list.push({ songId: id, language: tidy, raw: lang.toLowerCase() });
+        }
+        sentByKey.set(k, list);
+    }
+    for (const [k, list] of sentByKey) {
+        if (list.length > 1) { warnings.push('same-language'); keep.add(k); continue; }
+        desired.set(k, list[0]);
     }
     for (const [k, d] of [...desired]) {
-        if (!knownLangs.includes(d.language.toLowerCase())) { warnings.push('lang'); desired.delete(k); continue; }
-        if (!knownSongs.includes(d.songId.toLowerCase())) { warnings.push('song'); desired.delete(k); }
+        if (fkPresent && !knownLangs.includes(d.language.toLowerCase())) { warnings.push('lang'); desired.delete(k); keep.add(k); continue; }
+        if (!knownSongs.includes(d.songId.toLowerCase())) { warnings.push('song'); desired.delete(k); keep.add(k); }
     }
 
-    const existing = new Map(existingRows.map((r) => [r.language.toLowerCase(), r]));
+    /* #2137 review — stored rows are matched by their TIDIED language too
+       (a link stored as `iw` matches `he`), and a tidied match updates the
+       language in place. Two stored rows that tidy to one language are left
+       alone with a warning; that case, and the retired codes that cause it,
+       need the real shared rule, so they are tested against the real PHP in
+       tests/php/test-song-translations-sync.php rather than modelled here. */
+    const existing = new Map(existingRows.map((r) => [(tidyTag(r.language) || r.language).toLowerCase(), r]));
     const deletes = [];
     const updates = [];
     const inserts = [];
-    for (const [k, ex] of existing) if (!desired.has(k)) deletes.push(ex.id);
+    for (const [k, ex] of existing) if (!desired.has(k) && !keep.has(k)) deletes.push(ex.id);
     for (const [k, d] of desired) {
         const ex = existing.get(k);
         if (!ex) { inserts.push(d); continue; }
-        if (ex.songId.toLowerCase() !== d.songId.toLowerCase()) updates.push({ id: ex.id, songId: d.songId });
+        if (ex.songId.toLowerCase() !== d.songId.toLowerCase() || ex.language !== d.language) {
+            updates.push({ id: ex.id, songId: d.songId, language: d.language });
+        }
     }
     return { skipped: false, deletes, updates, inserts, warnings };
 }
@@ -225,6 +392,8 @@ function diffTranslations(payload, existingRows, sourceId, knownLangs, knownSong
 const LANGS = ['en', 'es', 'fr'];
 const SONGS = ['mp-1008', 'sdah-123', 'hlc-9', 'mp-1'];
 const run = (p, e, known = SONGS) => diffTranslations(p, e, 'MP-1008', LANGS, known);
+/* #2131 — the same diff on a server that HAS run the migration. */
+const runMigrated = (p, e) => diffTranslations(p, e, 'MP-1008', LANGS, SONGS, false);
 
 /* The common path: a song that has never used the panel must issue NO writes. */
 let r = run([], []);
@@ -256,10 +425,15 @@ r = run([{ songId: 'HLC-9', language: 'es' }], [{ id: 7, songId: 'SDAH-123', lan
 check('re-pointing a language UPDATEs the existing row instead of churning it',
     r.updates.length === 1 && r.updates[0].id === 7 && r.inserts.length === 0 && r.deletes.length === 0);
 
-/* The UNIQUE key allows one row per language — the diff must not emit two. */
+/* The UNIQUE key allows one row per language — the diff must not emit two.
+   #2137 review — nor guess which one was meant ("last wins" lost a stored
+   link's translator): two sent links for one language change nothing. */
 r = run([{ songId: 'SDAH-123', language: 'es' }, { songId: 'HLC-9', language: 'es' }], []);
-check('two same-language links collapse to one (last wins, uq_Translation)',
-    r.inserts.length === 1 && r.inserts[0].songId === 'HLC-9');
+check('two same-language links to different songs: neither is stored, with a warning',
+    r.inserts.length === 0 && r.warnings.includes('same-language'));
+r = run([{ songId: 'SDAH-123', language: 'es' }, { songId: 'HLC-9', language: 'es' }], [{ id: 7, songId: 'SDAH-123', language: 'es' }]);
+check('…and a stored link for that language is kept as it is',
+    r.deletes.length === 0 && r.updates.length === 0 && r.inserts.length === 0);
 
 /* Different languages coexist happily. */
 r = run([{ songId: 'SDAH-123', language: 'es' }, { songId: 'HLC-9', language: 'fr' }], []);
@@ -268,8 +442,11 @@ check('links in different languages both persist',
 
 /* Repeated saves must not accumulate duplicates. */
 r = run([{ songId: 'SDAH-123', language: 'es' }], [{ id: 7, songId: 'sdah-123', language: 'ES' }]);
-check('case differences do not create a duplicate row',
-    r.inserts.length === 0 && r.updates.length === 0 && r.deletes.length === 0);
+/* #2137 review — no duplicate and no delete; the stored `ES` is tidied to
+   `es` in place (same row, so Translator / Verified survive). */
+check('case differences do not create a duplicate row (the stored spelling is tidied in place)',
+    r.inserts.length === 0 && r.deletes.length === 0
+    && r.updates.length === 1 && r.updates[0].id === 7 && r.updates[0].language === 'es');
 
 /* Guard rails. */
 r = run([{ songId: 'MP-1008', language: 'en' }], []);
@@ -277,12 +454,36 @@ check('a self-link is dropped with a warning',
     r.inserts.length === 0 && r.warnings.includes('self'));
 
 r = run([{ songId: 'SDAH-123', language: 'pt-BR' }], []);
-check('a BCP-47 tag absent from tblLanguages is skipped, not thrown',
+check('before the #2131 migration: a regional tag absent from tblLanguages is skipped, not thrown',
+    r.inserts.length === 0 && r.warnings.includes('lang'));
+
+/* #2131 — after the migration: regional and script forms are real languages. */
+r = runMigrated([{ songId: 'SDAH-123', language: 'pt-BR' }], []);
+check('after the migration: a pt-BR translation link is stored',
+    r.inserts.length === 1 && r.inserts[0].language === 'pt-BR' && r.warnings.length === 0);
+
+r = runMigrated([{ songId: 'SDAH-123', language: 'zh-hant' }], []);
+check('after the migration: letter case is tidied (zh-hant is stored as zh-Hant)',
+    r.inserts.length === 1 && r.inserts[0].language === 'zh-Hant');
+
+r = runMigrated([{ songId: 'SDAH-123', language: 'pt-br' }, { songId: 'HLC-9', language: 'pt-BR' }], []);
+check('two spellings of one language to different songs: neither is stored, with a warning (#2137 review)',
+    r.inserts.length === 0 && r.warnings.includes('same-language'));
+
+r = runMigrated([{ songId: 'SDAH-123', language: 'pt-BR' }, { songId: 'HLC-9', language: 'pt-PT' }], []);
+check('pt-BR and pt-PT are two different languages (policy TEXT-050)',
+    r.inserts.length === 2);
+
+r = runMigrated([{ songId: 'SDAH-123', language: 'Portuguese' }], []);
+check('a language NAME is skipped with a warning, never stored as a tag',
     r.inserts.length === 0 && r.warnings.includes('lang'));
 
 r = run([{ songId: 'GONE-1', language: 'es' }], [], SONGS);
 check('a vanished target song is skipped with a warning',
     r.inserts.length === 0 && r.warnings.includes('song'));
+r = run([{ songId: 'GONE-1', language: 'es' }], [{ id: 7, songId: 'SDAH-123', language: 'es' }], SONGS);
+check('…and the link stored for that language is NOT deleted (#2137 review)',
+    r.deletes.length === 0 && r.updates.length === 0);
 
 /* A bad entry must not take its valid siblings down with it. */
 r = run([{ songId: 'SDAH-123', language: 'es' }, { songId: 'GONE-1', language: 'fr' }], []);

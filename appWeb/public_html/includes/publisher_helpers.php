@@ -39,6 +39,16 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that can see a database error starts by passing those back to its
+   caller. Loaded here, at the top, so that check can always be a catch's first
+   line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 /**
  * Publisher entity kinds (tblPublishers.Kind). App-validated vocabulary — add a
  * kind here, never an ENUM value (rule #20). key = stored value, value = label.
@@ -109,6 +119,7 @@ function publisherTableExists(\mysqli $db): bool
         $r = $db->query("SHOW TABLES LIKE 'tblPublishers'");
         return (bool)($r && $r->num_rows > 0);
     } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         return false;
     }
 }
@@ -156,9 +167,17 @@ function publisherSlugEnsureUnique(\mysqli $db, string $base, ?int $excludeId = 
  *   - On a miss, INSERTs a bare (Name, Slug, Kind='company') row and returns
  *     its Id — a curator refines Kind / person-link / parent afterward on
  *     /manage/publishers.
- *   - Returns null only when tblPublishers is unavailable (pre-migration).
+ *   - Returns null when tblPublishers is unavailable (pre-migration), or on
+ *     an ordinary database error (logged).
+ *   - An error that has already ended the caller's whole transaction (a
+ *     deadlock, a lock wait timeout, MariaDB's 1020 —
+ *     `songRelocateIsTransactionFatal()`) is passed back to the caller as
+ *     itself, never turned into null (#2137 review round 7): the v2 editor
+ *     calls this inside its transaction, and a null there let it carry on
+ *     with no transaction at all and commit a half-done change.
  *
  * @return int|null
+ * @throws \Throwable Only an error that has already ended the caller's transaction.
  */
 function publisherFindOrCreateByName(\mysqli $db, string $name): ?int
 {
@@ -186,6 +205,12 @@ function publisherFindOrCreateByName(\mysqli $db, string $name): ?int
         ilidStampNewRow($db, 'publisher', $newId);
         return $newId;
     } catch (\Throwable $e) {
+        /* #2137 review round 7 — first, an error that has already ended the
+           caller's whole transaction goes back to the caller as itself.
+           ilidStampNewRow() above re-throws exactly these on purpose; this
+           catch used to log them and return null (proven with a real MariaDB
+           1020 in tests/php/test-song-save-whole-rollback.php, Part A). */
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }
         error_log('[publisherFindOrCreateByName] ' . $e->getMessage());
         return null;
     }
@@ -331,6 +356,7 @@ function publisherResolvePickedOrCreate(\mysqli $db, string $name, ?int $claimed
                 }
             }
         } catch (\Throwable $e) {
+            if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
             error_log('[publisherResolvePickedOrCreate] verify failed: ' . $e->getMessage());
             /* Fall through to the name funnel below — a verify failure must
                never block the save, only fall back to the safe path. */

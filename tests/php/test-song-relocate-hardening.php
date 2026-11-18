@@ -493,7 +493,13 @@ $catalog = $relocate['songRelocateFkCatalogue'] ?? EMPTY_UNIT;
    the assertion reads has to follow them or it silently stops checking
    anything. */
 $taken  = $relocate['songRelocateIdTaken'] ?? EMPTY_UNIT;
-$fatal  = $relocate['songRelocateIsTransactionFatal'] ?? EMPTY_UNIT;
+/* #2137 review round 7 — the transaction-fatal predicate moved again, out of
+   song_relocate.php into includes/transaction_fatal.php (which loads nothing
+   else, so the two dozen files whose catch blocks now open with it need not
+   load the database layer). song_relocate.php loads that file; this reads the
+   predicate where it now lives, for the same reason as above. */
+$fatal  = phpSourceUnits((string)file_get_contents($ROOT . '/appWeb/public_html/includes/transaction_fatal.php'))['songRelocateIsTransactionFatal'] ?? EMPTY_UNIT;
+ok('songRelocateIsTransactionFatal() is found in includes/transaction_fatal.php', $fatal['code'] !== '');
 
 /* ------------------------------------------------- H3 — cascade pre-check -- */
 

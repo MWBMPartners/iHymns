@@ -54,6 +54,17 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that a song save, the v2 editor, the works or songbooks admin page
+   or an importer can reach from inside its transaction starts by passing those
+   back to its caller (the full list is in DEV_NOTES.md). Loaded here, at the
+   top, so that check can always be a catch's first line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 /** Max song ids per IN() chunk for the bulk fetch — bounds the prepared-statement
  *  placeholder count + memory; the corpus is read per-songbook, never all at once (#929). */
 const LYRIC_LINES_READ_CHUNK = 500;
@@ -92,6 +103,7 @@ function lyricLinesMirrorPresent(\mysqli $db): bool
         $present = ($row !== null && (int)$row[0] >= 3);
         if ($r) { $r->close(); }
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $present = false;
     }
     return $present;
@@ -117,15 +129,16 @@ function lyricLinesMirrorPresent(\mysqli $db): bool
  * Catch posture mirrors `lyricLinesMirrorPresent()` / `lyricLinesSyncReady()` with
  * one addition: because the write seam calls this INSIDE its own transaction
  * (between `begin_transaction()` and `commit()`), a deadlock / lock-wait-timeout
- * (#1688 A1 — `songRelocateIsTransactionFatal()` in `song_relocate.php`) means the
- * transaction is already dead, not merely "extras absent" — swallowing it would
- * let the caller commit nothing and still report success. `song_relocate.php` is
- * NOT loaded on every path that reaches this function (the public read path in
- * particular has no reason to pull it in), so the check is
- * `function_exists()`-guarded: when the function isn't loaded there is no live
- * write transaction depending on this call's answer, so any other throw
- * (missing table, transient connection error, …) safely degrades to "both
- * absent" — the same fail-safe posture as every other schema probe in this file.
+ * (#1688 A1 — `songRelocateIsTransactionFatal()`) means the transaction is
+ * already dead, not merely "extras absent" — swallowing it would let the caller
+ * commit nothing and still report success. The check's file,
+ * `transaction_fatal.php`, is loaded at the top of this file (#2137 review round
+ * 7), so the check is always there. It used to be `function_exists()`-guarded, because the public read path
+ * did not load song_relocate.php; that was safe only while every transaction
+ * reaching this function happened to have loaded it first, which nothing
+ * enforced. Any other throw (missing table, transient connection error, …)
+ * still degrades to "both absent" — the same fail-safe posture as every other
+ * schema probe in this file.
  *
  * Memoised per request (rule #19 migrations are not auto-applied, so a fresh
  * request re-probes after a migration is applied mid-deploy).
@@ -157,11 +170,10 @@ function lyricLinesComponentExtrasPresent(\mysqli $db): array
             'SourceWorkId' => isset($found['SourceWorkId']),
         ];
     } catch (\Throwable $e) {
-        /* #1688 A1 — a deadlock/lock-timeout mid-transaction must re-throw, not
-           be swallowed as "extras absent" (see doc-block above). The
-           function_exists guard covers callers (the public read path) where
-           song_relocate.php — and therefore this predicate — was never loaded. */
-        if (function_exists('songRelocateIsTransactionFatal') && songRelocateIsTransactionFatal($e)) {
+        /* #1688 A1 — a deadlock/lock-timeout (and, since #2137 round 6, MariaDB's
+           1020) mid-transaction must re-throw, not be swallowed as "extras
+           absent" (see doc-block above). */
+        if (songRelocateIsTransactionFatal($e)) {   /* #2137 review round 7: always loaded now (top of this file), so no function_exists() */
             throw $e;
         }
         $present = ['Label' => false, 'SourceWorkId' => false];

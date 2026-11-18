@@ -66,6 +66,17 @@ ihymns_emit_powered_by_header($app);
    (tests/php/test-api-envelope.php) without running the dispatcher. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_envelope.php';
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that a song save, the v2 editor, the works or songbooks admin page
+   or an importer can reach from inside its transaction starts by passing those
+   back to its caller (the full list is in DEV_NOTES.md). Loaded here, at the
+   top, so that check can always be a catch's first line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 /* =========================================================================
  * GLOBAL JSON ERROR HANDLER (#803)
  *
@@ -2248,6 +2259,13 @@ if ($action !== null) {
                    from the raw-TTML query params. */
                 $matchPayload = is_array($payload) ? $payload : [];
                 if ($songId !== '') { $matchPayload['songId'] = $songId; }
+                /* #2132 — a song created from this TTML takes the document's own
+                   declared language (its root xml:lang, already read with the
+                   shared file reader) when the sender gave none, rather than the
+                   guessed 'en' it used to get. With neither, it is `und`. */
+                if (trim((string)($matchPayload['language'] ?? '')) === '' && ($parsed['language'] ?? null) !== null) {
+                    $matchPayload['language'] = $parsed['language'];
+                }
                 /* FULLTEXT seed text for a song created from this TTML. */
                 $lyricsText = implode("\n", array_map(static fn($l) => (string)($l['text'] ?? ''), $parsed['lines']));
 
@@ -7288,7 +7306,7 @@ if ($action !== null) {
             $reqTitle    = mb_substr(trim($body['title'] ?? ''), 0, 500);
             $reqSongbook = mb_substr(trim($body['songbook'] ?? ''), 0, 100);
             $reqNumber   = mb_substr(trim($body['song_number'] ?? ''), 0, 20);
-            $reqLanguage = mb_substr(trim($body['language'] ?? 'en'), 0, 10);
+            $reqLanguage = mb_substr(trim($body['language'] ?? 'en'), 0, 10);   /* #2134 — known: still defaults to 'en' and cuts to 10 characters; filed separately, not part of #2132 */
             $reqDetails  = mb_substr(trim($body['details'] ?? ''), 0, 2000);
             $reqEmail    = mb_substr(trim($body['contact_email'] ?? ''), 0, 255);
 
@@ -7618,17 +7636,21 @@ if ($action !== null) {
                for the sibling-translations lookup further down via
                $sourceId — bind by reference so $forwardId can be
                re-assigned for the second execute. */
+            /* #2137 — no JOIN to tblLanguages: the stored tag IS the language
+               (policy LANG-001). The old INNER JOIN dropped every translation
+               whose tag carried a region or script (`pt-BR`), because that
+               table holds bare codes only; names are added below from the
+               registry by resolveLanguageMeta(), used for the NAME alone. The
+               old ORDER BY l.Name is replaced by the reader's order below. */
             $stmt = $db->prepare(
                 'SELECT t.TranslatedSongId AS songId, t.TargetLanguage AS language,
                         t.Translator AS translator, t.Verified AS verified,
-                        l.Name AS languageName, l.NativeName AS languageNativeName,
                         s.Title AS title, s.Number AS number
                  FROM tblSongTranslations t
-                 JOIN tblLanguages l ON l.Code = t.TargetLanguage
                  JOIN tblSongs s ON s.SongId = t.TranslatedSongId
                  WHERE t.SourceSongId = ? AND ' . songVisibleSql($db, 's') . '
                    AND ' . songServableSql($db, 's') . '
-                 ORDER BY l.Name ASC'
+                 ORDER BY t.Id'
             );   /* #1694/#1765 — a hidden translation target, or one in a
                     disabled songbook, is not offered (the sibling pass below
                     re-executes THIS statement, so it is filtered by the same
@@ -7659,10 +7681,8 @@ if ($action !== null) {
                 if (empty($seen[$sourceId])) {
                     $stmtSrc = $db->prepare(
                         'SELECT s.SongId AS songId, s.Language AS language,
-                                s.Title AS title, s.Number AS number,
-                                l.Name AS languageName, l.NativeName AS languageNativeName
+                                s.Title AS title, s.Number AS number
                          FROM tblSongs s
-                         LEFT JOIN tblLanguages l ON l.Code = s.Language
                          WHERE s.SongId = ? AND ' . songVisibleSql($db, 's') . '
                            AND ' . songServableSql($db, 's')
                     );   /* #1694/#1765 — a hidden source song, or one in a
@@ -7675,6 +7695,9 @@ if ($action !== null) {
                         $src['translator'] = '';
                         $src['verified'] = false;
                         $src['number'] = (int)$src['number'];
+                        /* #2137 — the source of a translation cluster IS the
+                           original (policy LANG-010 / UI-030): it goes first. */
+                        $src['isOriginal'] = true;
                         $seen[$sourceId] = true;
                         $translations[] = $src;
                     }
@@ -7786,12 +7809,9 @@ if ($action !== null) {
                         "SELECT s.SongId      AS songId,
                                 s.Language    AS language,
                                 s.Title       AS title,
-                                s.Number      AS number,
-                                l.Name        AS languageName,
-                                l.NativeName  AS languageNativeName
+                                s.Number      AS number
                            FROM tblWorkSongs ws
                            JOIN tblSongs s ON s.SongId = ws.SongId
-                           LEFT JOIN tblLanguages l ON l.Code = s.Language
                           WHERE ws.WorkId IN ($placeholders)
                             AND " . songVisibleSql($db, 's') . "
                             AND " . songServableSql($db, 's')
@@ -7828,6 +7848,38 @@ if ($action !== null) {
                     $stmt->close();
                 }
             }
+
+            /* #2137 — names and order for THIS reader (the shared language
+               policy, Part B). Each row gets its language's English name
+               ("Portuguese (Brazil)"), its own name ("português") and its text
+               direction from resolveLanguageMeta() — which uses the registry
+               for the base language's NAME only — and `isOriginal` (false
+               unless set above). Then the list is ordered for the reader: the
+               languages they chose first, in their order (UI-020; this action
+               is not cached, and apiFetch sends their preferences in the
+               X-Preferred-Languages header), then the original, then the rest
+               alphabetically by name (UI-030, UI-040). */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_names.php';
+            foreach ($translations as &$_tr) {
+                $_lang = trim((string)($_tr['language'] ?? ''));
+                $_tidy = mediaLanguageReady() ? mediaLanguageTagForStorage($_lang) : $_lang;
+                if (is_string($_tidy)) {
+                    $_tr['language'] = $_tidy;
+                }
+                $_meta = resolveLanguageMeta((string)$_tr['language']);
+                $_tr['languageName']       = $_meta['name'];
+                $_tr['languageNativeName'] = $_meta['nativeName'];
+                $_tr['textDirection']      = $_meta['dir'];
+                $_tr['isOriginal']         = !empty($_tr['isOriginal']);
+            }
+            unset($_tr, $_lang, $_tidy, $_meta);
+            $translations = mediaLanguageSortForReader(
+                $translations,
+                'language',
+                'isOriginal',
+                resolvePreferredLanguagesForRequest(getAuthenticatedUser()),
+                'resolveLanguageName'
+            );
 
             sendJson(['translations' => $translations, 'sourceId' => $translationSongId]);
             break;
@@ -8059,8 +8111,11 @@ if ($action !== null) {
          * a few dozen bytes and is cacheable for 5 minutes since
          * subtags rarely change.
          *
-         * Response: { subtags: ['en', 'es', 'fr', ...] }
-         *           (lowercase, sorted, de-duplicated)
+         * Response: { subtags: ['en', 'es', 'fr', ...],
+         *             names:   { en: 'English', es: 'Spanish', … } }
+         *           (subtags: lowercase, sorted, de-duplicated; names: #2137 —
+         *            each language's English name from the registry, so a
+         *            client can label a chip "Chinese" rather than "ZH")
          * ----------------------------------------------------------------- */
         case 'catalogue_language_subtags':
             $db = getDbMysqli();
@@ -8080,7 +8135,8 @@ if ($action !== null) {
                 if ($res) {
                     while ($r = $res->fetch_row()) {
                         $sub = (string)$r[0];
-                        if (preg_match('/^[a-z]{2,3}$/', $sub)) {
+                        /* #2132 — und / mul / zxx always pass the filter, so they are not a choice. */
+                        if (preg_match('/^[a-z]{2,3}$/', $sub) && !in_array($sub, IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN, true)) {
                             $subtags[$sub] = true;
                         }
                     }
@@ -8113,7 +8169,7 @@ if ($action !== null) {
                     if ($res) {
                         while ($r = $res->fetch_row()) {
                             $sub = (string)$r[0];
-                            if (preg_match('/^[a-z]{2,3}$/', $sub)) {
+                            if (preg_match('/^[a-z]{2,3}$/', $sub) && !in_array($sub, IHYMNS_LANGUAGE_FILTER_ALWAYS_SHOWN, true)) {   /* #2132 */
                                 $subtags[$sub] = true;
                             }
                         }
@@ -8125,11 +8181,19 @@ if ($action !== null) {
             $list = array_keys($subtags);
             sort($list);
 
+            /* #2137 — each language's name, so the settings chips can show
+               "Chinese" instead of "ZH" (the shared policy's UI-010). */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_names.php';
+            $names = [];
+            foreach ($list as $sub) {
+                $names[$sub] = resolveLanguageName($sub);
+            }
+
             /* Cache for 5 min (subtag set rarely changes). The Vary
                header is conservative — same result for every visitor
                regardless of auth state. */
             header('Cache-Control: public, max-age=300');
-            sendJson(['subtags' => $list]);
+            sendJson(['subtags' => $list, 'names' => (object)$names]);
             break;
 
         /* =================================================================
@@ -11021,10 +11085,17 @@ if ($action !== null) {
          * ================================================================= */
 
         /* -----------------------------------------------------------------
-         * Get the authenticated user's saved preferred-language subtags
+         * Get the authenticated user's saved preferred languages
          * Requires: Bearer token
          *
-         * Response: { subtags: ["en","es"] }   (empty array = no filter)
+         * Response: { subtags: ["en","pt"], languages: ["pt-BR","en"] }
+         *           (empty arrays = no filter)
+         *
+         * #2137 — `languages` (new) is the saved list as the person chose it:
+         * whole language tags, highest priority first. `subtags` is unchanged
+         * in meaning for anything already reading it: the distinct BASE codes,
+         * sorted. (The stored list used to hold only base codes; old lists
+         * still read back correctly in both fields.)
          * ----------------------------------------------------------------- */
         case 'user_preferred_languages':
             $authUser = getAuthenticatedUser();
@@ -11049,6 +11120,7 @@ if ($action !== null) {
                 if (!$hasCol) {
                     sendJson([
                         'subtags'          => [],
+                        'languages'        => [],
                         'migration_needed' => true,
                     ]);
                     break;
@@ -11063,16 +11135,19 @@ if ($action !== null) {
                 $row = $stmt->get_result()->fetch_row();
                 $stmt->close();
                 $raw = $row[0] ?? null;
-                $subtags = [];
+                $languages = [];
                 if ($raw) {
                     $decoded = json_decode($raw, true);
                     if (is_array($decoded)) {
-                        $subtags = parsePreferredLanguageSubtags(
+                        $languages = parsePreferredLanguageSubtags(
                             implode(',', array_map('strval', $decoded))
                         );
                     }
                 }
-                sendJson(['subtags' => $subtags]);
+                sendJson([
+                    'subtags'   => preferredLanguageBaseSubtags($languages),
+                    'languages' => $languages,
+                ]);
             } catch (\Throwable $e) {
                 error_log('[user_preferred_languages] ' . $e->getMessage());
                 sendJson(['error' => 'Could not load preferred languages.'], 500);
@@ -11080,14 +11155,21 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
-         * Save the authenticated user's preferred-language subtags
-         * POST body: { "subtags": ["en","es"] }   (empty array = no filter)
+         * Save the authenticated user's preferred languages
+         * POST body: { "languages": ["pt-BR","en"] }   (empty array = no filter)
+         *        or: { "subtags":   ["en","es"] }      (the older key; still accepted)
          * Requires: Bearer token
          *
-         * Server-side normalisation: invalid subtags are dropped, the
-         * list is lowercased, primary-subtag-only, and deduplicated
-         * (parsePreferredLanguageSubtags). Empty array clears the
-         * filter (returns the saved value as []).
+         * Server-side normalisation (parsePreferredLanguageSubtags): invalid
+         * entries are dropped, each tag is tidied by the shared language rule
+         * (`pt-br` → `pt-BR`), repeats removed, and the ORDER IS KEPT — it is
+         * the person's priority (#2137). It used to cut every entry to its
+         * base code and sort the list, losing both. Empty array clears the
+         * filter. At most 32 are kept — the first 32, in order (#2137 review
+         * round 4: every preference adds to the filter's SQL, so a longer
+         * list is cut where it is parsed). The response carries `languages`
+         * (as saved — so a caller can see if a list was cut) and `subtags`
+         * (the distinct base codes, sorted — the field's meaning is unchanged).
          * ----------------------------------------------------------------- */
         case 'user_preferred_languages_save':
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -11101,15 +11183,17 @@ if ($action !== null) {
             }
 
             $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
-            $rawList = $body['subtags'] ?? [];
+            /* #2137 — `languages` is the new key (whole tags, in order);
+               `subtags` is still accepted from older clients. */
+            $rawList = $body['languages'] ?? $body['subtags'] ?? [];
             if (!is_array($rawList)) {
-                sendJson(['error' => 'subtags must be an array.'], 400);
+                sendJson(['error' => 'languages must be an array.'], 400);
                 break;
             }
 
             /* Run through the canonical parser so the saved value is
-               always a clean primary-subtag list. Invalid entries
-               are dropped silently. */
+               always a clean list of tags in the person's order. Invalid
+               entries are dropped silently. */
             $clean = parsePreferredLanguageSubtags(
                 implode(',', array_map('strval', $rawList))
             );
@@ -11144,7 +11228,11 @@ if ($action !== null) {
                 $stmt->bind_param('si', $store, $authUserId);
                 $stmt->execute();
                 $stmt->close();
-                sendJson(['ok' => true, 'subtags' => $clean]);
+                sendJson([
+                    'ok'        => true,
+                    'subtags'   => preferredLanguageBaseSubtags($clean),
+                    'languages' => $clean,
+                ]);
             } catch (\Throwable $e) {
                 error_log('[user_preferred_languages_save] ' . $e->getMessage());
                 sendJson(['error' => 'Could not save preferred languages.'], 500);
@@ -14461,13 +14549,11 @@ if ($action !== null) {
             $copyright   = trim((string)($body['copyright']        ?? '')) ?: null;
             $affiliation = trim((string)($body['affiliation']      ?? '')) ?: null;
 
-            $language    = trim((string)($body['language']         ?? '')) ?: null;
-            if ($language !== null) {
-                $language = mb_substr($language, 0, 35);
-                if ($e = validateSongbookBcp47($language)) {
-                    sendJson(['error' => $e], 400);
-                    break;
-                }
+            /* #2137 — tidied by the shared policy rule, never cut short. */
+            [$language, $e] = normaliseSongbookLanguage((string)($body['language'] ?? ''));
+            if ($e !== null) {
+                sendJson(['error' => $e], 400);
+                break;
             }
 
             $websiteUrl   = trim((string)($body['website_url']         ?? '')) ?: null;
@@ -22130,11 +22216,13 @@ if ($action !== null) {
 
             try {
                 $usage = languageAdminUsageCounts($db, $code);
-                if (!$force && ($usage['songs'] + $usage['songbooks']) > 0) {
+                /* #2137 review — translation links count too. */
+                if (!$force && ($usage['songs'] + $usage['songbooks'] + $usage['translations']) > 0) {
                     sendJson([
                         'error'          => 'Language is in use.',
                         'songs'          => $usage['songs'],
                         'songbooks'      => $usage['songbooks'],
+                        'translations'   => $usage['translations'],
                         'requires_force' => true,
                     ], 409);
                     break;
@@ -22145,6 +22233,7 @@ if ($action !== null) {
 
                 logActivity('api.admin.language.delete', 'language', $code, [
                     'forced' => $force ? 1 : 0, 'songs_at_time' => $usage['songs'], 'sbooks_at_time' => $usage['songbooks'],
+                    'translations_at_time' => $usage['translations'],
                 ]);
                 sendJson(['ok' => true, 'code' => $code]);
             } catch (\Throwable $e) {
@@ -28012,16 +28101,43 @@ function getAuthBearerToken(): ?string
  * request, we only bump when the current ExpiresAt is less than
  * (30 days - 1 day) from now — i.e. at most once per day per token.
  * Also refreshes the browser-side cookie lifetime so the two stay in sync.
+ *
+ * NEVER INSIDE A TRANSACTION, AND NEVER FAILS THE REQUEST (#2137 review
+ * round 9 — the eighth review's L1, the lead's decision 1). The slide is a
+ * best-effort write to the token's own row, and it can run inside somebody
+ * else's transaction: logActivity() works out who is signed in (through
+ * getAuthenticatedUser()) while a save's transaction is open. Since round 7
+ * its catch passed a deadlock or a lock wait timeout back — right inside a
+ * transaction, but outside one another request holding the token's row for a
+ * moment made getAuthenticatedUser() itself throw (so the request asking who
+ * is signed in failed), and cost logActivity() its activity row. Checked on
+ * MariaDB 11.8 and MySQL 8.4 before this change: both happened.
+ * So now, like the geo cache (ihymnsGeoCachePut()): while a transaction is
+ * open on the connection — or when that cannot be told — this writes nothing
+ * (the next request outside a transaction slides the token), asked with
+ * dbTransactionIsOpen() BEFORE the write; and the write therefore runs only
+ * outside a transaction, where an error on it has ended nothing but this one
+ * row, so its catch logs every error and carries on. That catch does not
+ * start with the shared guard and is on the allow-list of
+ * tests/php/test-transaction-catch-audit.php with this reason. Tested in
+ * tests/php/test-activity-log-outside-transaction.php (Part D).
+ *
+ * getAuthenticatedUser() calls this only when the slide is due (its own read
+ * of the token answers that, with the same comparison as the UPDATE below),
+ * so the "is a transaction open?" question costs nothing on the other days.
  */
 function slideAuthTokenExpiry(string $rawToken): void
 {
+    $db = getDbMysqli();   /* the connection getAuthenticatedUser() has just read the token with */
+    if (dbTransactionIsOpen($db) !== false) {
+        return;
+    }
     try {
         $hashedToken  = hash('sha256', $rawToken);
         $newExpiresTs = time() + 30 * 86400;
         $newExpiresAt = gmdate('Y-m-d H:i:s', $newExpiresTs);
         $threshold    = gmdate('Y-m-d H:i:s', time() + 29 * 86400);
 
-        $db = getDbMysqli();
         /* #1409 — LastSeenAt piggybacks on this SAME already-throttled
            UPDATE (fires at most once per ~24h of active use PER TOKEN)
            rather than a new per-request write. A "last active" column read
@@ -28052,9 +28168,10 @@ function slideAuthTokenExpiry(string $rawToken): void
             setAuthTokenCookie($rawToken, $newExpiresTs);
         }
     } catch (\Throwable $e) {
-        /* Non-fatal: sliding expiry is best-effort. Logged so admins
-           notice if the UPDATE is failing systematically (e.g.,
-           tblApiTokens DDL drift). */
+        /* Non-fatal: sliding expiry is best-effort, and this runs only
+           outside a transaction (see above), so every error is logged and
+           walked past. Logged so admins notice if the UPDATE is failing
+           systematically (e.g., tblApiTokens DDL drift). */
         error_log('[api/slideAuthTokenExpiry] ' . $e->getMessage());
     }
 }
@@ -28090,26 +28207,37 @@ function getAuthenticatedUser(): ?array
     }
     $avatarSvcCol = $hasAvatarSvcCol ? ', u.AvatarService' : ', NULL AS AvatarService';
     $emailCol     = ', u.Email';
+    /* #2137 review round 9 — is the 30-day slide due (under 29 days left)?
+       The SAME comparison slideAuthTokenExpiry()'s UPDATE makes, read here
+       with the user so the slide (and its "is a transaction open?" question)
+       runs only on the day it can change something. Removed from the row
+       below, so callers see exactly the columns they did before. */
+    $slideThreshold = gmdate('Y-m-d H:i:s', time() + 29 * 86400);
 
     $stmt = $db->prepare(
         "SELECT u.Id, u.Username, u.DisplayName, u.Role
                 {$emailCol}
                 {$avatarSvcCol}
+                , (t.ExpiresAt < ?) AS _SlideDue
          FROM tblApiTokens t
          JOIN tblUsers u ON u.Id = t.UserId
          WHERE t.Token = ? AND t.ExpiresAt > ? AND u.IsActive = 1"
     );
-    $stmt->bind_param('ss', $hashedToken, $now);
+    $stmt->bind_param('sss', $slideThreshold, $hashedToken, $now);
     $stmt->execute();
     $user = $stmt->get_result()->fetch_assoc();
     $stmt->close();
 
     if (!$user) return null;
+    $slideDue = (int)($user['_SlideDue'] ?? 1) === 1;
+    unset($user['_SlideDue']);
 
     /* Sliding expiry (#390) — any active use extends the token 30 days,
        at most once per day per token. Keeps long-term users signed in
        without daily DB writes. */
-    slideAuthTokenExpiry($token);
+    if ($slideDue) {
+        slideAuthTokenExpiry($token);
+    }
 
     $user['Id'] = (int)$user['Id'];
     return $user;

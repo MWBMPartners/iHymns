@@ -26,6 +26,17 @@ declare(strict_types=1);
  * project before.
  */
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that a song save, the v2 editor, the works or songbooks admin page
+   or an importer can reach from inside its transaction starts by passing those
+   back to its caller (the full list is in DEV_NOTES.md). Loaded here, at the
+   top, so that check can always be a catch's first line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 const SONGBOOK_AUTO_COLOURS = [
     /* Existing seeds (keep first so a fresh install reuses them). */
     '#6366F1',  // CIS purple
@@ -89,6 +100,7 @@ function pickAutoSongbookColour(\mysqli $db, string $abbr): string
         }
         $stmt->close();
     } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         /* If the DB read fails we fall through to the hash path —
            a single random-ish colour is better than crashing the
            save. */

@@ -686,7 +686,11 @@ declare(strict_types=1);
             </h2>
 
             <p class="small text-muted mb-3">
-                Choose which languages you want to see across songbooks
+                <?php /* #2137 review round 5 — the site uses at most 32
+                         preferred languages; the picker below refuses a 33rd
+                         (js/modules/settings-language-filter.js), so say so
+                         up front. */ ?>
+                Choose up to 32 languages you want to see across songbooks
                 and song listings. Songbooks and songs without a
                 language tag always remain visible.
                 <?php if (!empty($currentUser)): ?>

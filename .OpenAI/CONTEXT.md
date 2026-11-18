@@ -28,6 +28,10 @@ iPadOS, tvOS, in Swift) and an Android app (which also covers Amazon Fire device
    codebase has made before. Check it before touching the area a rule covers.
 5. **`.OpenAI/MEMORY.md`** → short pitfalls.
 
+## Languages, translations and lyrics
+
+**Languages, translations and lyrics — mandatory:** any work touching BCP 47 language tags, languages, translations, transliterations, lyrics, language order or naming, language preferences, or audio/subtitle tracks MUST read and follow `docs/standards/media-language-bcp47-policy.md` (policy `MWBM-MEDIA-LANG`). It is normative and is not repeated here. Its conformance cases must pass (`tests/php/test-media-language-conformance.php`). The copies are checked against the master in MWBMPartners/MeedyaSuite-core by the checker in CI (`tools/media-lang/check_copies.py`); never edit the copies — change the master. In iHymns every language tag goes through `includes/media_language.php`, the one door to the shared rules; `DEV_NOTES.md` → "Languages, translations and language order (#2137)" says how iHymns applies them.
+
 ## The channels
 
 The code is deployed straight to the web host. There are no release tags.

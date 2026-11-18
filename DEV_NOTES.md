@@ -659,6 +659,678 @@ existing Node tests statically scan that file's own source text for specific lit
 request and reused for the index's own per-child `<lastmod>`. Host resolution calls the shared
 `appCanonicalHost()` (`includes/config.php`) rather than a second hardcoded host list.
 
+### Languages, translations and language order (#2137) — the shared policy you MUST follow, not re-fork
+
+iHymns follows the shared MWBM language policy, **MWBM-MEDIA-LANG 1.0.0**. The rules themselves are in
+[`docs/standards/media-language-bcp47-policy.md`](docs/standards/media-language-bcp47-policy.md) and are
+not repeated here; this note says how iHymns applies them and where the code is. That file, the policy's
+290 test cases (`tests/fixtures/bcp47-language-policy-v1.json`), its reference data and the shared PHP
+implementation (`appWeb/public_html/includes/vendor/media-language/`) are **exact copies** of the master in
+MWBMPartners/MeedyaSuite-core, pinned in `docs/standards/MWBM-MEDIA-LANG.lock` (core `aaaa585` since
+28 September 2026). CI (`tools/media-lang/check_copies.py` in the `lint` job) fails if a copy is edited
+here, and — since that commit — if the three PHP files (`MediaLanguagePolicy.php`, `README.md`,
+`tests/run-conformance.php`) are not all listed and laid out as in the master, or the repository tracks
+any other `run-conformance.php`. Never edit them: change the master, then run
+`python3 tools/media-lang/check_copies.py --update <core commit>`.
+
+- **Where the shared code lives, and why not in `private_html`.** It sits in the web folder's
+  `includes/vendor/`, not beside the PDF engine in `appWeb/private_html/lib/`, because the deploy never
+  uploads `private_html` (the step needs the `SFTP_PRIVATE_PATH` secret, which is not set — #2138). Without
+  these files on the server every language save is refused. `includes/` goes up with every deploy, in each
+  channel's own docroot, and `.htaccess` blocks it from the web. `vendor` marks it as code iHymns did not
+  write, so the tree-walking source checks skip it. `tests/php/test-media-language-deploy-layout.php`
+  copies the folder the way the deploy does and loads the rules from the copy.
+
+- **A language is identified by its BCP 47 tag, never by its name.** `pt-BR` (Brazilian Portuguese) and
+  `pt-PT` are two different languages; so are `zh-Hans` and `zh-Hant` (Chinese in Simplified and in
+  Traditional characters). Nothing stores or matches a language by name, and nothing cuts a tag down to its
+  base language to decide what it *is*. The registry tables (`tblLanguages` and friends) supply **names**
+  only.
+- **One door into the rules: `includes/media_language.php`.** It loads the shared code once and offers:
+  `mediaLanguageTagForStorage()` for a value that is meant to be a tag (typed in an editor, stored by
+  iHymns) — tidies letter case (`en-gb` → `en-GB`), replaces retired codes (`iw` → `he`), refuses a name or
+  a malformed value, and refuses (never cuts) a tag longer than the 35-character columns;
+  `mediaLanguageReadExternal()` for a value read from a file or another system (TTML `xml:lang`, OpenLyrics,
+  importers, the lyrics-ingest API, MARC) — also reads old three-letter codes (`eng`), and reports an
+  unreadable value instead of guessing; `mediaLanguageSortStored()` / `mediaLanguageSortForReader()` for the
+  two orders below; `mediaLanguageOrUnknown()` for "no language given → `und`" (every song save calls it);
+  `mediaLanguageIsOrdinaryLanguage()` for "is this a real language, not `und`/`mul`/`zxx`/`mis`/`qaa`–`qtz`/
+  private-use/malformed?". Do not write a regular expression for a language tag anywhere else. What the build
+  actually checks is narrower than that rule: `tests/php/test-media-language-ihymns.php` scans every PHP file
+  under `appWeb/public_html` for the one pattern shape the five retired checkers used (`[a-z]{2,3}(-…`); a
+  differently written pattern would not be caught, so reviewers still have to look. Three deliberate
+  exceptions exist, each because the shared PHP cannot run there: the SQL `REGEXP` patterns in
+  `includes/language_filter.php` (script matching inside the database), its degraded-path readers (used
+  only when the shared code is missing), and `scriptOf()` / `isPreferenceTag()` in
+  `js/utils/language-tags.js` (the browser).
+- **Unknown is `und`, never English.** A song whose language nobody gave is stored as `und` ("not known").
+  Nothing fills in `en`, the page's language, or any other default (#2132) — including a brand-new song from
+  the v2 editor, whose INSERT writes `und` explicitly (`includes/song_create.php`) so the column default does
+  not matter. Songs already stored as `en` by the old default were deliberately left alone: they cannot be
+  told apart from real English songs. The language filter always shows `und`, `mul` (several languages) and
+  `zxx` (no language) songs, like untagged ones. The "no English" guard in
+  `tests/php/test-media-language-ihymns.php` scans the site's PHP and JS for a language value falling back to
+  `'en'` in these shapes, each near a `language`/`lang` word: `?? 'en'`, `|| 'en'`, `?: 'en'`, a ternary's
+  `: 'en'` (else) and `? 'en' :` (then), `'language' => 'en'` (any letter case), `$language = 'en'` (also
+  `??=`), `$x['language']`/`['lang']`/`['Language'] = 'en'`, `$x->language = 'en'`, and `x.language = 'en'`
+  (with or without spaces); since round 4 of the review also a JavaScript object key (`language: 'en'`,
+  `{'language': 'en'}`, `"language": "en"`), a declaration (`var`/`let`/`const language = 'en'`, any name containing
+  `language` or `lang`), and a PHP `match` giving `'en'` to a language variable or key — on one line, or spread over
+  several (each PHP file is also read whole for that one shape). Since round 5: "English" is any quoted `en` tag, so
+  a regional fallback (`|| 'en-GB'`, `?? 'en-US'`) is caught in each shape listed here; an assignment with no spaces
+  where a statement or an argument starts
+  (`language='en'`, `if(!lang)lang='en'`, `{ id, language = 'en' }`, `function f(lang = 'en')`); a logical
+  assignment (`lang||='en'`, `language??='en'`); and a setter call (`setLanguage('en')`, `setSongLang('en-GB')`).
+  Round 5 also said "a language name" is any name CONTAINING `language` or `lang` "in every shape"; **that was not
+  true** (the fifth review, finding 4): the `??`/`||`/`?:` pattern and both ternary patterns still needed the word to
+  END there, so `song.languageCode || 'en'`, `$row['langCode'] ?? 'en'`, `$row['language_code'] ?? 'en'` and
+  `$song->languageCode ?: 'en'` got through. **Since round 6** every pattern takes any name containing `language`
+  or `lang` (`languageCode: 'en'`, `targetLang: 'en'`, `'languageCode' => 'en'`, `$x['languageCode'] = 'en'`,
+  JSON-LD's `inLanguage: 'en'`, and the three shapes just named); an assignment after `else` is caught
+  (`else lang='en';`); a comment opened and closed on the line no longer hides the code after it
+  (`lang = /* default */ x.language || 'en'`, `x.language || /* fallback */ 'en'` — the scan used to cut the line
+  at the comment); and "English" also means `'en_GB'` (an underscore), `'eng'`, the name `'English'`, and a list
+  holding it (`['en']`, `[ 'en-GB', 'fr' ]`) — except inside a `match`, where an arm giving `'English'` or `'eng'`
+  is normally a lookup (`'en' => 'English'`), so the two `match` patterns keep to the tag. Each new shape was proven
+  by planting it in the real tree (the guard goes red) and by removing each new pattern piece (its own checks go
+  red); the whole tree still scans clean. Because `'English'` now counts, a language NAME written as data under a
+  language key (`['code' => 'en', 'language' => 'English']`) would be flagged; none exists today, and one that
+  appears needs a decision, not a quiet exception. **Since round 7 (the sixth review's decision 5):** English inside
+  brackets or a list, wherever it stands in the list (`|| ('en')`, `?? ('en')`, PHP's `array('en')`,
+  `['fr', 'en']`, `array('fr', 'en-GB')`); an assignment after a `case …:` or `default:` label (`default:lang='en'`,
+  `case '':lang='en'`); and a JavaScript private field (`#lang = 'en'`). Only a REAL comment line is skipped now: a
+  line starting `#` used to be skipped in every file, but in PHP `#[` starts an attribute, which is code
+  (`#[Pure] public function f(string $lang = 'en')`), and in JavaScript `#` never starts a comment — so a `#` line
+  is skipped only in PHP and only when it is not `#[`. Each shape was proven with the sixth review's own list
+  (its `enguard.php`, re-pointed at the moved code: every shape the decision names is now caught) and by planting
+  it in the real tree; the whole tree still scans clean. **Since round 8 (the seventh review's L4, the lead's
+  decision 5):** an item before English in a list need not be quoted text (`?? [$primary, 'en']`, `[null, 'en']`,
+  `|| [base, 'en']`, `|| [...base, 'en']`, `[song.lang, 'en']`, `[$x->primary, 'en-GB']`); English as a KEYED value
+  (`?? ['default' => 'en']`, `array(0 => 'en')`, `['fr', 'first' => 'en', 'de']`); and a constant for a language
+  (`define('DEFAULT_LANGUAGE', 'en')`). And round 7's list rule raised false alarms, now gone: a list that is
+  looked in or picked from (`['fr', 'en'].includes(lang)`, `['en', 'en-GB'].indexOf(lang)`, `['fr', 'en'][0]`,
+  `(['fr', 'en']).includes(x)`) and English that is compared (`|| ('en' === song.lang && x)`,
+  `lang || 'en' === other`) are not fallbacks: English in a list counts only when what follows the list's closing
+  bracket is not `.`, `[`, `->`, `::`, a comparison or `&&` (the rest of the list is read in one go, so the check
+  cannot be dodged by stopping at an inner bracket), and bare English counts only when it is not compared. The scan
+  of a FILE is now a function the test hands a JavaScript and a PHP file of its own: the seventh review's planted
+  fault read every file as PHP (the "which language" argument dropped) and no check noticed, because they all
+  called the line reader directly; and the whole-file `match` scan reads a `#[` attribute line as code, like the
+  line scan (it used to blank every line starting `#`). The widened guard found one line in the tree:
+  `manage/songbooks.php`'s fallback list of dropdown CHOICES when `tblLanguages` cannot be read
+  (`[['Code' => 'en', 'Name' => 'English', …]]`) — a list of options, not a language given to a song, and nothing on
+  the page reads that variable any more; it is a deliberate exception (whole line), not a change. Proven with the
+  seventh review's `enguard-rv7.php` (every shape the decision names now answers as it should; round 7's own probe
+  gives round 7's answers) and nine planted faults, each red on both servers (the file scan reading every file as
+  PHP, its language decided wrongly, the `match` scan blanking `#[` again, list items quoted-only again, no key
+  before English, no check after a list, bare English counted when compared, the rest of a list read without the
+  atomic group, the `define()` pattern removed); the whole tree still scans clean. **Round 9 (the eighth review's L5
+  and L6 and carry-over 2, the lead's decision 5):** round 8 let ANY member through after a list's closing bracket,
+  so a fallback list kept and then changed got through — `(x || ['en']).map(f)`, `.join(',')`, `.slice()`,
+  `['en'].concat(more)`, `(… ?? ['en'])->toArray()`; now only members that look in the list are let through
+  (`.includes(`, `.indexOf(`, `.lastIndexOf(`, `.some(`, `.every(`, `.has(`, `.length`, `->contains(`, `->has(`),
+  besides an index, a comparison and `&&` (`x || ['en'] && y` is `x || (['en'] && y)` — `&&` binds tighter than
+  `||` and `??`, so the list is never the value; checked in PHP 8.5 and Node). A map from a language code to a
+  language NAME is no longer flagged (`['en' => 'English', …]`, `?? [$code => 'English']`,
+  `define('LANGUAGE_NAMES', ['en' => 'English', …])`): under a key that is a quoted language code or a variable, a
+  value counts only when it is itself a code (`'en'`, `'en-GB'`, `'eng'`), never the name; under any other key
+  (`'default' => 'en'`, `0 => 'en'`) any spelling still counts. And a lone English NAME used only as a display label
+  is no longer flagged (`$label = $lang ? $names[$lang] : ('English');`, the line the seventh review called a false
+  alarm): in a statement that assigns to something named as display text (label, name, title, text, caption,
+  heading or display, and not lang/language), a lone 'English' — not an item of a list — is blanked before the
+  patterns run. Still flagged: a code (`$label = … ?? 'en'`), a list (`?? ['English']`), and the name assigned to a
+  language or to anything else (`$language = … : ('English')`, `$x = $row['language'] ?? 'English'`). Proven with
+  the eighth review's `enguard-rv8.php` (every shape the decision names now answers as it should) and six planted
+  faults on the guard (round 8's look-in rule back, round 8's keyed rule back, the label rule removed, the label rule
+  blanking whatever is assigned to — all red; a real fallback in the label's shape planted in the tree — red; the
+  label line itself planted in the tree — green); the eighth review's G1 and G2 stay red; the whole tree still scans
+  clean, with `manage/songbooks.php`'s list of choices still a deliberate exception (it holds the code `'en'` under
+  the key `'Code'`; removing that unused list is a separate issue).
+  **What it still cannot see (its blind spots), so reviewers still look:** English passed through a call or a cast
+  (`?? strtolower('EN')`, `?? mediaLanguageTagForStorage('en')`, `|| String('en')`, `?? (string) 'en'`,
+  `?? \trim('en')`, `?? collect(['en'])->all()` — round 8, listed by the lead); a value under a variable or
+  language-code key that is the English NAME (`[$code => 'English']` — read as a code-to-name map, round 9); a lone
+  'English' assigned to something named as display text (read as a label, round 9) — so `$title = $song['language']
+  ?? 'English'` is not flagged; a list with more than eight items before English, at any one
+  level (`['a', …, 'i', 'en']`); an item before English that is itself a call, an index or an expression
+  (`[f(x), 'en']`, `[$row['x'], 'en']`); English picked out of a list by its index (`['en', 'fr'][0]` is
+  English, but every index on a list is let through); a destructuring default under a new name
+  (`const {lang: songLang = 'en'} = song`); a PHP array key that is exactly
+  `'lang' => 'en'` (left out on purpose — see below); a template literal
+  (`` language: `en` ``); a value built by joining strings (`'e' + 'n'`); a fallback through a variable or constant
+  (`$raw : DEFAULT_LANG`, `const EN = 'en'; … || EN`); a fallback spread over two lines in any shape except the PHP
+  `match`; a `match` or ternary whose result is returned or passed on rather than assigned to a language name;
+  any call other than a `set…Language(…)` setter (`Object.assign(song, { lang: x })` with `x` holding `'en'`,
+  `$map->set('language', 'en')`, `new Map([['language', 'en']])`); a bare `lang: 'en'`-style assignment in the
+  middle of a longer expression (`x = (lang='en')` is caught only because of the bracket before it; `a && lang='en'`
+  is not); a name that does not contain `language` or `lang` (`$code = 'en'` then stored as the language); English
+  spelled any other way (`'en-gb'` is caught, `'English (UK)'`, `'anglais'` or `"\x65n"` are not); code on the same
+  line after the END of a comment that spans lines (` */ lang = 'en';` — only a comment opened and closed on ONE line
+  is removed, and a line starting with `*` is skipped whole; the opposite case, a line inside a longer comment that
+  does not start with `*`, is read as code, which can only flag too much, never too little);
+  a comment marker inside a string earlier on the line (`$s = 'a /* b'; $lang = $x ?? 'en'; // */` and
+  `$t = ' //'; $lang = $x ?? 'en';` — the scan removes comments by pattern, not by reading strings, so it cuts the
+  line there; found by the sixth review, still open); an English tag with a subtag longer than eight characters
+  (`'en-123456789'`, not a valid tag anyway); Python's `or` (`language = x.language or 'en'`, not a PHP or
+  JavaScript fallback); a trailing `#` comment in PHP is read as code (which can only flag too much);
+  and anything outside the site's own PHP and JS (vendor folders, JSON files, the Apple and Android apps, `tools/`).
+  Deliberate exceptions are listed in the test by file and the WHOLE line (trimmed) — since round 5 the whole line
+  must be equal, because "contains the listed text" also excused a real fallback appended to that line (the fourth
+  review's planted fault) — and each must still be found: today only `js/modules/print.js`'s sample song for the
+  print editor's preview ("Amazing Grace", really English). (A PHP array key that is exactly `'lang' => 'en'` is
+  deliberately not flagged: the geocoder in `manage/places-api.php` asks for place names in English that way,
+  which is not a song's language. `'langCode' => 'en'` and every longer name are flagged.)
+- **The songbook-language card is a curator's decision** ("Fill in a missing song language from its
+  songbook", manual, never part of "Apply all"): it gives a songbook's language ONLY to songs that have no
+  language at all, and never changes a song that has any value — a real tag, `und`/`mul`/`zxx`, or a
+  malformed value. (An earlier version also rewrote songs in a different language — `yue` in a `zh` book
+  became `zh` — with no record; that was removed.) Songs whose language differs from their songbook's are
+  listed for review by hand. The dry run lists every fill; a confirmed run records each one in the activity
+  log (`migration.song_language_backfill`, old → new), so it can be traced and undone. Its "dry run unless
+  confirmed" decision is `migrateBackfillSongLanguageConfirmed()`. Since round 4 of the review: "no language"
+  means NULL or only spaces, tabs and line breaks (`mediaLanguageIsBlank()` in `includes/media_language.php`) —
+  a no-break or zero-width space is a value, listed, never filled; the card's "pending" check decides with that
+  same function (it used to ask the database, whose collation disagreed both ways, so a tab-only song was never
+  reported and a no-break-space song kept the card "pending" for ever); each log row records WHO ran it — from
+  the web the signed-in user (`UserId`) and `ranBy: "web"`, from the command line `ranBy: "command line"` — and a
+  confirmed web run that cannot tell who is signed in changes nothing (`migrateBackfillSongLanguageActor()`); and
+  every fill and its log row are one transaction. **If somebody changes a song's language while a confirmed run is
+  under way, their change stands** — any change to its bytes, since round 5 of the review. How depends on the
+  database: on MySQL (and MariaDB without snapshot isolation) that one song is skipped and the rest filled; on
+  MariaDB 11.8, where `innodb_snapshot_isolation` is on by default, the whole run stops with "Record has changed
+  since last read" and is rolled back — nothing filled, nothing logged — and can simply be run again. (An earlier
+  note said only "that song is skipped".) Until round 5 this note said "their change always stands", and that was
+  not true: the check compared the value the card had read by the column's collation, which counts an empty
+  value, a space, a no-break space and a zero-width space as the same, so on MySQL 8.4 (and MariaDB with snapshot
+  isolation off) a change from empty to one of those spaces, or from a space to empty, was overwritten with the
+  songbook's language. The check now compares bytes
+  (`CAST(Language AS BINARY) <=> CAST(? AS BINARY)`). What it still cannot see: a change that ends with exactly
+  the bytes the card read (somebody changing the value and changing it back) — there is then nothing of theirs to
+  lose. A confirmed run also refuses, changing nothing, when the activity log table or its `Details` column is
+  missing. All of this is tested against a real database in `tests/php/test-song-language-backfill.php` Part C, on
+  both (each concurrent case in both snapshot-isolation modes on MariaDB).
+- **Two orders, on purpose, never mixed.**
+  - *Stored order* (the policy's Part A) is the same for everyone and is what the site returns and keeps:
+    the original's language first, then every other language by its code (`de`, `en`, `es` …), general
+    before specific (`zh`, `zh-Hans`, `zh-TW`, `zh-Hant-TW`), countries before multi-country areas (`es-MX`
+    before `es-419`). Whole-song translations (`SongData::getSongTranslations()`, `_getTranslations()`) and
+    the translations under each lyric line use it. SQL cannot produce it (`ORDER BY` sorts letters), so it
+    is done in PHP.
+  - *Reader order* (Part B) is what a person sees in a menu or list and differs per person: their own
+    languages first, in the order they chose; then the original; then everything else alphabetically by
+    name; special codes last. It must never be written back into stored data, and nothing moves because it
+    was just selected. The song page's translation picker is a shared cached fragment, so the server sends
+    it in no-preference order and `js/modules/song-translations.js` puts the reader's languages first in the
+    browser, once, on load. The `song_translations` API action and the language filter lists order on the
+    server or in the browser for the person asking.
+- **The original comes first.** In a whole-song translation cluster the source song is the original
+  (`is_original` / `isOriginal`); the song page marks it "(original)".
+- **Names.** `resolveLanguageName()` composes a full English name from the tag's parts — "Portuguese
+  (Brazil)", "Chinese (Traditional)", "Spanish (Latin America)" — using CLDR English names loaded into the
+  registry tables. It used to fall back to the base language ("Portuguese"), which gave different
+  translations the same name. The language's own name ("português") is a second label, never the only one.
+  English is the only interface language today (#744 covers others).
+- **Text direction comes from the script when the tag names one** (`IHYMNS_RTL_SCRIPTS` in
+  `includes/language_names.php`): `pa-Arab` runs right to left, `ar-Latn` (romanised Arabic) left to right.
+  Otherwise the base language's registry direction applies.
+- **Transliterations should carry their script** (`ja-Latn` for romanised Japanese, `sr-Latn`): without it a
+  transliteration cannot be told apart from the original text. This is a SHOULD in the policy, so it is not
+  enforced.
+- **Preferences** (`tblUsers.PreferredLanguagesJson`, the `X-Preferred-Languages` header, the browser's
+  saved list, Song of the Day's `?lang=`) keep full tags in the person's order. Filtering matches by
+  language, so a `pt-BR` preference shows `pt` and `pt-PT` songs — except that a preference naming a script
+  hides content in another script (`zh-Hans` hides `zh-Hant`, `sr-Latn` hides `sr-Cyrl`; policy MATCH-040).
+  The same rule runs in SQL (`applyLanguageFilterSql()`), in PHP (`makeLanguageFilterPredicate()`, via the
+  shared `Policy::matchTags()`) and in the browser (`preferenceMatchesTag()`);
+  `tests/php/test-language-filter-scripts.php` checks the SQL and PHP agree row for row on a real database
+  (MariaDB and MySQL 8.4), including 59 stored values not in standard form and 47 that the column's collation used to bend. For that, the SQL also matches
+  the old spellings the shared data file maps to the preferred language (`iw` for `he`, `in` for `id`,
+  `zh-yue` for `yue`, `i-klingon` for `tlh`, `sgn-BR` for `bzs`), never treats a spelling that only starts
+  like a language as that language (`zh-yue` is Cantonese, not `zh`), treats `und`/`mul`/`mis`/`zxx` as
+  preferences that match only themselves (`languageFilterAliasIndex()`), and — since round 4 of the review —
+  reads a stored value exactly as the shared rule does: it ignores ASCII letter case and the rule's four trim
+  characters (space, tab, carriage return, line feed) at either end, and nothing else. The column's collation
+  used to bend more than that: it ignores accents, letter width and some characters entirely, so `én`, full-width
+  `ｅｎ`, `ünd`, and `en` followed by a no-break or zero-width space all matched `en` or `und`, a value holding only
+  such a space counted as untagged, and MySQL's `TRIM()` left tabs and line breaks on. The SQL now compares BYTES
+  (`CAST … AS BINARY` — a binary *collation* is not enough, because `utf8mb4_bin` still ignores trailing spaces),
+  turns any non-ASCII character into `?` first (`LOWER()` maps `İ` to `i` on both servers, which would make `İW`
+  the Hebrew alias `iw`), and trims by turning tab, CR and LF into spaces and then using `TRIM()` — the same result
+  under byte comparisons, and it works on MySQL 5.7, which has no `REGEXP_REPLACE`. Because re-trimming for every
+  comparison made the filter 2–5 times slower, a value that is "clean" (only ASCII letters, digits and hyphens —
+  almost every stored value) is compared on a fast path that computes exactly the same bytes; only the rest take
+  the exact path. (That "exactly" does not hold on MySQL 5.7, corrected in round 5: 5.7's regular expressions stop
+  reading at a NUL byte, so a value with a NUL in it can be judged clean and take the fast path, whose bytes then
+  differ from the exact path's after the NUL. The results still agree — everything before the NUL is the same on
+  both paths, and no comparison can match a NUL — and the review's harness confirmed it on 5.7.44: 99 such values,
+  the same answer on both paths for all 28 preference lists, and no difference from the in-memory filter outside
+  the documented class below.) The in-memory
+  filter trims the same four characters (it used PHP's bare `trim()`, which also strips NUL and a vertical tab).
+  **What still differs, stated plainly:** a MALFORMED stored value that begins the way a matching value begins is
+  matched in SQL, where the shared rule matches nothing — SQL looks at the start of a value and does not check the
+  whole of it is a well-formed tag. For `en`: `en-`, `en--GB`, `en-toolongsubtag`, `en-é`; for `yue`: `zh-yue-` and
+  `zh-yue-%` (they start like the old form `zh-yue` followed by more parts); for `zh`/`zh-Hans`: `zh-hant` with a
+  line break inside. `tests/php/test-language-filter-scripts.php` pins exactly this list, so any other difference
+  turns it red. And the alias lists need the shared rules installed. **Speed** (MariaDB 11.8 and MySQL 8.4 in
+  throwaway containers on a development Mac, median of 5): on 300,000 rows a filter of 1–5 preferences takes about
+  230–430 ms, within about 30% of the code before round 4 (180–450 ms on the same machine). On the fourth review's
+  20,000-row tables (median of 5, MariaDB 11.8 and MySQL 8.4 — corrected in round 5, because an earlier line here
+  said "8 preferences take about 40 ms before and after", which is true only for clean values): with clean values,
+  8 preferences take 37–46 ms (42–53 ms before round 4) and 32 take 95–140 ms (116–198 ms before); when EVERY value
+  needs trimming (a tab at the end — the exact path's worst case), 8 take 117–130 ms (44–50 ms before) and 32 take
+  341–394 ms (161–202 ms before). **At most 32 preferences are used** — the
+  first 32, in order (`IHYMNS_LANGUAGE_FILTER_MAX_PREFERENCES`, applied in `parsePreferredLanguageSubtags()` and
+  `languageFilterUsablePreferences()`): a 2,000-entry header used to build a query of up to 270 KB taking 3.6–21
+  seconds (median, depending on the data, whether the preferences name a script, and the server), and now costs
+  what 32 do (0.08–0.43 s, the same measurements). The limit also applies to the saved account setting — saving a longer list
+  saves its first 32, and the save's answer shows what was kept. **Since round 5 the browser keeps to the same 32**
+  (the lead's decision): the settings page's picker (`js/modules/settings-language-filter.js`) and the home/songbooks
+  grid's dropdown (`js/modules/songbook-language-filter.js`) refuse a 33rd tick — the box does not tick and they say
+  "You can choose up to 32 languages. Untick one to add another."; after an account save the settings page stores
+  and ticks exactly what the server's answer says was kept (tidied, never longer than 32), and says so when it kept
+  fewer, using only the answer to the newest save; and every browser reader of the saved list — both pickers, the
+  grids' filtering and the `X-Preferred-Languages` header — uses its first 32 (`usablePreferenceList()` in
+  `js/utils/language-tags.js`, whose `MAX_PREFERENCES` a test checks against the server's constant). So what is
+  ticked, what the grids show and what the server-filtered lists show agree. A list saved before the limit keeps its
+  extra entries in the browser's storage until the person next changes it; they are never used. The grid's dropdown
+  was not named in the decision; it got the same rule because otherwise a 33rd tick there would look on and do
+  nothing. `tests/test-language-preference-cap.js` runs the real pickers in jsdom.
+  A malformed preference matches nothing — not even the identical malformed value — and a list holding only
+  malformed preferences counts as none, so nothing is filtered (policy MATCH-010 / AUTO-010, core
+  `aaaa585`); the server judges that with the shared rules, the browser can only rule out values not
+  shaped like a tag. Old lists of bare codes stay valid.
+- **Whole-song translations accept regional and script tags** once the "Translations: allow regional and
+  script languages" migration card has been run (#2131). Until then the song editor skips such a link with a
+  warning pointing at the card (`includes/song_translations_schema.php` asks the live database). **A link the
+  save cannot write never costs the stored link it may belong with (#2137 review rounds 3 and 4):** when a sent
+  link cannot be written — its language is not a code (`English`), the server cannot store or link it yet (no
+  #2131 card run), its target song has gone, it points at the song itself, two links were sent for one language,
+  or it has no language or no song — the save protects, BY ROW ID, the union of every stored row pointing at the
+  same song AND the stored row filed under the same language. Both halves are needed: the song half keeps `pt → T1`
+  when a curator's change to `pt-BR → T1` cannot be stored; the language half keeps `English → T1` re-pointed to
+  `English → T2`, and `iw → T1` re-pointed to T2 on a server whose registry has `iw` but not `he` (round 3 had
+  swapped one half for the other and lost these). A protected row is never deleted — including when two stored
+  links clash (`mo → T3`, `ro → T4`: a failed `ro-MD → T3` keeps Ion's `mo` row even though the curator kept `ro`)
+  — and never changed: a change that would touch one is itself not made, with a warning, and protects the rows
+  sharing ITS song or language in turn (`songTranslationsProtectedIds()`, `songTranslationsPlanSync()`'s
+  `blocked`, the repeat in `songTranslationsSaveLinks()`). **What this cannot do:** a failed link is tied back only
+  by its song or its language, so if a curator changes BOTH (`pt → T1` becomes `pt-BR → T2`) and that cannot be
+  written, the save treats `pt → T1` as removed — it cannot tell that apart from deleting one link and adding
+  another. In particular, "a vanished target does not delete the stored link" holds only when the link's
+  language is unchanged: a song that no longer exists cannot be pointed at by any stored row, so only the
+  language half can match. **Round 5 (the fourth review) closed four more ways to lose a link:** (1) a stored
+  language is compared after the SAME trim the save gives what the editor sends (`IHYMNS_TRANSLATION_LINK_TRIM`:
+  space, tab, CR, LF, NUL, vertical tab), so `"English "` or `"English\t"` re-pointed to another song is protected
+  like `English` — it used to be deleted; (2) the link writes are **all or nothing**: the song save calls
+  `songTranslationsSaveLinksAllOrNothing()`, which sets a savepoint, and if any write fails part-way (a stored junk
+  row such as `"pt-BR"` + a no-break space that the database counts as the same language as `pt-BR`) runs
+  `ROLLBACK TO SAVEPOINT`, so the links are exactly as before, the curator is told "The translation links were
+  left unchanged because …", and the rest of the song is still saved — it used to commit whatever had been
+  written, losing a link deleted before the failing write (a deadlock, a lock wait timeout, MariaDB's 1020 since
+  round 6, and a failed undo still stop the whole save — see "MariaDB's 1020" below); (3) a payload entry that is not a link (not an object, a list such as `["T1", "pt"]`, a song or language
+  that is not text, and — since round 6, the fifth review's finding 2 — a non-empty object with neither a `songId`
+  nor a `language` key, such as `{"song":"T2","lang":"de"}` or `{"SongId":"T2","Language":"de"}`) makes the whole
+  translation save refuse, changing nothing — it used to be skipped and the stored links deleted as if removed
+  (an object with those keys but both empty or null still names nothing and is skipped); (4) a successful change of language on the SAME song (`pt → T1`, translator
+  Ana, verified, becomes `pt-BR → T1`) now updates the row in place, as `iw → he` already did — it used to delete
+  and insert a bare row. Only an unambiguous pair is updated: one stored row whose language nobody sent back and
+  one sent link with a new language, for the same song, and the row not protected; two stored rows or two new
+  links for one song are still read as "removed one, added one". **What the row keeps (corrected in round 6, the
+  lead's decision on the fifth review's finding 3):** the Translator always — it is the same song, so the same
+  translation; the Verified flag only when the primary language is the same under the shared rule
+  (`pt` → `pt-BR`, `iw` → `he`, `zh` → `zh-Hant` — `mediaLanguageGroup()`); otherwise (`fr` → `de` on T1) the
+  Translator stays and the link is no longer verified. (Round 6 said "the Verified flag and its date"; since round
+  7 the date stays whenever the row stays with its own song — see "The date" below.) Round 5 kept everything for any language change and called
+  it "more precise", which `fr` → `de` is not. **Round 6, the fifth review's finding 1 — a link's details never move
+  to a different song.** A stored row's Translator, Verified flag and date belong to the song it links to. When a
+  save re-points a language to a different song: if that song has its own stored row that no sent link matches,
+  that row is relabelled to the sent language and keeps its own details (its Translator and, since round 7, its
+  date always; its Verified flag by the rule just above, since a relabel is a language change of that song), and
+  the displaced row for
+  the old song is deleted; otherwise the re-pointed row is updated in place with no Translator, not verified.
+  The review's case: stored `pt → T1` (Ana, verified) and `pt-BR → T2` (Zed, verified), sent `pt-BR → T1`, used
+  to become `pt-BR → T1` credited to Zed and verified; it is now `pt-BR → T1`, Ana, verified, and the T2 row is
+  gone. A protected row is never relabelled (the re-point then keeps no details), and a song with two claims on
+  its row (a re-point and a new link, or two re-points) is ambiguous, so nobody takes it. Two links that swap
+  songs both keep no details — each row's language was sent back, so neither song has a row "no sent link
+  matches". **Round 7 (the sixth review's decisions 2 and 3).** Two stored spellings of one language and a
+  re-point onto the other spelling's song: stored `iw → T1` (Ana, verified) and `he → T2` (Zed, verified), sent
+  `he → T1`. The `iw` row is T1's own row, so it is relabelled `he` and keeps Ana and the verified flag (one primary
+  language), and the T2 row goes; it used to be deleted first, leaving `he → T1` with no translator and not
+  verified. The relabelled row takes the spelling the curator kept, as the clash rule always has (stored `he → T1`
+  and `iw → T2`, sent `iw → T1`, gives `iw → T1`, Ana, verified; the next save tidies it to `he`), and, as with any
+  re-point, only when nothing else claims T1 and T1 has exactly one stored row nobody sent back — or, **since
+  round 8** (the seventh review's L3, the lead's decision), exactly one such row in the re-point's primary
+  language. Stored `iw → T1` (Ana, verified), `he → T2` (Zed, verified) and `de → T1` (Bob), sent `he → T1`: the
+  `iw` row is still T1's own row in that language, so it becomes `he → T1`, Ana, verified, its date; Bob's
+  `de → T1`, which the curator did not send back, is removed like any other removed link, and so is the T2 row.
+  Round 7 read T1's second row as ambiguous and the re-point reached T1 with no translator and not verified
+  (reproduced on both servers). The same holds for a single-row re-point (`de → T2`, with `de-AT → T1` and
+  `fr → T1` stored, sent `de → T1`: the `de-AT` row takes it). Two of T1's rows in that primary language (`iw` and
+  `he-IL`) are still ambiguous, and a protected one is still never relabelled. This is for a re-point only: a NEW
+  language for a song with two unsent rows (stored `pt → T1` and `es → T1`, sent `pt-BR → T1`) is still read as
+  "removed two, added one", as round 5 decided — the lead's decision named the re-point case, so that one was
+  left as it was. **That stays ambiguous on purpose (round 9, the lead's carry-over 1): do not "fix" it by analogy
+  with the re-point rule above** — stored `pt → T1` and `es → T1`, sent `pt-BR → T1`, keeps no translator and no
+  verified flag, as round 5 pinned it. Tested for
+  `iw`/`he`, `in`/`id`, `ji`/`yi` and `mo`/`ro`, both ways round, on both servers. Stored song ids are now compared
+  after the same trim as stored languages (`songTranslationsSongKey()`): a stored `'T1 '`, which the database
+  accepts as a link to T1 because its collation ignores trailing spaces, re-saved unchanged keeps its translator
+  and verified flag (it used to read as a re-point and lose both); the stored value is not rewritten. **The date (changed in round 7, the lead's decision):** the table has no separate date for when a
+  link was verified; its only date is `CreatedAt`, when the row was written, which the round-5 notes called "the
+  date". It is set to the time of the save only when a row comes to link to a DIFFERENT song — it is then a new
+  link in all but its row id (the planner's `clear`). Whenever a row stays with its own song — a same-song language
+  change, or the target song's own row relabelled by a re-point — its date is left exactly as it was, whatever
+  happens to the Verified flag (`keep` and `unverify` leave it; `songTranslationsDetailsAfterChange()`). Round 6
+  made the date follow the flag (reset whenever the flag was cleared), which treated a changed language label as
+  a new link.
+  Proven against a real database on MariaDB 11 and MySQL 8.4
+  (`tests/php/test-song-translations-sync.php` Parts B and C — C runs in its own PHP process against a database
+  built the way the table looked BEFORE the card, because `songTranslationsLanguageFkPresent()`'s answer is cached
+  for the life of a process). Every one of the fourth review's seventeen planted translation faults turns it red on
+  both servers, including the two it did not catch before round 5 (a failed link keyed by its raw spelling, and a
+  sent clash protecting only its first link).
+- **MariaDB's 1020 ends the whole transaction (#2137 review round 6, the fifth review's finding 6).** With
+  `innodb_snapshot_isolation` ON — the default on MariaDB 11.8 — a transaction that read a row, and then tries to
+  change it after another session committed a change to it, fails with 1020 ("Record has changed since last
+  read"), and MariaDB has then rolled back the WHOLE transaction: checked on MariaDB 11.8.9, `@@in_transaction` is
+  0 afterwards, the transaction's own earlier write is gone, and `ROLLBACK TO SAVEPOINT` answers "SAVEPOINT … does
+  not exist". MySQL 8.4 does not raise it (its writes read the latest row). Until round 6, 1020 was not on the
+  shared list (`songRelocateIsTransactionFatal()`, then in `includes/song_relocate.php` — since round 7 in
+  `includes/transaction_fatal.php` — which had 1213 and 1205), so
+  the translation links' all-or-nothing wrapper tried its undo, the undo failed, and that "SAVEPOINT … does not
+  exist" replaced the 1020 — the error that actually broke the save was never logged (the save did still stop).
+  Now 1020 is on the list; the wrapper re-throws it as itself, and when an ordinary write fails it logs the
+  ORIGINAL error before trying the undo and, if the undo fails too, throws an error naming both with the original
+  as its cause. (Corrected in the same round, finding 8: after a lock wait timeout, 1205, the server's default —
+  `innodb_rollback_on_timeout` OFF — rolls back only the failed STATEMENT, not the transaction; the wrapper's
+  comment said otherwise. The whole save still stops, because the wrapper re-throws and the caller's outer
+  handler rolls the transaction back.) `tests/php/test-song-translations-sync.php` reproduces the 1020 on MariaDB
+  (and checks that MySQL simply saves); `tests/php/test-transaction-fatal.php` checks the list. **The song save's
+  all-or-nothing call is guarded two ways (#2137 review round 7, the sixth review's decision 4).** Part A7 of
+  `test-song-translations-sync.php` reads `save_song_core.php` with PHP's tokenizer: no `try` of its own around
+  `songTranslationsSaveLinksAllOrNothing()`, and the transaction's catch rolls back as its FIRST statement (on its
+  own, in its own try, or inside an `if` that only checks the connection exists) — so it rolls back on every path,
+  not merely somewhere. But a helper function that swallows errors somewhere else cannot be seen by reading one
+  file (the review planted `rv6BestEffort()`, and the tokenizer check stayed green). So
+  `tests/php/test-song-save-whole-rollback.php` runs the REAL save, `editorSaveSongCore()`, against a database built
+  from schema.sql: a 1020 during the link writes (B2; a real one on MariaDB, a stand-in on MySQL) and a failed undo
+  (B3) must each answer 500, change no table but the activity log, and leave no transaction open on the save's
+  connection. With `rv6BestEffort()` planted, B2 and B3 go red on both servers; so do a catch with no rollback, a
+  rollback only for mysqli errors, and an early return before the rollback.
+  **Every catch a save can reach from inside its transaction (#2137 review round 7, the sixth review's
+  decision 1).** Round 6 looked only at the catches that already called the list (34 of them) and said each now
+  passes a 1020 back. That was not enough, and this paragraph replaces round 6's list: a catch that does not call
+  the list at all swallows a 1020 just the same. The sixth review proved it with `tuneFindOrCreateByName()`: the
+  IL-id step re-throws a 1020 on purpose, the tune funnel caught it again and returned "no tune", and the song
+  save carried on with no transaction at all. On MariaDB the save then answered 500 but had already saved the
+  song's sections, revision and translation links without its title change; on MySQL (with a stand-in 1020) it
+  answered 200 and saved everything (`tests/php/test-song-save-whole-rollback.php`, case B1, failed both ways
+  before the fix). Round 7 audited EVERY catch block reachable, directly or through called functions, from inside
+  a transaction opened by the song save (`editorSaveSongCore()`), the v2 editor (`manage/editor/api2.php`, 51
+  transactions), the works admin page (`manage/works.php`), the songbooks admin page (`manage/songbooks.php`, 5),
+  the importers (`includes/song_importers.php` — the bulk saver and the ProPresenter media step — and
+  `includes/lyrics_ingest.php`, 2 each), and the transactions those open themselves through the functions they
+  call (`workAutolinkSafe()` in its own-transaction mode, `songSoftDelete()`, `songCopyrightHoldersReplace()`,
+  `musicianReapOrphanedAutoRow()`, `songIdPrefixProbeAndFixup()`): 67 transactions. (Round 7's notes said 72:
+  its audit tool counted each of the five transactions written inside a FUNCTION of those files — the save's
+  one, and two each in the importers — twice, once for the file and once for the function. The count is 67.)
+  **Since round 8 this audit is a test that runs with the rest:** `tests/php/test-transaction-catch-audit.php`
+  (the seventh review's L1, the lead's decision). It reads every PHP file under `appWeb/` with PHP's tokenizer,
+  finds those 67 transactions again, works out every catch block that can run inside them, and FAILS if one does
+  not start with the guard and is not on its short allow-list, each entry with its reason; an allow-list entry
+  that no longer matches such a catch fails it too. **How "can run inside" is worked out:** a transaction runs
+  from `begin_transaction()` to the last `commit()` after it in the same block (stopping at the next
+  `begin_transaction()` there), or to the end of the block if there is none. Every catch written in that stretch
+  counts, and so does every catch in anything it can call: a function by its name; a method by its method name in
+  EVERY class that has one (over-counting rather than missing); `new X` (that class's constructor); a function or
+  method named in a string (`call_user_func('x')`, `[$this, 'save']` — but not a name handed to
+  `function_exists()` and the like, which calls nothing); a closure or arrow function written there; `$name(...)`
+  (every closure or arrow function assigned to `$name` in the same file — this is what replaced round 7's
+  hand-placed `$persistWorkExtraFields`); and `require`/`include` (the included file's top-level code, found by
+  its path). Those last four are the widenings the seventh review's own audit made over round 7's tool. **Round 9
+  (the eighth review's L4, the lead's decision 4) widened it to the eighth review's planted shapes:** a begin
+  whose own block has no commit after it (`if ($own) { $db->begin_transaction(); }`, then the work, then `if
+  ($own) { $db->commit(); }` — the `songCopyrightHoldersReplace()` shape) now runs on to the last commit in the
+  whole function (or to its end); a name or a first-class callable assigned to a variable anywhere in the same
+  file (`$fn = 'x';`, `$fn = x(...);`, `$fn = $box->run(...);`, `$fn = [$box, 'run'];`) is followed when `$fn()`
+  is called inside; a parameter called inside a function (`$work()`) is followed to every closure or arrow
+  function written straight into a call of that function in the same file; a name in a string with a leading
+  backslash or a namespace (`'\x'`) counts; and the second item of a two-item list (`[$box, 'run']`,
+  `array($box, 'run')`) is a method's name however short (elsewhere a string counts as a method's name only above
+  three letters). Each turned the test red when the eighth review's planted catch was added through it (AU02,
+  AU03, AU06, AU07, AU10, AU12); the real tree still has the same 101 catches. **What it cannot see (each planted
+  by the eighth review, and still unseen):** a class's `__call()` / `__callStatic()` (AU04), `require $path` with
+  the whole path in a variable (AU05), a callable kept in an object property (AU18), `new $class()` (AU19); also a
+  function or class name built at run time, a method named in a string of three letters or fewer outside a
+  two-item list, a closure handed in from another file, a transaction in a file none of the audited ones can
+  reach, and code that runs after the last `commit()` in a block on a path that skipped that commit. It proves the shape of the code; the
+  all-or-nothing behaviour is proven by running the save (`test-song-save-whole-rollback.php`). **Proven:** each
+  of the eight guards the seventh review removed without any test noticing (`slideAuthTokenExpiry()`,
+  `publisherResolvePickedOrCreate()`, `ed2_touchRevision()`, `workMedleyReplace()`, `songRedirectsTableReady()`,
+  `generateUniqueMusicianSlug()`, `adoptApiTokenSession()`'s sliding expiry, `pickAutoSongbookColour()`) turns it
+  red; so do a new unguarded catch inside a helper the save calls, a new helper with one called inside the save,
+  and one catch reached only through each of the widenings (a `$var()` closure, a function named in a string,
+  `new X`, an include); an unguarded catch in a helper nothing calls does not (no false alarm). **The rule now:**
+  such a catch starts with `if (songRelocateIsTransactionFatal($e)) { throw $e; }`, and every file holding one
+  loads the check's file at its top, so the check is always there and always first (the `function_exists()`
+  forms in `lyric_lines_read.php`, `lyric_rounds.php` and `vocal_parts.php`, and the `require_once` inside the
+  catch in `ilidStampNewRow()` and `workAutolinkSafe()`, are gone). The check moved from `song_relocate.php` to
+  its own file, `includes/transaction_fatal.php`, which loads nothing else: `song_relocate.php` also loads the
+  database layer, and loading it in some two dozen more files broke a test that stands in its own
+  `getDbMysqli()` (`test-songbook-render-parity.php`). Its name is unchanged and `song_relocate.php` loads the new
+  file, so every existing caller works as before. The 101 catch blocks the test finds today (round 7's 95, the
+  four activity-log handlers below that its tool could not see, round 8's in `dbTransactionIsOpen()` and round
+  9's second one there, around reading the session's access mode), by what each does now (line numbers
+  approximate):
+  - **Start by passing the error back to the caller (88).**
+    `includes/transaction_fatal.php`: `dbTransactionIsOpen()` ~224 (round 9) and ~243 (round 8).
+    `includes/activity_log.php`: `activityLogResolveUserId()` ~187; `logActivity()`'s two column probes ~321,
+    ~342 (its main catch is in its own group below since round 8);
+    `activityLogIpReputation()` ~715. `includes/api_tokens.php`: `apiTokensDeviceMetaColumnsExist()` ~102.
+    `includes/arrangement.php`: `arrangementColumnExists()` ~207. `includes/external_link_helpers.php`:
+    `loadExternalLinksForRow()` ~365. `includes/ilyrics_id.php`: `ilidSequenceReady()` ~268, `ilidColumnReady()`
+    ~405, `ilidStampNewRow()` ~535. `includes/ip_geolocation.php`: `ihymnsGeoCacheGet()` ~163.
+    `includes/lyric_lines_read.php`: `lyricLinesMirrorPresent()` ~105,
+    `lyricLinesComponentExtrasPresent()` ~172. `includes/lyric_lines_sync.php`: `lyricLinesSyncReady()` ~84,
+    `lyricLinesComponentsLangReady()` ~121, `lyricLinesPartTypeSlug()` ~439, `lyricLinesShadowColumnsPresent()`
+    ~576, `lyricLinesWriteComponents()` ~817 and ~837, `lyricLinesEnrichmentTablesPresent()` ~1588,
+    `lyricLinesVocalTablesPresent()` ~1651, `lyricLinesSnapshotDeletedEnrichment()` ~1927,
+    `lyricLinesFlagRoundsAfterLineDelete()` ~1974. `includes/lyric_rounds.php`: `lyricRoundsReady()` ~152.
+    `includes/musician_helpers.php`: `musicianNamePartsColumnsExist()` ~666, `musicianMaidenSurnameColumnExists()`
+    ~696, `musicianMbidColumnExists()` ~757, `generateUniqueMusicianSlug()` ~1329, `musicianProfileColumnsExist()`
+    ~3160. `includes/publisher_helpers.php`: `publisherTableExists()` ~120, `publisherFindOrCreateByName()` ~206,
+    `publisherResolvePickedOrCreate()` ~357. `includes/search_fold.php`: `searchFoldReady()` ~111.
+    `includes/song_alt_titles.php`: `songAltTitlesTableExists()` ~107. `includes/song_copyright_holders.php`:
+    `songCopyrightHoldersTableExists()` ~116, `_songCopyHolders_holderIdColPresent()` ~146,
+    `_songCopyHolders_publisherIdExists()` ~180, `songCopyrightHoldersList()` ~229. `includes/song_external_ids.php`:
+    `songExternalIdsTableExists()` ~144. `includes/song_importers.php`: `_bulkImport_saveSong()`'s ArrangementJson
+    check ~841 and revision record ~1097, `_bulkImport_nextSongNumberFor()` ~2674. `includes/song_public_id.php`:
+    `songPublicId_columnReady()` ~79. `includes/song_redirects.php`: `songRedirectsTableReady()` ~80.
+    `includes/song_relocate.php`: `songRelocateFkCatalogue()` ~712, `songRelocateCascadeVerdict()` ~856, the move's
+    SongCount recompute in `songRelocate()` ~1398. `includes/song_soft_delete.php`:
+    `_songSoftDeleteRecountSongbook()` ~441. `includes/song_translations_schema.php`:
+    `songTranslationsLanguageFkPresent()` ~74. `includes/song_translations_sync.php`:
+    `songTranslationsSaveLinksAllOrNothing()` ~1014 and ~1026. `includes/tune_helpers.php`: `tuneTunesTableExists()`
+    ~148, `tuneFindOrCreateByName()` ~254. `includes/vocal_parts.php`: `vocalPartsTablesReady()` ~911,
+    `vocalPartsSpansReady()` ~943. `includes/work_admin.php`: `workAdminReady()` ~181, `_workAdminIlIdColumnExists()`
+    ~212, `workAutolinkSafe()` inside the caller's transaction ~1077, `workMedleyReady()` ~1202,
+    `workMedleyReplace()` ~1514. `manage/editor/api2.php`: `ed2_songIdentityColsPresent()` ~919,
+    `ed2_rightsColsPresent()` ~951, `ed2_tuneIdColumnExists()` ~1033, `ed2_worksTableExists()` ~1082,
+    `ed2_copyrightHolderIdColPresent()` ~1198, `ed2_touchRevision()` ~2220 (the v2 editor's revision record), and
+    in the page code the duplicate-song optional copies ~2446 and ~2460, its enrichment and scripture copy ~2606,
+    and the work-medley lockstep in the section save ~3619. `manage/editor/save_song_core.php`, all in
+    `editorSaveSongCore()`: the ArrangementJson column check ~570, a ChordsJson column check on the older write
+    path ~915 (round 6's notes called this one a "Note" column check; it checks ChordsJson), the component
+    Language and ChordsJson column checks ~1204 and ~1224, the revision record ~1416, the songbook SongCount
+    recompute ~1452, the external links ~1506 and the translations-table check ~1631.
+    `manage/includes/auth.php`: `adoptApiTokenSession()` ~258 and ~310. `manage/includes/songbook-palette.php`:
+    `pickAutoSongbookColour()` ~102. Of these, the 52 that did not check the list at all before round 7 were the
+    fault; the column and table checks only read `INFORMATION_SCHEMA`, so in practice a 1020 starts in the writes,
+    but a deadlock or lock wait timeout can arrive anywhere. `tests/php/test-song-save-whole-rollback.php` runs the
+    real save and proves two of them end to end: B1 (the tune funnel, a real 1020 on MariaDB) and B4
+    (`logActivity()`, a deadlock while the save writes its own activity-log row); the rest rest on this audit.
+    **Round 8 added the guard to five more** that round 7 had listed by hand as safe, so that they need no
+    allow-list entry: `activityLogRequestId()` ~141 (makes a random id), `getDbMysqli()` (`db_mysql.php` ~107;
+    checks whether its saved connection is still open, no query), `ihymnsGeoViaMaxmind()` ~244 (reads a local
+    file), `mediaLanguageReady()` (`media_language.php` ~156; loads the shared language rules) and the
+    `\InvalidArgumentException` around a malformed alternative title in `_bulkImport_saveSong()`
+    (`song_importers.php` ~1078). None of their tries touches the database today, so nothing changes; but "cannot
+    meet a database error" is a claim a later edit to the try can quietly make false, and the guard cannot be.
+    `db_mysql.php` and `media_language.php` now load `transaction_fatal.php` at their top for it.
+  - **Pass it back only when a transaction was open (1)** — round 8. `logActivity()`'s main catch
+    (`activity_log.php` ~434): see "Round 8 … corrected for the two best-effort writes" below.
+  - **Write only when no transaction is open, and log every error (2)** — round 9 (the eighth review's L1, the
+    lead's decision 1). `ihymnsGeoCachePut()` (`ip_geolocation.php` ~231) and `slideAuthTokenExpiry()`
+    (`api.php` ~28167) return before their try whenever `dbTransactionIsOpen()` does not answer "not open", so
+    their write runs only outside a transaction, where a deadlock or a lock wait timeout ends nothing but that one
+    row: their catch logs it and carries on. See "Round 9" below.
+  - **Pass it back already, in their own way (3).** `workFindOrLinkByIdentifier()` (`work_admin.php` ~974)
+    re-throws every database error except a duplicate (1062); `musicianReapOrphanedAutoRow()`
+    (`musician_helpers.php` ~1886) re-throws every error except a missing table (1146);
+    `songTranslationsSaveLinksAllOrNothing()`'s catch around a failed undo (`song_translations_sync.php` ~1040)
+    always throws, carrying the original error.
+  - **Handle a transaction of their own (3).** `workAutolinkSafe()` in its own-transaction mode (`work_admin.php`
+    ~1064, and ~1067, the catch around its own rollback) and `songCopyrightHoldersReplace()` when it owns the
+    transaction (`song_copyright_holders.php` ~509) roll back their OWN transaction and answer null /
+    `write_failed`; that mode is used only after the caller's own write has committed. When
+    `songCopyrightHoldersReplace()` is running inside the caller's transaction it re-throws everything.
+  - **Run by PHP at the end of the request, or as it dies (4)** — new in round 8, because the test follows an
+    include: the save's transaction loads `manage/includes/auth.php`, whose top level installs the activity log's
+    handlers. The end-of-request "request.*" row (a shutdown function, `activity_log.php` ~864), the uncaught-
+    exception handler's log row and its hand-over to the handler before it (~934, ~944), and the
+    "fatal.php_error" row (a shutdown function, ~985). PHP calls these only after the request's own code has
+    finished or an exception has escaped everything, so no save code runs after them; the guard there would only
+    turn a failed end-of-request log row into an error after the response.
+  The thirteen not passing the error back with the plain guard (every group after the first) are the test's
+  allow-list, each with its reason in the test.
+
+  **What this changes outside a transaction.** Most of these helpers are also called where no transaction is
+  open. There too, a deadlock, a lock wait timeout or a 1020 is now passed back instead of being logged and
+  ignored, so a request that meets one in a best-effort step (an activity-log row, the geo cache, a sign-in
+  token's sliding expiry) now fails instead of quietly carrying on. These are rare outside a transaction, but
+  they are a change. The song save's own error handler, which runs after its rollback, wraps the two calls in it
+  that could now meet one (the failure's activity-log row and the "who is signed in" lookup), so the save's own
+  error answer is never replaced; other error handlers were not changed this round.
+  **Round 8 (the seventh review's check 2 and L2, the lead's decisions 3 and 2) — corrected for the two
+  best-effort writes.** The seventh review showed the change above was real and harmful for the activity log:
+  another session holding the log table's last gap (its "purge lock") made a log row written AFTER a page's work
+  had committed meet a lock wait timeout (1205), and the request failed — on work already saved, inviting a
+  duplicate on retry. Such calls are everywhere: a tokenizer scan found 104 `logActivity()` calls written after a
+  `commit()` in the same function or page block with no new `begin_transaction()` between (api.php 31,
+  manage/editor/api2.php 50 — `create_song` ~2363 among them —, manage/songbooks.php 5 — the auto-colour audit
+  row ~2264 among them —, duplicate-songs.php, publishers.php, tunes.php and vocal-parts-review.php 3 each,
+  includes/song_importers.php 2, manage/editor/api.php, manage/includes/auth.php, songbook-series.php and
+  works.php 1 each), and more functions write their own log row after their own work (auth.php's user
+  functions, for example). So the fix is in `logActivity()` itself, not at a hundred call sites: it asks once,
+  BEFORE its first database statement, whether a transaction is open on the shared connection
+  (`dbTransactionIsOpen()`, below); its main catch passes a transaction-ending error back only when one was open
+  (or it could not tell), and otherwise logs and carries on, as before round 7. It has to ask first: a deadlock
+  or a 1020 has already rolled the whole transaction back by the time PHP sees it, so asking in the catch would
+  always answer "not open" — `tests/php/test-activity-log-outside-transaction.php` proves that with a REAL
+  deadlock on the log row inside a transaction (B8), which a check made afterwards lets through. The user and
+  client-address lookups moved inside its try, so their errors reach the same catch. That catch is therefore on
+  the audit test's allow-list, with this reason. The ISWC works backfill (`.sql/backfill-works-from-iswc.php`
+  ~304) already wrapped its own log row in a catch that carries on; a deadlock there finishes the batch, and the
+  test pins it (B7). **The geo cache is never written inside a transaction.** `logActivity()` looks up the
+  visitor's country while it writes its row, and `ihymnsGeoCachePut()` wrote the shared `tblIpReputation` row on
+  the same connection — inside the song save's transaction, since the save writes its activity row there. On
+  MariaDB, when another request wrote the same address's row after the save had begun reading, the save's write
+  met a 1020 and the save answered "Failed to save song" over a best-effort cache (on MySQL it wrote the row
+  inside the save). Now, while a transaction is open (or that cannot be told), `ihymnsGeoCachePut()` writes
+  nothing; the lookup still answers from the local country database, and the row is written by the next lookup
+  made outside a transaction. Proven on both servers: the review's race through the real save (B5 in
+  `test-song-save-whole-rollback.php` — on round 7's code MariaDB answered 500 and MySQL wrote the row), and at
+  the cache write itself (C1–C3 in the new test). `IHYMNS_GEO_MMDB_PATH` can now be defined before
+  `ip_geolocation.php` loads, which is how both tests put a stand-in country database in place.
+  **How "is a transaction open?" is asked — `dbTransactionIsOpen()`, in `includes/transaction_fatal.php`.** It
+  reads the session's own access mode (`@@SESSION.transaction_read_only`, or `tx_read_only` on a server that does
+  not know that name — MariaDB 10.11, for one), then runs `SET TRANSACTION READ ONLY` or `SET TRANSACTION READ
+  WRITE`, whichever the session already has: without GLOBAL or SESSION that sets only the NEXT transaction's access
+  mode, and both servers refuse it with 1568 while a transaction is open — from `begin_transaction()` on, before
+  any statement, and with autocommit off once a statement has read or written a table (round 9, the eighth
+  review's L9: with autocommit off a statement that touches no table, such as `SELECT 1`, opens nothing, and the
+  answer "not open" is then right — nothing could be lost). Checked on MariaDB 11.8.9, MySQL 8.4.11 and MySQL
+  5.7.44; a refused SET leaves the open transaction exactly as it was. **What asking changes (round 9, the eighth
+  review's L2, the lead's decision 2).** Round 8 ran `SET TRANSACTION READ WRITE` whatever the session's mode, and
+  said its only effect was a read-write next transaction "which it would have been anyway"; the eighth review
+  showed that in a session set to READ ONLY the next write then went through. Now, when no transaction is open,
+  asking KEEPS the session's own access mode and isolation level (the next autocommit statement and the next
+  `BEGIN` behave exactly as without asking: a read-only session still refuses a write, a session at READ
+  UNCOMMITTED still reads another request's uncommitted change) and a one-off isolation level set with `SET
+  TRANSACTION ISOLATION LEVEL …` just before asking. It does NOT keep a one-off access mode set with `SET
+  TRANSACTION READ ONLY` (or READ WRITE) just before asking, where that differs from the session's own: the next
+  transaction gets the session's mode instead (the server shows a pending one-off nowhere it can be read back;
+  nothing in iHymns sets one). Proven on MariaDB 11.8.9, MySQL 8.4.11 and MariaDB 10.11.19 by
+  `test-activity-log-outside-transaction.php` A8–A12 (A12 pins what is not kept), and on MySQL 5.7.44 with the
+  eighth review's own probe. It now costs two round trips. **"Could not tell" counts as open, and is tested
+  (round 9, the eighth review's L3, the lead's decision 3).** When the server's answer cannot be read the question
+  says null, never "not open", and every caller treats null as "maybe open"; no test checked that before (the
+  eighth review planted four faults against it and all stayed green). `test-activity-log-outside-transaction.php`
+  Part E: a connection with an unread result pending, and one killed just before the question's SET, each with
+  error reporting on and off, all get null (E1); with the question unanswerable, `logActivity()` passes a deadlock
+  on its row back (E2), and neither the geo cache (E3) nor the token's sliding expiry (E4) writes. Rejected: MariaDB's
+  `@@in_transaction` (MySQL lacks it — 1193); `information_schema.INNODB_TRX` (MySQL needs the PROCESS
+  privilege, which a shared host's account usually lacks); counting `begin_transaction()`/`commit()` in PHP (all
+  ~146 places that open one would have to take part, and one that did not would make the answer "not open"
+  inside a transaction — the wrong way to be wrong); passing the knowledge in from callers (the activity log and
+  the geo cache are called from hundreds of places that do not know). It costs two round trips (one before round
+  9) per log row, per cache write and per due token slide. **Planted faults, each turning these tests red on both servers:** the cache check removed,
+  `dbTransactionIsOpen()` always answering "not open", `logActivity()`'s catch back to round 7's plain guard,
+  back to swallowing everything, and asking only after the error. **Not covered by round 8:** the
+  other best-effort helpers round 7 guarded (a sign-in token's sliding expiry and the like) still pass such an
+  error back outside a transaction too; they write single rows that rarely wait on a lock, and the decision named
+  the activity log and the geo cache.
+  **Round 9 (the eighth review's L1, the lead's decision 1) — a write that only ever runs outside a transaction
+  never fails the request.** Round 8 left the geo cache's catch passing a deadlock or a lock wait timeout back,
+  although since round 8 that write only runs when no transaction is open. Checked on MariaDB 11.8.9 and MySQL
+  8.4.11 before the change, with another request holding the same address's cache row for a moment (its insert
+  not yet committed): `logActivity()` threw nothing but lost its whole activity row (only "write failed … Lock
+  wait timeout" in the error log), and the admin "geolocate" request (`manage/activity-log.php ?action=geo`,
+  `api.php`'s `admin_ip_geolocate`, through `activityLogGeoResolveIps()`) failed with the 1205. Now that catch
+  logs every error and carries on. **The sign-in token's sliding expiry had the same fault, and now has the same
+  treatment.** `logActivity()` asks `getAuthenticatedUser()` (`api.php`) who is signed in, which slides the
+  token's expiry once a day (an UPDATE of the token's row). With another request holding that row, checked on
+  both servers before the change: `logActivity()` lost its row, and `getAuthenticatedUser()` itself threw the 1205
+  (so the request asking who is signed in failed). Now `slideAuthTokenExpiry()` asks `dbTransactionIsOpen()`
+  first and writes nothing while a transaction is open (or that cannot be told) — the next sign-in check outside
+  one slides the token — and its catch logs every error and carries on. So that the question costs nothing on
+  the other days, `getAuthenticatedUser()` reads whether the slide is due with the user (the same comparison as
+  the slide's UPDATE) and calls it only then; before, it sent the (usually empty) UPDATE on every call. Tests:
+  `test-activity-log-outside-transaction.php` C4 and C5 (the geo cache, a real 1205) and Part D (the token: D1–D2
+  a real 1205 outside a transaction, D3 inside one it writes nothing and waits for nothing, D4 the next check
+  slides it, D5 nothing is sent when the slide is not due). **Still not changed:** `adoptApiTokenSession()`'s own
+  sliding expiry (`manage/includes/auth.php` ~310, used when a /manage page adopts the main app's sign-in) has
+  the same shape and still passes such an error back outside a transaction (from reading; not reproduced).
+  **Still true from round 6, outside this round's scope:** `.sql/migrate-backfill-vocal-part-suggestions.php`
+  stops the batch on a 1020, as it already did on a deadlock, instead of counting that song as "errored" and
+  continuing; `includes/vocal_part_review.php` still checks the list through `function_exists()` (it is not
+  reachable from the transactions above).
+- **Reporting, not rewriting.** The curator audit on `/manage/languages` lists stored tags that are
+  malformed, unregistered, retired, or not in standard form (e.g. `en-gb`), and offers a remap. Importers
+  report a language they cannot read as an `import.language_unrecognised` row on `/manage/activity-log`.
+  Since the #2137 review fixes, a stored tag changes only when a person saves or confirms something: a song
+  save tidies the tags it writes (a translation link stored as `iw` is updated in place to `he`, keeping its
+  translator and verified flag, and since round 5 so is `pt → T1` changed to `pt-BR → T1` — since round 6 a change
+  to a different primary language keeps the translator but not the verified flag, and a link re-pointed to another
+  song never takes the old song's details; of two stored links
+  that tidy to one language, the one the curator keeps in
+  the editor survives and the other is deleted, and if the editor sends both or neither, both stay with a
+  warning; two links sent for one language change nothing for it; a link that cannot be written — for any
+  reason, including a target song that no longer exists or a new language the server cannot store yet — leaves
+  the stored links sharing its song or its language exactly as they were (see the translations bullet above for
+  exactly when that holds); the link writes are all or nothing — `songTranslationsSaveLinksAllOrNothing()`
+  around `songTranslationsSaveLinks()`, tested against a real database); the
+  language picker keeps a tag its boxes cannot show (`en-u-ca-gregory`, `x-hymnal`) instead of rewriting it;
+  the songbook-language card fills only empty languages and only when confirmed; the remap is a curator
+  action. No migration run by
+  "Apply all" changes a stored tag (policy COMPAT-040).
+- **Apple app** (#2136): `LanguageDisplay` (`appApple/Packages/iHymnsKit/Sources/IHFeatures/LanguageDisplay.swift`)
+  names a tag with the system's own `Locale.localizedString(forIdentifier:)` — in the device's language — and
+  sorts lists A to Z by that name, special codes last. Filters still match the exact tag. The app has no
+  language-preference setting yet, so "your languages first" does not apply there.
+
+
 ---
 
 ## 🚀 Deployment Architecture

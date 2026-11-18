@@ -123,6 +123,17 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that a song save, the v2 editor, the works or songbooks admin page
+   or an importer can reach from inside its transaction starts by passing those
+   back to its caller (the full list is in DEV_NOTES.md). Loaded here, at the
+   top, so that check can always be a catch's first line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 /* The canonical DB layer — getDbMysqli() + the bindParamSafe() count-guard
    every DB function below binds through (#928). Lazy: requiring it opens no
    connection of its own. */
@@ -844,10 +855,13 @@ function vocalPartsTtmlAgent(array $part, int $index): array
  * `lyricLinesComponentExtrasPresent()` in lyric_lines_read.php: a
  * transaction-fatal error (a deadlock/lock-wait mid-save) must propagate,
  * never be swallowed as "not ready", because that would let a caller
- * commit nothing while still reporting success. `song_relocate.php` (home
- * of `songRelocateIsTransactionFatal()`) is not loaded on every path that
- * reaches these probes, hence the `function_exists()` guard — no live
- * write transaction depends on the answer when it isn't loaded at all.
+ * commit nothing while still reporting success. `transaction_fatal.php`
+ * (home of `songRelocateIsTransactionFatal()` since #2137 review round 7;
+ * `song_relocate.php` before) is loaded at the top of this file. It used to be checked with `function_exists()`
+ * instead, on the reasoning that no live write transaction depends on the
+ * answer when it is not loaded — true only as long as every transaction
+ * that reaches these probes happens to have loaded it first, which nothing
+ * enforced.
  * ===================================================================== */
 
 /**
@@ -895,7 +909,7 @@ function vocalPartsTablesReady(\mysqli $db): bool
         }
         $ready = $tablesOk && $columnOk;
     } catch (\Throwable $_e) {
-        if (function_exists('songRelocateIsTransactionFatal') && songRelocateIsTransactionFatal($_e)) {
+        if (songRelocateIsTransactionFatal($_e)) {   /* #2137 review round 7: always loaded now (top of this file), so no function_exists() */
             throw $_e;
         }
         $ready = false;
@@ -927,7 +941,7 @@ function vocalPartsSpansReady(\mysqli $db): bool
             $r->close();
         }
     } catch (\Throwable $_e) {
-        if (function_exists('songRelocateIsTransactionFatal') && songRelocateIsTransactionFatal($_e)) {
+        if (songRelocateIsTransactionFatal($_e)) {   /* #2137 review round 7: always loaded now (top of this file), so no function_exists() */
             throw $_e;
         }
         $ready = false;

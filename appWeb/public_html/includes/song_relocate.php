@@ -175,6 +175,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';   /* songRelocateIsTransactionFatal() — moved there in #2137 review round 7, see below */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_redirects.php';
 
@@ -200,79 +201,13 @@ class SongRelocateEnvironmentException extends \RuntimeException
 {
 }
 
-/**
- * Is this throwable one that has already rolled back the CALLER'S transaction?
- *
- * ELI5: some database errors do not just fail one statement — they throw away
- * everything you have done since the transaction started. If we swallow one of
- * those and carry on, we end up cheerfully reporting success for work that no
- * longer exists.
- *
- * WHY THIS IS A SHARED PREDICATE AND NOT AN INLINE `in_array` (#1679 F8/A1)
- * ------------------------------------------------------------------------
- * `songRelocate()` re-throws these from its own best-effort SongCount recompute,
- * but the re-throw only holds if NOTHING between the relocate and the caller's
- * `commit()` swallows them again — and both funnels have several deliberate
- * `catch (\Throwable) { error_log(...) }` blocks in exactly that span
- * (`ed2_touchRevision()` in api2.php; the probe / revision / SongCount /
- * external-link / works / translation-link blocks in save_song_core.php). Each of
- * those is CORRECT for what it was written for: a best-effort follow-up must not
- * cost the curator their edit. None of them was written with "the transaction I
- * am inside may already be gone" in mind. Copying a two-element error-code list
- * into ten catch blocks is precisely the "keep these in sync" comment rule #35
- * names as the failure rather than the fix — so the list lives here, once, and
- * every one of those catches opens with
- * `if (songRelocateIsTransactionFatal($e)) { throw $e; }`.
- *
- * THE TWO CODES, ACCURATELY
- * -------------------------
- *  - 1213 `ER_LOCK_DEADLOCK` — InnoDB picked this transaction as the deadlock
- *    victim and rolled the WHOLE transaction back. Swallowing this is what makes
- *    a false success reachable: `commit()` then succeeds trivially (there is
- *    nothing left to commit) and the endpoint answers `{ok:true, songId:<new>}`
- *    for a song that does not exist under that id.
- *  - 1205 `ER_LOCK_WAIT_TIMEOUT` — `innodb_lock_wait_timeout` elapsed. MySQL's
- *    DEFAULT is `innodb_rollback_on_timeout = OFF`, which rolls back only the
- *    FAILING STATEMENT, so on a default server this one does NOT by itself
- *    produce the false success — the transaction is still alive and the commit is
- *    real. It is treated as fatal anyway because (a) with that variable ON it
- *    behaves exactly like 1213, and (b) a statement that timed out waiting for a
- *    row lock in the middle of a multi-statement move is not something to log and
- *    walk past.
- *
- * https://dev.mysql.com/doc/mysql-errors/8.0/en/server-error-reference.html
- * https://dev.mysql.com/doc/refman/8.0/en/innodb-parameters.html#sysvar_innodb_rollback_on_timeout
- *
- * @param  \Throwable $e Anything a `catch` block caught.
- * @return bool TRUE when the caller must re-throw rather than continue to commit.
- */
-function songRelocateIsTransactionFatal(\Throwable $e): bool
-{
-    /* WALK THE CAUSE CHAIN — do not just type-check the outermost exception.
-       This function's first version tested `$e instanceof \mysqli_sql_exception`
-       and stopped, and the very same pass that wrote it also added
-       `songRedirectsTableReady($db, true)`, whose strict branch WRAPS whatever
-       it caught in a plain `\RuntimeException` with the original as `previous`.
-       So a deadlock raised inside that probe arrived here as a RuntimeException,
-       this predicate answered "not fatal", the catch swallowed it and the caller
-       committed — reinstating, through a brand-new code path, the exact false
-       success the predicate exists to prevent. Any wrapper anywhere in either
-       funnel would do the same.
-
-       Depth-bounded because `getPrevious()` chains are attacker-free but not
-       guaranteed acyclic in userland, and a guard must not be the thing that
-       hangs a save. Ten is far beyond any real chain in this codebase.
-       https://www.php.net/manual/en/exception.getprevious.php */
-    for ($depth = 0; $e !== null && $depth < 10; $depth++, $e = $e->getPrevious()) {
-        if ($e instanceof \mysqli_sql_exception
-            && in_array((int)$e->getCode(), [1213, 1205], true)
-        ) {
-            return true;
-        }
-    }
-
-    return false;
-}
+/* songRelocateIsTransactionFatal() — the ONE list of database errors that have
+   already ended the caller's transaction — lived here until #2137 review round 7.
+   It now lives in includes/transaction_fatal.php (loaded at the top of this file,
+   so everything that loads this file still has it): every file whose catch blocks
+   a save's transaction can reach needs it, and this file also loads db_mysql.php,
+   which a file that only needs the list should not have to pull in (a test that
+   stands in its own getDbMysqli() broke the moment one did). */
 
 /**
  * Is this candidate SongId claimed by ANYTHING — the live corpus or a redirect?
@@ -697,6 +632,7 @@ function songRelocateFkCatalogue(\mysqli $db): array
 
         $catalogue = ['error' => null, 'fks' => $fks, 'columns' => $columns];
     } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         /* Fail CLOSED, exactly as the migration does. A move we cannot verify is
            a move that may silently orphan children; refusing is recoverable, an
            orphaned graph is not. */
@@ -1382,12 +1318,13 @@ function songRelocate(\mysqli $db, string $oldSongId, string $targetAbbr, ?int $
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'songbook_count.php';
         songbookRecomputeSongCount($db, $targetAbbr, $currentAbbr);
     } catch (\Throwable $e) {
-        /* #1679 F8 / A1 — "best-effort" must not mean "swallow anything". Two
-           MySQL errors do not fail just the STATEMENT, they can roll back the
+        /* #1679 F8 / A1 — "best-effort" must not mean "swallow anything". Some
+           MySQL/MariaDB errors do not fail just the STATEMENT, they can roll back the
            ENTIRE InnoDB transaction — the caller's transaction, containing the
            move — after which the caller's $db->commit() commits NOTHING and the
            endpoint answers {ok:true, songId:<new>} for a song that no longer
-           exists under that id. The two codes and the precise conditions live in
+           exists under that id. The codes (three since #2137 review round 6,
+           which added MariaDB's 1020) and the precise conditions live in
            songRelocateIsTransactionFatal(): ONE list, because the same test has
            to hold in every catch between the relocate and the commit, and the two
            funnels have ten more. Anything else (a missing SongCount column on an

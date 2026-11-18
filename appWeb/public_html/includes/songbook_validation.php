@@ -96,33 +96,49 @@ function validateSongbookColour(string $c): ?string
 }
 
 /**
- * Validate an IETF BCP 47 language tag (#681). Empty is fine
- * (NULL = "not specified" for songbooks). Otherwise must match the
- * v1 grammar: lowercase 2-3 letter language, optional 4-letter
- * Title Case script, optional 2-letter UPPER region or 3-digit
- * numeric area code. Variants / extensions / private-use are out
- * of scope for v1 per the issue brief.
+ * Check and tidy a songbook's language as a curator typed or picked it
+ * (#681, #2137). The ONE songbook-language check: the admin page
+ * (`manage/songbooks.php`), the shared write core (`includes/songbook_admin.php`)
+ * and the API (`api.php` admin songbook update) all call this.
  *
- * Returns null if valid (empty or matching), an error message
- * string otherwise. Caller is responsible for calling mb_substr to
- * cap to the column width regardless — the regex doesn't bound
- * length on its own.
+ * ELI5: "pt-br" is saved as "pt-BR"; an empty box means "not specified";
+ * "Portuguese" is refused with a plain sentence saying what to type instead.
+ *
+ * #2137 — this used to hold its own regular expression that disagreed with the
+ * song editor's (it refused variants such as `de-1996` and any letter-case
+ * slip), and its callers cut the value to 35 characters BEFORE checking it,
+ * which can turn one tag into another. Both are gone: the shared policy rule
+ * (`mediaLanguageTagForStorage()`, MWBM-MEDIA-LANG LANG-001) decides, fixes
+ * letter case rather than refusing, and refuses a tag that is too long for
+ * the column instead of cutting it.
+ *
+ * @param string|null $raw What was submitted (null or '' = not specified).
+ * @return array{0: ?string, 1: ?string} [the canonical tag or null, the refusal message or null]
+ * @throws \RuntimeException when the shared rules are not installed on the server.
+ */
+function normaliseSongbookLanguage(?string $raw): array
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    $tag = mediaLanguageTagForStorage((string)$raw);
+    if ($tag === false) {
+        return [null, mediaLanguageRefusalMessage((string)$raw)];
+    }
+    return [$tag, null];
+}
+
+/**
+ * Older yes/no form of normaliseSongbookLanguage(), kept for any caller that
+ * only needs the answer "is this acceptable?". Returns null when the value is
+ * empty or can be stored (after tidying), or the plain refusal message.
+ * Callers that SAVE the value must use normaliseSongbookLanguage() so they
+ * store the tidied tag, not what was typed.
  *
  * @param string $tag Raw tag as typed (or '').
- * @return string|null Error message or null if valid.
+ * @return string|null Error message or null if acceptable.
  */
 function validateSongbookBcp47(string $tag): ?string
 {
-    if ($tag === '') {
-        return null;
-    }
-    if (strlen($tag) > 35) {
-        return 'Language tag must be 35 characters or fewer.';
-    }
-    if (!preg_match('/^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2}|-[0-9]{3})?$/', $tag)) {
-        return 'Language tag must be a valid IETF BCP 47 form (e.g. en, pt-BR, zh-Hans-CN).';
-    }
-    return null;
+    return normaliseSongbookLanguage($tag)[1];
 }
 
 /**
