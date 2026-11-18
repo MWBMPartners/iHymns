@@ -222,6 +222,18 @@ console.log('Every write of a shared setting tells the sync (derived from the tr
         offenders.length === 0, offenders.join('\n      '));
 }
 
+console.log('The offline cache lists only files that exist, and includes the sync modules (guard G6):');
+{
+    const sw = fs.readFileSync(path.join(PUB, 'service-worker.js.php'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1');
+    const listed = [...sw.matchAll(/'(\/js\/[^']+\.js)'/g)].map((m) => m[1]);
+    const missing = listed.filter((p) => !fs.existsSync(path.join(PUB, p)));
+    check('the service worker lists JavaScript files (' + listed.length + ')', listed.length > 40);
+    check('every listed /js/ file exists on disk (a missing one breaks the offline install)', missing.length === 0, missing.join(', '));
+    const syncModules = fs.readdirSync(path.join(PUB, 'js', 'modules')).filter((f) => /^settings-sync.*\.js$/.test(f)).map((f) => '/js/modules/' + f);
+    const notListed = syncModules.filter((p) => !listed.includes(p));
+    check('every settings-sync module is in the offline list (so the app starts offline)', syncModules.length >= 3 && notListed.length === 0, notListed.join(', '));
+}
+
 console.log('The server never trusts it, and the old overwrite is gone:');
 {
     const files = execFileSync('git', ['ls-files', '-z'], { cwd: REPO, encoding: 'utf8' }).split('\0').filter(Boolean);

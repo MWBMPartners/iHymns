@@ -17,7 +17,8 @@
  *
  * WHAT DOES NOT SYNC (too large for cookies):
  *   - Favourites, set lists, history, search history
- *   - These use the iframe StorageBridge instead
+ *   - These stay on each site (or, for a signed-in user, come from their account).
+ *     The old hidden-frame bridge for them was removed (#2143).
  *
  * COOKIE DETAILS:
  *   - Name: ihymns_sync

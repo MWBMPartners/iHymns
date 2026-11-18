@@ -346,7 +346,7 @@ foreach (['ihymns.app', 'www.ihymns.app', 'dev.ihymns.app', 'beta.ihymns.app'] a
 sv('5.3 robots.txt.php\'s source contains the literal "/sitemap.xml" (the advertised line exists on the visible branch)',
     strpos($robotsStripped, '/sitemap.xml') !== false);
 sv('5.4 robots.txt.php preserves "Disallow: /api"', strpos($robotsStripped, 'Disallow: /api') !== false);
-sv('5.5 robots.txt.php preserves "Disallow: /bridge.html"', strpos($robotsStripped, 'Disallow: /bridge.html') !== false);
+sv('5.5 robots.txt.php no longer lists "Disallow: /bridge.html" (the bridge page was removed, #2143)', strpos($robotsStripped, 'Disallow: /bridge.html') === false);
 
 /* The active ban: extract every double-quoted string literal from the
    stripped source and check NONE of them, once concatenated, forms a bare
