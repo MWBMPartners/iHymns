@@ -379,7 +379,7 @@ function fetchHymn(int $number, string $baseUrl, string $homeUrl): array|string|
             CURLOPT_TIMEOUT        => 15,             // Total request timeout in seconds
             CURLOPT_CONNECTTIMEOUT => 10,             // Connection timeout in seconds
             CURLOPT_USERAGENT      => 'Mozilla/5.0 (compatible; HymnScraper/2.0; personal use)',
-            CURLOPT_ENCODING       => '',             // Accept all encodings (gzip, deflate, etc.)
+            CURLOPT_ENCODING       => 'gzip, deflate', // NOT '' — that accepts Brotli too (CVE-2026-111497, #2157; see tests/test-no-brotli.js)
             CURLOPT_SSL_VERIFYPEER => true,           // Verify SSL certificates
         ]);
 
@@ -468,7 +468,7 @@ function fetchHymn(int $number, string $baseUrl, string $homeUrl): array|string|
             CURLOPT_TIMEOUT        => 15,
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_USERAGENT      => 'Mozilla/5.0 (compatible; HymnScraper/2.0; personal use)',
-            CURLOPT_ENCODING       => '',
+            CURLOPT_ENCODING       => 'gzip, deflate', // NOT '' — see the note above (CVE-2026-111497, #2157)
             CURLOPT_SSL_VERIFYPEER => true,
         ]);
 
