@@ -196,6 +196,32 @@ console.log('A hostile cookie changes nothing:');
     check('...and nothing in the page was polluted', ({}).polluted === undefined && Object.keys({}).length === 0);
 }
 
+console.log('Every write of a shared setting tells the sync (derived from the tree):');
+{
+    const stripJs = (s) => s.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1');
+    const constantsText = stripJs(fs.readFileSync(path.join(PUB, 'js', 'constants.js'), 'utf8'));
+    const nameToKey = new Map([...constantsText.matchAll(/export const (STORAGE_[A-Z0-9_]+)\s*=\s*'([^']+)'/g)].map((m) => [m[1], m[2]]));
+    const files = execFileSync('git', ['ls-files', '-z', '--', 'appWeb/public_html/js'], { cwd: REPO, encoding: 'utf8' })
+        .split('\0').filter((f) => f.endsWith('.js') && !/settings-sync(-core|-registry)?\.js$|subdomain-sync\.js$|storage-bridge\.js$/.test(f));
+    const offenders = []; let writes = 0;
+    for (const f of files) {
+        const lines = stripJs(fs.readFileSync(path.join(REPO, f), 'utf8')).split('\n');
+        lines.forEach((line, i) => {
+            const m = /localStorage\.(?:setItem|removeItem)\(\s*(STORAGE_[A-Z0-9_]+|'[^']+')/.exec(line);
+            if (!m) return;
+            const key = m[1].startsWith("'") ? m[1].slice(1, -1) : nameToKey.get(m[1]);
+            if (!key || !CROSS_SITE_KEYS.includes(key)) return;
+            writes++;
+            const after = lines.slice(i, i + 16).join('\n');
+            if (!/syncStorage\(|recordRemoval\(|recordLocalChange\(/.test(after)) offenders.push(f.replace('appWeb/public_html/', '') + ':' + (i + 1) + ' ' + m[1]);
+        });
+    }
+    check('the scan found real writes of shared settings (' + writes + ')', writes >= 8,
+        'Too few writes found: the scan pattern no longer matches the code, so this check would pass while checking nothing.');
+    check('every one is followed, within a few lines, by syncStorage / recordRemoval / recordLocalChange',
+        offenders.length === 0, offenders.join('\n      '));
+}
+
 console.log('The server never trusts it, and the old overwrite is gone:');
 {
     const files = execFileSync('git', ['ls-files', '-z'], { cwd: REPO, encoding: 'utf8' }).split('\0').filter(Boolean);

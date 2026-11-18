@@ -380,6 +380,9 @@ export class Settings {
                 } else {
                     localStorage.setItem(k, v);
                 }
+                /* #2143 — the account's value is now the newest change on this site, so tell the
+                   cross-site sync (an account wins over the cookie, as it always has). */
+                this.app.syncStorage(k);
                 if (k === 'ihymns_theme') appliedTheme = true;
             }
         });
@@ -1026,6 +1029,7 @@ export class Settings {
                     localStorage.removeItem(STORAGE_CVD_MODE);
                     document.documentElement.removeAttribute('data-ihymns-cvd');
                 }
+                this.app.syncStorage(STORAGE_CVD_MODE);   /* #2143: it never reached the shared cookie before */
                 this._maybePushSync(STORAGE_CVD_MODE);
             });
         }
@@ -1047,6 +1051,7 @@ export class Settings {
                     localStorage.removeItem(STORAGE_LINK_EMPHASIS);
                     document.documentElement.removeAttribute('data-ihymns-linkcue');
                 }
+                this.app.syncStorage(STORAGE_LINK_EMPHASIS);   /* #2143: it never reached the shared cookie before */
                 this._maybePushSync(STORAGE_LINK_EMPHASIS);
             });
         }
@@ -1171,6 +1176,13 @@ export class Settings {
                     localStorage.removeItem(Settings.CONSENT_KEY);
                     /* Clear shared subdomain cookie (#133) */
                     this.app.subdomainSync?.clear();
+                    /* #2143 — record a deletion for exactly the shared settings removed above, so
+                       other iHymns sites remove them too instead of handing the old values back. */
+                    const removedKeys = [
+                        ...Object.keys(this.defaults).map((key) => this.storagePrefix + key),
+                        STORAGE_DEFAULT_SONGBOOK, STORAGE_TRANSITION, STORAGE_AUTO_UPDATE_SONGS,
+                    ].filter((key) => CROSS_SITE_KEYS.includes(key));
+                    this.app.crossSiteSync?.recordRemoval(removedKeys);
                     /* Re-apply defaults */
                     this.applyTheme(this.defaults.theme);
                     this.applyReduceMotion(this.defaults.reduceMotion);

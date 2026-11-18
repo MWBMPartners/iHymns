@@ -48,6 +48,7 @@ import { openSongPrintDialog } from './modules/print.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
 import { SubdomainSync } from './modules/subdomain-sync.js';
+import { CrossSiteSync } from './modules/settings-sync.js';
 import { Gestures } from './modules/gestures.js';
 import { PullToRefresh } from './modules/pull-to-refresh.js';
 import { Analytics } from './modules/analytics.js';
@@ -162,8 +163,11 @@ class iHymnsApp {
         /** @type {OfflineIndicator} Offline status indicator (#112) */
         this.offlineIndicator = null;
 
-        /** @type {SubdomainSync} Subdomain cookie sync (#133) */
+        /** @type {SubdomainSync} Subdomain cookie sync (#133) — used while the rebuilt sync is switched off */
         this.subdomainSync = null;
+
+        /** @type {CrossSiteSync|null} Rebuilt cross-site settings sync (#2143) — only when switched on for this channel */
+        this.crossSiteSync = null;
 
         /** @type {Gestures} Touch gesture navigation (#143) */
         this.gestures = null;
@@ -183,8 +187,18 @@ class iHymnsApp {
             /* Subdomain cookie sync — pull settings from other *.ihymns.app
              * subdomains BEFORE applying settings, so shared preferences
              * are available immediately (#133, Layer 1). */
-            this.subdomainSync = new SubdomainSync();
-            this.subdomainSync.init();
+            /* #2143 — when an admin has switched the rebuilt settings sync on for this
+             * channel, it replaces the old cookie sync. It must still run BEFORE
+             * `new Settings(this)` below, so a setting changed on another site is
+             * applied on the first paint. Off by default: then the old sync runs
+             * exactly as it always has. */
+            if (this.config.crossSiteSync?.enabled) {
+                this.crossSiteSync = new CrossSiteSync({ channel: this.config.crossSiteSync.channel });
+                this.crossSiteSync.init();
+            } else {
+                this.subdomainSync = new SubdomainSync();
+                this.subdomainSync.init();
+            }
 
             /* #1531 — populate the client songbook registry (abbr → full name)
                once, fire-and-forget, so every list view can show the full
@@ -1011,6 +1025,7 @@ class iHymnsApp {
                 const remember = document.getElementById('quick-jump-remember')?.checked;
                 if (remember) {
                     localStorage.setItem(STORAGE_DEFAULT_SONGBOOK, bookId);
+                    this.syncStorage(STORAGE_DEFAULT_SONGBOOK);   /* #2143: a shared setting, so tell the sync */
                 }
                 closePicker();
                 const padded = number.padStart(4, '0');
@@ -1290,9 +1305,12 @@ class iHymnsApp {
      * @param {string} key Full localStorage key (e.g. 'ihymns_favorites')
      */
     syncStorage(key) {
-        /* Subdomain cookie sync (*.ihymns.app). The hidden-frame "bridge" that used to be a second
-           layer here never connected and was removed (#2143). */
-        this.subdomainSync?.sync(key);
+        /* The shared settings cookie (*.ihymns.app): the rebuilt sync when it is switched on for
+           this channel, otherwise the old one. Either way only registered display settings travel
+           and everything else is ignored. The hidden-frame "bridge" that used to be a second layer
+           here never connected and was removed (#2143). */
+        if (this.crossSiteSync) this.crossSiteSync.recordLocalChange(key);
+        else this.subdomainSync?.sync(key);
     }
 
     /**
