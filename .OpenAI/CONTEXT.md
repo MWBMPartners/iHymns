@@ -1,6 +1,6 @@
 # iHymns — context for Codex
 
-_Last updated: 2026-11-17._
+_Last updated: 2026-11-18._
 
 ## What iHymns is
 
@@ -36,6 +36,12 @@ iPadOS, tvOS, in Swift) and an Android app (which also covers Amazon Fire device
 
 PHP 8.4 and 8.5 are supported; 8.6 is prepared and checked as advisory in CI (rule #53 in
 `.claude/CLAUDE.md`, plan `.claude/php86-readiness-plan.md`).
+
+## Where things stand (2026-11-18)
+
+Version 1.4.0. Cross-site settings sync was rebuilt and is off by default (rule #52). PHP 8.6 is
+prepared with an advisory CI check (rule #53). The account and profile rewrite (epic #2180) has part 1
+merged; parts 2 and 3 are next. The handoff has the details and the owner's decisions.
 
 ## The channels
 

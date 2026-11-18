@@ -78,9 +78,15 @@ The PHP forward-compatibility job (`php-compat` in `.github/workflows/test.yml`)
 - **What the 8.6 run adds.** A log of every PHP "deprecated" warning raised while the PHP tests run (`tools/ci/deprecation-trap.php`), a report that fails on warnings from our own code but only warns for the vendored PDF library (`tools/ci/deprecation-report.php`), and a syntax-check pass that looks for deprecations found at compile time.
 - **Turn it on only after** PHP 8.6 is released, setup-php offers it as a stable version, and the 8.6 run has been green for about a week.
 
-### Pull requests opened by our own workflows are held (#2127)
+### Branches are deleted after merge, and workflows use a GitHub App (#2173, #2168, #2172)
 
-The monthly audit (`maintenance-ha-integrity-audit.yml`) and the security-backport workflow open pull requests using GitHub's built-in token. GitHub holds the checks on those pull requests ("action_required") until a person approves them or pushes to the branch, and until then the pull request cannot merge. Releasing them takes a person's approval in the Actions tab, or a push of a real change to the pull request's branch. An empty commit, or closing and reopening the pull request, is against the project's rules. Dependabot pull requests are not affected. The fix (a small GitHub App, or a personal token) is waiting on an owner decision in #2127.
+- **Branch clean-up.** The auto-merge workflow (`auto-merge-alpha.yml`) now deletes a pull request's branch once it has merged (#2174). Older merged branches still need deleting by hand, after checking each one.
+- **The GitHub App token.** The "iHymns Automation" GitHub App (secrets `AUTOMATION_APP_ID` and `AUTOMATION_APP_PRIVATE_KEY`) supplies the token for the audit, the security-backport workflow (#2168) and the deploy's version commit (#2172). A pull request opened with an App token gets its checks started as normal, and the version commit can pass the `alpha` rules if the App is on the ruleset's bypass list (#2143 part 1).
+- If the "Get a token from the GitHub App" step fails: "Bad credentials" means an incomplete private key; "Resource not accessible" means a missing App permission or the App is not installed on iHymns.
+
+### Pull requests opened by our own workflows were held (#2127)
+
+The monthly audit (`maintenance-ha-integrity-audit.yml`) and the security-backport workflow open pull requests using GitHub's built-in token. GitHub holds the checks on those pull requests ("action_required") until a person approves them or pushes to the branch, and until then the pull request cannot merge. Releasing them takes a person's approval in the Actions tab, or a push of a real change to the pull request's branch. An empty commit, or closing and reopening the pull request, is against the project's rules. Dependabot pull requests are not affected. The fix, a small GitHub App, was merged on 18 November (#2168) but has not yet been proven by a real audit run. Until then, assume the next audit pull request may still be held.
 
 ### CI checks (`test.yml`)
 

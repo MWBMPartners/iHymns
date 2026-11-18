@@ -3,20 +3,26 @@
 Short, lasting facts. Newest first within each section. Where this file and the newest handoff in
 `.claude/sessions/` disagree, the handoff wins. Fix this file when that happens.
 
-_Last updated: 2026-11-18._
+_Last updated: 2026-11-18 (second update)._
+
+## Added 2026-11-18
+
+- **Newest handoff:** `.claude/sessions/2026-11-18-HANDOFF.md`. It lists the owner's decisions O1-O6 (do not re-ask) and the owner to-do list.
+- **Merged branches are now deleted automatically** (#2174), and our workflows open pull requests with the GitHub App's token (#2168), so held checks should stop (unproven until the next audit run).
+- **Settings sync is off by default** and only ever moves display settings, through one registry (rule #52). Content comes from the account over `/api`.
+- **Account rewrite** (epic #2180): part 1 is merged. Parts 2 and 3 follow `.claude/account-profile-rewrite-plan.md`. Review the red-flag steps read-only before each merge.
+- **Traps:** do not call PHP with `-r` when `auto_prepend_file` is set; a log on stderr can freeze `tools/run-php-tests.php`; a guard that only passes with a fake reader is wrong-but-green; the Apple app sends no platform at sign-in.
 
 ## Working pitfalls
 
-- **Pull requests that our own workflows open have their checks held** until a person approves them or
+- **Pull requests that our own workflows open could have their checks held (the App token of #2168 should now stop this; unproven)** until a person approves them or
   pushes a real change to the branch (#2127). The monthly audit pull request does this (#2154, #2165).
   No empty commits, and no closing and reopening.
 - **There are two wikis.** The repo's `wiki/` folder is the maintained copy. The GitHub wiki
   (`iHymns.wiki`) is a separate repository that cloud sessions cannot push to, and it is months behind.
   Edit `wiki/`, and have the owner publish it.
-- **The deploy's "Failed to push version bump" warning is expected for now** (#2143). The site still
-  deploys. Documentation-only pushes run no deploy at all.
-- **A security review for CVE-2026-111497 (a flaw in the Brotli decoder) is open as #2157** and is the
-  first item in the handoff's queue.
+- **The deploy's "Failed to push version bump" warning should no longer appear** (#2172 fixed it; if it comes back, see #2143). The site deploys either way. Documentation-only pushes run no deploy at all.
+- **The Brotli review (#2157) is done and closed**; the importers refuse Brotli. Updating Node, PowerShell and Apple systems is on the owner.
 
 - **Language tags go through `includes/media_language.php` only.** Never write a regular expression for
   a language tag, and never edit `appWeb/public_html/includes/vendor/media-language/` or the other policy
@@ -31,8 +37,7 @@ _Last updated: 2026-11-18._
   a stand-in reviewer. A catch-up Codex review of commit `f108b948` is still owed (issue #2123).
 - **A "Closes #N" line in a pull request into `alpha` does not close the issue**, because `alpha` is
   not the default branch. Close the issue by hand.
-- **Merging a pull request does not delete its branch** here. Delete it by hand, but only after
-  `git diff origin/alpha origin/<branch>` prints nothing.
+- **Merging a pull request now deletes its branch** (#2174). Older merged branches still need deleting by the owner; check each first.
 - **Before switching to `beta` or `main`**, check that branch does not track files that `alpha` has
   stopped tracking. Switching once deleted 1.6 GB of local files (#2108).
 

@@ -6,9 +6,16 @@
 > `project-rules.md` (detailed rules), and `sessions/<date>-HANDOFF.md` (session history).
 > When something here goes stale, fix it **here and in the file it mirrors**.
 
-_Last updated: 2026-08-28 (branch `claude/dormant-features-settings-1sdw4t` — ProPresenter interop epic #1968 complete through P6 chords + dormant timeline; multi-licence orgs #1969; device management #1975; docs + security + a11y sweep in flight)._
+_Last updated: 2026-11-18 (see the first bullet under "Where things stand"); older text below dates from 2026-08-28 (branch `claude/dormant-features-settings-1sdw4t` — ProPresenter interop epic #1968 complete through P6 chords + dormant timeline; multi-licence orgs #1969; device management #1975; docs + security + a11y sweep in flight)._
 
 ## Where things stand
+- **2026-11-18 (newest):** the current picture is `sessions/2026-11-18-HANDOFF.md`. In one breath: version
+  1.4.0; cross-site settings sync rebuilt and **off by default** (rule #52, #2143); PHP 8.4 and 8.5
+  supported, 8.6 prepared with an advisory CI check and a one-variable switch `PHP86_ENFORCE` (rule #53,
+  epic #2179); the GitHub App token now opens our workflow PRs and makes the version commit; merged
+  branches are deleted automatically (#2174); account rewrite part 1 merged (epic #2180: safety fixes,
+  dormant schema, `profile_schema`), parts 2 and 3 are next (#2184, #2185). Owner decisions O1-O6 are
+  recorded in that handoff. Newer items above override the older lines below.
 - **⚠️ THIS SECTION IS OLD (2026-08-28).** The current picture is always the "Current state" section
   of the newest `.claude/sessions/*-HANDOFF.md` — as of 2026-11-17 that is
   `sessions/2026-11-17-HANDOFF.md`. Read that first; it wins wherever the two disagree. It holds the whole

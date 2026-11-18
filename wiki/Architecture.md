@@ -161,6 +161,16 @@ A new manage-page action that lands without a mapping entry fails the guard outr
 
 **Scale, as last measured (2026-09-08):** `api.php` dispatches **325** public `?action=` cases (up from 223 before this program) and `api2.php` **74** — both counts produced by running `tests/php/lib/dispatch_parser.php`, the same tokeniser the coverage guard and `test-openapi-actions-exist.php` use, so treat any number here as orientation rather than a pinned contract. (The previous figures, 312 and 66, had both drifted; the 66 also disagreed with [[API Reference]], which already said 74.)
 
+### Account and profile sync (epic #2180, part 1 merged as #2182)
+
+Where this is going: signed-in people get their favourites, set lists, recent history and profile from the **account** over `/api`, shared across live, beta and dev. Only display settings ever travel through the browser (rule #52). Built so far (phases A-C of `.claude/account-profile-rewrite-plan.md`):
+
+- **`profile_schema` endpoint.** A profile registry lists every profile field once; `profile_schema` tells clients (web and native) what exists, so a new field is one registry line.
+- **Account-writes channel switch.** Account writes can be turned off per channel (default: all three on; turning one off needs the typed words `turn off production`; if the check cannot run it fails safe).
+- **One token maker** for sign-in tokens (per-device tokens are the agreed direction).
+- **Dormant schema.** One migration card, "Account and profile foundation", on `/manage/setup-database`. A separate manual job blanks old privacy links (stored search links and erased accounts' details).
+- **Still to come:** part 2 (phases D-G, #2184) and part 3 (H-I, #2185). Search history stays on the device unless the user opts in (#2177).
+
 ### Guided-wizard framework (#1992 family)
 
 `js/modules/admin-wizard.js` (`createWizard(rootEl, opts)`) is the **one reusable multi-step "wizard" stepper** for `/manage/*` admin pages — the same shape every "set up a new thing in N small screens, Next/Back, a progress trail" flow needs, built once instead of per-feature. It knows how to show one step at a time, move focus correctly when the step changes (WCAG 2.4.3), block advancing until the current step validates, and render the progress trail; it carries **zero domain knowledge** of any one wizard. Steps are **derived from the DOM** (`[data-wiz-step]` elements, in document order), never a JS-side list that the markup could drift out of sync with (rule #35 — the same drift class #1581's event-name bug was). A host supplies field markup, its own `validateStep`/save logic, and a modal to put it in — `opts.host` is either `'bootstrap-modal'` (the host page's own Bootstrap Modal instance supplies the focus trap; every current consumer uses this) or `'overlay'` (the module lazily pulls in `js/utils/dialog-a11y.js`'s `openModalDialog()` for pages with no Bootstrap modal already on screen).
