@@ -238,19 +238,23 @@ function apiTokenMint(\mysqli $db, int $uid, ?array $meta, string $issuedVia, ?i
  * ELI5: a person can be signed in on a web browser AND on an iPhone at once.
  * Signing out of the browser used to delete the iPhone's notification
  * registration too, so the iPhone quietly stopped getting notifications. Now
- * the Apple push rows are only removed when the session being signed out is
- * itself an Apple one.
+ * the Apple push rows are removed only when the session being signed out could
+ * be an Apple one.
  *
  * Detailed: the answer comes from the signed-out token's own `Platform`
- * (`apple | android | web`, NULL when the client never declared one). NULL is
- * treated as "not known to be Apple", the safe side: leaving a push
- * registration in place is recoverable (step G4 ties each registration to its
- * own session, after which this rule is replaced), whereas deleting another
- * device's registration silently is the bug being fixed. PURE: no database.
+ * (`apple | android | web`, NULL when nothing was declared). The shipped Apple
+ * app declares no platform and sends a non-browser User-Agent, so its sessions
+ * are stored with a NULL platform. So "unknown" must count as "might be Apple":
+ * only a session KNOWN to be web or Android is left alone. Browser sign-ins are
+ * always stored as 'web' (apiTokenWebDeviceFallback() fills it from the
+ * User-Agent), so the browser fix still works; the cost is that a browser with
+ * an unrecognised User-Agent signing out can drop an iPhone's registration,
+ * which the iPhone re-registers the next time it opens. Step G4 later ties each
+ * registration to its own session and replaces this rule. PURE: no database.
  */
 function apiTokenSessionOwnsApplePush(?string $platform): bool
 {
-    return $platform === 'apple';
+    return $platform !== 'web' && $platform !== 'android';
 }
 
 /**
@@ -261,8 +265,8 @@ function apiTokenSessionOwnsApplePush(?string $platform): bool
  * caller's own session); with `$prefix = true` it is the short device id used
  * by the device list, and only rows belonging to `$userId` are considered.
  * Returns null when the platform column is missing (un-migrated install), no
- * row matches, or the platform was never declared; callers then take the safe
- * side (see apiTokenSessionOwnsApplePush()). Every value is bound.
+ * row matches, or the platform was never declared; callers then treat the
+ * session as possibly Apple (see apiTokenSessionOwnsApplePush()). Every value is bound.
  */
 function apiTokenSessionPlatform(\mysqli $db, int $userId, string $tokenHashOrPrefix, bool $prefix): ?string
 {

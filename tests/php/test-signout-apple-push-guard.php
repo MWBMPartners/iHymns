@@ -42,7 +42,17 @@ function chk(string $label, bool $cond, string $detail = ''): void
 chk('an Apple session owns Apple push rows', apiTokenSessionOwnsApplePush('apple') === true);
 chk('a web session does not', apiTokenSessionOwnsApplePush('web') === false);
 chk('an Android session does not', apiTokenSessionOwnsApplePush('android') === false);
-chk('an undeclared platform (NULL) takes the safe side: does not', apiTokenSessionOwnsApplePush(null) === false);
+chk('an undeclared platform (NULL) might be Apple (the shipped app declares none)', apiTokenSessionOwnsApplePush(null) === true);
+chk('an empty platform might be Apple too', apiTokenSessionOwnsApplePush('') === true);
+
+/* A browser sign-in is always stored as 'web', so it keeps the iPhone's rows. */
+$_uaChrome = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
+$_fb = apiTokenWebDeviceFallback(null, null, $_uaChrome);
+chk('a browser sign-in with no declared platform is stored as web', $_fb['platform'] === 'web');
+chk('a web session still keeps Apple push rows', apiTokenSessionOwnsApplePush($_fb['platform']) === false);
+$_fbApp = apiTokenWebDeviceFallback(null, null, 'iHymns/1.0 CFNetwork/1494 Darwin/23.4.0');
+chk('the Apple app (non-browser UA, no platform) stays NULL', $_fbApp['platform'] === null);
+chk('so its sign-out removes its own push rows', apiTokenSessionOwnsApplePush($_fbApp['platform']) === true);
 
 /* ---- every whole-person delete sits behind it ---- */
 $src = (string)file_get_contents(dirname(__DIR__, 2) . '/appWeb/public_html/api.php');
