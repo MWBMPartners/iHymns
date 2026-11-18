@@ -5203,4 +5203,50 @@ return [
                _migProbe_constraintExists($db, 'tblSongTranslations', 'fk_Trans_Lang')
             || _migProbe_indexExists($db, 'tblSongTranslations', 'fk_Trans_Lang'),
     ],
+
+    /* Account/profile rewrite, epic #2180, step B1 - ONE migration for the whole
+       feature family (rule #20): three dormant tables plus a few additive
+       columns, designed in one pass. Everything is empty and unused until later
+       steps read or write it, so applying it is a verified no-op for every
+       existing page. Normal (non-manual) card: purely additive, so safe in
+       "Apply all". OWNER ACTION: check the MySQL version, take a backup, run it
+       once from alpha (the database is shared). */
+    'account-profile-foundation' => [
+        'script' => 'migrate-account-profile-foundation.php',
+        'card' => [
+            'title'  => 'Account and profile foundation (#2180)',
+            'body'   => 'Creates three empty tables &mdash; <code>tblUserProfileItems</code>'
+                      . ' (small per-person settings with a change counter and delete markers),'
+                      . ' <code>tblUserSyncTombstones</code> (delete markers for favourites and'
+                      . ' custom tags) and <code>tblAccountEnrolKeys</code> (keys a phone app can'
+                      . ' swap only for its own sign-in) &mdash; and adds a few optional columns:'
+                      . ' <code>tblApiTokens.DeviceInstallId</code>/<code>IssuedVia</code>,'
+                      . ' <code>tblApnsTokens.ApiTokenHash</code>,'
+                      . ' <code>tblPushSubscriptions.Channel</code> and'
+                      . ' <code>tblSongHistory.Source</code>/<code>Channel</code>/<code>Platform</code>.'
+                      . ' <strong>Nothing uses them yet</strong>, so nothing changes for anyone.'
+                      . ' <strong>Before running:</strong> check the MySQL version (8.0.12 or later adds'
+                      . ' the columns almost instantly; an older server copies'
+                      . ' <code>tblSongHistory</code>, which can be slow) and take a backup. The'
+                      . ' history columns are added last. Idempotent &mdash; an interrupted run is'
+                      . ' finished by running it again.',
+            'button' => 'Run Account and Profile Foundation Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending while ANY table, column or
+           index is missing, so a partial apply never shows the card as done.
+           Read from the live schema - never `=> true`. */
+        'probe' => static fn(\mysqli $db): bool =>
+               !_migProbe_tableExists($db, 'tblUserProfileItems')
+            || !_migProbe_tableExists($db, 'tblUserSyncTombstones')
+            || !_migProbe_tableExists($db, 'tblAccountEnrolKeys')
+            || !_migProbe_columnExists($db, 'tblApiTokens', 'DeviceInstallId')
+            || !_migProbe_columnExists($db, 'tblApiTokens', 'IssuedVia')
+            || !_migProbe_indexExists($db, 'tblApiTokens', 'idx_UserInstall')
+            || !_migProbe_columnExists($db, 'tblApnsTokens', 'ApiTokenHash')
+            || !_migProbe_indexExists($db, 'tblApnsTokens', 'idx_ApiToken')
+            || !_migProbe_columnExists($db, 'tblPushSubscriptions', 'Channel')
+            || !_migProbe_columnExists($db, 'tblSongHistory', 'Source')
+            || !_migProbe_columnExists($db, 'tblSongHistory', 'Channel')
+            || !_migProbe_columnExists($db, 'tblSongHistory', 'Platform'),
+    ],
 ];

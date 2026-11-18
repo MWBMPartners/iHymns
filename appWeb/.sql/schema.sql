@@ -1014,9 +1014,12 @@ CREATE TABLE IF NOT EXISTS tblApiTokens (
     LastSeenAt      DATETIME        NULL DEFAULT NULL COMMENT 'Updated on each authenticated request bearing this token (#1409) — powers a future manage-devices last-active column',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ExpiresAt       TIMESTAMP       NOT NULL,
+    DeviceInstallId VARCHAR(64) NULL DEFAULT NULL COMMENT 'Random id the app makes once per install, so a reinstall replaces its old sign-in instead of piling up. Never trusted across users',
+    IssuedVia VARCHAR(20) NULL DEFAULT NULL COMMENT 'How this sign-in was created: password | email | apple | device_code | cross_surface | enrol. VARCHAR not ENUM (rule #20)',
 
     INDEX idx_User      (UserId),
     INDEX idx_Expires   (ExpiresAt),
+    INDEX idx_UserInstall (UserId, DeviceInstallId),
 
     CONSTRAINT fk_Tokens_User
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
@@ -1485,6 +1488,64 @@ CREATE TABLE IF NOT EXISTS tblUserSetlistTombstones (
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Explicitly deleted user setlists — anti-resurrection + cross-device prune (#1661).';
+
+
+-- ----------------------------------------------------------------------------
+-- ACCOUNT / PROFILE FOUNDATION (epic #2180) - one migration, three dormant tables
+-- (tblUserProfileItems, tblUserSyncTombstones, tblAccountEnrolKeys) plus a few
+-- additive columns declared inline on tblApiTokens, tblApnsTokens,
+-- tblPushSubscriptions and tblSongHistory. Designed in ONE pass (rule #20).
+-- Mirrors appWeb/.sql/migrate-account-profile-foundation.php byte for byte.
+-- ----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS tblUserProfileItems (
+    UserId         INT UNSIGNED    NOT NULL COMMENT 'FK tblUsers.Id - whose item this is',
+    Section        VARCHAR(40)     NOT NULL COMMENT 'Registry section, app-validated against includes/profile_registry.php - VARCHAR not ENUM (rule #20)',
+    ItemKey        VARCHAR(191)    NOT NULL COMMENT 'Item identity inside the section (a setting key, a SongId, a songbook abbreviation). Identity, never position (rule #51)',
+    ValueJson      JSON            NULL DEFAULT NULL COMMENT 'The item value. NULL on a delete marker',
+    Version        BIGINT UNSIGNED NOT NULL COMMENT 'Per-person change counter, assigned under the person row lock. A pull asks for rows above its last cursor',
+    UpdatedAt      DATETIME(3)     NOT NULL COMMENT 'Server UTC time the change was accepted. Diagnosis only: ordering uses Version, never device clocks',
+    DeletedAt      DATETIME(3)     NULL DEFAULT NULL COMMENT 'Non-NULL = delete marker (the item was removed at this time)',
+    WriterChannel  VARCHAR(16)     NULL DEFAULT NULL COMMENT 'production | beta | alpha - which site accepted the write. Diagnosis only',
+    WriterPlatform VARCHAR(20)     NULL DEFAULT NULL COMMENT 'web | apple | android - which kind of app wrote it. Diagnosis only',
+
+    PRIMARY KEY (UserId, Section, ItemKey),
+    INDEX idx_UserVersion (UserId, Version),
+
+    CONSTRAINT fk_ProfileItems_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='One row per small per-person item (settings, chord choices, recent songbooks, per-song key and capo). One sync method for all of them (account/profile rewrite, epic #2180). Dormant until the profile sync code uses it.';
+
+CREATE TABLE IF NOT EXISTS tblUserSyncTombstones (
+    UserId    INT UNSIGNED NOT NULL COMMENT 'FK tblUsers.Id',
+    Kind      VARCHAR(30)  NOT NULL COMMENT 'favorite | custom_tag - what was deleted. App-validated, VARCHAR not ENUM (rule #20)',
+    ItemId    VARCHAR(191) NOT NULL COMMENT 'The deleted item identity (a SongId for a favourite, the tag text for a custom tag)',
+    DeletedAt DATETIME     NOT NULL COMMENT 'Database clock (userSyncNow frame) at deletion',
+    Reason    VARCHAR(20)  NOT NULL DEFAULT 'user' COMMENT 'user | admin - VARCHAR not ENUM (rule #20)',
+
+    PRIMARY KEY (UserId, Kind, ItemId),
+
+    CONSTRAINT fk_SyncTomb_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Explicit delete markers for favourites and custom tags, so a removed item stays removed on other devices (account/profile rewrite, epic #2180). Set lists keep tblUserSetlistTombstones. Dormant until the favourites sync code uses it.';
+
+CREATE TABLE IF NOT EXISTS tblAccountEnrolKeys (
+    KeyHash    VARCHAR(64)  NOT NULL PRIMARY KEY COMMENT 'sha256 of the enrol key. The key itself is never stored',
+    UserId     INT UNSIGNED NOT NULL COMMENT 'FK tblUsers.Id - whose key this is',
+    Platform   VARCHAR(20)  NOT NULL COMMENT 'apple | android | web - which kind of app holds the key',
+    CreatedAt  DATETIME     NOT NULL,
+    LastUsedAt DATETIME     NULL DEFAULT NULL COMMENT 'Last time the key was swapped for a device sign-in',
+    ExpiresAt  DATETIME     NOT NULL,
+    RevokedAt  DATETIME     NULL DEFAULT NULL COMMENT 'Non-NULL = revoked (sign out everywhere)',
+
+    INDEX idx_User (UserId),
+
+    CONSTRAINT fk_EnrolKeys_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Long-lived keys a native app can swap ONLY for a new device sign-in (one sign-in per device, account/profile rewrite, epic #2180). Lives in its own table so a key can never work as a normal sign-in token. Dormant until the device-enrolment code uses it.';
 
 
 -- ----------------------------------------------------------------------------
@@ -2046,6 +2107,7 @@ CREATE TABLE IF NOT EXISTS tblPushSubscriptions (
     P256dhKey       TEXT            NOT NULL,
     AuthKey         TEXT            NOT NULL,
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    Channel VARCHAR(16) NULL DEFAULT NULL COMMENT 'production | beta | alpha - which site the browser subscribed from (diagnosis only)',
 
     INDEX idx_User      (UserId),
 
@@ -2163,6 +2225,9 @@ CREATE TABLE IF NOT EXISTS tblSongHistory (
     UserId          INT UNSIGNED    NULL COMMENT 'NULL for anonymous views',
     SongId          VARCHAR(20)     NOT NULL,
     ViewedAt        TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    Source VARCHAR(20) NOT NULL DEFAULT 'view' COMMENT 'view | backfill - a real view, or one uploaded later from a device list. Only view counts as popularity. VARCHAR not ENUM (rule #20)',
+    Channel VARCHAR(16) NULL DEFAULT NULL COMMENT 'production | beta | alpha - which site recorded the view, so test sites can be left out of live statistics',
+    Platform VARCHAR(20) NULL DEFAULT NULL COMMENT 'web | apple | android - which kind of app recorded the view',
 
     INDEX idx_User      (UserId),
     INDEX idx_Song      (SongId),
@@ -4474,10 +4539,12 @@ CREATE TABLE IF NOT EXISTS tblApnsTokens (
     ExpiresAt  DATETIME       NULL DEFAULT NULL COMMENT 'Optional TTL — NULL = no expiry (ordinary device tokens); Live Activity tokens set this to the activity end',
     CreatedAt  TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt  TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    ApiTokenHash VARCHAR(64) NULL DEFAULT NULL COMMENT 'Hash of the sign-in token this push registration belongs to, so signing that session out removes only its own registration',
 
     UNIQUE KEY uq_PushToken (PushToken),
     INDEX      idx_User (UserId),
     INDEX      idx_Session (SessionId),
+    INDEX idx_ApiToken (ApiTokenHash),
 
     CONSTRAINT fk_ApnsTokens_User
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE,
