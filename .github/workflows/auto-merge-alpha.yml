@@ -130,6 +130,42 @@ jobs:
           # blip into a failed job that ALSO never dispatched the deploy. Each
           # gh call is now guarded and retried on the next poll instead.
           set -uo pipefail
+
+          # -- Delete the merged pull request's branch (#2173) --
+          # The repository's "Automatically delete head branches" setting never
+          # fires for these merges: auto-merge is switched on by this workflow, so
+          # the merge is done by github-actions[bot], and across 38 merged pull
+          # requests not one branch was deleted by the setting. Dependabot cleans
+          # up its own branches; every other one was deleted by hand. So the
+          # branch is deleted here, in the one place that already knows the merge
+          # has happened. Best effort: a failure only warns and never stops the
+          # deploy dispatch below. Never deletes a branch from a fork, and never
+          # one of the long-lived branches (the same names the "Keep core
+          # branches" ruleset protects, plus release candidates).
+          delete_merged_branch() {
+              local info ref cross
+              if ! info=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefName,isCrossRepository -q '.headRefName + " " + (.isCrossRepository|tostring)' 2>&1); then
+                  echo "::warning::could not read PR #$PR_NUMBER's branch name ($info) — not deleting its branch"
+                  return 0
+              fi
+              ref="${info% *}"
+              cross="${info##* }"
+              if [[ "$cross" != "false" || -z "$ref" ]]; then
+                  echo "Branch '$ref' comes from a fork or is unknown — leaving it."
+                  return 0
+              fi
+              if [[ "$ref" =~ ^(alpha|beta|main|master|release-candidate.*|archive/.*|backup/.*|future/.*)$ ]]; then
+                  echo "Branch '$ref' is a long-lived branch — leaving it."
+                  return 0
+              fi
+              if gh api -X DELETE "repos/$REPO/git/refs/heads/$ref" >/dev/null 2>&1; then
+                  echo "Deleted merged branch '$ref'."
+              else
+                  echo "::warning::could not delete merged branch '$ref' (already gone, or not allowed) — leaving it."
+              fi
+              return 0
+          }
+
           for i in $(seq 1 120); do
               # A failed `gh pr view` (network/TLS/rate-limit blip) is not a
               # terminal state — warn and re-poll rather than aborting.
@@ -141,6 +177,7 @@ jobs:
               case "$STATE" in
                   MERGED)
                       echo "PR #$PR_NUMBER merged — dispatching deploy.yml on alpha."
+                      delete_merged_branch
                       # Retry the dispatch too, so a transient blip here does
                       # not silently drop the post-merge deploy (#849 shape).
                       for d in 1 2 3 4 5; do
