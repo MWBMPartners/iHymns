@@ -91,6 +91,19 @@ jobs:
     # stops responding.
     timeout-minutes: 30
     steps:
+      # Token from the "iHymns Automation" GitHub App (#2127). A pull request opened
+      # with the built-in GITHUB_TOKEN has its checks held until a person approves
+      # them; one opened with an app token is treated like any other pull request,
+      # so its checks start by themselves. The token lasts about an hour and is
+      # limited to this repository. (`app-id` is the older input name. It still
+      # works; GitHub now prefers `client-id`.)
+      - name: Get a token from the GitHub App
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+
       - name: Check out alpha
         uses: actions/checkout@v7
         with:
@@ -98,8 +111,9 @@ jobs:
           # Fetch the full history so the new branch we'll push has
           # a clean rebase target.
           fetch-depth: 0
-          # Token with write scope for pushing the audit branch back.
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Token with write scope for pushing the audit branch back. It is the
+          # app's token, so the pull request opened below has its checks run.
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Configure git identity
         run: |
@@ -214,7 +228,7 @@ jobs:
       - name: Open PR with the audit report
         if: steps.report.outputs.report_path != ''
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPORT_PATH: ${{ steps.report.outputs.report_path }}
           AUDIT_DATE:  ${{ steps.report.outputs.date }}
           AUDIT_TOTAL: ${{ steps.report.outputs.total }}
