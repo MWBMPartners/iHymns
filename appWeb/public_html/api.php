@@ -263,6 +263,8 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    tblUserPreferences was deleted in the same change — two stores for one
    concept is a data-integrity trap, not a dormant feature. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_settings.php';
+/* C2 (epic #2180): the per-channel brake every personal-data write checks first. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'account_write_gate.php';
 /* Per-user song markup / notes (#1266 Phase 1) — vocab + pure validators +
    read/write layer for a signed-in user's PRIVATE notes/highlights on a song
    or lyric line. DORMANT: the three user_markup_* actions below are the only
@@ -2694,6 +2696,10 @@ if ($action !== null) {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             /* Parse JSON request body */
             $rawBody = file_get_contents('php://input');
@@ -4092,6 +4098,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
 
@@ -4773,6 +4783,10 @@ if ($action !== null) {
             }
 
             if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+                /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+                   paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+                   change is made. Reads, sign-in and sign-out are never gated. */
+                if (accountWritesRefuseIfOff()) { break; }
                 $rawBody = file_get_contents('php://input');
                 $body = json_decode($rawBody, true);
                 $settings = is_array($body) ? ($body['settings'] ?? null) : null;
@@ -6716,6 +6730,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -6934,6 +6952,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -7021,6 +7043,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -7211,6 +7237,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $db = getDbMysqli();
             if (!userMarkupTableReady($db)) {
@@ -7266,6 +7296,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $db = getDbMysqli();
             if (!userMarkupTableReady($db)) {
@@ -8258,6 +8292,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -8315,6 +8353,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -8387,6 +8429,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -8454,6 +8500,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -8602,6 +8652,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             $authUserId = (int)$authUser['Id'];
             $db = getDbMysqli();
             $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -9773,6 +9827,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Auth required.'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             $user = [
                 'id'       => $authUser['Id'] ?? null,
                 'role'     => $authUser['Role'] ?? null,
@@ -9803,6 +9861,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Auth required.'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
             $surface = (string)($body['surface'] ?? '');
             if (!in_array($surface, CARD_LAYOUT_SURFACES, true)) {
@@ -10729,7 +10791,10 @@ if ($action !== null) {
             }
 
             $authUser = getAuthenticatedUser();
-            $viewUserId = $authUser ? $authUser['Id'] : null;
+            /* C2 (epic #2180): when saving to accounts is paused on this site the view is
+               still counted, but WITHOUT the person (the same as an anonymous view), so a
+               test site cannot put views into a real person's history. */
+            $viewUserId = ($authUser && accountWritesAllowedHere()) ? $authUser['Id'] : null;
 
             try {
                 $db = getDbMysqli();
@@ -10849,6 +10914,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -10920,6 +10989,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $db = getDbMysqli();
             /* A5 (epic #2180): "Clear history" removes the person's NAME from
@@ -11237,6 +11310,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
             /* #2137 — `languages` is the new key (whole tags, in order);
@@ -12518,6 +12595,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $body      = json_decode((string)file_get_contents('php://input'), true) ?? [];
             $setlistId = trim((string)($body['setlistId'] ?? ''));
@@ -12579,6 +12660,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
             $setlistId = trim((string)($body['setlistId'] ?? ''));
             if ($setlistId === '') { sendJson(['error' => 'setlistId required.'], 400); break; }
@@ -12671,6 +12756,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             /* Per-user rate limit (#321) — caps invite-spam at 20 per
                hour per signed-in user. checkRateLimit() returns true
@@ -12857,6 +12946,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
             $setlistId = trim((string)($body['setlistId'] ?? ''));
             $collabId  = (int)($body['collaboratorId'] ?? 0);
@@ -13036,6 +13129,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
             $setlistId = trim((string)($body['setlistId'] ?? ''));
@@ -13144,6 +13241,10 @@ if ($action !== null) {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
             if (!_sharedSetlistTokenColumns()) {
                 sendJson(['error' => 'Edit links are not available on this server yet.'], 409);
@@ -13374,6 +13475,10 @@ if ($action !== null) {
             }
             $rvUser = getAuthenticatedUser();
             if (!$rvUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
             if (!_sharedSetlistTokenColumns()) { sendJson(['error' => 'Not available yet.'], 409); break; }
             $rvBody = json_decode((string)file_get_contents('php://input'), true) ?? [];

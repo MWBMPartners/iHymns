@@ -3260,6 +3260,8 @@ paths:
                     response's `editAudience` reports the value actually stored (which
                     may differ from the request if it was clamped).
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Setlist created or updated
           content:
@@ -3530,6 +3532,8 @@ paths:
                         items:
                           $ref: "#/components/schemas/SetlistSongEntry"
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Merged setlists
           content:
@@ -3864,6 +3868,8 @@ paths:
                       - $ref: "#/components/schemas/FavoriteEntry"
                   example: [{ "id": "CP-0202", "tags": ["Easter"] }, "MP-0042"]
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Stored favorites as {id, tags} objects
           content:
@@ -3917,6 +3923,8 @@ paths:
                   pattern: "^[A-Za-z]+-\\d+$"
                   example: CP-0202
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Favorite removed
           content:
@@ -4013,6 +4021,8 @@ paths:
                   items: { type: string, maxLength: 50 }
                   example: ["Easter", "Quiet Time"]
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Stored tag list
           content:
@@ -4184,6 +4194,7 @@ paths:
             `tblUserSongMarkup` has not been migrated on this server yet.
             Distinct from `422` (rule #35) so a client branches on STATUS,
             never on this file's error prose.
+            Also returned (reason account_writes_off_here) when saving to accounts is paused on this site.
           content:
             application/json:
               schema:
@@ -4248,7 +4259,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: "`tblUserSongMarkup` has not been migrated on this server yet."
+          description: "`tblUserSongMarkup` has not been migrated on this server yet. Also returned (reason account_writes_off_here) when saving to accounts is paused on this site."
           content:
             application/json:
               schema:
@@ -4906,6 +4917,8 @@ paths:
                   nullable: true
                   description: Resolver name (gravatar / libravatar / dicebear / none), or null to inherit the project default.
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Preference saved
           content:
@@ -4960,6 +4973,8 @@ paths:
                   maxLength: 255
                   example: john@example.com
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Profile updated
           content:
@@ -5019,6 +5034,8 @@ paths:
                   format: password
                   minLength: 8
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Password changed
           content:
@@ -7548,7 +7565,10 @@ paths:
       description: |
         Fire-and-forget analytics ping. Writes one row to `tblSongHistory`
         so the dashboard's view counts + `popular_songs` can aggregate.
-        Never blocks the response.
+        Never blocks the response. Account/profile rewrite C2: when an admin has
+        paused saving to accounts on this site, the view is still counted but
+        WITHOUT the signed-in person (as an anonymous view), and the answer is
+        still 200 (this action never returns the `account_writes_off_here` 409).
       parameters:
         - name: action
           in: query
@@ -7724,6 +7744,8 @@ paths:
                   items: { type: string }
                   example: ["en", "es"]
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Saved (canonical normalised list returned)
           content:
@@ -7789,6 +7811,8 @@ paths:
                   description: Optional free-text notes
                   example: "Sunday 10am — Communion service"
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Scheduled
           content:
@@ -7823,6 +7847,8 @@ paths:
               properties:
                 setlistId: { type: string, example: slist-abc123 }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Cleared (no-op if nothing was scheduled)
           content:
@@ -7961,6 +7987,8 @@ paths:
                   enum: [view, edit]
                   default: edit
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Invitation accepted / permission updated
           content:
@@ -8057,7 +8085,7 @@ paths:
                   error:  { type: string, example: "Sign in to edit this set list." }
                   reason: { type: string, enum: [signin_required], example: signin_required }
         "403": { description: View-only link, cross-origin, or owner locked }
-        "409": { description: Edit links not migrated on this server }
+        "409": { description: "Edit links not migrated on this server. Also returned (reason account_writes_off_here) when saving to accounts is paused on this site." }
         "410": { description: Link revoked or expired }
         "413":
           description: >
@@ -8150,7 +8178,7 @@ paths:
                   revoked: { type: boolean }
         "403": { description: Caller does not own this link }
         "404": { description: No such link }
-        "409": { description: Edit links not migrated on this server }
+        "409": { description: "Edit links not migrated on this server. Also returned (reason account_writes_off_here) when saving to accounts is paused on this site." }
         "401":
           description: >-
             Not signed in.
@@ -8230,6 +8258,8 @@ paths:
                 setlistId:      { type: string }
                 collaboratorId: { type: integer }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Removed (reports how many rows were deleted)
           content:
@@ -8411,6 +8441,8 @@ paths:
                         type: array
                         items: { type: integer, minimum: 0 }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Saved; echoes the sanitised song list actually stored
           content:
@@ -9701,6 +9733,8 @@ paths:
                       song_id:   { type: string, pattern: "^[A-Za-z0-9_-]{1,32}$" }
                       viewed_at: { type: string, format: date-time }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Imported count
           content:
@@ -9738,6 +9772,8 @@ paths:
           required: true
           schema: { type: string, enum: [song_history_clear] }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Cleared count
           content:
@@ -19479,6 +19515,7 @@ paths:
             Whole-blob saves are switched off (`user_settings_legacy_blob_writes`
             is `'0'`) and the request named no namespace. Body carries
             `reason: namespace_required`. Resend with a `namespace`.
+            Also returned (reason account_writes_off_here) when saving to accounts is paused on this site.
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "403":
           description: |
@@ -19528,6 +19565,8 @@ paths:
                   format: password
                   description: Caller's current password (re-auth).
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Username changed
           content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
@@ -19628,7 +19667,7 @@ paths:
           description: Cross-origin request rejected (CSRF gate)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "409":
-          description: Caller is the last active global_admin — transfer first
+          description: "Caller is the last active global_admin — transfer first. Also returned (reason account_writes_off_here) when saving to accounts is paused on this site."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
           description: Too many re-auth attempts from this IP
@@ -19713,6 +19752,8 @@ paths:
                 order:   { type: array, items: { type: string } }
                 hidden:  { type: array, items: { type: string } }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Saved
           content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
@@ -19743,6 +19784,8 @@ paths:
               properties:
                 surface: { type: string }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Override cleared
           content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
@@ -25138,6 +25181,23 @@ components:
         `X-API-Key: ihdrv_live_…`.
 
   responses:
+    AccountWritesOff:
+      description: |
+        Saving to accounts is paused on this site (account/profile rewrite C2).
+        An admin can pause it per site (live, beta or dev) as an emergency brake,
+        because all three sites share one set of accounts. The response is
+        **409** with `reason: account_writes_off_here`. NOTHING was changed.
+        Reading data, signing in and signing out still work. A client should
+        branch on the 409 status and the `reason` code (never the sentence), keep
+        the change on the device, and try again later. Not sent by any action
+        that only reads, nor by sign-in, sign-out or registration.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:  { type: string }
+              reason: { type: string, enum: [account_writes_off_here], example: account_writes_off_here }
     RateLimited:
       description: |
         Too Many Requests — the per-window read rate limit was exceeded

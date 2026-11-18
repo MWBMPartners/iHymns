@@ -67,6 +67,7 @@ import {
     loadSongbookRegistry,
     EVT_REFRESH_REQUESTED,
     EVT_REFRESH_COMPLETE,
+    EVT_ACCOUNT_WRITES_OFF,
 } from './constants.js';
 
 /* #1582 — install the global error/unhandledrejection listeners BEFORE
@@ -429,6 +430,16 @@ class iHymnsApp {
                etc.) before / alongside the route refresh. */
             this.pullToRefresh = new PullToRefresh(this);
             this.pullToRefresh.init();
+            /* Account/profile rewrite C2 (epic #2180): when this site has been told to
+               stop saving to accounts (an admin's emergency brake), say so ONCE per page
+               load, quietly. The person's change is not lost: it stays on this device and
+               goes up when saving is switched back on. */
+            let accountWritesNoticeShown = false;
+            window.addEventListener(EVT_ACCOUNT_WRITES_OFF, () => {
+                if (accountWritesNoticeShown) return;
+                accountWritesNoticeShown = true;
+                this.showToast('Saving to your account is paused on this site. Your changes are kept on this device for now.', 'info', 6000);
+            });
             document.addEventListener(EVT_REFRESH_REQUESTED, async () => {
                 try {
                     /* Re-poll auxiliary data first so the bell / footer

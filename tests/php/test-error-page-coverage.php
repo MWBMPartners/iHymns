@@ -492,9 +492,12 @@ $exemptions = [
                   . 'shape as every other site in this exemption. #2073 commit 15 added manage/vocal-parts-'
                   . 'review.php\'s Accept/Dismiss/Undo/Rescan actions: a not-pending suggestion, a marker line '
                   . 'that has since moved/vanished (VocalPartReviewConflictException), or the review tables not '
-                  . 'yet migrated all return the same JSON-only 409 shape, never a rendered page.',
+                  . 'yet migrated all return the same JSON-only 409 shape, never a rendered page. The '
+                  . 'account/profile rewrite (C1/C2, epic #2180) added includes/account_write_gate.php\'s '
+                  . 'accountWritesRefuseIfOff(): the "saving to accounts is paused on this site" 409, the same '
+                  . 'JSON-only, no-render shape (it calls api.php\'s sendJson, and only the API ever does).',
         'paths' => [
-            'api.php', 'includes/api_keys.php', 'includes/duplicate_song_admin.php',
+            'api.php', 'includes/account_write_gate.php', 'includes/api_keys.php', 'includes/duplicate_song_admin.php',
             'includes/musician_duplicates.php', 'includes/song_link_admin.php',
             'includes/song_soft_delete.php', 'manage/api-keys.php',
             'manage/duplicate-songs.php', 'manage/editor/api.php', 'manage/editor/api2.php',

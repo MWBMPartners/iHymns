@@ -251,6 +251,16 @@ export const EVT_REFRESH_REQUESTED        = 'ihymns:refresh-requested';
 export const EVT_REFRESH_COMPLETE         = 'ihymns:refresh-complete';
 export const EVT_FETCH_FAILED             = 'ihymns:fetch-failed';
 export const EVT_FETCH_SUCCEEDED          = 'ihymns:fetch-succeeded';
+/* Account/profile rewrite C2 (epic #2180): fired on `window` by apiFetch() when
+   the server answers a same-origin request with 409 + reason
+   ACCOUNT_WRITES_OFF_REASON, meaning "saving to accounts is paused on this
+   site". app.js listens and shows ONE quiet notice per page load; the change
+   itself stays on the device. */
+export const EVT_ACCOUNT_WRITES_OFF       = 'ihymns:account-writes-off';
+/* The reason code the server puts on that 409. MUST equal ACCOUNT_WRITES_OFF_REASON in
+   includes/account_write_gate.php (tests/php/test-account-write-gate.php compares
+   them, rule #35). Clients branch on the 409 status and this code, never the sentence. */
+export const ACCOUNT_WRITES_OFF_REASON    = 'account_writes_off_here';
 export const EVT_LANGUAGE_FILTER_CHANGED  = 'ihymns:language-filter-changed';
 export const EVT_OFFLINE_SETTINGS_CHANGED = 'ihymns:offline-settings-changed';
 /* #1786 Option B — fired on `document` by list-sort.js every time a
