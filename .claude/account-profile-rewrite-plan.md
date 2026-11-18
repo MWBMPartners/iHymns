@@ -1,5 +1,19 @@
 # Plan: rewriting accounts, profiles and personal-data sync (iHymns)
 
+## Progress (PR 1: phases A, B, C; branch `claude/account-profile-sync-pr1`)
+
+| Step | Commit | Status |
+|---|---|---|
+| A1 one locked settings writer | a427c47 | done |
+| A2 stop re-fetching settings every page | 5e021c6 | done |
+| A3 keep visitor language choice | 3bc9b2b | done |
+| A4 stop recording who searched | 21a7e6c | done |
+| A5 clear history unlinks | 218371e | done |
+| A6 sign-out no longer kills iPhone push (part 1) | f0752cb | done |
+| A7 never merge one person's data into another's | cac1080 | done, needs Opus review |
+| A8 old builds cannot delete by omission | a3dbecd | done, needs Opus review |
+| A9 switch to refuse whole-box saves | c6b12a4 | done |
+
 2026-11-18. Builds on `.claude/account-profile-architecture-review-2026-11-18.md` (the "review") and `.claude/settings-sync-2143-plan.md`. Plan only; nothing built.
 
 ---
