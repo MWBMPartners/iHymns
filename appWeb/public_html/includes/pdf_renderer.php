@@ -103,6 +103,38 @@ function _pdfVendorAutoloadPath(): string
 }
 
 /**
+ * Make sure `mb_regex_encoding()` exists before the PDF engine loads.
+ *
+ * ELI5: the PDF library asks PHP "which text encoding do your regex
+ * functions use?" on every PDF. PHP 8.6 is moving that "mbregex" part of
+ * the mbstring add-on out of the default build, so on a PHP built without
+ * it the question would crash and every PDF would fall back to browser
+ * print. This gives the library a tiny stand-in answer ONLY when the real
+ * function is missing; where it exists (every 8.4/8.5 build today) nothing
+ * is defined and the real one is used.
+ *
+ * DETAIL: mPDF 8.3.x calls only this one mbregex function (Mpdf.php, three
+ * places, found by reading the vendored source). With no argument it reads
+ * the encoding, so we say 'UTF-8' (what mPDF sets it to anyway); with an
+ * argument it sets it, so we say "done" (true). We check that the function
+ * EXISTS, not the PHP version, because whether mbregex is present depends
+ * on how that PHP was built, not on its version.
+ * @see https://www.php.net/manual/en/function.mb-regex-encoding.php
+ * @see .claude/php86-readiness-plan.md  A4
+ */
+function _pdfEnsureMbRegexStandIn(): void
+{
+    if (function_exists('mb_regex_encoding')) {
+        return;
+    }
+    /* Declared here (inside the check) so it only exists when needed. */
+    function mb_regex_encoding(?string $encoding = null): string|bool
+    {
+        return $encoding === null ? 'UTF-8' : true;
+    }
+}
+
+/**
  * Is the mPDF engine usable on THIS install?
  *
  * ELI5: "do we even have the PDF toolbox here?" — the ONE question
@@ -130,6 +162,7 @@ function ihymnsPdfEngineAvailable(): bool
         return $cached = false;
     }
     try {
+        _pdfEnsureMbRegexStandIn();
         require_once $autoload;
     } catch (\Throwable $e) {
         error_log('[pdf_renderer] vendored autoload failed to load: ' . $e->getMessage());
