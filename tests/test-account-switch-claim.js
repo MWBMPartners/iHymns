@@ -96,6 +96,7 @@ async function story(userAuthPath) {
     Object.defineProperty(globalThis, 'navigator', { value: { onLine: true, serviceWorker: undefined }, configurable: true, writable: true });
 
     const requests = [];   // { who, action, body }
+    const gates = {};      // action -> a promise Ben's (user 1) replies wait on, to hold a request "in flight"
     let currentToken = null;
     const tokenOwner = { 'tok-ben': 1, 'tok-carol': 2 };
     globalThis.fetch = async (input, init = {}) => {
@@ -107,13 +108,14 @@ async function story(userAuthPath) {
         const who = tokenOwner[token] ?? null;
         const body = init.body ? JSON.parse(init.body) : null;
         requests.push({ who, action, body });
+        if (gates[action] && who === 1) await gates[action];
         const ok = (obj) => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => obj });
         if (action === 'favorites_sync') {
             if (token === 'tok-expired') return { ok: false, status: 401, headers: { get: () => null }, json: async () => ({}) };
             return ok({ favorites: (body.favorites || []).map((f) => ({ id: f.id, tags: f.tags || [] })), syncedAt: '2026-02-02 00:00:00' });
         }
         if (action === 'user_setlists_sync') return ok({ setlists: body.setlists || [], tombstones: [], syncedAt: '2026-02-02 00:00:00' });
-        if (action === 'custom_tags_sync' || action === 'custom_tags') return ok({ tags: [] });
+        if (action === 'custom_tags_sync' || action === 'custom_tags') return ok({ tags: gates.benTags && who === 1 ? ['BEN-TAG'] : [] });
         return ok({});
     };
 
@@ -127,7 +129,7 @@ async function story(userAuthPath) {
 
     const settle = async () => { app.userAuth._userDataSynced = false; await app.userAuth.triggerUserDataSync(); await flush(30); };
     const mine = (who) => requests.filter((r) => r.who === who);
-    return { app, requests, mine, settle, window };
+    return { app, requests, mine, settle, window, gates };
 }
 
 console.log('\n2 - the real UserAuth, Favorites and SetList\n');
@@ -191,6 +193,34 @@ check('Ben signing back in gets his songs back', good.benBack === true);
     check("a visitor's own songs are still claimed by the person who signs in first", JSON.stringify(env.mine(2).map((r) => r.body)).includes('MP-VISITOR'));
 }
 
+/* a FAST account switch: Ben's requests are still in flight when Carol signs in */
+async function fastSwitch(userAuthPath) {
+    const env = await story(userAuthPath);
+    const { app, gates } = env;
+    app.userAuth.saveCredentials('tok-ben', { id: 1, username: 'ben' });
+    localStorage.setItem(C.STORAGE_FAVORITES, JSON.stringify([{ id: 'MP-BEN-1', tags: [] }]));
+    localStorage.setItem(C.STORAGE_SETLISTS, JSON.stringify([{ id: 'sl-ben', name: 'Ben only', songs: [] }]));
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    gates.favorites_sync = gate; gates.user_setlists_sync = gate; gates.custom_tags_sync = gate; gates.benTags = true;
+    /* the three ways a reply is used: a per-edit push (absorbs), a reconcile, and the custom-tag reconcile */
+    const push = (async () => app.userAuth._absorbFavoritesSync(await app.userAuth.syncFavorites([{ id: 'MP-BEN-1', tags: [] }], 'replace')))();
+    const pushLists = (async () => app.userAuth._absorbSetlistSync(await app.userAuth.syncSetlists([{ id: 'sl-ben', name: 'Ben only', songs: [] }], 'replace')))();
+    const tags = app.userAuth.triggerCustomTagsSync();
+    await flush();                                              /* all three are now waiting on the server */
+    app.userAuth.saveCredentials('tok-carol', { id: 2, username: 'carol' });   /* Carol signs in on the same device */
+    release();
+    const results = await Promise.all([push, pushLists, tags]);
+    await flush(30);
+    const live = (localStorage.getItem(C.STORAGE_FAVORITES) || '') + (localStorage.getItem(C.STORAGE_SETLISTS) || '') + (localStorage.getItem(C.STORAGE_CUSTOM_TAGS) || '');
+    return { leaked: live.includes('MP-BEN-1') || live.includes('sl-ben') || live.includes('BEN-TAG'), owner: core.readDataOwner(localStorage), results };
+}
+console.log('\n2b - a fast account switch while a sync is in flight\n');
+const fast = await fastSwitch(USER_AUTH);
+check("Ben's late replies are dropped: none of his songs, set lists or tags reach Carol's cache", fast.leaked === false);
+check('...and the device is still recorded as Carol\'s, not re-labelled by a stale reply', fast.owner === '2', String(fast.owner));
+check('...each late reply reports "not applied" (false), not success', fast.results.every((r) => r === false), JSON.stringify(fast.results));
+
 console.log('\n3 - mutation proof (owner check switched off)\n');
 let mutant = null;
 try {
@@ -225,6 +255,22 @@ try {
         check('with unplanned protection off, the songs stay in the browser (the test can fail)', (localStorage.getItem(C.STORAGE_FAVORITES) || '').includes('MP-BEN-9'));
     } finally {
         if (m2) fs.rmSync(m2, { force: true });
+    }
+}
+
+/* third mutation: a reply is used no matter who is signed in now */
+{
+    let m3 = null;
+    try {
+        const src = fs.readFileSync(USER_AUTH, 'utf8');
+        const from = '_replyIsStillForRequester(requesterUid) {';
+        if (!src.includes(from)) throw new Error('mutation setup: helper not found; update this test');
+        m3 = path.join(MODULES, `zz_ihymns_test_userauth_mutant_${Date.now()}_${Math.random().toString(16).slice(2)}.js`);
+        fs.writeFileSync(m3, src.replace(from, from + ' return true; /* MUTATED: any reply accepted */'));
+        const bad = await fastSwitch(m3);
+        check("with the still-the-same-person check off, Ben's late reply DOES land in Carol's cache (the test can fail)", bad.leaked === true);
+    } finally {
+        if (m3) fs.rmSync(m3, { force: true });
     }
 }
 

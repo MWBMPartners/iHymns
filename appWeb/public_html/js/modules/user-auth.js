@@ -645,6 +645,22 @@ export class UserAuth {
     }
 
     /**
+     * Is this reply still for the person who is signed in?
+     *
+     * ELI5: a sync takes a moment. If Ben asked and Carol signed in while the
+     * answer was on its way, Ben's answer must not be stored as Carol's data, and
+     * Carol must not be recorded as the owner of it.
+     *
+     * @param {?(string|number)} requesterUid who made the request (captured before it was sent)
+     * @returns {boolean} true when it is safe to use the reply
+     */
+    _replyIsStillForRequester(requesterUid) {
+        if (requesterUid === undefined || requesterUid === null) return true; /* a caller that did not say: old behaviour */
+        const now = this.getUser()?.id;
+        return this.isLoggedIn() && now !== undefined && now !== null && String(now) === String(requesterUid);
+    }
+
+    /**
      * Note that the server answered a sync as READ-ONLY.
      *
      * ELI5: when an admin has paused saving on this site, the server still lets
@@ -701,6 +717,9 @@ export class UserAuth {
      */
     _absorbSetlistSync(res) {
         if (!res || !Array.isArray(res.setlists) || !this.app.setList) return false;
+        /* The reply belongs to whoever ASKED. If someone else is signed in now (a fast
+           account switch while the request was in flight), drop it entirely. */
+        if (!this._replyIsStillForRequester(res.uid)) return false;
         /* #1661 — PRUNE BEFORE UNION, and the order is load-bearing. The union
            lets the CURRENT local copy win for a shared id (it may carry an
            in-flight edit), so a set list another device deleted would survive
@@ -731,8 +750,10 @@ export class UserAuth {
         const final = this._unionSetlists(localSide, res.setlists);
         this.app.setList.saveAll(final, { sync: false });
         this._setSyncedAt(STORAGE_SETLISTS_SYNCED_AT, res.syncedAt);
-        /* A7: the device's set lists now mirror THIS account's. */
-        recordDataOwner(localStorage, this.getUser()?.id);
+        /* A7: the device's set lists now mirror the REQUESTER's account (not whoever is
+           signed in now: the check above makes those the same person, and recording
+           the requester keeps it right even if that check is ever loosened). */
+        recordDataOwner(localStorage, res.uid ?? this.getUser()?.id);
 
         /* One toast per absorb (not per row). The refused edit is replaced by
            the newer server copy; the user re-applies it and the next push finds
@@ -764,13 +785,14 @@ export class UserAuth {
      */
     _absorbFavoritesSync(res) {
         if (!res || !Array.isArray(res.favorites) || !this.app.favorites) return false;
+        if (!this._replyIsStillForRequester(res.uid)) return false; /* fast account switch: drop it */
         this.app.favorites.saveAll(
             this._mergeFavorites(this.app.favorites.getAll(), res.favorites),
             { sync: false }
         );
         this._setSyncedAt(STORAGE_FAVORITES_SYNCED_AT, res.syncedAt);
-        /* A7: the device's favourites now mirror THIS account's. */
-        recordDataOwner(localStorage, this.getUser()?.id);
+        /* A7: the device's favourites now mirror the REQUESTER's account. */
+        recordDataOwner(localStorage, res.uid ?? this.getUser()?.id);
         return true;
     }
 
@@ -794,6 +816,9 @@ export class UserAuth {
      */
     async syncSetlists(localSetlists, mode = 'replace') {
         if (!this.isLoggedIn()) return null;
+        /* Who is asking: captured BEFORE the request, handed back on the result so the
+           absorb step can tell if somebody else signed in while it was in flight. */
+        const uid = this.getUser()?.id;
 
         /* Offline → mark a pending sync in the queue. bindOfflineDrains()
            replays with the LATEST local state when connectivity returns,
@@ -913,6 +938,7 @@ export class UserAuth {
                 conflicts: Array.isArray(data.conflicts) ? data.conflicts : [],
                 /* A paused site answered as a read-only pull (see _noteReadOnly). */
                 readOnly: this._noteReadOnly(data),
+                uid,
             };
         } catch (err) {
             /* Network error mid-fetch — queue a sync marker so it runs
@@ -944,6 +970,7 @@ export class UserAuth {
      */
     async syncFavorites(localFavorites, mode = 'replace') {
         if (!this.isLoggedIn()) return null;
+        const uid = this.getUser()?.id; /* who is asking; see syncSetlists() */
 
         if (!navigator.onLine) {
             try { await offlineQueue.enqueue('favorites-sync', { ts: Date.now() }); } catch (_e) {}
@@ -983,6 +1010,7 @@ export class UserAuth {
                 syncedAt: typeof data.syncedAt === 'string' ? data.syncedAt : null,
                 truncated: data.truncated === true,
                 readOnly: this._noteReadOnly(data),
+                uid,
             };
         } catch (err) {
             if (err instanceof TypeError) {
@@ -1090,7 +1118,9 @@ export class UserAuth {
             /* MERGE, not replace: custom tags are add-only today (no removal
                UI), so union is correct and needs no _syncReady gate — it can
                never wipe another device's tags (review #4). */
+            const uid = this.getUser()?.id; /* who is asking; the reply is dropped if that changes */
             const merged = await this.syncCustomTags(this.app.favorites.getCustomTags(), 'merge');
+            if (!this._replyIsStillForRequester(uid)) return false;
             if (merged && Array.isArray(merged)) {
                 this.app.favorites.saveCustomTags(merged);
                 return true;
@@ -2512,8 +2542,10 @@ export class UserAuth {
         if (!this.app.favorites?.getCustomTags) return false;
         this._reconcileDataOwner();
 
+        const uid = this.getUser()?.id; /* who is asking; the reply is dropped if that changes */
         const local = this.app.favorites.getCustomTags();
         const merged = await this.syncCustomTags(local, 'merge');
+        if (!this._replyIsStillForRequester(uid)) return false;
 
         if (merged && Array.isArray(merged)) {
             this.app.favorites.saveCustomTags(merged);
