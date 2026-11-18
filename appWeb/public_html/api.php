@@ -1155,14 +1155,19 @@ if ($action !== null) {
             if ($offset === 0) {
                 try {
                     $logDb = getDbMysqli();
-                    $uid   = null;
-                    $logAuth = getAuthenticatedUser();
-                    if ($logAuth) $uid = (int)$logAuth['Id'];
+                    /* A4 (epic #2180): the search text is recorded WITHOUT who
+                       typed it. This used to store the signed-in person's id
+                       next to every search, but nothing in the whole codebase
+                       ever read that id, and the privacy page tells people
+                       their recent searches stay on their own device. So the
+                       UserId column is simply not written any more (it stays
+                       NULL). Old rows are blanked later by the manual step B2.
+                       tests/php/test-privacy-minimisation.php guards this. */
                     $logStmt = $logDb->prepare(
-                        'INSERT INTO tblSearchQueries (Query, ResultCount, UserId) VALUES (?, ?, ?)'
+                        'INSERT INTO tblSearchQueries (Query, ResultCount) VALUES (?, ?)'
                     );
                     $resultCount = count($results);
-                    $logStmt->bind_param('sii', $query, $resultCount, $uid);
+                    $logStmt->bind_param('si', $query, $resultCount);
                     $logStmt->execute();
                     $logStmt->close();
                 } catch (\Throwable $_e) {
