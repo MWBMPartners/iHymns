@@ -29,6 +29,7 @@ import {
     EVT_OFFLINE_SETTINGS_CHANGED,
 } from '../constants.js';
 import { escapeHtml } from '../utils/html.js';
+import { CROSS_SITE_KEYS } from './settings-sync-registry.js';
 /* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
    on every same-origin request, replacing the old global fetch monkey-patch. */
 import { apiFetch } from '../utils/api-client.js';
@@ -57,24 +58,13 @@ import {
  * would just mean that phone silently prompts for MIDI permission
  * the next time it loads a song page, for hardware it can't see.
  */
-const SYNC_PREF_KEYS = Object.freeze([
-    'ihymns_theme',
-    'ihymns_fontSize',
-    'ihymns_reduceMotion',
-    'ihymns_reduceTransparency',
-    'ihymns_transition',
-    'ihymns_default_songbook',
-    'ihymns_auto_update_songs',
-    'ihymns_numpad_live_search',
-    'ihymns_search_lyrics',
-    'ihymns_display',
-    STORAGE_CVD_MODE,
-    STORAGE_LINK_EMPHASIS,
-    'ihymns_keyboardShortcuts',
-    /* #1770 §4.7 — unprefixed on purpose; see the constant's own doc-comment
-       in constants.js for why it must NOT gain the ihymns_ prefix. */
-    STORAGE_LIVE_IDLE_TIMEOUT_MINS,
-]);
+const SYNC_PREF_KEYS = CROSS_SITE_KEYS;
+/* ^ #2143 — the ONE list of display settings that may travel (rule #35). It used
+   to be typed out here. The rebuilt cross-site sync (settings-sync.js) reads the
+   same list, and tests/test-settings-sync-registry.js checks it against the
+   tree. (The old cookie module, subdomain-sync.js, keeps its own shorter list
+   until the rebuilt sync replaces it.) Adding a setting means one line, and its
+   check, in settings-sync-registry.js. */
 
 /** localStorage key for the user's opt-in toggle. Default = on. */
 const SYNC_TOGGLE_KEY = 'ihymns_sync_app_settings';
