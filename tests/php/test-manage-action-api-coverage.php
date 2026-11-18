@@ -616,6 +616,7 @@ $MAPPING = [
            conceivable use for it (same class as every other action in
            this file — see this array's own doc-block just above). */
         'save_search_visibility'           => 'web_only:configuration-secrets',
+        'save_cross_site_sync'             => 'web_only:configuration-secrets',
         'save_webhooks'                    => 'web_only:configuration-secrets',
         'test_email'                       => 'web_only:configuration-secrets',
     ],
