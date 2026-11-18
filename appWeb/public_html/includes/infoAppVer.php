@@ -199,7 +199,7 @@ $app["Application"]["Description"]["Keywords"] = "hymns, worship, lyrics, songbo
 /* Note: the old "v1.x = local-JSON phase, v2.x = iLyrics dB phase" scheme is
    dead — reads went DB-direct with epic #1010 (there is no local-JSON phase to
    be in), so the major digit no longer encodes a data-source phase. */
-$app["Application"]["Version"]["Number"] = "1.3.0";
+$app["Application"]["Version"]["Number"] = "1.4.0";
 
 /* Build number — the git commit count (`git rev-list --count HEAD`): a
  * monotonic, NEVER-RESETTING per-commit build identifier, fully separate
