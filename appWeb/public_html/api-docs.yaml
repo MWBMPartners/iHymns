@@ -3413,6 +3413,14 @@ paths:
       tags: [Setlists]
       summary: Sync setlists with server
       description: |
+        **Paused site (account-writes switch off): a plain `merge` still works,
+        read-only.** The server returns what the account holds and changes
+        nothing (no inserts, no deletes, no clean-up). The response carries
+        `readOnly: true` and `syncedAt: null`: do NOT record a "synced up to
+        here" mark from it, and do not start sending deleting `replace` syncs
+        on the strength of it. Every other request (`replace`, or any mode other
+        than `merge`) still gets the 409 `account_writes_off_here`.
+
         Reconcile local setlists with server-side storage.
 
         **There are two protocols, and the server picks between them by the
@@ -3823,6 +3831,14 @@ paths:
       tags: [Favorites]
       summary: Sync favorites
       description: |
+        **Paused site (account-writes switch off): a plain `merge` still works,
+        read-only.** The server returns what the account holds and changes
+        nothing (no inserts, no deletes, no clean-up). The response carries
+        `readOnly: true` and `syncedAt: null`: do NOT record a "synced up to
+        here" mark from it, and do not start sending deleting `replace` syncs
+        on the strength of it. Every other request (`replace`, or any mode other
+        than `merge`) still gets the 409 `account_writes_off_here`.
+
         Reconcile local favorites with server-side storage (WS-G #1019).
         Behaviour depends on `mode`:
           * `replace` (default for per-edit auto-sync) — the client's list is
@@ -3991,6 +4007,14 @@ paths:
       tags: [Favorites]
       summary: Sync the user's custom tag pool
       description: |
+        **Paused site (account-writes switch off): a plain `merge` still works,
+        read-only.** The server returns what the account holds and changes
+        nothing (no inserts, no deletes, no clean-up). The response carries
+        `readOnly: true` and `syncedAt: null`: do NOT record a "synced up to
+        here" mark from it, and do not start sending deleting `replace` syncs
+        on the strength of it. Every other request (`replace`, or any mode other
+        than `merge`) still gets the 409 `account_writes_off_here`.
+
         Reconcile the local custom-tag pool with the server (WS-G #1019).
         `mode=replace` (default for edits) deletes tags absent from the
         payload; `mode=merge` (first-login backfill) only adds. Max 200 tags.

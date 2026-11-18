@@ -4118,8 +4118,11 @@ if ($action !== null) {
             }
             /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
                paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
-               change is made. Reads, sign-in and sign-out are never gated. */
-            if (accountWritesRefuseIfOff()) { break; }
+               change is made - EXCEPT a plain "merge", which runs READ-ONLY ($readOnly)
+               so a person on a new device still sees their account data. Reads,
+               sign-in and sign-out are never gated. */
+            $readOnly = false;
+            if (accountWritesRefuseUnlessMergeRead($readOnly)) { break; }
 
             $rawBody = file_get_contents('php://input');
 
@@ -4234,6 +4237,55 @@ if ($action !== null) {
 
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
+
+            /* READ-ONLY merge on a paused site: hand back what the account holds and
+               change NOTHING - no expiry clean-up, no deletes, no inserts. No `syncedAt`
+               (so the device does not record "I have seen everything up to now" and
+               arm its own deleting syncs) and no conflicts (nothing was written).
+               Expired lists are left out of the answer, using the same UTC clock and
+               rule the normal path uses to expire them. */
+            if ($readOnly) {
+                $roExpiry = userSyncExpiryReady($db);
+                $roSlots  = setlistSlotsColumnReady($db);
+                $stmt = $db->prepare(
+                    'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt'
+                    . ($roExpiry ? ', ExpiresAt' : '') . ($roSlots ? ', SlotsJson' : '')
+                    . ' FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC'
+                );
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $roRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+                $roExpired = $roExpiry
+                    ? userSyncExpiredIds(
+                        array_map(static fn(array $r): array => ['id' => $r['SetlistId'], 'expiresAt' => $r['ExpiresAt'] ?? null], $roRows),
+                        userSyncUtcNow($db)
+                    )
+                    : [];
+                $roSetlists = [];
+                foreach ($roRows as $row) {
+                    if (in_array(userSyncSanitiseId($row['SetlistId']), $roExpired, true)) { continue; }
+                    $roSetlists[] = [
+                        'id'        => $row['SetlistId'],
+                        'name'      => $row['Name'],
+                        'songs'     => json_decode($row['SongsJson'], true) ?: [],
+                        'createdAt' => $row['CreatedAt'],
+                        'updatedAt' => $row['UpdatedAt'],
+                        'expiresAt' => $row['ExpiresAt'] ?? null,
+                        'plan'      => setlistTemplateDecodePlan($row['SlotsJson'] ?? null),
+                    ];
+                }
+                sendJson([
+                    'setlists'   => $roSetlists,
+                    'syncedAt'   => null,
+                    'truncated'  => false,
+                    'cap'        => null,
+                    'tombstones' => userSyncTombstoneList($db, $userId, $since),
+                    'conflicts'  => [],
+                    'readOnly'   => true,
+                ]);
+                break;
+            }
 
             /* #1661 — PROTOCOL 2 REQUIRES SOMEWHERE TO RECORD A DELETION.
                Migrations here are web-run, so between a deploy and someone
@@ -6742,8 +6794,11 @@ if ($action !== null) {
             }
             /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
                paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
-               change is made. Reads, sign-in and sign-out are never gated. */
-            if (accountWritesRefuseIfOff()) { break; }
+               change is made - EXCEPT a plain "merge", which runs READ-ONLY ($readOnly)
+               so a person on a new device still sees their account data. Reads,
+               sign-in and sign-out are never gated. */
+            $readOnly = false;
+            if (accountWritesRefuseUnlessMergeRead($readOnly)) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -6766,6 +6821,30 @@ if ($action !== null) {
 
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
+
+            /* READ-ONLY merge on a paused site: return the stored favourites and change
+               NOTHING (no inserts, no deletes, no `syncedAt`, so the device does not
+               arm its deleting syncs). */
+            if ($readOnly) {
+                $stmt = $db->prepare(
+                    'SELECT SongId, Tags FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
+                );
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $roRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+                sendJson([
+                    'favorites' => array_map(static function ($row) {
+                        $t = $row['Tags'] !== null ? json_decode($row['Tags'], true) : [];
+                        return ['id' => $row['SongId'], 'tags' => is_array($t) ? array_values($t) : []];
+                    }, $roRows),
+                    'syncedAt'  => null,
+                    'truncated' => false,
+                    'cap'       => 500,
+                    'readOnly'  => true,
+                ]);
+                break;
+            }
 
             /* Cap at 500 favourites, recording whether the cap BIT (#1649).
                Computed from the pre-slice count, because a truncated payload is
@@ -7055,8 +7134,11 @@ if ($action !== null) {
             }
             /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
                paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
-               change is made. Reads, sign-in and sign-out are never gated. */
-            if (accountWritesRefuseIfOff()) { break; }
+               change is made - EXCEPT a plain "merge", which runs READ-ONLY ($readOnly)
+               so a person on a new device still sees their account data. Reads,
+               sign-in and sign-out are never gated. */
+            $readOnly = false;
+            if (accountWritesRefuseUnlessMergeRead($readOnly)) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -7073,6 +7155,24 @@ if ($action !== null) {
 
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
+
+            /* READ-ONLY merge on a paused site: return the stored tags and change
+               NOTHING (no inserts, no `syncedAt`). */
+            if ($readOnly) {
+                $stmt = $db->prepare('SELECT Tag FROM tblUserCustomTags WHERE UserId = ? ORDER BY Tag ASC');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $roTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
+                $stmt->close();
+                sendJson([
+                    'tags'      => $roTags,
+                    'syncedAt'  => null,
+                    'truncated' => false,
+                    'cap'       => 200,
+                    'readOnly'  => true,
+                ]);
+                break;
+            }
 
             /* Sanitise: trim, cap length at 50, drop empties, de-dupe,
                cap the pool at 200 tags. The 200-cap is applied to the DEDUPED

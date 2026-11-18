@@ -645,6 +645,24 @@ export class UserAuth {
     }
 
     /**
+     * Note that the server answered a sync as READ-ONLY.
+     *
+     * ELI5: when an admin has paused saving on this site, the server still lets
+     * a new device PULL the person's saved data down, but changes nothing and
+     * sends no "synced up to here" mark. This remembers that it happened, so the
+     * reconcile does not arm its deleting syncs, and does not retry on every
+     * page change.
+     *
+     * @param {object} data decoded server response
+     * @returns {boolean} true when the response was a read-only one
+     */
+    _noteReadOnly(data) {
+        if (data?.readOnly !== true) return false;
+        this._readOnlyThisRun = true;
+        return true;
+    }
+
+    /**
      * Tell the user once per session that their collection exceeds the server
      * cap, so the overflow lives on this device only.
      *
@@ -893,6 +911,8 @@ export class UserAuth {
                 /* #1675 — per-row overwrite refusals for _absorbSetlistSync() to
                    take the server copy of (and toast). [] when none. */
                 conflicts: Array.isArray(data.conflicts) ? data.conflicts : [],
+                /* A paused site answered as a read-only pull (see _noteReadOnly). */
+                readOnly: this._noteReadOnly(data),
             };
         } catch (err) {
             /* Network error mid-fetch — queue a sync marker so it runs
@@ -962,6 +982,7 @@ export class UserAuth {
                 favorites: data.favorites,
                 syncedAt: typeof data.syncedAt === 'string' ? data.syncedAt : null,
                 truncated: data.truncated === true,
+                readOnly: this._noteReadOnly(data),
             };
         } catch (err) {
             if (err instanceof TypeError) {
@@ -1005,6 +1026,7 @@ export class UserAuth {
             }
 
             const data = await res.json();
+            this._noteReadOnly(data);
             return Array.isArray(data.tags) ? data.tags : null;
         } catch (err) {
             if (err instanceof TypeError) {
@@ -2430,6 +2452,10 @@ export class UserAuth {
            so no caller can advance the watermark without keeping the data. */
         if (!this._absorbSetlistSync(res)) return false;
         const final = this.app.setList.getAll();
+        /* A paused site answered with a read-only pull: the account's lists are now
+           on this device, but nothing may be pushed back, so the deleting auto-sync
+           stays unarmed (it would only be refused with a 409). */
+        if (res.readOnly) return true;
         this.app.setList._syncReady = true;
         /* Only announce when the user did something deliberate (login, the
            "Sync Now" button, a settings action). The automatic per-boot
@@ -2473,6 +2499,7 @@ export class UserAuth {
 
         /* Merge + watermark advance, in that order (#1649). */
         if (!this._absorbFavoritesSync(res)) return false;
+        if (res.readOnly) return true; /* paused site: pulled only, do not arm the deleting sync */
         this.app.favorites._syncReady = true;
         return true;
     }
@@ -2514,10 +2541,15 @@ export class UserAuth {
     async triggerUserDataSync() {
         if (this._userDataSynced || this._userDataSyncing) return;
         if (!this.isLoggedIn()) return;
+        /* A paused site only ever answers with a read-only pull. Having just done
+           one, wait a few minutes before the next, instead of re-asking on every
+           page change. */
+        if (this._userDataReadOnlyAt && Date.now() - this._userDataReadOnlyAt < 5 * 60 * 1000) return;
         /* A7: before anything merges, make sure these saved songs are this
            person's (see _reconcileDataOwner). */
         this._reconcileDataOwner();
         this._userDataSyncing = true;
+        this._readOnlyThisRun = false;
 
         let allOk = false;
         try {
@@ -2541,6 +2573,16 @@ export class UserAuth {
            the rest. */
         this.app.setList?._scheduleSync?.();
         this.app.favorites?._scheduleSync?.();
+
+        /* Read-only pull on a paused site: the data was pulled, but we are NOT fully
+           reconciled (nothing is armed), so do not latch. Remember when, so the next
+           attempt waits a few minutes. When saving is switched back on the next
+           attempt does the full, arming reconcile. */
+        if (allOk && this._readOnlyThisRun) {
+            this._userDataReadOnlyAt = Date.now();
+            return;
+        }
+        this._userDataReadOnlyAt = 0;
 
         /* Latch only on full success so failures retry next navigation. */
         if (allOk) {

@@ -222,7 +222,7 @@ foreach ($writerCases as $name => $fw) {
     if (isset($CASE_EXEMPT[$name])) { continue; }
     $body = $bodies[$name];
     $gateAt = null;
-    foreach (['accountWritesRefuseIfOff(', 'accountWritesAllowedHere('] as $needle) {
+    foreach (['accountWritesRefuseIfOff(', 'accountWritesAllowedHere(', 'accountWritesRefuseUnlessMergeRead('] as $needle) {
         $p = strpos($body, $needle);
         if ($p !== false) { $gateAt = $gateAt === null ? $p : min($gateAt, $p); }
     }
@@ -231,6 +231,29 @@ foreach ($writerCases as $name => $fw) {
 foreach ($CASE_EXEMPT as $name => $why) {
     chk("exempt case '$name' still writes (else the exemption is stale): $why", isset($writerCases[$name]));
     chk("exempt case '$name' really is not gated", !str_contains($bodies[$name] ?? '', 'accountWritesRefuseIfOff('));
+}
+/* The three sync actions let a plain merge through as a READ-ONLY pull (so a new device
+   sees the account's data on a paused site). Everything else stays refused, and the
+   read-only branch must come before the first write and must not mint a watermark. */
+echo "3b. the sync actions: paused site = read-only merge, nothing else\n";
+require_once $web . '/includes/account_write_gate.php';
+chk('mode merge is a merge read', accountWritesIsMergeRead(['mode' => 'merge', 'favorites' => []]) === true);
+chk('mode missing is a merge read (the handlers default to merge)', accountWritesIsMergeRead(['favorites' => []]) === true);
+chk('mode replace is NOT a merge read', accountWritesIsMergeRead(['mode' => 'replace']) === false);
+chk('an odd mode is NOT a merge read', accountWritesIsMergeRead(['mode' => 'MERGE ']) === false && accountWritesIsMergeRead(['mode' => 1]) === false);
+chk('a body that is not an object is NOT a merge read', accountWritesIsMergeRead(null) === false && accountWritesIsMergeRead('merge') === false);
+foreach (['favorites_sync', 'user_setlists_sync', 'custom_tags_sync'] as $syncCase) {
+    $b = $bodies[$syncCase] ?? '';
+    $g = strpos($b, 'accountWritesRefuseUnlessMergeRead(');
+    $r = strpos($b, 'if ($readOnly)');
+    $w = $firstWrite($b);
+    chk("case '$syncCase' uses the merge-read gate (not the plain refusal)", $g !== false && !str_contains($b, 'accountWritesRefuseIfOff('));
+    chk("case '$syncCase' returns early on \$readOnly, before its first write", $r !== false && $w !== null && $g < $r && $r < $w);
+    $roEnd = $r === false ? 0 : strpos($b, 'break;', $r);
+    $roBlock = $r === false || $roEnd === false ? '' : substr($b, $r, $roEnd - $r);
+    chk("case '$syncCase': the read-only branch writes nothing and mints no watermark",
+        $roBlock !== '' && !preg_match($writeRe, $roBlock) && !str_contains($roBlock, 'userSyncNow(') && !str_contains($roBlock, 'userSyncExpireSetlists(')
+        && str_contains($roBlock, "'syncedAt'") && (bool)preg_match("/'syncedAt'\\s*=>\\s*null/", $roBlock));
 }
 echo "4. getting in and out is never gated\n";
 foreach ($NEVER_GATED as $name) {

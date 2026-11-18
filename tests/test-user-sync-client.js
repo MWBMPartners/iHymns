@@ -448,6 +448,24 @@ check('the client never deletes a set list locally on expiry (the server convert
     !/expired[\s\S]{0,120}?this\.delete\(/i.test(setlistNoComments));
 
 /* ---------------------------------------------------------------------- */
+/* Paused site: the server answers a merge as a READ-ONLY pull (readOnly:true,
+   no syncedAt). The client must treat that as a successful read, must not arm
+   its deleting syncs from it, and must not re-ask on every page change. */
+const uaNoComments = userAuthSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+const trigSetlist = methodBody(uaNoComments, 'triggerSetlistSync') || '';
+const trigFav     = methodBody(uaNoComments, 'triggerFavoritesSync') || '';
+const trigAll     = methodBody(uaNoComments, 'triggerUserDataSync') || '';
+check('the three sync calls note a read-only answer',
+    (uaNoComments.match(/_noteReadOnly\(data\)/g) || []).length >= 3);
+check('triggerSetlistSync returns before arming _syncReady on a read-only answer',
+    /res\.readOnly\)\s*return true/.test(trigSetlist) && trigSetlist.indexOf('res.readOnly') < trigSetlist.indexOf('_syncReady = true'));
+check('triggerFavoritesSync returns before arming _syncReady on a read-only answer',
+    /res\.readOnly\)\s*return true/.test(trigFav) && trigFav.indexOf('res.readOnly') < trigFav.indexOf('_syncReady = true'));
+check('triggerUserDataSync does not latch after a read-only pull, and waits before retrying',
+    /_userDataReadOnlyAt\s*&&\s*Date\.now\(\)/.test(trigAll) && /allOk\s*&&\s*this\._readOnlyThisRun/.test(trigAll)
+    && trigAll.indexOf('_readOnlyThisRun) {') < trigAll.indexOf('this._userDataSynced = true'));
+
+/* ---------------------------------------------------------------------- */
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {

@@ -125,3 +125,62 @@ function accountWritesRefuseIfOff(): bool
     }
     return true;
 }
+
+/**
+ * PURE: is this decoded sync request a plain "merge" - the kind that only
+ * pulls the person's saved data down onto a device?
+ *
+ * ELI5: when a site is paused for saving, a signed-in person on a NEW device
+ * should still SEE what is already in their account. The first sync after
+ * sign-in is a "merge" (it only adds), so on a paused site it is allowed to
+ * run as a read: it hands back what the account holds and changes nothing.
+ * Anything else (a "replace", which can delete) stays refused.
+ *
+ * `mode` missing counts as merge, because that is what every sync handler
+ * already does with it. Anything that is not exactly 'merge' (or missing) is
+ * not a merge read.
+ *
+ * @param mixed $body the json_decode()d request body
+ */
+function accountWritesIsMergeRead(mixed $body): bool
+{
+    if (!is_array($body)) {
+        return false;
+    }
+    $mode = $body['mode'] ?? 'merge';
+    return $mode === 'merge';
+}
+
+/**
+ * The gate for the three sync actions (favourites, set lists, custom tags):
+ * like accountWritesRefuseIfOff(), except that on a paused site a plain
+ * "merge" is let through as a READ-ONLY request.
+ *
+ * Returns true when it refused (sent the 409; the caller then `break`s).
+ * Otherwise returns false and sets `$readOnly` by reference: true means the
+ * site is paused and the caller MUST NOT write anything (no inserts, no
+ * deletes, no new "synced at" mark); false means writes are allowed as usual.
+ *
+ *     case 'favorites_sync':
+ *         $readOnly = false;
+ *         if (accountWritesRefuseUnlessMergeRead($readOnly)) { break; }
+ *
+ * The body is only read when the site is paused, so the normal path costs
+ * nothing extra.
+ */
+function accountWritesRefuseUnlessMergeRead(bool &$readOnly): bool
+{
+    $readOnly = false;
+    if (accountWritesAllowedHere()) {
+        return false;
+    }
+    $body = json_decode((string)file_get_contents('php://input'), true);
+    if (accountWritesIsMergeRead($body)) {
+        $readOnly = true;
+        return false;
+    }
+    if (function_exists('sendJson')) {
+        sendJson(accountWritesRefusalBody(), 409);
+    }
+    return true;
+}

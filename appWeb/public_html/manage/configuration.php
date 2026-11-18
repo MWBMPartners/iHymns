@@ -1797,9 +1797,10 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 misbehaves, untick it here and that site stops changing real people&rsquo;s saved data.
             </p>
             <p class="small text-secondary mb-3">
-                A paused site still lets people read their data, sign in and sign out. Changes they make
-                there are kept on their own device until the site is switched back on. Everything is
-                switched on by default.
+                A paused site still lets people read their data, sign in and sign out. Someone signing
+                in on a new device there still sees their favourites, set lists and tags (pulled down,
+                nothing saved). Changes they make are kept on their own device until the site is
+                switched back on. Everything is switched on by default.
             </p>
             <form method="post">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
