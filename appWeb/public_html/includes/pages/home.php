@@ -360,7 +360,7 @@ $homeCardEnd = '</div>';
                                           aria-hidden="true">Unofficial</span>
                                 <?php endif; ?>
                                 <p class="card-text text-muted small mt-2 mb-0">
-                                    <?= number_format($book['songCount']) ?> songs
+                                    <?= number_format($book['songCount']) ?> <?= (int)$book['songCount'] === 1 ? 'song' : 'songs' ?>
                                 </p>
                                 <?php
                                 /* #782 phase D — "Part of: <Series>" line.

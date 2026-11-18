@@ -46,7 +46,7 @@ foreach ($songbooks as $_sbCheck) {
         </h1>
         <?php if (($stats['totalSongs'] ?? 0) > 0): ?>
         <span class="badge bg-primary bg-gradient rounded-pill">
-            <?= number_format($stats['totalSongs']) ?> songs total
+            <?= number_format($stats['totalSongs']) ?> <?= (int)$stats['totalSongs'] === 1 ? 'song' : 'songs' ?> total
         </span>
         <?php endif; ?>
     </div>
@@ -180,7 +180,7 @@ foreach ($songbooks as $_sbCheck) {
                                               aria-hidden="true">Unofficial</span>
                                     <?php endif; ?>
                                     <p class="text-muted small mb-0 mt-1">
-                                        <?= number_format($book['songCount']) ?> songs
+                                        <?= number_format($book['songCount']) ?> <?= (int)$book['songCount'] === 1 ? 'song' : 'songs' ?>
                                     </p>
                                     <?php
                                     /* #782 phase D — "Part of: <Series>" line.

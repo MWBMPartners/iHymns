@@ -879,7 +879,7 @@ declare(strict_types=1);
                         </span>
                         <div class="offline-songbook-info">
                             <span class="small"><?= htmlspecialchars($book['name']) ?></span>
-                            <span class="text-muted small">(<?= $count ?> songs)</span>
+                            <span class="text-muted small">(<?= $count ?> <?= (int)$count === 1 ? 'song' : 'songs' ?>)</span>
                         </div>
                         <span class="text-muted small offline-songbook-size">~<?= $estSize ?></span>
                         <span class="small text-muted offline-songbook-status" data-songbook="<?= htmlspecialchars($book['id']) ?>"></span>

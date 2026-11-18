@@ -1102,14 +1102,35 @@ class iHymnsApp {
         if (!('serviceWorker' in navigator)) return;
 
         /*
-         * Reload when a new service worker takes control.
-         * The SW now calls skipWaiting() during install, so it activates
-         * immediately. This listener ensures the page reloads to pick up
-         * fresh HTML and newly cached CDN resources. The { once: true }
-         * flag prevents infinite reload loops.
+         * Reload when a NEW service worker replaces an OLD one.
+         *
+         * ELI5: when an updated version of the app takes over, reload so the
+         * page matches it. On someone's very first visit there is no older
+         * version to replace, so don't reload — the page they are looking at
+         * is already the newest one.
+         *
+         * DETAILED: on a first visit the worker calls skipWaiting() and
+         * clients.claim() (service-worker.js.php, the #354 first-install
+         * branch), which fires `controllerchange` here about a second after
+         * the page has loaded — later on a slow phone, because the worker
+         * finishes caching the app first. Reloading at that point threw away
+         * whatever the visitor had started doing: text typed into search,
+         * their scroll position, and the sign-in box that /login opens (so a
+         * "Sign in" link did nothing on a new device). It gained nothing,
+         * because a first-visit page was fetched from the network and is
+         * already current. `navigator.serviceWorker.controller` is null
+         * exactly when this page load was not controlled by any worker, so
+         * it tells the two cases apart. Updates still reload here (the page
+         * had a controller), and the "New version available — Refresh" toast
+         * below adds its own reload for the case where an update is accepted
+         * on a page that started uncontrolled.
+         * https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerContainer/controller
+         * https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerContainer/controllerchange_event
          */
+        const pageWasControlled = !!navigator.serviceWorker.controller;
         let refreshing = false;
         navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (!pageWasControlled) return;
             if (refreshing) return;
             refreshing = true;
             window.location.reload();

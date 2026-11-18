@@ -141,6 +141,17 @@ console.log('2 — nonce\'d CSS fallback script present and covers every CDN sty
         } else {
             fail('fallback script does not strip integrity — the local copy would fail SRI');
         }
+        /* A failed cross-origin stylesheet is NOT always `sheet === null`:
+           Chromium keeps an empty sheet whose cssRules throw a SecurityError,
+           so a bare `el.sheet` "loaded" test never fired there — with the CDN
+           unreachable the page stayed unstyled (seen in a real browser by
+           tests/browser/polish.spec.js). The script must read cssRules, inside
+           a try, to tell a real load from a failed one. */
+        if (/\.sheet\.cssRules\b/.test(fallbackScript) && /\btry\s*\{/.test(fallbackScript)) {
+            pass('fallback treats an empty / unreadable sheet as failed (reads cssRules inside try)');
+        } else {
+            fail('fallback only checks link.sheet — in Chromium a FAILED CDN stylesheet still has a (empty) sheet, so the /vendor copy would never load; read sheet.cssRules inside a try');
+        }
     }
 }
 
