@@ -78,6 +78,7 @@ final class FakeStmt
 final class FakeDb extends \mysqli
 {
     public array $log = [];
+    public array $userAudit = [];   /* user id => audit rows still holding personal details */
     public function __construct(public array $tables, public array $cols, public int $search, public int $audit) {}
     public function prepare(string $q): mixed { $this->log[] = ['prepare', $q]; return new FakeStmt($this, $q); }
     public function query(string $q, int $m = 0): mixed {
@@ -93,6 +94,13 @@ final class FakeDb extends \mysqli
     }
     public function exec(string $sql, array $b, FakeStmt $st): void {
         if (str_starts_with(ltrim($sql), 'SELECT')) { return; }   /* a read: answered by get_result() */
+        if (str_starts_with($sql, 'UPDATE tblActivityLog') && str_contains($sql, 'WHERE UserId = ?')) {
+            [$uid, $lim] = [(int)$b[0], (int)$b[1]];
+            $n = min($lim, $this->userAudit[$uid] ?? 0);
+            $this->userAudit[$uid] = ($this->userAudit[$uid] ?? 0) - $n;
+            $st->affected_rows = $n;
+            return;
+        }
         $limit = (int)$b[0];
         if (str_starts_with($sql, 'UPDATE tblSearchQueries')) { $n = min($limit, $this->search); $this->search -= $n; $st->affected_rows = $n; return; }
         if (str_starts_with($sql, 'UPDATE tblActivityLog'))   { $n = min($limit, $this->audit);  $this->audit  -= $n; $st->affected_rows = $n; return; }
@@ -118,6 +126,25 @@ chk('there were writes to inspect', count($writes) > 0);
 chk('every write is an UPDATE of tblSearchQueries or tblActivityLog, never a DELETE or INSERT',
     count(array_filter($writes, fn($e) => !preg_match('/^UPDATE (tblSearchQueries|tblActivityLog) SET /', $e[1]))) === 0);
 chk('every write binds its batch limit as a value (LIMIT ?)', count(array_filter($writes, fn($e) => !str_ends_with($e[1], 'LIMIT ?'))) === 0);
+
+/* ---------------- erasing ONE account blanks that person's audit rows (same list as the migration) ---------------- */
+$one = new FakeDb(['tblSearchQueries', 'tblActivityLog', 'tblUsers'],
+    ['tblSearchQueries' => ['Id', 'Query', 'UserId'], 'tblActivityLog' => $auditCols, 'tblUsers' => ['Id', 'Status']], 0, 0);
+$one->userAudit = [41 => 11000, 42 => 3];
+chk('one account: blanks every one of that person\'s rows (loops in batches)', privacyLegacyBlankUserAuditRows($one, 41) === 11000 && $one->userAudit[41] === 0);
+chk('one account: another person\'s rows are untouched', $one->userAudit[42] === 3);
+chk('one account: a re-run changes nothing', privacyLegacyBlankUserAuditRows($one, 41) === 0);
+$userWrites = array_values(array_filter($one->log, fn($e) => $e[0] === 'prepare' && str_starts_with($e[1], 'UPDATE tblActivityLog')));
+chk('one account: the statement is scoped by a BOUND UserId and batched', count($userWrites) >= 1 && count(array_filter($userWrites, fn($e) => !str_contains($e[1], 'WHERE UserId = ? AND (') || !str_ends_with($e[1], 'LIMIT ?'))) === 0);
+chk('one account: it uses the SAME set list as the migration', str_contains($userWrites[0][1], privacyLegacyAuditSql($all)['set']));
+chk('one account: a missing table or user id is skipped, never thrown', privacyLegacyBlankUserAuditRows(new FakeDb(['tblUsers'], ['tblUsers' => ['Id', 'Status']], 0, 0), 41) === 0 && privacyLegacyBlankUserAuditRows($one, 0) === 0);
+/* the erasure itself must call it, and must not widen to unattributed rows */
+$life = code((string)file_get_contents($root . '/public_html/includes/account_lifecycle.php'));
+$eraseAt = strpos($life, 'function accountErase(');
+$eraseBody = $eraseAt === false ? '' : substr($life, $eraseAt);
+chk('accountErase() blanks the person\'s audit rows through the shared function', str_contains($eraseBody, 'privacyLegacyBlankUserAuditRows($db, $userId)'));
+chk('...before it writes the tombstone, in the same transaction', strpos($eraseBody, 'privacyLegacyBlankUserAuditRows(') < strpos($eraseBody, "Status                 = 'deleted'"));
+chk('...and account_lifecycle.php does not carry its own audit SET list', !str_contains($life, 'JSON_REMOVE') && !str_contains($life, 'UPDATE tblActivityLog'));
 
 /* An install that lacks the tables: skipped quietly, no throw. */
 $bare = new FakeDb(['tblUsers'], ['tblUsers' => ['Id', 'Status']], 0, 0);

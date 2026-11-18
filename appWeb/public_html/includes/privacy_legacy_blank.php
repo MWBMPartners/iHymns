@@ -67,8 +67,13 @@ const PRIVACY_LEGACY_AUDIT_BLANKS = [
  * PURE: build the audit-log SET list and WHERE condition for the columns that
  * exist on this install. Columns not in `$existing` are left out.
  *
+ * `needs` is the "still holds something" half of the condition on its own (no
+ * account filter), so erasing ONE account can scope it by `UserId = ?` while the
+ * migration scopes it by "every erased account" (see
+ * privacyLegacyBlankUserAuditRows()).
+ *
  * @param string[] $existing names of tblActivityLog columns that exist
- * @return array{set:string, where:string}
+ * @return array{set:string, where:string, needs:string}
  */
 function privacyLegacyAuditSql(array $existing): array
 {
@@ -88,7 +93,7 @@ function privacyLegacyAuditSql(array $existing): array
     /* Only the account is erased when its tombstone says so. */
     $where = "UserId IN (SELECT Id FROM tblUsers WHERE Status = 'deleted')"
            . ($needs ? ' AND (' . implode(' OR ', $needs) . ')' : ' AND 0');
-    return ['set' => implode(', ', $set), 'where' => $where];
+    return ['set' => implode(', ', $set), 'where' => $where, 'needs' => $needs ? implode(' OR ', $needs) : '0'];
 }
 
 /** Does a table exist? (INFORMATION_SCHEMA, bound.) */
@@ -129,7 +134,7 @@ function privacyLegacyAuditReady(\mysqli $db): bool
         && in_array('UserId', _privacyLegacyColumns($db, 'tblActivityLog', ['UserId']), true);
 }
 
-/** The audit-log SET/WHERE for THIS install's real columns. @return array{set:string, where:string} */
+/** The audit-log SET/WHERE for THIS install's real columns. @return array{set:string, where:string, needs:string} */
 function privacyLegacyAuditSqlForDb(\mysqli $db): array
 {
     $wanted = array_merge(array_keys(PRIVACY_LEGACY_AUDIT_BLANKS), ['Details']);
@@ -155,6 +160,48 @@ function privacyLegacyAuditPendingCount(\mysqli $db): int
     $n = (int)($r->fetch_row()[0] ?? 0);
     $r->close();
     return $n;
+}
+
+/**
+ * Blank the audit rows of ONE person, as part of erasing their account.
+ *
+ * ELI5: when an account is erased, the audit log keeps WHAT happened but must
+ * not keep WHO (address, browser, country, username, email). The one-off
+ * migration above cleans up accounts erased long ago; this does the same for the
+ * account being erased right now, so the migration never has to be run again.
+ *
+ * Same columns, same blanking rules as the migration (one SET list, from
+ * privacyLegacyAuditSql()), scoped to this one user with a BOUND id. Only rows
+ * attributed to this user are touched: audit rows with no user attached are a
+ * separate question (see the plan's follow-ups). Runs in batches so a person
+ * with a huge history never holds one long lock; once blanked a row no longer
+ * matches, so the loop ends.
+ *
+ * Skipped (returns 0) when tblActivityLog or its UserId column is missing.
+ * Does NOT need tblUsers.Status, because it is told which account to blank.
+ *
+ * @return int rows blanked
+ */
+function privacyLegacyBlankUserAuditRows(\mysqli $db, int $userId, int $limit = PRIVACY_LEGACY_BATCH): int
+{
+    if ($userId <= 0
+        || !_privacyLegacyTableExists($db, 'tblActivityLog')
+        || !in_array('UserId', _privacyLegacyColumns($db, 'tblActivityLog', ['UserId']), true)) {
+        return 0;
+    }
+    $sql = privacyLegacyAuditSqlForDb($db);
+    if ($sql['set'] === '' || $sql['needs'] === '0') { return 0; }
+    /* SET and the "needs" test come from the fixed list in this file; the user id and batch size are bound. */
+    $st = $db->prepare('UPDATE tblActivityLog SET ' . $sql['set'] . ' WHERE UserId = ? AND (' . $sql['needs'] . ') LIMIT ?');
+    $total = 0;
+    do {
+        $st->bind_param('ii', $userId, $limit);
+        $st->execute();
+        $n = max(0, (int)$st->affected_rows);
+        $total += $n;
+    } while ($n >= $limit);
+    $st->close();
+    return $total;
 }
 
 /** The dashboard probe: is anything still waiting to be blanked? */
