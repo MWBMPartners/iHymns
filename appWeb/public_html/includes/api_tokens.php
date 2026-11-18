@@ -106,6 +106,131 @@ function apiTokensDeviceMetaColumnsExist(\mysqli $db): bool
     return $exists;
 }
 
+/* ======================================================================
+ * THE ONE TOKEN MAKER (account/profile rewrite step C3, epic #2180)
+ * ======================================================================
+ *
+ * ELI5
+ * ----
+ * Every way of signing in (password, new account, Sign in with Apple, a TV
+ * pairing code, an emailed link, the admin-to-public bridge) ends by making
+ * one new sign-in token. Six places each made one by hand, and only three of
+ * them wrote the device's name, platform or app version. Now there is ONE
+ * function that makes a sign-in token. Everything that records "how was this
+ * sign-in made" and "which install is it" is added there once, so no route
+ * can be forgotten, and a guard forbids any other place from inserting one.
+ *
+ * Detailed
+ * --------
+ *  - 32 random bytes shown as 64 hex characters (the raw token, returned once
+ *    and never stored); only its sha256 is stored, as `tblApiTokens.Token`.
+ *  - It expires 30 days after it is made (it slides forward on use: see
+ *    getAuthenticatedUser()). The expiry time is handed back through the
+ *    `$expiresAtTs` out-parameter so the caller can set the cookie to match.
+ *  - `$meta` is the device details a client declared (`deviceName`, `platform`,
+ *    `appVersion`; optionally `deviceInstallId`). `null` means "write no device
+ *    details", for internal tokens and for the two routes whose caller writes
+ *    them itself after its transaction. The web User-Agent auto-naming of
+ *    apiTokenDeviceMetaStore() still applies whenever `$meta` is an array.
+ *  - `$issuedVia` says how it was made (API_TOKEN_ISSUED_VIA). An unknown word
+ *    is stored as NULL and logged, never allowed to fail a sign-in.
+ *  - The new columns (IssuedVia, DeviceInstallId) come from the B1 migration and
+ *    are only written when they exist, so an install that has not run it signs
+ *    in exactly as before.
+ *
+ * @see tests/php/test-single-token-mint.php  the guard that bans any other INSERT
+ */
+
+/** How long a new sign-in token lives, in seconds (30 days). */
+const API_TOKEN_LIFETIME_SECONDS = 30 * 86400;
+
+/** Closed vocabulary for `tblApiTokens.IssuedVia`: how a sign-in was created. VARCHAR, never an ENUM (rule #20). */
+const API_TOKEN_ISSUED_VIA = ['password', 'email', 'apple', 'device_code', 'cross_surface', 'enrol'];
+
+/**
+ * Do BOTH new sign-in columns (IssuedVia, DeviceInstallId) exist? Remembered per
+ * connection. A partial apply never counts as ready (an AND across the columns).
+ */
+function apiTokensFoundationColumnsExist(\mysqli $db): bool
+{
+    static $memo = [];
+    $key = spl_object_id($db);
+    if (array_key_exists($key, $memo)) {
+        return $memo[$key];
+    }
+    try {
+        $st = $db->prepare(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblApiTokens'
+                AND COLUMN_NAME IN ('IssuedVia', 'DeviceInstallId')"
+        );
+        $st->execute();
+        $count = (int)($st->get_result()->fetch_row()[0] ?? 0);
+        $st->close();
+        return $memo[$key] = ($count === 2);
+    } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
+        return $memo[$key] = false;
+    }
+}
+
+/**
+ * PURE: clean a client-declared install id, or null. 8 to 64 letters, digits
+ * and dashes. Anything else is dropped (never a failed sign-in).
+ */
+function apiTokenCleanInstallId(mixed $raw): ?string
+{
+    if (!is_string($raw)) {
+        return null;
+    }
+    $t = trim($raw);
+    return preg_match('/^[A-Za-z0-9\-]{8,64}$/', $t) ? $t : null;
+}
+
+/**
+ * Make ONE sign-in token. THE only place that inserts into tblApiTokens.
+ *
+ * @param \mysqli     $db
+ * @param int         $uid         the person being signed in (already verified)
+ * @param ?array      $meta        device details, or null for none (see the header)
+ * @param string      $issuedVia   one of API_TOKEN_ISSUED_VIA
+ * @param int|null    $expiresAtTs OUT: the Unix time the token expires at
+ * @return string the RAW token (64 hex characters). Returned once; only its hash is stored.
+ */
+function apiTokenMint(\mysqli $db, int $uid, ?array $meta, string $issuedVia, ?int &$expiresAtTs = null): string
+{
+    $token       = bin2hex(random_bytes(32));
+    $tokenHash   = hash('sha256', $token);
+    $expiresAtTs = time() + API_TOKEN_LIFETIME_SECONDS;
+    $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
+
+    if (apiTokensFoundationColumnsExist($db)) {
+        $via = in_array($issuedVia, API_TOKEN_ISSUED_VIA, true) ? $issuedVia : null;
+        if ($via === null) {
+            error_log('[api_tokens/mint] unknown issuedVia "' . $issuedVia . '" stored as NULL');
+        }
+        $installId = apiTokenCleanInstallId($meta['deviceInstallId'] ?? null);
+        $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt, IssuedVia, DeviceInstallId) VALUES (?, ?, ?, ?, ?)');
+        $stmt->bind_param('sisss', $tokenHash, $uid, $expiresAt, $via, $installId);
+    } else {
+        $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
+        $stmt->bind_param('sis', $tokenHash, $uid, $expiresAt);
+    }
+    $stmt->execute();
+    $stmt->close();
+
+    if ($meta !== null) {
+        apiTokenDeviceMetaStore(
+            $db,
+            $tokenHash,
+            $meta['deviceName'] ?? null,
+            $meta['platform'] ?? null,
+            $meta['appVersion'] ?? null
+        );
+    }
+    return $token;
+}
+
 /**
  * Should signing out THIS session also remove the person's Apple push
  * registrations? (account/profile rewrite A6, epic #2180)

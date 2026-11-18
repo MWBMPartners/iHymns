@@ -27,11 +27,12 @@ declare(strict_types=1);
  *      the UA is a browser; respects an explicit platform; leaves an
  *      unrecognised UA untouched (never fakes "web").
  *  (C) apiTokenCleanDeviceName()     — trim, 120-cap, blank/non-string→null.
- *  (D) TOKEN-MINT COVERAGE (tree-derived, rule #34) — every
- *      `INSERT INTO tblApiTokens (Token, UserId, ExpiresAt)` across api.php +
- *      manage/includes/auth.php is, within a window, either followed by an
- *      `apiTokenDeviceMetaStore(` call OR annotated with a `device-meta:` /
- *      `no-device-meta:` reason marker. Floor ≥ 5 (vacuity guard).
+ *  (D) TOKEN-MINT COVERAGE (tree-derived, rule #34) — every call to the one
+ *      token maker, apiTokenMint() (C3, epic #2180), across api.php +
+ *      manage/includes/auth.php either passes device details read from the
+ *      request (apiTokenDeviceMetaFromBody) OR passes null with a
+ *      `device-meta:` / `no-device-meta:` reason marker. Floor >= 5 (vacuity
+ *      guard). That nothing else inserts a token is test-single-token-mint.php.
  *  (E) device_rename ENDPOINT — POST-gated, validateCsrfRequest(), a
  *      per-user rate limit, an un-migrated 409, and an UPDATE whose `UserId = ?`
  *      is IN the WHERE (own-only).
@@ -118,45 +119,59 @@ ok('keeps a normal name intact',    apiTokenCleanDeviceName("Lance's iPhone") ==
  * ===================================================================== */
 echo "\n(D) token-mint coverage (tree-derived):\n";
 
-/** A mint's surrounding window is "covered" when it either stores device
- *  metadata OR carries a written reason marker. */
-function mintCovered(string $window): bool
+/* C3 (epic #2180): there is now ONE token maker, apiTokenMint(). The rule this
+   section has always enforced is unchanged in spirit: every sign-in route either
+   passes real device details (so a device is never listed "Unnamed") or says in
+   writing why it passes none. The mint function itself writes the details. */
+
+/** A call is "covered" when it passes device details taken from the request
+ *  (apiTokenDeviceMetaFromBody) OR passes `null` and carries a written reason
+ *  marker (`device-meta:` / `no-device-meta:`) in its surrounding window. */
+function mintCovered(string $callLine, string $window): bool
 {
-    return strpos($window, 'apiTokenDeviceMetaStore(') !== false
-        || strpos($window, 'device-meta:') !== false;   /* matches device-meta: AND no-device-meta: */
+    $passesNull = (bool)preg_match('/apiTokenMint\(\s*[^,]+,\s*[^,]+,\s*null\s*,/', $callLine);
+    if ($passesNull) {
+        return strpos($window, 'device-meta:') !== false;   /* matches device-meta: AND no-device-meta: */
+    }
+    return strpos($window, 'apiTokenDeviceMetaFromBody(') !== false;
 }
 
 /* Self-test the scan logic can fail (rule #34). */
-ok('mintCovered self-test: bare window is NOT covered',
-    mintCovered("\$stmt = INSERT INTO tblApiTokens ...;\n\$stmt->execute();") === false);
-ok('mintCovered self-test: a store call IS covered',
-    mintCovered("...\napiTokenDeviceMetaStore(\$db, \$h, ...);") === true);
-ok('mintCovered self-test: a reason marker IS covered',
-    mintCovered("/* no-device-meta: internal bridge token */") === true);
+ok('mintCovered self-test: null details with NO reason is NOT covered',
+    mintCovered('$t = apiTokenMint($db, $id, null, \'password\', $e);', "\$t = apiTokenMint(...);") === false);
+ok('mintCovered self-test: null details WITH a reason marker IS covered',
+    mintCovered('$t = apiTokenMint($db, $id, null, \'x\', $e);', "/* no-device-meta: internal bridge token */") === true);
+ok('mintCovered self-test: details taken from the request ARE covered',
+    mintCovered('$t = apiTokenMint($db, $id, $meta, \'x\', $e);', "\$meta = apiTokenDeviceMetaFromBody(\$body);") === true);
+ok('mintCovered self-test: passing a variable that was never read from the request is NOT covered',
+    mintCovered('$t = apiTokenMint($db, $id, $meta, \'x\', $e);', "\$meta = ['platform' => 'x'];") === false);
 
 $mintFiles = [
     $ROOT . '/appWeb/public_html/api.php',
     $ROOT . '/appWeb/public_html/manage/includes/auth.php',
 ];
-$MINT = 'INSERT INTO tblApiTokens (Token, UserId, ExpiresAt)';
 $WIN_BEFORE = 35; $WIN_AFTER = 25;
 $mintsFound = 0; $mintsUncovered = [];
 foreach ($mintFiles as $f) {
     $lines = explode("\n", (string)file_get_contents($f));
     foreach ($lines as $i => $line) {
-        if (strpos($line, $MINT) === false) { continue; }
+        if (!preg_match('/=\s*apiTokenMint\(/', $line)) { continue; }
         $mintsFound++;
         $from = max(0, $i - $WIN_BEFORE);
         $window = implode("\n", array_slice($lines, $from, $WIN_BEFORE + $WIN_AFTER + 1));
-        if (!mintCovered($window)) {
+        if (!mintCovered($line, $window)) {
             $mintsUncovered[] = basename($f) . ':' . ($i + 1);
         }
     }
 }
-ok('found the token-mint sites (floor ≥ 5, vacuity guard)', $mintsFound >= 5);
-ok('EVERY token mint stores device metadata or carries a reason marker'
-    . ($mintsUncovered ? ' — UNCOVERED: ' . implode(', ', $mintsUncovered) : ''),
+ok('found the token-mint call sites (floor >= 5, vacuity guard)', $mintsFound >= 5);
+ok('EVERY token mint passes device details from the request or carries a reason marker'
+    . ($mintsUncovered ? ' - UNCOVERED: ' . implode(', ', $mintsUncovered) : ''),
     $mintsUncovered === []);
+$tokensSrc = (string)file_get_contents($ROOT . '/appWeb/public_html/includes/api_tokens.php');
+$mintBodyAt = strpos($tokensSrc, 'function apiTokenMint(');
+ok('the one maker itself writes the details (calls apiTokenDeviceMetaStore when given any)',
+    $mintBodyAt !== false && strpos($tokensSrc, 'apiTokenDeviceMetaStore(', (int)$mintBodyAt) !== false);
 
 /* ========================================================================
  * (E) device_rename endpoint hardening (source scan of api.php)

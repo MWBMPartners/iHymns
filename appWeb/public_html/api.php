@@ -3491,21 +3491,14 @@ if ($action !== null) {
                 break;
             }
 
-            /* Generate API token (64-character hex string, 30-day expiry) */
-            $token = bin2hex(random_bytes(32));
-            $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
-            $tokenHash = hash('sha256', $token);
-            $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-            $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
-            $stmt->execute();
-            $stmt->close();
-
-            /* #1975 — device metadata (+ the web auto-name UA fallback inside
-               apiTokenDeviceMetaStore) so a brand-new registration is never
-               listed as "Unnamed device". Best-effort, never blocks sign-up. */
+            /* Generate API token (64-character hex string, 30-day expiry) through the
+               ONE token maker (C3, epic #2180). #1975 — device metadata (+ the web
+               auto-name UA fallback inside apiTokenDeviceMetaStore) so a brand-new
+               registration is never listed as "Unnamed device". Best-effort, never
+               blocks sign-up. */
             $regDeviceMeta = apiTokenDeviceMetaFromBody($body);
-            apiTokenDeviceMetaStore($db, $tokenHash, $regDeviceMeta['deviceName'], $regDeviceMeta['platform'], $regDeviceMeta['appVersion']);
+            $token = apiTokenMint($db, (int)$userId, $regDeviceMeta, 'password', $expiresAtTs);
+            $tokenHash = hash('sha256', $token);
 
             /* Cross-subdomain cookie — keeps sign-in state on every
                *.ihymns.app subdomain and survives iOS ITP longer than
@@ -3811,24 +3804,16 @@ if ($action !== null) {
             $stmt->execute();
             $stmt->close();
 
-            /* Generate API token */
-            $token = bin2hex(random_bytes(32));
-            $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
-            $tokenHash = hash('sha256', $token);
-            $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-            $stmt->bind_param('sis', $tokenHash, $userIdInt, $expiresAt);
-            $stmt->execute();
-            $stmt->close();
-
-            /* #1409 — OPTIONAL device metadata (deviceName/platform/
+            /* Generate API token through the ONE token maker (C3, epic #2180).
+               #1409 — OPTIONAL device metadata (deviceName/platform/
                appVersion). Every field is genuinely optional: a client that
                omits them (every existing caller today) signs in
                byte-identically to before this change. Best-effort, never
                blocks sign-in on a write failure (see
                apiTokenDeviceMetaStore()'s docblock). */
             $deviceMeta = apiTokenDeviceMetaFromBody($body);
-            apiTokenDeviceMetaStore($db, $tokenHash, $deviceMeta['deviceName'], $deviceMeta['platform'], $deviceMeta['appVersion']);
+            $token = apiTokenMint($db, $userIdInt, $deviceMeta, 'password', $expiresAtTs);
+            $tokenHash = hash('sha256', $token);
 
             /* Cross-subdomain cookie (#390) */
             setAuthTokenCookie($token, $expiresAtTs);
@@ -5783,22 +5768,14 @@ if ($action !== null) {
                 }
             }
 
-            /* Mint the standard bearer token — byte-identical machinery to
-               auth_login (api.php ~2151). */
-            $token = bin2hex(random_bytes(32));
-            $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
-            $tokenHash   = hash('sha256', $token);
-            $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-            $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
-            $stmt->execute();
-            $stmt->close();
-
-            /* #1409 — OPTIONAL device metadata, same discipline as
+            /* Mint the standard bearer token through the ONE token maker (C3,
+               epic #2180), the same machinery as auth_login.
+               #1409 — OPTIONAL device metadata, same discipline as
                auth_login above (never required, best-effort, never blocks
                sign-in). */
             $deviceMeta = apiTokenDeviceMetaFromBody($body);
-            apiTokenDeviceMetaStore($db, $tokenHash, $deviceMeta['deviceName'], $deviceMeta['platform'], $deviceMeta['appVersion']);
+            $token = apiTokenMint($db, (int)$userId, $deviceMeta, 'apple', $expiresAtTs);
+            $tokenHash = hash('sha256', $token);
 
             setAuthTokenCookie($token, $expiresAtTs);
 
@@ -9024,14 +9001,9 @@ if ($action !== null) {
                not a browser — the web auto-name fallback would mislabel it, so
                naming is left to that device's own client sending platform +
                device name. Guarded by tests/php/test-api-token-device-meta.php. */
-            $token       = bin2hex(random_bytes(32));
-            $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
-            $tokenHash   = hash('sha256', $token);
-            $tstmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-            $tstmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
-            $tstmt->execute();
-            $tstmt->close();
+            /* C3 (epic #2180): through the ONE token maker. `null` meta = no-device-meta
+               (the reason is the paragraph above). */
+            $token       = apiTokenMint($db, (int)$userId, null, 'device_code', $expiresAtTs);
             setAuthTokenCookie($token, $expiresAtTs);
             $updLogin = $db->prepare('UPDATE tblUsers SET LastLoginAt = NOW(), LoginCount = LoginCount + 1 WHERE Id = ?');
             $updLogin->bind_param('i', $userId);
