@@ -481,7 +481,6 @@ function _placesHttpGet(string $url, string $userAgent): ?string
         ]);
         $body = curl_exec($ch);
         $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
         if ($body === false || $code !== 200) return null;
         return is_string($body) ? $body : null;
     }

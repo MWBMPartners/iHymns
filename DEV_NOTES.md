@@ -1424,7 +1424,7 @@ build number is NOT part of that lockstep, since it has no equivalent field in t
 ### Recommended Setup
 
 - **Editor**: VS Code or Xcode (for Apple development)
-- **PHP**: 8.1–8.5 (8.1 minimum, tested through 8.5)
+- **PHP**: 8.4 and 8.5 supported; 8.6 prepared (advisory in CI)
 - **Node.js**: v22+ (LTS)
 - **npm**: v10+
 - **Xcode**: 16+ (for Swift 6.3)
@@ -1534,7 +1534,7 @@ Starting with v0.10.0, iHymns uses MySQL as the data store. Since the DB-direct 
 ### Prerequisites
 
 - **MySQL 5.7+** or **MariaDB 10.3+** with InnoDB support
-- **PHP 8.1–8.5** (8.1 minimum, tested through 8.5) with the `mysqli` extension enabled
+- **PHP 8.4 or 8.5** (8.6 prepared, advisory in CI) with the `mysqli` extension enabled
 - A MySQL database created for iHymns:
   ```sql
   CREATE DATABASE ihymns CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

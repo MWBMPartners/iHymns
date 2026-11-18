@@ -98,14 +98,25 @@ declare(strict_types=1);
 /* A session that stores nothing, started before anything is printed. The save
    asks who is signed in (manage/includes/auth.php starts a session to find
    out); in the command line, starting one after output has begun only prints
-   warnings, and the default session handler would leave files behind. */
-session_set_save_handler(new class implements \SessionHandlerInterface {
+   warnings, and the default session handler would leave files behind.
+
+   PHP 8.6 marks a session handler as outdated unless it can also make and
+   check session ids, so this one carries the two extra interfaces too
+   (they have existed since PHP 7, so this is the same on every version).
+   https://www.php.net/manual/en/class.sessionidinterface.php */
+session_set_save_handler(new class implements \SessionHandlerInterface, \SessionIdInterface, \SessionUpdateTimestampHandlerInterface {
     public function open(string $path, string $name): bool { return true; }
     public function close(): bool { return true; }
     public function read(string $id): string|false { return ''; }
     public function write(string $id, string $data): bool { return true; }
     public function destroy(string $id): bool { return true; }
     public function gc(int $max_lifetime): int|false { return 0; }
+    /* Make a fresh random id (the "make an id" half of SessionIdInterface). */
+    public function create_sid(): string { return bin2hex(random_bytes(16)); }
+    /* This handler stores nothing, so no id is ever "already known": false. */
+    public function validateId(string $id): bool { return false; }
+    /* Nothing to refresh, so "refreshed" is always true. */
+    public function updateTimestamp(string $id, string $data): bool { return true; }
 }, true);
 session_start();
 

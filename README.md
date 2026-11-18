@@ -23,7 +23,7 @@
 
 | Platform | Technology | Status |
 | --- | --- | --- |
-| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v1.3.0) |
+| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.4 / 8.5 (8.6 prepared), MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v1.3.0) |
 | Apple Universal (iOS / iPadOS / macOS / tvOS / watchOS / visionOS) | Swift 6.3, SwiftUI, one SwiftPM package (`iHymnsKit`) shared across four thin app shells | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
 | Android / Fire OS | Kotlin, Jetpack Compose | Scaffold / in progress |
 
@@ -184,7 +184,7 @@ Every write on these pages is CSRF-protected via `validateCsrfRequest()` — a r
 
 ### Prerequisites
 
-- **PHP 8.1+** with `mysqli` extension
+- **PHP 8.4 or 8.5** with `mysqli` extension (PHP 8.6 is prepared: CI runs it as an advisory check)
 - **MySQL 5.7+** or **MariaDB 10.3+** (InnoDB)
 - **Node.js v22+** and **npm v10+** (for build tools)
 
@@ -239,7 +239,7 @@ iHymns uses MySQL with a `tblCamelCase` schema spanning 166 tables (`CREATE TABL
 ### Database prerequisites
 
 - MySQL 5.7+ or MariaDB 10.3+ with InnoDB support
-- PHP 8.1+ with `mysqli` extension
+- PHP 8.4 or 8.5 with `mysqli` extension (8.6 prepared, advisory in CI)
 - A database created for iHymns:
 
 ```sql

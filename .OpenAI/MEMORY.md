@@ -41,6 +41,10 @@ _Last updated: 2026-11-18._
 - **Per-line song data (notes, chords, singing parts) follows a line's identity number, never its
   position** (rule #51 in `.claude/CLAUDE.md`). Carrying it across by position puts it on the wrong
   words, and nobody notices.
+- **PHP 8.4 and 8.5 are supported; 8.6 is prepared** (rule #53). Use a `PHP_VERSION_ID >= 80600`
+  check where behaviour must differ, never 8.6-only syntax, and `ihymns_metaphone()` instead of
+  `metaphone()`. CI has an advisory "PHP 8.6" check; the repository variable `PHP86_ENFORCE=true`
+  makes it enforcing.
 - **Song reads come straight from MySQL.** There is no whole-catalogue JSON file (rule #17).
 - **A page fragment can never run an inline `<script>`.** The site's security policy silently blocks
   it (rule #30).

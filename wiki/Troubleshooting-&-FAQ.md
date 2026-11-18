@@ -238,7 +238,7 @@ A: A shared **live** set-list link stops serving once the set-list's own expiry 
 A: Any modern browser with ES module support: Chrome 80+, Firefox 78+, Safari 14+, Edge 80+.
 
 **Q: What PHP version is required?**
-A: PHP 8.4 or 8.5, with the `mysqli` extension. Those are the two versions CI runs the whole PHP test
+A: PHP 8.4 or 8.5, with the `mysqli` extension (PHP 8.6 is prepared and checked as advisory in CI). Those are the two versions CI runs the whole PHP test
 suite against (`.github/workflows/test.yml`), so they are the pair that is actually proven to work.
 There is no PDO or SQLite dependency — PDO was fully removed from the codebase.
 

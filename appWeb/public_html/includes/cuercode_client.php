@@ -371,7 +371,6 @@ function _cuercodeHttpExec(array $config, string $url, string $body): array
     curl_exec($ch);
     $errno      = curl_errno($ch);
     $httpStatus = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
 
     return ['errno' => $errno, 'httpStatus' => $httpStatus, 'body' => $buf];
 }

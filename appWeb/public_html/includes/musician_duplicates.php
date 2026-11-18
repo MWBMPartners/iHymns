@@ -64,7 +64,8 @@ declare(strict_types=1);
  *   (a) a pseudonym vs a real name (Fanny Crosby vs Frances van Alstyne)
  *       — no string metric finds this; Bucket C (curated aliases) is the
  *       intended fix once a curator records the link.
- *   (b) metaphone() is English-phonetics only — a transliterated non-Latin
+ *   (b) metaphone (via ihymns_metaphone(), includes/phonetic.php, which keeps
+ *       PHP's own function on 8.4/8.5 and a PHP copy on 8.6) is English-phonetics only — a transliterated non-Latin
  *       name may fold to ASCII that doesn't co-bucket with its own
  *       variants.
  *   (c) anything inside a skipped over-cap bucket — always visible in
@@ -112,6 +113,10 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
    require_once's it) — idempotent, safe even if a caller already loaded
    either file this request. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+
+/* The sounds-like code (PHP 8.6 marks the built-in metaphone() as outdated, so
+   every caller goes through this one helper instead — see phonetic.php). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'phonetic.php';
 
 /** Default fuzzy-match threshold (Bucket B) — mirrors the bulk-promote
  *  default this scan's scorer was extracted from (#1785 C2/C3), GET-tunable
@@ -288,10 +293,10 @@ function musicianDuplicatesFindCandidates(array $rows, array $aliasRows = [], ar
         $fold[$id] = $f;
         $tokens = $f === '' ? [] : array_values(array_filter(explode(' ', $f), static fn(string $t): bool => $t !== ''));
         if (count($tokens) >= 2) {
-            $metaFirst[$id] = (string)metaphone($tokens[0]);
-            $metaLast[$id]  = (string)metaphone($tokens[count($tokens) - 1]);
+            $metaFirst[$id] = (string)ihymns_metaphone($tokens[0]);
+            $metaLast[$id]  = (string)ihymns_metaphone($tokens[count($tokens) - 1]);
         } elseif (count($tokens) === 1) {
-            $metaWhole[$id] = (string)metaphone($tokens[0]);
+            $metaWhole[$id] = (string)ihymns_metaphone($tokens[0]);
         }
     }
 

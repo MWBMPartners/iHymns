@@ -100,7 +100,6 @@ function orgLogoValidateAndStage(string $tmpPath, int $sizeBytes): array
         throw new \RuntimeException('Could not check the uploaded file. Please try again.');
     }
     $sniffedMime = finfo_file($finfo, $tmpPath) ?: '';
-    finfo_close($finfo);
 
     /* ---- 3. Branch on sniffed MIME ---- */
     if ($sniffedMime === 'image/png') {

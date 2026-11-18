@@ -771,7 +771,6 @@ function appleSiwaFetchJwks(): ?array
     ]);
     $raw      = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
 
     if ($raw === false || $httpCode !== 200) {
         return null;
@@ -1092,7 +1091,6 @@ function _appleSiwaPostForm(string $url, string $formBody, bool $successOnly = f
     ]);
     $raw      = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
 
     if ($raw === false || $httpCode !== 200) {
         return null;

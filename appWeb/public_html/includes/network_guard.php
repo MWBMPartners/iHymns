@@ -146,6 +146,13 @@ function ihymnsNormalizeHostLiteral(string $host): string
 function _ihymnsNumericIpv4ToDotted(string $host): ?string
 {
     if (preg_match('/^0x[0-9a-f]+$/i', $host) === 1) {
+        /* PHP 8.6: hexdec() gives a notice when the number is too big to convert
+           exactly. An IPv4 address needs at most 8 hex digits (ignoring leading
+           zeros), so anything longer is "not a numeric IPv4" — the same null the
+           range check below would have returned, minus the notice. */
+        if (strlen(ltrim(substr($host, 2), '0')) > 8) {
+            return null;
+        }
         $val = hexdec(substr($host, 2));
     } elseif (preg_match('/^[0-9]+$/', $host) === 1) {
         $val = (int)$host;

@@ -323,7 +323,6 @@ function ihymnsGeoHttpGetJson(string $url): ?array
         ]);
         $resp = curl_exec($ch);
         $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
         if ($resp !== false && $httpCode >= 200 && $httpCode < 300) {
             $body = (string)$resp;
         }

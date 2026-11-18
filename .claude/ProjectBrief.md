@@ -1562,7 +1562,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 
 | Platform | Technology | Directory | Status |
 | --- | --- | --- | --- |
-| Web/PWA | PHP 8.5+, Bootstrap 5.3.6, Vanilla JS (ES modules), Fuse.js | `appWeb/` | Core + Enhanced complete |
+| Web/PWA | PHP 8.4 and 8.5 supported, 8.6 prepared (advisory in CI), Bootstrap 5.3.6, Vanilla JS (ES modules), Fuse.js | `appWeb/` | Core + Enhanced complete |
 | Apple (iOS/iPadOS/tvOS/visionOS/macOS/watchOS) | Swift 6.3, SwiftUI | `appApple/` | Phase 1 + Phase 2 code-complete (`iHymnsKit` SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents) — consolidated and CI-compiled, unreleased; device matrices + APNs provisioning owner-gated |
 | Android (+ Fire OS, Android TV) | Kotlin 2.1, Jetpack Compose | `appAndroid/` | Scaffold / in-progress (~12 Kotlin files) |
 

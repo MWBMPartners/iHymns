@@ -996,7 +996,6 @@ function webPushSend(\mysqli $db, array $subscription, string $payload, int $ttl
     $resp   = curl_exec($ch);
     $errno  = curl_errno($ch);
     $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
     unset($resp);   /* the body is never logged: it can echo endpoint material */
 
     if ($errno !== 0) {

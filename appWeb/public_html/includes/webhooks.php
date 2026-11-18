@@ -581,7 +581,6 @@ function webhookHttpPost(string $url, string $body, array $headers): array
     $errno  = curl_errno($ch);
     $errstr = curl_error($ch);
     $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
 
     $result['ms']     = (int)round((microtime(true) - $t0) * 1000);
     $result['status'] = $status;

@@ -171,7 +171,6 @@ class SongMediaStorage
             throw new \RuntimeException("Could not initialise mime sniff.");
         }
         $mime = finfo_file($finfo, $tmpPath) ?: '';
-        finfo_close($finfo);
 
         $allowed = self::ALLOWED_MIMES[$kind] ?? [];
         if (!isset($allowed[$mime])) {

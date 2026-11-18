@@ -431,7 +431,6 @@ function apnsSend(\mysqli $db, string $pushTokenHex, string $apnsEnv, string $ki
     $respBody   = curl_exec($ch);
     $errno      = curl_errno($ch);
     $httpStatus = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
 
     if ($errno !== 0 || $respBody === false) {
         return ['ok' => false, 'status' => 'transport_error', 'reason' => 'curl_errno_' . $errno];

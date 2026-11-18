@@ -192,6 +192,23 @@ ok('(a17) a genuine public IPv6 literal, bracketed, is NOT private ([2001:4860:4
 ok('(a18) a genuine public IPv4 literal is NOT private (93.184.216.34)',
     !ihymnsHostResolvesPrivate('93.184.216.34'));
 
+/* PHP 8.6 makes hexdec() print a notice when a number is too big to convert
+ * exactly. A host like 0xffffffffffffffffffff (20 digits) must give "not a
+ * numeric IPv4" (null) WITHOUT any notice, and leading zeros must not count
+ * toward the length. A temporary error handler records anything PHP complains
+ * about while the calls run. */
+$a2086notices = [];
+set_error_handler(static function (int $no, string $str) use (&$a2086notices): bool {
+    $a2086notices[] = $str;
+    return true;
+});
+$a2086huge  = _ihymnsNumericIpv4ToDotted('0x' . str_repeat('f', 20));
+$a2086zeros = _ihymnsNumericIpv4ToDotted('0x' . str_repeat('0', 20) . '7f000001');
+restore_error_handler();
+ok('(a-2086-1) an over-long 0x… host gives null, not a guess', $a2086huge === null);
+ok('(a-2086-2) the over-long 0x… host raised no PHP notice or deprecation', $a2086notices === []);
+ok('(a-2086-3) leading zeros do not count toward the length limit (still 127.0.0.1)', $a2086zeros === '127.0.0.1');
+
 /* #2111 — ranges PHP's own filter misses. Added 2026-09-14 after an independent
  * review showed the earlier fix for these had NO test that could fail: deleting it
  * left this whole file green. Boundaries are tested on both sides, and each IPv6
