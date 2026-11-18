@@ -3868,8 +3868,14 @@ if ($action !== null) {
             $authedUser = $token ? getAuthenticatedUser() : null;
             if ($token) {
                 $db = getDbMysqli();
-                $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE Token = ?');
                 $tokenHash = hash('sha256', $token);
+                /* A6 (epic #2180): read this session's platform BEFORE deleting
+                   its row. Apple push registrations are removed below only when
+                   this session is an Apple one. */
+                $signedOutPlatform = $authedUser
+                    ? apiTokenSessionPlatform($db, (int)$authedUser['Id'], $tokenHash, false)
+                    : null;
+                $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE Token = ?');
                 $stmt->bind_param('s', $tokenHash);
                 $stmt->execute();
                 $stmt->close();
@@ -3881,7 +3887,11 @@ if ($action !== null) {
                    itself must NEVER 500 because of this best-effort
                    cleanup (mirrors live_activity_push.php's own "never let
                    a push-bridge failure surface" posture). */
-                if ($authedUser) {
+                /* A6: signing out of a WEB browser must not remove the person's
+                   iPhone notification registrations (it used to delete every
+                   Apple device's row). Step G4 later ties each registration to
+                   its own session. */
+                if ($authedUser && apiTokenSessionOwnsApplePush($signedOutPlatform)) {
                     try {
                         require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
                         if (apnsTokensTableExists($db)) {
@@ -6150,6 +6160,10 @@ if ($action !== null) {
                input, and a same-user prefix collision (astronomically
                unlikely at 64 bits) would only ever let someone sign out one
                of their OWN other devices — never cross a user boundary. */
+            /* A6 (epic #2180): note the platform of the session being removed
+               BEFORE its row is deleted, so a stale browser can be removed from
+               the device list without stopping the iPhone's notifications. */
+            $signedOutPlatform = apiTokenSessionPlatform($db, $userId, $deviceId, true);
             $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token LIKE CONCAT(?, "%")');
             $stmt->bind_param('is', $userId, $deviceId);
             $stmt->execute();
@@ -6167,16 +6181,18 @@ if ($action !== null) {
                sign-out/410") — same cleanup as auth_logout above, wrapped
                defensively so a signed-out device never sees a 500 because
                of this best-effort cleanup. */
-            try {
-                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
-                if (apnsTokensTableExists($db)) {
-                    $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
-                    $delApns->bind_param('i', $userId);
-                    $delApns->execute();
-                    $delApns->close();
+            if (apiTokenSessionOwnsApplePush($signedOutPlatform)) {
+                try {
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+                    if (apnsTokensTableExists($db)) {
+                        $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
+                        $delApns->bind_param('i', $userId);
+                        $delApns->execute();
+                        $delApns->close();
+                    }
+                } catch (\Throwable $e) {
+                    error_log('[api/device_signout] apns token cleanup failed: ' . $e->getMessage());
                 }
-            } catch (\Throwable $e) {
-                error_log('[api/device_signout] apns token cleanup failed: ' . $e->getMessage());
             }
 
             sendJson(['ok' => true]);

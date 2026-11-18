@@ -107,6 +107,61 @@ function apiTokensDeviceMetaColumnsExist(\mysqli $db): bool
 }
 
 /**
+ * Should signing out THIS session also remove the person's Apple push
+ * registrations? (account/profile rewrite A6, epic #2180)
+ *
+ * ELI5: a person can be signed in on a web browser AND on an iPhone at once.
+ * Signing out of the browser used to delete the iPhone's notification
+ * registration too, so the iPhone quietly stopped getting notifications. Now
+ * the Apple push rows are only removed when the session being signed out is
+ * itself an Apple one.
+ *
+ * Detailed: the answer comes from the signed-out token's own `Platform`
+ * (`apple | android | web`, NULL when the client never declared one). NULL is
+ * treated as "not known to be Apple", the safe side: leaving a push
+ * registration in place is recoverable (step G4 ties each registration to its
+ * own session, after which this rule is replaced), whereas deleting another
+ * device's registration silently is the bug being fixed. PURE: no database.
+ */
+function apiTokenSessionOwnsApplePush(?string $platform): bool
+{
+    return $platform === 'apple';
+}
+
+/**
+ * Read the declared `Platform` of the session(s) whose token hash matches
+ * `$tokenHashOrPrefix` BEFORE it is deleted (a deleted row cannot be asked).
+ *
+ * With `$prefix = false` the value is an exact token hash (sign-out of the
+ * caller's own session); with `$prefix = true` it is the short device id used
+ * by the device list, and only rows belonging to `$userId` are considered.
+ * Returns null when the platform column is missing (un-migrated install), no
+ * row matches, or the platform was never declared; callers then take the safe
+ * side (see apiTokenSessionOwnsApplePush()). Every value is bound.
+ */
+function apiTokenSessionPlatform(\mysqli $db, int $userId, string $tokenHashOrPrefix, bool $prefix): ?string
+{
+    if (!apiTokensDeviceMetaColumnsExist($db)) {
+        return null;
+    }
+    try {
+        $sql = $prefix
+            ? 'SELECT Platform FROM tblApiTokens WHERE UserId = ? AND Token LIKE CONCAT(?, "%") LIMIT 1'
+            : 'SELECT Platform FROM tblApiTokens WHERE UserId = ? AND Token = ? LIMIT 1';
+        $st = $db->prepare($sql);
+        $st->bind_param('is', $userId, $tokenHashOrPrefix);
+        $st->execute();
+        $row = $st->get_result()->fetch_row();
+        $st->close();
+        $platform = is_string($row[0] ?? null) ? $row[0] : null;
+        return $platform;
+    } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
+        return null;
+    }
+}
+
+/**
  * Clean an OPTIONAL client-declared device-metadata triple from a decoded
  * sign-in request body. Every field is genuinely optional — an existing
  * native client that never sends them (every caller today) must sign in

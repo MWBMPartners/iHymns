@@ -4771,7 +4771,11 @@ paths:
       operationId: logout
       tags: [Authentication]
       summary: Log out
-      description: Invalidate the current bearer token.
+      description: |
+        Invalidate the current bearer token. Also clears the caller's APNs push
+        tokens, but only when this session declared `platform: apple` (account/
+        profile rewrite A6); signing out a browser leaves the person's iPhone
+        notification registrations alone.
       security:
         - bearerAuth: []
       parameters:
@@ -5668,9 +5672,14 @@ paths:
         never touch another user's token, regardless of what `id` is
         supplied. Requires authentication plus the same-origin CSRF check
         (`validateCsrfRequest()`, rule #29). Rate-limited to 30 / hour per
-        user. Best-effort also clears any APNs push tokens for the caller
+        user. Best-effort also clears the caller's APNs push tokens
         (#1429 F3b — "push tokens deleted on sign-out"), wrapped so that
         cleanup failure never turns a successful sign-out into a 500.
+        Account/profile rewrite A6: the APNs tokens are cleared ONLY when the
+        session being removed declared `platform: apple`. Removing a browser
+        (or any session of another or unknown platform) leaves the person's
+        iPhone notification registrations alone. The same rule applies to
+        `auth_logout`.
       security:
         - bearerAuth: []
         - cookieAuth: []
