@@ -247,6 +247,13 @@ export const EVT_OFFLINE_SETTINGS_CHANGED = 'ihymns:offline-settings-changed';
    the page; now that list-sort.js owns sorting, the strip has to learn
    about a re-order it didn't itself perform. */
 export const EVT_LIST_SORT_CHANGED = 'ihymns:list-sort-changed';
+/* #2143 — fired on `document` by the cross-site settings sync
+   (settings-sync.js) after it has changed one or more local display settings
+   because a newer value arrived from another iHymns site, `detail: { keys }`.
+   Dispatcher: CrossSiteSync.init() / its visibility handler. Listener:
+   settings.js, which re-applies theme, text size and the other visual
+   settings so the change shows at once. */
+export const EVT_XSITE_SETTINGS_APPLIED = 'ihymns:xsite-settings-applied';
 
 /* ── Songbook Name Lookup ─────────────────────────────────────────────── */
 

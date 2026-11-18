@@ -27,6 +27,7 @@ import {
     CACHE_SONGS_RECENT,
     EVT_AUTH_CHANGED,
     EVT_OFFLINE_SETTINGS_CHANGED,
+    EVT_XSITE_SETTINGS_APPLIED,
 } from '../constants.js';
 import { escapeHtml } from '../utils/html.js';
 import { CROSS_SITE_KEYS } from './settings-sync-registry.js';
@@ -203,6 +204,10 @@ export class Settings {
                 }
             });
         }
+
+        /* #2143 — the cross-site settings sync adopted a newer value from another
+           iHymns site (settings-sync.js): re-apply everything visual so it shows at once. */
+        document.addEventListener(EVT_XSITE_SETTINGS_APPLIED, () => this.reapplyAll());
 
         /* Re-apply the Account section whenever auth state changes, even if
            the user is on the Settings page (no navigation triggered).
@@ -692,6 +697,18 @@ export class Settings {
         this.app.syncStorage(fullKey);
         /* Per-user profile sync (whitelisted keys only — no-ops otherwise) */
         this._maybePushSync(fullKey);
+    }
+
+    /**
+     * Re-apply every visual setting from what is stored now (#2143). Called when
+     * the cross-site sync adopts a newer value from another site. applyTheme() also
+     * re-applies the colour-blindness filter and the link-emphasis mode.
+     */
+    reapplyAll() {
+        this.applyTheme(this.get('theme'));
+        this.applyReduceMotion(this.get('reduceMotion'));
+        this.applyReduceTransparency(this.get('reduceTransparency'));
+        this.applyFontSize(this.get('fontSize'));
     }
 
     /**
