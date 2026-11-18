@@ -222,6 +222,15 @@ console.log('Every write of a shared setting tells the sync (derived from the tr
         offenders.length === 0, offenders.join('\n      '));
 }
 
+console.log('The privacy page describes it accurately:');
+{
+    const privacy = fs.readFileSync(path.join(PUB, 'includes', 'pages', 'privacy.php'), 'utf8');
+    check('it names the real cookie (' + CROSS_SITE_COOKIE + ')', privacy.includes('<code>' + CROSS_SITE_COOKIE + '</code>'));
+    check('it says plainly that the test sites share it', /including its test sites/i.test(privacy));
+    check('it says how to clear it', /Reset all settings/.test(privacy));
+    check('it no longer mentions a hidden frame or a storage bridge', !/hidden iframe|storage bridge/i.test(privacy));
+}
+
 console.log('The offline cache lists only files that exist, and includes the sync modules (guard G6):');
 {
     const sw = fs.readFileSync(path.join(PUB, 'service-worker.js.php'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1');

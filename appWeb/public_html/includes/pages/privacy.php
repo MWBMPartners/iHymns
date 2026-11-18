@@ -33,7 +33,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
     </h1>
 
     <p class="text-muted small mb-4">
-        Last updated: 5 October 2026
+        Last updated: 18 November 2026
     </p>
 
     <!-- Overview -->
@@ -186,19 +186,20 @@ $appUrl = $app["Application"]["Website"]["URL"];
     <!-- Cookies & Cross-Domain Sync -->
     <div class="card card-settings mb-3">
         <div class="card-body">
-            <h2 class="h6 mb-3">4. Cookies &amp; Cross-Domain Synchronisation</h2>
+            <h2 class="h6 mb-3">4. Cookies &amp; Synchronisation Between Our Sites</h2>
             <p>
                 <?= htmlspecialchars($appName) ?> uses first-party cookies sparingly:
             </p>
             <ul>
                 <li><strong>Sign-in cookie</strong> (<code>ihymns_auth</code>) — set <strong>only when you sign in</strong>. It keeps you signed in across <?= htmlspecialchars($appName) ?> subdomains (on <code>.ihymns.app</code>); it is <code>HttpOnly</code>, <code>Secure</code>, and <code>SameSite=Lax</code>, has a sliding 30-day expiry, and holds only an opaque session token — no personal data.</li>
-                <li><strong>Preferences sync</strong> (<code>ihymns_sync</code>) — synchronises your display preferences (theme, font size, motion settings) across subdomains. It contains only your settings — no personal or tracking data.</li>
+                <li><strong>Display preferences</strong> (<code>ihymns_prefs</code>) — lets the display choices you make follow you between <?= htmlspecialchars($appName) ?>&rsquo;s own sites. It is set <strong>only after you change one of those choices</strong> (or reset them), is shared by all of <?= htmlspecialchars($appName) ?>&rsquo;s sites on <code>.ihymns.app</code> <strong>including its test sites</strong> (dev and beta), and lasts up to a year, renewed each time you visit. It holds only the choices themselves: your theme, text size, motion and transparency settings, colour-blindness filter, link emphasis, page transition, default songbook, auto-update and live-search choices, keyboard shortcuts, lyric display settings and the live-session idle time. It never holds your favourites, set lists, history, sign-in details or consent choices. It is only used on a site where it has been switched on; elsewhere the older cookie below is used.</li>
+                <li><strong>Older preferences cookie</strong> (<code>ihymns_sync</code>) — the earlier version of the same idea, still used on any site where the newer cookie is not yet switched on. It holds only a few of the same display settings, and no personal or tracking data.</li>
             </ul>
             <p>
-                Additionally, a lightweight cross-domain storage bridge (using a hidden iframe)
-                may be used to keep your localStorage preferences in sync if you access
-                <?= htmlspecialchars($appName) ?> from multiple subdomains. This mechanism
-                transfers only your app settings and never collects personal information.
+                You can clear these at any time: choose <strong>Reset all settings</strong> on the Settings
+                page (which also tells the other sites to forget your choices), or delete the cookies in your
+                browser. If you are signed in, your display settings are also kept on your account so they
+                follow you to other devices; signing out does not remove them.
             </p>
             <p>
                 Third-party analytics services (if enabled and consented to) may set their own
