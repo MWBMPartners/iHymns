@@ -44,6 +44,10 @@ $words = [
     'Alstyne', 'Fanny', 'Crosby', 'Anna-Marie', 'Smith', '', '123', "\xC3\xA9tienne",
 ];
 
+/* The ONE place this test calls PHP's own (soon-deprecated) function, so the
+   deprecation guard can allow exactly one use here. Only ever called below 8.6. */
+$native = static fn(string $w): string => \metaphone($w);
+
 $passed = 0;
 $failed = 0;
 $check = static function (string $label, bool $ok, string $detail = '') use (&$passed, &$failed): void {
@@ -61,7 +65,7 @@ if (in_array('--regenerate', $argv ?? [], true)) {
         exit(2);
     }
     $table = [];
-    foreach ($words as $w) { $table[$w] = \metaphone($w); }
+    foreach ($words as $w) { $table[$w] = $native($w); }
     file_put_contents($frozenPath, json_encode($table, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n");
     echo "wrote {$frozenPath}\n";
     exit(0);
@@ -82,7 +86,7 @@ if (PHP_VERSION_ID >= 80600) {
     echo "  SKIP  live comparison with native metaphone() — PHP 8.6+ has it deprecated; the frozen table above is the guard here.\n";
 } else {
     foreach ($words as $w) {
-        $check('native: ' . json_encode($w), ihymns_metaphone_userland($w) === \metaphone($w));
+        $check('native: ' . json_encode($w), ihymns_metaphone_userland($w) === $native($w));
     }
     /* 5,000 seeded random strings: letters, both cases, spaces, hyphen,
        apostrophe, digits and a few non-ASCII bytes. mt_srand with a fixed seed
@@ -95,13 +99,13 @@ if (PHP_VERSION_ID >= 80600) {
     for ($i = 0; $i < 5000; $i++) {
         $s = '';
         for ($n = mt_rand(0, 14); $n > 0; $n--) { $s .= $alphabet[mt_rand(0, $max)]; }
-        if (ihymns_metaphone_userland($s) !== \metaphone($s)) {
+        if (ihymns_metaphone_userland($s) !== $native($s)) {
             $bad++;
             if ($firstBad === '') { $firstBad = json_encode($s, JSON_INVALID_UTF8_SUBSTITUTE); }
         }
     }
     $check('native: 5,000 seeded random strings all match', $bad === 0, "{$bad} differ, first {$firstBad}");
-    $check('the wrapper uses the native function below 8.6', ihymns_metaphone('Knight') === \metaphone('Knight'));
+    $check('the wrapper uses the native function below 8.6', ihymns_metaphone('Knight') === $native('Knight'));
 }
 
 $check('the wrapper gives the same answer as the copy for a plain word', ihymns_metaphone('Newton') === ihymns_metaphone_userland('Newton'));
