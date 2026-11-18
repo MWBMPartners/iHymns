@@ -4809,25 +4809,32 @@ if ($action !== null) {
                         break;
                     }
 
-                    /* Read-modify-write of ONE subtree. Not a transaction: the
-                       blob is per-user and a user's own devices racing each
-                       other is last-write-wins by design (identical to the
-                       legacy path). What the namespace buys is that a race
-                       between two PRODUCTS is no longer possible at all,
-                       because they never touch the same subtree. */
-                    $sel = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ?');
-                    $sel->bind_param('i', $authUserId);
-                    $sel->execute();
-                    $curRow = $sel->get_result()->fetch_row();
-                    $sel->close();
-                    $curRaw = (string)($curRow[0] ?? '');
-                    $current = $curRaw !== '' ? json_decode($curRaw, true) : [];
-                    if (!is_array($current)) { $current = []; }
+                    /* Read-modify-write of ONE subtree, through the ONE locked
+                       writer (account/profile rewrite A1, epic #2180).
+                       userSettingsMutate() locks this person's row, reads the
+                       whole box, lets us swap our shelf, writes it back and
+                       releases. Two saves landing at the same moment therefore
+                       take turns instead of one erasing the other.
+                       (The old comment here said a race was "no longer possible
+                       at all"; that was wrong. Two saves to DIFFERENT shelves
+                       that overlapped each wrote back their own stale copy of
+                       the whole box. That is what the lock fixes.)
 
-                    /* ONE decision function. The reason code — never the
-                       sentence — chooses the status, so a client branches on
-                       the HTTP status and never on our prose (rule #35). */
-                    $reason = userSettingsRejectReason($current, $nsPost, $settings);
+                       ONE decision function. The reason code, never the
+                       sentence, chooses the status, so a client branches on
+                       the HTTP status and never on our prose (rule #35).
+                       REJECTED, never truncated: a silently amputated payload
+                       is how #1649 / #1662 destroyed users' set lists. */
+                    $mutated = userSettingsMutate(
+                        $db,
+                        $authUserId,
+                        static function (array $current) use ($nsPost, $settings) {
+                            $reason = userSettingsRejectReason($current, $nsPost, $settings);
+                            if ($reason !== null) { return $reason; }
+                            return userSettingsMergeNamespace($current, $nsPost, $settings);
+                        }
+                    );
+                    $reason = $mutated['reason'];
                     if ($reason === 'invalid_namespace') {
                         sendJson(['error' => 'Invalid namespace.'], 400);
                         break;
@@ -4840,16 +4847,6 @@ if ($action !== null) {
                         sendJson(['error' => 'Stored settings would exceed the per-account limit.'], 413);
                         break;
                     }
-
-                    /* REJECTED, never truncated — a silently amputated payload
-                       is how #1649 / #1662 destroyed users' set lists. */
-                    $json = userSettingsEncode(
-                        userSettingsMergeNamespace($current, $nsPost, $settings)
-                    );
-                    $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
-                    $stmt->bind_param('si', $json, $authUserId);
-                    $stmt->execute();
-                    $stmt->close();
                     sendJson(['ok' => true, 'namespace' => $nsPost]);
                     break;
                 }
@@ -4862,15 +4859,15 @@ if ($action !== null) {
                    sibling namespace. The isolation property only holds once
                    every writer is namespaced; migrating settings.js to
                    `namespace: 'ihymns.web'` is the remaining step. */
-                $json = json_encode($settings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-                if (strlen($json) > 16384) {
+                if (strlen(userSettingsEncode($settings)) > 16384) {
                     sendJson(['error' => 'Settings payload too large.'], 413);
                     break;
                 }
-                $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
-                $stmt->bind_param('si', $json, $authUserId);
-                $stmt->execute();
-                $stmt->close();
+                /* Still a whole-box replace, but now through the ONE locked
+                   writer (A1) so it cannot interleave with a shelf save. */
+                userSettingsMutate($db, $authUserId, static function (array $_current) use ($settings) {
+                    return $settings;
+                });
                 sendJson(['ok' => true]);
                 break;
             }

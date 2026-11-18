@@ -110,6 +110,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'user_settings.php';
 
 /* The complete set of card grids that support reorder/hide.
  *
@@ -289,10 +290,12 @@ function cardLayoutUserOverride(int $userId, string $surface): array
  * ELI5: save just this person's card arrangement, without disturbing the rest
  * of their preferences that live in the same JSON blob.
  *
- * The read-modify-write below is NOT transactional, and that is a deliberate
- * match for how `user_settings` treats the same column: the blob is per-user,
- * so the only possible race is one person's own two devices saving at once, and
- * last-write-wins is the accepted outcome there too.
+ * The read-modify-write below goes through `userSettingsMutate()` (A1, epic
+ * #2180), which locks the person's row for the whole read-change-write. It used
+ * to be unlocked, on the theory that only one person's own two devices could
+ * race. That was wrong: a card-layout save and a settings-page save to
+ * DIFFERENT shelves of the same box could overlap, and the later write put back
+ * a stale copy of the whole box, erasing the other save.
  *
  * ⚠ The merge protects siblings only in THIS direction. The legacy
  * un-namespaced `?action=user_settings` write path (used today by
@@ -310,30 +313,26 @@ function cardLayoutSaveUserOverride(int $userId, string $surface, array $layout)
 
     try {
         $db = getDbMysqli();
-        $stmt = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ?');
-        $stmt->bind_param('i', $userId);
-        $stmt->execute();
-        $row = $stmt->get_result()->fetch_row();
-        $stmt->close();
-        $raw = (string)($row[0] ?? '');
-        $settings = $raw === '' ? [] : (json_decode($raw, true) ?: []);
-        /* Rebuild the container if it's missing OR present-but-not-an-array —
-           the second half matters because a hand-edited or foreign-written blob
-           could leave `cardLayouts` as a string, and indexing into that would
-           throw (caught below, but the user's save would silently fail forever
-           instead of self-healing). */
-        if (!isset($settings['cardLayouts']) || !is_array($settings['cardLayouts'])) {
-            $settings['cardLayouts'] = [];
-        }
-        $settings['cardLayouts'][$surface] = [
+        $cleanLayout = [
             'order'  => cardLayoutSanitiseIds($layout['order']  ?? []),
             'hidden' => cardLayoutSanitiseIds($layout['hidden'] ?? []),
         ];
-        $json = (string)json_encode($settings, JSON_UNESCAPED_SLASHES);
-        $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-        $stmt->bind_param('si', $json, $userId);
-        $stmt->execute();
-        $stmt->close();
+        /* ONE locked writer (A1, epic #2180): the lock, the read and the write
+           all happen inside userSettingsMutate(), so this save can no longer
+           overwrite a settings-page save made at the same moment. */
+        $out = userSettingsMutate($db, $userId, static function (array $settings) use ($surface, $cleanLayout) {
+            /* Rebuild the container if it's missing OR present-but-not-an-array —
+               the second half matters because a hand-edited or foreign-written blob
+               could leave `cardLayouts` as a string, and indexing into that would
+               throw (caught below, but the user's save would silently fail forever
+               instead of self-healing). */
+            if (!isset($settings['cardLayouts']) || !is_array($settings['cardLayouts'])) {
+                $settings['cardLayouts'] = [];
+            }
+            $settings['cardLayouts'][$surface] = $cleanLayout;
+            return $settings;
+        });
+        if (!$out['ok']) return false;
         return true;
     } catch (\Throwable $_e) {
         return false;
@@ -361,22 +360,16 @@ function cardLayoutClearUserOverride(int $userId, string $surface): bool
     if ($userId <= 0 || !in_array($surface, CARD_LAYOUT_SURFACES, true)) return false;
     try {
         $db = getDbMysqli();
-        $stmt = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ?');
-        $stmt->bind_param('i', $userId);
-        $stmt->execute();
-        $row = $stmt->get_result()->fetch_row();
-        $stmt->close();
-        $raw = (string)($row[0] ?? '');
-        if ($raw === '') return true;
-        $settings = json_decode($raw, true) ?: [];
-        if (isset($settings['cardLayouts'][$surface])) {
-            unset($settings['cardLayouts'][$surface]);
-        }
-        $json = (string)json_encode($settings, JSON_UNESCAPED_SLASHES);
-        $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-        $stmt->bind_param('si', $json, $userId);
-        $stmt->execute();
-        $stmt->close();
+        /* ONE locked writer (A1). Returning the box unchanged when there is
+           nothing to clear keeps the old "already on the default = success"
+           behaviour; the write is then just a harmless rewrite of the same bytes. */
+        $out = userSettingsMutate($db, $userId, static function (array $settings) use ($surface) {
+            if (isset($settings['cardLayouts'][$surface])) {
+                unset($settings['cardLayouts'][$surface]);
+            }
+            return $settings;
+        });
+        if (!$out['ok']) return false;
         return true;
     } catch (\Throwable $_e) {
         return false;
