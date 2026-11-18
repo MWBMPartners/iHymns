@@ -54,9 +54,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'environment.php'; /* ihymns_environment(), ihymns_parse_channels_csv() */
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';    /* getAppSetting() needs it available */
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'maintenance.php'; /* getAppSetting(): returns the default on ANY error */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'channel_switch.php'; /* the ONE per-channel switch shape (C1, epic #2180); also loads environment.php and getAppSetting() */
 
 /** The settings key, defined ONCE (rule #35) so the admin page and the reader never re-type it. */
 const CROSS_SITE_SYNC_SETTING_KEY = 'cross_site_sync_channels';
@@ -77,7 +75,8 @@ const CROSS_SITE_SYNC_DEFAULT = 'none';
  */
 function crossSiteSyncAllows(string $csv, string $channel): bool
 {
-    return in_array(strtolower(trim($channel)), ihymns_parse_channels_csv($csv), true);
+    /* The shared shape (includes/channel_switch.php). Behaviour is unchanged. */
+    return channelSwitchAllows($csv, $channel);
 }
 
 /**
@@ -90,14 +89,6 @@ function crossSiteSyncAllows(string $csv, string $channel): bool
  */
 function crossSiteSyncEnabledHere(): bool
 {
-    static $enabled = null;
-    if ($enabled !== null) {
-        return $enabled;
-    }
-    try {
-        $csv = (string)(getAppSetting(CROSS_SITE_SYNC_SETTING_KEY, CROSS_SITE_SYNC_DEFAULT) ?? CROSS_SITE_SYNC_DEFAULT);
-        return $enabled = crossSiteSyncAllows($csv, ihymns_environment());
-    } catch (\Throwable $e) {
-        return $enabled = false;
-    }
+    /* The shared shape; `false` = fails closed on any error, as before. */
+    return channelSwitchEnabledHere(CROSS_SITE_SYNC_SETTING_KEY, CROSS_SITE_SYNC_DEFAULT, false);
 }
