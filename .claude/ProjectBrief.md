@@ -1,5 +1,22 @@
 # 📋 iHymns — Project Brief
 
+## 📌 Current state — 2026-11-18 (newest; older sections below are history)
+
+- **Version 1.4.0** on `alpha`; the version commit works again (GitHub App token, #2172). No open pull requests.
+- **Cross-site settings sync** rebuilt (#2178, rule #52): one registry, per-setting newest-wins merge, one
+  cookie `ihymns_prefs`, hidden-frame bridge deleted. **Off by default**; switched on per channel under
+  `cross_site_sync_channels` on `/manage/configuration` (tick alpha, then beta, then production).
+- **PHP:** 8.4 and 8.5 supported, 8.6 prepared (#2181, rule #53, epic #2179). The "PHP 8.6" CI check is
+  advisory until the repository variable `PHP86_ENFORCE=true` is set.
+- **Account and profile rewrite** (epic #2180, plan `.claude/account-profile-rewrite-plan.md`): part 1
+  (phases A-C) merged as #2182 — safety fixes, dormant schema (card "Account and profile foundation"), manual
+  privacy blanking, account-writes channel switch, one token maker, profile registry with a `profile_schema`
+  endpoint. Part 2 (D-G, #2184) and part 3 (H-I, #2185) are next. Owner decisions O1-O6 are in
+  `.claude/sessions/2026-11-18-HANDOFF.md`.
+- **Automation:** merged pull-request branches are deleted automatically (#2174); our workflows open pull
+  requests with the GitHub App's token (#2168).
+- Full queue and owner to-do list: `.claude/sessions/2026-11-18-HANDOFF.md`.
+
 ## 📌 Current state — 2026-09-07 (repository hygiene, a public-exposure finding, Apple work next)
 
 **Working branch `fix/untrack-temp-copyrighted-samples`, two commits, not yet pushed.**

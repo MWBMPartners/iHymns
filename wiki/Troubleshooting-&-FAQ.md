@@ -150,6 +150,15 @@ iHymns is **MySQL-only** — there is no SQLite fallback and no runtime JSON cop
 - **Cause:** The branch rules on `alpha` refuse the bot's version commit (#2143)
 - **Effect:** None on the site. The deploy itself succeeded; the displayed version number just does not move
 
+#### A pull request's branch has disappeared
+- **Cause:** The auto-merge workflow deletes the branch after merging (#2174). This is intended.
+- **Fix:** Nothing is lost; the work is in `alpha`. To change it, start a new branch from `alpha`
+
+#### Running the account database steps (after the account rewrite, #2180)
+1. Check the MySQL version and take a backup first.
+2. On `/manage/setup-database` on alpha, run the **"Account and profile foundation"** card (B1). It is safe to run more than once.
+3. The **privacy blanking** card (B2) is manual and cannot be undone except from the backup. Run it as a dry run first, confirm once, and only after the change that stops recording who made each search is live on production.
+
 #### A push to `alpha` ran no deploy
 - **Cause:** Deploys only run when the push changes `appWeb/**` or `deploy.yml`. Documentation-only pushes do not
 
