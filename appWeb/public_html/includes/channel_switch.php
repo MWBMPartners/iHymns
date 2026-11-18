@@ -19,7 +19,8 @@ declare(strict_types=1);
  * This file answers two questions about such a row:
  *   - channelSwitchAllows(): is this channel's name in that list? (pure)
  *   - channelSwitchEnabledHere(): is the switch on for the copy of the site that
- *     is running right now? (reads the row, and says what to do if it cannot)
+ *     is running right now? (reads the row STRICTLY, and says what to do if it
+ *     genuinely cannot)
  *
  * Detailed
  * --------
@@ -33,6 +34,12 @@ declare(strict_types=1);
  * key, because a setting cannot change mid-request. A caller (a test) that
  * passes its own reader or channel bypasses the memory, so a test can ask the
  * same question twice with different answers.
+ *
+ * The read is STRICT (`getAppSettingStrict()`): a missing row gives the default,
+ * but a database or decryption failure THROWS and so reaches `$onError`. (The
+ * everyday `getAppSetting()` swallows every error and returns the default, which
+ * would make `$onError` unreachable, and a broken database would then look like
+ * "switch on everywhere".)
  *
  * What to do when the setting cannot be read is the CALLER'S decision, passed as
  * `$onError`: a plain bool, or a function that is given the channel and returns
@@ -52,8 +59,8 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'environment.php'; /* ihymns_environment(), ihymns_parse_channels_csv() */
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';    /* getAppSetting() needs it available */
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'maintenance.php'; /* getAppSetting(): returns the default on ANY error */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';    /* getAppSettingStrict() needs it available */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'maintenance.php'; /* getAppSettingStrict(): throws on a real read failure */
 
 /**
  * PURE: does this comma list switch the thing ON for this channel?
@@ -77,7 +84,7 @@ function channelSwitchAllows(string $csv, string $channel): bool
  * @param bool|callable $onError  answer if the row cannot be read: a bool, or a
  *                                function (string $channel): bool
  * @param ?callable     $reader   test hook: function (string $key, string $default): string,
- *                                which may throw. Default reads getAppSetting().
+ *                                which may throw. Default reads getAppSettingStrict().
  * @param ?string       $channel  test hook: the channel to ask about. Default ihymns_environment().
  */
 function channelSwitchEnabledHere(string $key, string $default, bool|callable $onError, ?callable $reader = null, ?string $channel = null): bool
@@ -91,7 +98,7 @@ function channelSwitchEnabledHere(string $key, string $default, bool|callable $o
     try {
         $csv = $reader !== null
             ? (string)$reader($key, $default)
-            : (string)(getAppSetting($key, $default) ?? $default);
+            : (string)(getAppSettingStrict($key, $default) ?? $default);
         $answer = channelSwitchAllows($csv, $ch);
     } catch (\Throwable $_e) {
         $answer = is_callable($onError) ? (bool)$onError($ch) : $onError;

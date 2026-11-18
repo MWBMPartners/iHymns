@@ -70,6 +70,33 @@ chk('a failing read with onError=true is on', channelSwitchEnabledHere('k2', 'no
 chk('a failing read can ask a function, given the channel', channelSwitchEnabledHere('k2', 'none', static fn(string $ch): bool => $ch === 'beta', $boom, 'beta') === true
     && channelSwitchEnabledHere('k2', 'none', static fn(string $ch): bool => $ch === 'beta', $boom, 'alpha') === false);
 
+/* ---- the REAL reader path (rule #34: a test must not only inject a reader the real one never has) ---- */
+echo "the real reader\n";
+/* Fake handles (duck-typed: getAppSettingStrict() only needs prepare()). */
+class IhymnsFailingDb { public function prepare(string $q) { throw new mysqli_sql_exception('database down'); } }
+class IhymnsEmptyResult { public function fetch_row() { return null; } }
+class IhymnsEmptyStmt { public function bind_param(...$a) { return true; } public function execute() { return true; } public function get_result() { return new IhymnsEmptyResult(); } public function close() {} }
+class IhymnsEmptyDb { public function prepare(string $q) { return new IhymnsEmptyStmt(); } }
+
+$threw = false;
+try { getAppSettingStrict('whatever', 'd', new IhymnsFailingDb()); } catch (\Throwable $_e) { $threw = true; }
+chk('getAppSettingStrict() THROWS when a query fails', $threw);
+chk('a genuinely missing row returns the default (not an error)', getAppSettingStrict('nope', 'production,beta,alpha', new IhymnsEmptyDb()) === 'production,beta,alpha');
+
+/* No credentials in this test run, so the REAL getDbMysqli() throws: the real default path, not an injected reader. */
+$threw = false;
+try { getAppSettingStrict('whatever', 'd'); } catch (\Throwable $_e) { $threw = true; }
+chk('on the real path, an unreachable database THROWS', $threw);
+chk('getAppSetting() (the everyday one) swallows the same failure and returns the default - why the switch must not use it',
+    getAppSetting('whatever_k', 'd') === 'd');
+chk('no injected reader: an unreadable switch reaches onError (false)', channelSwitchEnabledHere('real_k1', 'none', false, null, 'alpha') === false);
+chk('no injected reader: an unreadable switch reaches onError (true)', channelSwitchEnabledHere('real_k2', 'none', true, null, 'alpha') === true);
+chk('account writes, real reader, unreadable database: alpha REFUSED', channelSwitchEnabledHere('real_k3', ACCOUNT_WRITES_DEFAULT, 'accountWritesOnReadError', null, 'alpha') === false);
+chk('account writes, real reader, unreadable database: production ALLOWED', channelSwitchEnabledHere('real_k4', ACCOUNT_WRITES_DEFAULT, 'accountWritesOnReadError', null, 'production') === true);
+chk('the switch reads through the strict reader, not getAppSetting()',
+    str_contains(code((string)file_get_contents($web . '/includes/channel_switch.php')), 'getAppSettingStrict($key, $default)')
+    && !str_contains(code((string)file_get_contents($web . '/includes/channel_switch.php')), 'getAppSetting('));
+
 /* ---- cross_site_sync still behaves, by delegation ---- */
 echo "cross_site_sync.php delegates\n";
 $cs = code((string)file_get_contents($web . '/includes/cross_site_sync.php'));

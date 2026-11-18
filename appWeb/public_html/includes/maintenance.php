@@ -121,6 +121,42 @@ function getAppSetting(string $key, ?string $default = null): ?string
 }
 
 /**
+ * Read a tblAppSettings value, but let a failure be SEEN instead of hidden.
+ *
+ * ELI5: getAppSetting() above answers "the default" when the database is down,
+ * which is right for a page that must never break. But a few switches need to
+ * tell "the setting says X" apart from "I could not read it at all" (for
+ * example "may this test site save personal data?"). This one reads the row
+ * fresh (no memory), hands back the default ONLY when the row genuinely does
+ * not exist, and THROWS when the database fails or a stored secret cannot be
+ * decrypted.
+ *
+ * @param object|null $db test hook: anything with a mysqli-style prepare(). Default getDbMysqli().
+ * @throws \Throwable on a database error or a decryption failure
+ */
+function getAppSettingStrict(string $key, ?string $default = null, ?object $db = null): ?string
+{
+    $db ??= getDbMysqli();
+    $stmt = $db->prepare('SELECT SettingValue FROM tblAppSettings WHERE SettingKey = ?');
+    $stmt->bind_param('s', $key);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    if ($row === null) {
+        return $default;
+    }
+    $raw = (string)$row[0];
+    if (function_exists('secretIsEncrypted') && secretIsEncrypted($raw)) {
+        $decrypted = secretDecrypt($raw);
+        if ($decrypted === null) {
+            throw new \RuntimeException('Stored setting could not be decrypted.');
+        }
+        return $decrypted;
+    }
+    return $raw;
+}
+
+/**
  * Write ONE tblAppSettings row, encrypting it first when it is a secret.
  *
  * ELI5: save a setting — and if it is a password-like setting and encryption is
