@@ -319,7 +319,6 @@ function drawBranding(GdImage $img, int $W, int $H, int $grey, string $fontBold)
             $brandY = $H - 55;
             $iconX = ($W / 2) - 55;
             imagecopyresampled($img, $icon, (int)$iconX, $brandY, 0, 0, $iconSize, $iconSize, imagesx($icon), imagesy($icon));
-            imagedestroy($icon);
             imagettftext($img, 12, 0, (int)$iconX + 34, $brandY + 20, $grey, $fontBold, 'iHymns');
         }
     }
@@ -743,7 +742,6 @@ elseif ($mode === 'setlist') {
                        correctly with no extra toggling here. */
                     imagecopyresampled($img, $logo, $bandLeftX, $logoY, 0, 0, $targetW, $targetH, $logoSrcW, $logoSrcH);
                 }
-                imagedestroy($logo);
             }
         } else {
             /* No PNG logo resolves (SVG-only org, or nothing dark-capable
@@ -764,7 +762,6 @@ elseif ($mode === 'setlist') {
             $creditIcon = imagecreatefrompng($creditIconPath);
             if ($creditIcon) {
                 imagecopyresampled($img, $creditIcon, $creditIconX, $bandCenterY - (int)($creditIconSize / 2), 0, 0, $creditIconSize, $creditIconSize, imagesx($creditIcon), imagesy($creditIcon));
-                imagedestroy($creditIcon);
             }
         }
         imagettftext($img, 12, 0, $creditTextX, $bandCenterY + 4, $bandFg, $fontBold, $creditText);
@@ -791,7 +788,6 @@ else {
                 $iconSize, $iconSize,
                 imagesx($icon), imagesy($icon)
             );
-            imagedestroy($icon);
         }
     }
 
@@ -812,4 +808,3 @@ else {
  * OUTPUT
  * ========================================================================= */
 imagepng($img);
-imagedestroy($img);

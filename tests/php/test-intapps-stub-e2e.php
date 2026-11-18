@@ -140,7 +140,6 @@ for ($i = 0; $i < 100; $i++) {
     curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 2, CURLOPT_CONNECTTIMEOUT => 2]);
     $body = curl_exec($ch);
     $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
     if ($status === 200 && is_string($body) && str_contains($body, '"status":"ok"')) {
         $ready = true;
         break;
@@ -275,7 +274,6 @@ function rawStubCall(int $port, string $method, string $path, array $headers, st
     }
     $respBody = curl_exec($ch);
     $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
     return [$status, (string)$respBody];
 }
 

@@ -369,7 +369,6 @@ function _iaHttpGet(string $url, int $timeoutSeconds, int $maxBytes): ?array
     curl_exec($ch);
     $errno      = curl_errno($ch);
     $httpStatus = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
 
     if ($errno !== 0) {
         return null; /* transport failure, incl. CURLE_FILESIZE_EXCEEDED / write-callback abort */

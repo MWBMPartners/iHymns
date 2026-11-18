@@ -657,7 +657,6 @@ function intappsRequest(string $method, string $path, ?string $rawBody = null): 
     curl_exec($ch);
     $errno      = curl_errno($ch);
     $httpStatus = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
     $result['durationMs'] = round((microtime(true) - $start) * 1000, 2);
 
     /* Two independent triggers can report an oversized body, and curl's

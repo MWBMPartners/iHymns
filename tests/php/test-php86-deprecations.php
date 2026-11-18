@@ -66,6 +66,9 @@ $FIXED = [
     'mb_convert_variables',
     'mysqli_get_charset', 'mysqli_stmt_init',
     'spl_object_hash', 'spl_classes',
+    /* Deprecated since 8.5 (do-nothing since 8.0/8.1): kept in the fixed list so the check
+       behaves the same on 8.4, 8.5 and 8.6. Our own code no longer calls them. */
+    'curl_close', 'imagedestroy', 'finfo_close',
     'is_double', 'is_long', 'is_integer', 'doubleval', 'strcoll',
 ];
 $BANNED_METHODS = ['get_charset', 'stmt_init', 'getcsvcontrol', 'setcsvcontrol'];
@@ -249,6 +252,8 @@ $ALLOWED = [
        never runs (mPDF indexes, FPDI page import). Re-vendor once upstream supports 8.6. */
     'appWeb/private_html/lib/pdf/vendor/mpdf/mpdf/src/Mpdf.php' => ['fn:mb_regex_encoding' => 3, 'fn:strcoll' => 1],
     'appWeb/private_html/lib/pdf/vendor/setasign/fpdi/src/FpdiTrait.php' => ['fn:spl_object_hash' => 1],
+    'appWeb/private_html/lib/pdf/vendor/mpdf/mpdf/src/Http/CurlHttpClient.php' => ['fn:curl_close' => 1],
+    'appWeb/private_html/lib/pdf/vendor/mpdf/mpdf/src/Image/ImageProcessor.php' => ['fn:imagedestroy' => 1],
     /* The parity test deliberately calls the real function (below 8.6 only), through one helper. */
     'tests/php/test-metaphone-parity.php' => ['fn:metaphone' => 1],
     'appWeb/public_html/includes/phonetic.php' => ['fn:metaphone' => 1],

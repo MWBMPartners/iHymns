@@ -1059,7 +1059,6 @@ function _captchaProbeHttp(string $url, ?string $postFields, int $maxRedirects, 
     curl_exec($ch);
     $errno      = curl_errno($ch);
     $httpStatus = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
 
     return [
         'ok'         => ($errno === 0 && $httpStatus >= 200 && $httpStatus < 300),
@@ -1308,7 +1307,6 @@ function captchaVerifyToken(?string $token, string $clientIp): bool
     curl_exec($ch);
     $errno      = curl_errno($ch);
     $httpStatus = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
 
     if ($errno !== 0 || $httpStatus < 200 || $httpStatus >= 300) {
         /* Transport failure / non-2xx: an attacker CANNOT induce this from

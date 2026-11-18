@@ -1345,12 +1345,10 @@ final class EmailService
         $raw = curl_exec($ch);
         if ($raw === false) {
             $err = curl_error($ch) ?: 'curl_exec_failed';
-            curl_close($ch);
             return ['err' => $err, 'code' => 0, 'body' => '', 'headers' => ''];
         }
         $code       = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $headerSize = (int)curl_getinfo($ch, CURLINFO_HEADER_SIZE);
-        curl_close($ch);
         $hdr = (string)substr((string)$raw, 0, $headerSize);
         $bod = (string)substr((string)$raw, $headerSize);
         return ['err' => '', 'code' => $code, 'body' => $bod, 'headers' => $hdr];
