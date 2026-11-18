@@ -244,8 +244,14 @@ function makeSession(): array
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
     curl_setopt($ch, CURLOPT_MAXREDIRS, 10);
 
-    // Accept compressed responses (gzip, deflate) — cURL handles decompression
-    curl_setopt($ch, CURLOPT_ENCODING, '');
+    // Accept compressed responses — cURL unpacks them for us. Only gzip and
+    // deflate are asked for, on purpose. An empty string here would tell cURL
+    // to accept EVERY kind it was built with, and that includes Brotli. The
+    // Brotli unpacker had a flaw that attackers are using (CVE-2026-111497,
+    // "HTTP2Shell", #2157): a deliberately broken reply could run code on this
+    // computer. We never need Brotli from these sites. Guarded by
+    // tests/test-no-brotli.js.
+    curl_setopt($ch, CURLOPT_ENCODING, 'gzip, deflate');
 
     // Connection timeout (10s) and transfer timeout (30s)
     curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
