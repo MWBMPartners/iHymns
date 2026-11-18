@@ -139,6 +139,27 @@ ok(
     markdownLiteRender("- bullet\n  wrapped\n\nA real paragraph.")
         === "<ul>\n<li>bullet wrapped</li>\n</ul>\n<p>A real paragraph.</p>\n"
 );
+/* Loose lists — WHATS-NEW.md puts a blank line between every bullet. That is
+   still ONE list in CommonMark (https://spec.commonmark.org/0.31.2/#loose);
+   before this was handled, each bullet became its own one-item <ul> on the
+   live What's New page. A wrapped bullet followed by a blank line and another
+   bullet must also stay one list, and the line after a blank must never be
+   swallowed into the previous bullet as a "continuation". */
+ok(
+    'bullets separated by blank lines stay ONE <ul> (loose list)',
+    markdownLiteRender("- first\n\n- second\n\n- third")
+        === "<ul>\n<li>first</li>\n<li>second</li>\n<li>third</li>\n</ul>\n"
+);
+ok(
+    'a wrapped bullet, a blank line, then another bullet is still one <ul>',
+    markdownLiteRender("- one\n  wrapped\n\n- two")
+        === "<ul>\n<li>one wrapped</li>\n<li>two</li>\n</ul>\n"
+);
+ok(
+    'a paragraph after a blank line still closes a loose list (not merged into the last bullet)',
+    markdownLiteRender("- a\n\n- b\n\nAfter.")
+        === "<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n<p>After.</p>\n"
+);
 ok('an empty string renders as empty output', markdownLiteRender('') === '');
 ok('whitespace-only input renders as empty output', markdownLiteRender("   \n\t\n  ") === '');
 

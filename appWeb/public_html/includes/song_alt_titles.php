@@ -68,6 +68,17 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that a song save, the v2 editor, the works or songbooks admin page
+   or an importer can reach from inside its transaction starts by passing those
+   back to its caller (the full list is in DEV_NOTES.md). Loaded here, at the
+   top, so that check can always be a catch's first line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 /**
  * Cached, per-request probe: does `tblSongAlternativeTitles` exist on this
  * install? The exact idiom `song_external_ids.php`'s
@@ -94,6 +105,7 @@ function songAltTitlesTableExists(\mysqli $db): bool
         $cached = $stmt->get_result()->fetch_row() !== null;
         $stmt->close();
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $cached = false;
     }
     return $cached;
@@ -173,13 +185,14 @@ function songAltTitlesList(\mysqli $db, string $songId): array
  * @param string      $title    Trimmed, non-empty, <=255 CODE POINTS
  *                               (`mb_strlen`, not `strlen` — a multi-byte
  *                               title must not be cut mid-character).
- * @param string|null $language Trimmed; `''` or `null` -> `NULL`. Otherwise
- *                               must match the SAME soft BCP-47 grammar
- *                               `song_importers.php` already uses for a
- *                               songbook-language folder suffix
- *                               (`/^[a-z]{2,3}(-[A-Za-z0-9]+)*$/i`), then
- *                               capped to 35 code points (the column
- *                               width) via `mb_substr`.
+ * @param string|null $language `''` or `null` -> `NULL`. Otherwise tidied
+ *                               by the ONE shared language rule
+ *                               (`mediaLanguageTagForStorage()`, #2137 —
+ *                               MWBM-MEDIA-LANG LANG-001): letter case is
+ *                               fixed and a value that is not a language
+ *                               tag, or is longer than the 35-character
+ *                               column, is refused (never cut short, which
+ *                               would store a different tag).
  * @param string|null $note     Trimmed, <=255 code points; `''` or `null`
  *                               -> `NULL`.
  * @return array{id:int, created:bool, row:array{id:int,title:string,language:string,note:string,sortOrder:int}}
@@ -196,18 +209,14 @@ function songAltTitleAdd(\mysqli $db, string $songId, string $title, ?string $la
         throw new \InvalidArgumentException('title must be 255 characters or fewer.');
     }
 
-    /* Same soft BCP-47 grammar + code-point cap `song_importers.php` already
-       validates a songbook-language folder suffix against
-       (`_bulkImport_upsertSongbook()`) — reused rather than re-typed, so an
-       alt title's language and a songbook's language agree on what counts
-       as a plausible tag. */
-    $language = $language === null ? '' : trim($language);
-    if ($language === '') {
-        $language = null;
-    } elseif (!preg_match('/^[a-z]{2,3}(-[A-Za-z0-9]+)*$/i', $language)) {
-        throw new \InvalidArgumentException('language is not a recognised BCP-47 tag.');
-    } else {
-        $language = mb_substr($language, 0, 35);
+    /* #2137 — the ONE shared language rule decides (it replaced a local loose
+       pattern plus a silent cut to 35 characters): tidied, or refused with the
+       same plain sentence every other language box shows. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'media_language.php';
+    $rawLanguage = $language === null ? '' : $language;
+    $language    = mediaLanguageTagForStorage($rawLanguage);
+    if ($language === false) {
+        throw new \InvalidArgumentException(mediaLanguageRefusalMessage($rawLanguage));
     }
 
     $note = $note === null ? '' : trim($note);

@@ -169,6 +169,19 @@
     border: 1px solid #fff !important;
 }
 
+/* Neutral grey badges (a songbook's short code, recent-search chips, the
+   Settings font-size readout). Bootstrap builds `.bg-body-secondary` from
+   `--bs-secondary-bg-rgb`, which the block above does not override, so in
+   this mode the badge kept its pale light-theme grey behind white text
+   (about 1.2:1). Black with white text, matching the rest of this mode.
+   The selector is more specific than Bootstrap's `.bg-body-secondary`, so
+   this `!important` wins over Bootstrap's own `!important`. See the
+   matching light/dark rule in app.css ("NEUTRAL GREY BADGES"). */
+[data-ihymns-contrast="high"] .badge.bg-body-secondary {
+    background-color: #000 !important;
+    color: #fff !important;
+}
+
 [data-ihymns-contrast="high"] img {
     filter: contrast(1.2) !important;
 }

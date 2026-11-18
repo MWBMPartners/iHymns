@@ -110,14 +110,19 @@ extension AppRootViewModel {
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
-    /// Every distinct BCP-47 language tag in the loaded catalogue, sorted —
-    /// same "always the full loaded set" reasoning as
+    /// Every distinct BCP-47 language tag in the loaded catalogue — same
+    /// "always the full loaded set" reasoning as
     /// `availableSongbookAbbreviations` above.
     ///
     /// ELI5: "Which languages could I filter by?"
+    ///
+    /// #2136 — ordered A to Z by each language's NAME in the reader's
+    /// language, with "several languages" / "not known" / "no language" last
+    /// (`LanguageDisplay.sortedForDisplay`), instead of by code, where "zh"
+    /// (Chinese) came after "sw" (Swahili). The tags themselves are unchanged.
     public var availableLanguages: [String] {
         guard case .loaded(let songs) = catalogueLoadState else { return [] }
-        return Array(Set(songs.map(\.language))).sorted()
+        return LanguageDisplay.sortedForDisplay(Array(Set(songs.map(\.language))))
     }
 
     /// Whether any songbook/language filter is currently active — drives

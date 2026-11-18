@@ -1234,7 +1234,7 @@ if ($hasSchema) {
                             meta: {
                                 songId: PRINT_SAMPLE_SONG.publicId || PRINT_SAMPLE_SONG.id || '',
                                 title: PRINT_SAMPLE_SONG.title || '',
-                                lang: PRINT_SAMPLE_SONG.language || 'en',
+                                lang: PRINT_SAMPLE_SONG.language || 'und',   /* #2132 — never a guessed 'en' (the sample song itself is English) */
                                 dir: 'ltr',
                                 book: PRINT_SAMPLE_SONG.songbookName || '',
                             },

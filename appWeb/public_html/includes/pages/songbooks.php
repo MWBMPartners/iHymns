@@ -46,7 +46,7 @@ foreach ($songbooks as $_sbCheck) {
         </h1>
         <?php if (($stats['totalSongs'] ?? 0) > 0): ?>
         <span class="badge bg-primary bg-gradient rounded-pill">
-            <?= number_format($stats['totalSongs']) ?> songs total
+            <?= number_format($stats['totalSongs']) ?> <?= (int)$stats['totalSongs'] === 1 ? 'song' : 'songs' ?> total
         </span>
         <?php endif; ?>
     </div>
@@ -92,20 +92,15 @@ foreach ($songbooks as $_sbCheck) {
                        #857 — also expose the contained-languages union
                        so a book tagged English but holding Afrikaans
                        songs surfaces under an Afrikaans filter. */
-                    $bookLang = (string)($book['language'] ?? '');
-                    $langCode = '';
-                    if ($bookLang !== '' && preg_match('/^([a-z]{2,3})/i', $bookLang, $m)) {
-                        $langCode = mb_strtoupper($m[1]);
-                    }
-                    $bookLangs    = $book['languages'] ?? [];
-                    $bookLangsCsv = !empty($bookLangs) ? implode(',', $bookLangs) : '';
-                    $bookLangNames = [];
-                    foreach ($bookLangs as $sub) {
-                        $bookLangNames[] = resolveLanguageName($sub);
-                    }
-                    $bookLangsTitle = !empty($bookLangNames)
-                        ? implode(', ', $bookLangNames)
-                        : resolveLanguageName($bookLang);
+                    /* #2137 — whole tag on the badge, full names in the
+                       tooltip and the accessible name (see home.php). */
+                    $tile           = songbookTileLanguage($book);
+                    $bookLang       = $tile['tag'];
+                    $langCode       = $tile['badge'];
+                    $bookLangsCsv   = $tile['groupsCsv'];
+                    $bookLangTagsCsv = $tile['tagsCsv'];   /* #2137 review — whole tags, for the filter's script check */
+                    $bookLangsTitle = $tile['title'];
+                    $bookLangName   = $tile['name'];
                     /* #1223 — unofficial-songbook flag. SongData casts
                        tblSongbooks.IsOfficial (#502) to a strict bool;
                        empty() also treats a missing key (pre-migration /
@@ -132,7 +127,8 @@ foreach ($songbooks as $_sbCheck) {
                          data-songbook-id="<?= htmlspecialchars($book['id']) ?>"
                          data-songbook-songs="<?= (int)$book['songCount'] ?>"
                          <?php if ($langCode !== ''): ?>data-songbook-language="<?= htmlspecialchars($bookLang) ?>"<?php endif; ?>
-                         <?php if ($bookLangsCsv !== ''): ?>data-songbook-languages="<?= htmlspecialchars($bookLangsCsv) ?>"<?php endif; ?>>
+                         <?php if ($bookLangsCsv !== ''): ?>data-songbook-languages="<?= htmlspecialchars($bookLangsCsv) ?>"<?php endif; ?>
+                         <?php if ($bookLangTagsCsv !== ''): ?>data-songbook-language-tags="<?= htmlspecialchars($bookLangTagsCsv) ?>"<?php endif; ?>>
                         <!-- Stretched link covers the whole card; the
                              absolute-positioned download button below
                              stays clickable because its z-index sits
@@ -141,7 +137,7 @@ foreach ($songbooks as $_sbCheck) {
                         <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
                            class="stretched-link text-decoration-none text-reset"
                            data-navigate="songbook"
-                           aria-label="Open <?= htmlspecialchars($book['name']) ?><?= $isUnofficial ? ' (unofficial songbook)' : '' ?> — <?= number_format($book['songCount']) ?> songs<?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>"></a>
+                           aria-label="Open <?= htmlspecialchars($book['name']) ?><?= $isUnofficial ? ' (unofficial songbook)' : '' ?> — <?= number_format($book['songCount']) ?> songs<?= $bookLangName !== '' ? ' (' . htmlspecialchars($bookLangName) . ')' : '' ?>"></a>
                         <?php if ($langCode !== ''): ?>
                             <!-- #856 / #857: tooltip resolves the IETF tag to
                                  the full language name; when the book contains
@@ -180,7 +176,7 @@ foreach ($songbooks as $_sbCheck) {
                                               aria-hidden="true">Unofficial</span>
                                     <?php endif; ?>
                                     <p class="text-muted small mb-0 mt-1">
-                                        <?= number_format($book['songCount']) ?> songs
+                                        <?= number_format($book['songCount']) ?> <?= (int)$book['songCount'] === 1 ? 'song' : 'songs' ?>
                                     </p>
                                     <?php
                                     /* #782 phase D — "Part of: <Series>" line.

@@ -395,6 +395,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 /* #1235 P3 / #1088 — shared per-line enrichment (translations / annotations)
    write+read layer; the SAME contract the future native API (#1201) reuses. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'line_enrichment.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_language.php';   /* #2137 — the shared language rules: tidy/refuse the song, section and line languages */
 /* #2073 — voice parts / echo spans / rounds. ELI5: this is the one place that
    knows "who sings this line" and "how a round of voices comes in one after
    another" — the eight vocal-part and round actions below, and load_song's
@@ -916,6 +917,7 @@ function ed2_songIdentityColsPresent(\mysqli $db): array {
             $r->close();
         }
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         /* Degrade to "not migrated" (all false) on any probe failure — the
            safe direction, matching every other existence probe in this file. */
     }
@@ -947,6 +949,7 @@ function ed2_rightsColsPresent(\mysqli $db): array {
             $r->close();
         }
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         /* Degrade to "not migrated" — the safe direction (rule #9). */
     }
     return $presence;
@@ -1028,6 +1031,7 @@ function ed2_tuneIdColumnExists(\mysqli $db): bool {
         $exists = $r && $r->fetch_row() !== null;
         if ($r) { $r->close(); }
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $exists = false;
     }
     return $exists;
@@ -1076,6 +1080,7 @@ function ed2_worksTableExists(\mysqli $db): bool {
         $exists = $r && $r->fetch_row() !== null;
         if ($r) { $r->close(); }
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $exists = false;
     }
     return $exists;
@@ -1191,6 +1196,7 @@ function ed2_copyrightHolderIdColPresent(\mysqli $db): bool {
         $exists = $r && $r->fetch_row() !== null;
         if ($r) { $r->close(); }
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         $exists = false;
     }
     return $exists;
@@ -2326,21 +2332,14 @@ try {
 
             $songId = ed2_allocateSongId($db, $abbr);
             $norm   = ed2_normalizeTitle($title);
-            /* #1343-B — mint the opaque PublicId permalink at create (gated; an
-               un-migrated env omits the column and the backfill fills it later). */
-            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
-            if (songPublicId_columnReady($db)) {
-                $pubId = songPublicId_mintUnique($db);
-                $ins = $db->prepare('INSERT INTO tblSongs (SongId, PublicId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?, ?)');
-                $ins->bind_param('sssss', $songId, $pubId, $title, $norm, $abbr);
-            } else {
-                $ins = $db->prepare('INSERT INTO tblSongs (SongId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?)');
-                $ins->bind_param('ssss', $songId, $title, $norm, $abbr);
-            }
-            $ins->execute();
-            $ins->close();
-            /* #1860 go-live — mint this song's permanent IL-id (ILS…). */
-            ilidStampNewRow($db, 'song', $songId, 'SongId');
+            /* #1343-B — the opaque PublicId permalink is minted at create (gated;
+               an un-migrated env omits the column and the backfill fills it
+               later). #2137 review — the language is written explicitly as
+               `und` ("not known yet"): leaving it to the column default made
+               every new song English on a server that has not run the und
+               card. Both live in songInsertNewRow(). */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_create.php';
+            songInsertNewRow($db, $songId, $title, $norm, $abbr);   /* also mints the IL-id (#1860) */
             ed2_touchRevision($db, $songId, $ed2UserId, 'create');
             $db->commit();
         } catch (\Throwable $e) {
@@ -2415,19 +2414,13 @@ try {
         try {
             $newId = ed2_allocateSongId($db, $pendingAbbr);
             $norm  = ed2_normalizeTitle($title);
-            if (songPublicId_columnReady($db)) {
-                $pubId = songPublicId_mintUnique($db);
-                $ins = $db->prepare('INSERT INTO tblSongs (SongId, PublicId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?, ?)');
-                $ins->bind_param('sssss', $newId, $pubId, $title, $norm, $pendingAbbr);
-            } else {
-                $ins = $db->prepare('INSERT INTO tblSongs (SongId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?)');
-                $ins->bind_param('ssss', $newId, $title, $norm, $pendingAbbr);
-            }
-            $ins->execute();
-            $ins->close();
-            /* #1860 go-live — mint the duplicate's OWN permanent IL-id (ILS…),
-               never copied from the source (a duplicate is a distinct row). */
-            ilidStampNewRow($db, 'song', $newId, 'SongId');
+            /* The same insert as create_song (#2137 review): `und` until the
+               snapshot below copies the source song's real language over it. */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_create.php';
+            /* songInsertNewRow() also mints the duplicate's OWN permanent IL-id
+               (#1860 go-live, ILS…), never copied from the source (a duplicate
+               is a distinct row). */
+            songInsertNewRow($db, $newId, $title, $norm, $pendingAbbr);
 
             /* The bulk content copy: scalars (Ccli/Iswc kept, Isrc/Verified/media
                flags reset above), components + lyric lines + per-line chords,
@@ -2451,6 +2444,7 @@ try {
                     $cp->execute();
                     $cp->close();
                 } catch (\Throwable $_ce) {
+                    if (songRelocateIsTransactionFatal($_ce)) { throw $_ce; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
                     error_log('[editor duplicate_song] optional copy skipped: ' . $_ce->getMessage());
                 }
             }
@@ -2464,6 +2458,7 @@ try {
                 $g->execute();
                 $g->close();
             } catch (\Throwable $_ge) {
+                if (songRelocateIsTransactionFatal($_ge)) { throw $_ge; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
                 error_log('[editor duplicate_song] Genre/Explicit/Availability copy skipped: ' . $_ge->getMessage());
             }
 
@@ -2726,6 +2721,23 @@ try {
 
         [$column, $type] = ED2_META_FIELDS[$field];
         $raw = $body['value'] ?? null;
+
+        /* ---- #2137 — the song's language: tidied by the ONE shared rule ----
+           This field used to reach the generic trim-and-store path below with
+           no check at all, so `pt_br` or `English` could be written straight
+           into tblSongs.Language. Now `pt-br` is stored as `pt-BR`, and a value
+           that is not a language code is refused with a plain sentence (422 —
+           the status, not the wording, is what the client branches on, rule
+           #35). #2132 — an emptied box is stored as `und` ("not known"), never
+           as a blank or a guessed English. */
+        if ($field === 'language') {
+            $rawLanguage = $raw === null ? '' : (string)$raw;
+            $tidyLanguage = mediaLanguageTagForStorage($rawLanguage);
+            if ($tidyLanguage === false) {
+                ed2_respond(['ok' => false, 'error' => mediaLanguageRefusalMessage($rawLanguage, 'the song')], 422);
+            }
+            $raw = mediaLanguageOrUnknown($tidyLanguage);
+        }
 
         /* ---- #1741 P1 existence gate ---------------------------------------
            Five of the identity columns above may not exist yet on an install
@@ -3404,6 +3416,11 @@ try {
         $comp   = is_array($body['component'] ?? null) ? $body['component'] : [];
         if ($songId === '' || !$comp) { ed2_respond(['ok' => false, 'error' => 'songId + component are required.'], 400); }
         if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        /* #2137 — refuse a section or line language that is not a language code,
+           naming the box, before anything is written (the shared write path
+           tidies letter case but cannot answer the curator). */
+        $languageRefusal = mediaLanguageFirstRefusalInComponents([$comp]);
+        if ($languageRefusal !== null) { ed2_respond(['ok' => false, 'error' => $languageRefusal], 422); }
 
         $compId    = isset($comp['id']) ? (int)$comp['id'] : 0;
         $type      = mb_substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse';
@@ -5623,6 +5640,9 @@ try {
         $mode   = (($body['mode'] ?? 'replace') === 'append') ? 'append' : 'replace';
         if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
         if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        /* #2137 — same refusal as component_upsert, for every section at once. */
+        $languageRefusal = mediaLanguageFirstRefusalInComponents($rows);
+        if ($languageRefusal !== null) { ed2_respond(['ok' => false, 'error' => $languageRefusal], 422); }
 
         $db->begin_transaction();
         try {

@@ -507,9 +507,14 @@ if ($mode === 'song') {
     }
     $titleBottom = $titleY + ((count($titleLines) - 1) * 44);
 
-    /* --- Songbook name (below title) --- */
+    /* --- Songbook name (below title) ---
+       Shortened with "…" to the same width as the writer and lyric lines
+       below it. Without this a long songbook name ran off both edges of
+       the 1200px card, cut mid-word, while every other line was neatly
+       trimmed. */
     $bookName = $songInfo['songbookName'] ?? '';
     if ($bookName !== '') {
+        $bookName = truncateText($bookName, 16, $fontRegular, $maxTextW);
         drawCentredText($img, 16, $fontRegular, $bookName, $titleBottom + 50, $bookAccent, $W);
     }
 

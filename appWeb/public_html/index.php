@@ -409,6 +409,12 @@ try {
                other-language versions. Self + each alternate (+ x-default in the
                head). Shares SongData::getSongTranslations() with the picker. */
             $hreflangSongLang = trim((string)($ogSong['language'] ?? ''));
+            /* #2132 — `und` ("language not known") is not a language a search
+               engine can act on, so it never becomes an hreflang value; nor,
+               since the #2137 review, do `mul`, `zxx`, private-use tags or a
+               malformed value — the same test as the song page's picker. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_language.php';
+            if (!mediaLanguageIsOrdinaryLanguage($hreflangSongLang)) { $hreflangSongLang = ''; }
             $_cluster = $songData->getSongTranslations($matches[1]);
             if (!empty($_cluster)) {
                 $_seen = [];
@@ -419,7 +425,7 @@ try {
                 foreach ($_cluster as $_c) {
                     $_lang = trim((string)($_c['target_language'] ?? ''));
                     $_sid  = (string)($_c['song_id'] ?? '');
-                    if ($_lang === '' || $_sid === '' || isset($_seen[strtolower($_lang)])) { continue; }
+                    if (!mediaLanguageIsOrdinaryLanguage($_lang) || $_sid === '' || isset($_seen[strtolower($_lang)])) { continue; }
                     $hreflangLinks[$_lang] = getCanonicalUrl('/song/' . rawurlencode($_sid));
                     $_seen[strtolower($_lang)] = true;
                 }
@@ -453,18 +459,22 @@ try {
             /* JSON-LD: MusicComposition. #858 — inLanguage is the
                union of the song's primary language and every per-
                component override, so a Spanish-chorus / English-verse
-               medley is correctly indexed as multilingual. Falls back
-               to a single-string $locale when no per-component data
-               is attached (pre-migration / no overrides). */
+               medley is correctly indexed as multilingual.
+               #2132 — when the song's language is not known (empty or
+               `und`), inLanguage is LEFT OUT. It used to fall back to the
+               page's interface language ($locale), which told search engines
+               a guess as if it were fact — an English label on a Zulu hymn
+               (policy LANG-003 / TEXT-070: export the tag that was stored,
+               never a stand-in). `und` sections are skipped for the same
+               reason. */
             $jsonLdLanguages = [];
-            if (!empty($ogSong['language'])) {
-                $jsonLdLanguages[] = (string)$ogSong['language'];
-            } elseif ($locale !== '') {
-                $jsonLdLanguages[] = $locale;
+            $_songLang = trim((string)($ogSong['language'] ?? ''));
+            if ($_songLang !== '' && strtolower($_songLang) !== 'und') {
+                $jsonLdLanguages[] = $_songLang;
             }
             foreach (($ogSong['components'] ?? []) as $cmp) {
                 $cl = trim((string)($cmp['language'] ?? ''));
-                if ($cl !== '' && !in_array($cl, $jsonLdLanguages, true)) {
+                if ($cl !== '' && strtolower($cl) !== 'und' && !in_array($cl, $jsonLdLanguages, true)) {
                     $jsonLdLanguages[] = $cl;
                 }
             }
@@ -472,14 +482,16 @@ try {
                 '@context' => 'https://schema.org',
                 '@type'    => 'MusicComposition',
                 'name'     => $ogSong['title'],
-                /* Single-value when only one language; array when the
-                   song carries per-component overrides. Both shapes
-                   are valid schema.org per the Web Schemas
-                   recommendation. */
-                'inLanguage' => count($jsonLdLanguages) > 1
-                    ? $jsonLdLanguages
-                    : ($jsonLdLanguages[0] ?? $locale),
             ];
+            /* inLanguage: single-value when only one language; array when the
+               song carries per-component overrides. Both shapes are valid
+               schema.org per the Web Schemas recommendation.
+               #2132 — only when a language is actually known (see above). */
+            if ($jsonLdLanguages !== []) {
+                $musicComposition['inLanguage'] = count($jsonLdLanguages) > 1
+                    ? $jsonLdLanguages
+                    : $jsonLdLanguages[0];
+            }
             /* #832 — alternateName for SEO. Search engines pick this up
                so a query for the original title / common misspelling /
                vernacular name still surfaces this song. Empty array on
@@ -583,7 +595,8 @@ try {
             $pageType = 'songbook';
             $ogTitle = $ogBook['name'] . ' — ' . $app["Application"]["Name"];
             $ogDescription = 'Browse ' . number_format($ogBook['songCount'])
-                           . ' songs from ' . $ogBook['name'] . ' on ' . $app["Application"]["Name"];
+                           . ((int)$ogBook['songCount'] === 1 ? ' song' : ' songs')
+                           . ' from ' . $ogBook['name'] . ' on ' . $app["Application"]["Name"];
             /* #832 — append "Also known as: …" to social previews when
                alt names are present, so a Twitter/Facebook share card
                surfaces vernacular names too. Capped at 3 alts to keep
@@ -1227,11 +1240,17 @@ if (!empty($breadcrumbItems)) {
          the old per-<link> onerror fallback silently never fired when a CDN was
          down — the /vendor copy never loaded. A render-blocking
          <link rel="stylesheet"> blocks the following <script> until it has
-         loaded or failed, so by the time THIS runs each CDN sheet is resolved:
-         link.sheet is a CSSStyleSheet on success and null on failure (404 /
-         network / SRI mismatch). This mirrors the Bootstrap-JS
-         `typeof … === 'undefined'` fallback already used lower in this file.
+         loaded or failed, so by the time THIS runs each CDN sheet is resolved.
+         A FAILED load is NOT always `link.sheet === null`: Chromium keeps an
+         empty stylesheet object whose cssRules throw a SecurityError, so a
+         `!link.sheet` test alone never fired there and, with the CDN
+         unreachable, Bootstrap and Font Awesome never loaded at all. Because
+         every one of these <link>s is crossorigin="anonymous", a sheet that
+         really loaded always has READABLE rules, so "no sheet, unreadable
+         rules, or zero rules" is the failure test. This mirrors the
+         Bootstrap-JS `typeof … === 'undefined'` fallback lower in this file.
          https://developer.mozilla.org/docs/Web/API/HTMLLinkElement/sheet
+         https://developer.mozilla.org/docs/Web/API/CSSStyleSheet/cssRules
          ================================================================ -->
     <script nonce="<?= $cspNonce ?>">
         (function () {
@@ -1245,9 +1264,15 @@ if (!empty($breadcrumbItems)) {
             ];
             for (var i = 0; i < fb.length; i++) {
                 var el = document.getElementById(fb[i].id);
-                /* Skip when the <link> is absent, no vendored copy is configured
-                   (local resolves to a bare '/'), or the CDN sheet loaded fine. */
-                if (!el || fb[i].local === '/' || el.sheet) { continue; }
+                /* Skip when the <link> is absent or no vendored copy is
+                   configured (local resolves to a bare '/'). */
+                if (!el || fb[i].local === '/') { continue; }
+                /* Skip when the CDN sheet really loaded: it exists AND its rules
+                   can be read and are not empty (see the comment above for why
+                   a non-null sheet is not enough on its own). */
+                var cdnLoaded = false;
+                try { cdnLoaded = !!el.sheet && el.sheet.cssRules.length > 0; } catch (e) { cdnLoaded = false; }
+                if (cdnLoaded) { continue; }
                 /* The same-origin copy has no CORS headers and a different
                    byte-for-byte build, so its own hash would fail — strip both
                    before re-pointing (same as the old onerror did). */

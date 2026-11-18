@@ -122,7 +122,7 @@ if (_migUserPrefLang_columnExists($db, 'tblUsers', 'PreferredLanguagesJson')) {
 } else {
     $sql = "ALTER TABLE tblUsers
             ADD COLUMN PreferredLanguagesJson TEXT NULL DEFAULT NULL
-            COMMENT 'JSON array of IETF BCP 47 primary subtags the user wants to see (e.g. [\"en\",\"es\"]). NULL or [] = all languages.'";
+            COMMENT 'Synced per-user language-filter choice — JSON array of canonical IETF BCP 47 tags, highest priority first (e.g. [\"pt-BR\",\"en\"]; #2137). Lists saved before #2137 hold base codes only and stay valid. Filtering matches by language group. NULL / [] = show all languages (#736)'";
     if (!$db->query($sql)) {
         _migUserPrefLang_out('ERROR: adding PreferredLanguagesJson failed: ' . $db->error);
         exit(1);

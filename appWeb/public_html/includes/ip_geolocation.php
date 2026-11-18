@@ -40,6 +40,17 @@ declare(strict_types=1);
  * @requires PHP 8.4+ — project targets 8.5.
  */
 
+/* #2137 review round 7 (the sixth independent review) — songRelocateIsTransactionFatal(),
+   the ONE list of database errors that have already ended the caller's whole
+   transaction (a deadlock, a lock wait timeout, MariaDB's 1020). Every catch in
+   this file that a song save, the v2 editor, the works or songbooks admin page
+   or an importer can reach from inside its transaction starts by passing those
+   back to its caller (the full list is in DEV_NOTES.md). Loaded here, at the
+   top, so that check can always be a catch's first line. It lives in
+   transaction_fatal.php, which loads nothing else (song_relocate.php, its old
+   home, also loads the database layer). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+
 if (!function_exists('getDbMysqli')) {
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 }
@@ -48,9 +59,16 @@ if (!function_exists('getDbMysqli')) {
 const IHYMNS_GEO_TTL_DAYS = 90;
 
 /** Path to the MaxMind GeoLite2-Country database, when the follow-up has
- *  installed it (kept OUTSIDE the web root; the deploy/cron drops it here). */
-const IHYMNS_GEO_MMDB_PATH = __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR
-    . '..' . DIRECTORY_SEPARATOR . '.geoip' . DIRECTORY_SEPARATOR . 'GeoLite2-Country.mmdb';
+ *  installed it (kept OUTSIDE the web root; the deploy/cron drops it here).
+ *  #2137 review round 8: a deploy or a test may point it elsewhere by
+ *  defining IHYMNS_GEO_MMDB_PATH before this file loads (tests/php/
+ *  test-activity-log-outside-transaction.php and test-song-save-whole-
+ *  rollback.php point it at a stand-in, so the cache write below can be
+ *  tested without the real database file). */
+if (!defined('IHYMNS_GEO_MMDB_PATH')) {
+    define('IHYMNS_GEO_MMDB_PATH', __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR
+        . '..' . DIRECTORY_SEPARATOR . '.geoip' . DIRECTORY_SEPARATOR . 'GeoLite2-Country.mmdb');
+}
 
 /**
  * Resolve an IP to ['code' => 'GB', 'name' => 'United Kingdom', 'source' => …]
@@ -142,6 +160,7 @@ function ihymnsGeoCacheGet(mysqli $db, string $ip): ?array
             'source' => 'cache',
         ];
     } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 7: never swallow an error that has ended the transaction */
         return null;   // pre-migration / probe failure → treat as a miss
     }
 }
@@ -149,9 +168,51 @@ function ihymnsGeoCacheGet(mysqli $db, string $ip): ?array
 /**
  * Upsert a geo result into tblIpReputation (IpAddress PK; other columns keep
  * their defaults / existing proxy values). Best-effort.
+ *
+ * NEVER INSIDE A TRANSACTION (#2137 review round 8 — the seventh independent
+ * review's L2, the lead's decision). This row is shared: any request from the
+ * same address may write it at the same moment. logActivity() looks the
+ * country up while it writes its row, and a song save writes its activity row
+ * INSIDE its own transaction — so the cache write used to run inside the save.
+ * On MariaDB, when another request wrote the same address's row after the
+ * save had started reading, the save's write met error 1020 ("Record has
+ * changed since last read"), which ends the WHOLE transaction: the curator was
+ * told "Failed to save song" over a best-effort cache. (On MySQL the write
+ * waited for the other request's lock instead, inside the save.) So while a
+ * transaction is open on this connection — or when that cannot be told — this
+ * writes nothing; the lookup still answered from the local country database.
+ * Asked with dbTransactionIsOpen() (includes/transaction_fatal.php, which says
+ * how and why), BEFORE the write: after a 1020 the transaction has already
+ * ended, so asking afterwards would answer "not open".
+ *
+ * WHEN THE SKIPPED ROW IS WRITTEN (#2137 review round 9 — the eighth review's
+ * L10 corrected what this used to say): by a LATER request from that address
+ * whose first lookup of it is made outside a transaction. Not by a later
+ * lookup in the same request — ihymnsGeoLookup() remembers its answer for the
+ * rest of the request and writes nothing more. And not by the activity-log
+ * viewer's catch-up (activityLogGeoResolveIps()): the viewer sends only the
+ * addresses whose shown rows have no country, and a row written inside the
+ * save already has one, from the local country database.
+ *
+ * NEVER FAILS THE REQUEST (#2137 review round 9 — the eighth review's L1, the
+ * lead's decision 1). Because of the early return above, the write below runs
+ * only when no transaction is open, so a deadlock or a lock wait timeout on
+ * it has ended nothing but this one cache row (with autocommit switched off,
+ * the transaction it would open holds nothing but this row). So its catch
+ * logs every error and carries on; it does not start with the shared
+ * "pass back an error that has ended the transaction" guard, and it is on the
+ * allow-list of tests/php/test-transaction-catch-audit.php with this reason.
+ * Before round 9 that guard passed such an error back: outside any
+ * transaction, another request holding the same address's cache row for a
+ * moment cost logActivity() its whole activity row, and failed the admin
+ * "geolocate" request (tests/php/test-activity-log-outside-transaction.php,
+ * C4 and C5).
  */
 function ihymnsGeoCachePut(mysqli $db, string $ip, string $code, string $name, string $source): void
 {
+    if (dbTransactionIsOpen($db) !== false) {
+        return;
+    }
     try {
         $code = strtoupper(substr($code, 0, 2));
         $name = substr($name, 0, 100);
@@ -168,7 +229,9 @@ function ihymnsGeoCachePut(mysqli $db, string $ip, string $code, string $name, s
         $stmt->execute();
         $stmt->close();
     } catch (\Throwable $_e) {
-        /* best-effort cache write */
+        /* Best-effort cache write, run only outside a transaction (see "NEVER
+           FAILS THE REQUEST" above): log it and carry on, whatever it was. */
+        error_log('[ip_geolocation] cache write failed: ' . $_e->getMessage());
     }
 }
 
@@ -200,6 +263,7 @@ function ihymnsGeoViaMaxmind(string $ip): ?array
             $name = is_array($rec) ? (string)($rec['country']['names']['en'] ?? $code) : $code;
             return ['code' => strtoupper($code), 'name' => $name, 'source' => 'maxmind'];
         } catch (\Throwable $_e) {
+            if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #2137 review round 8: the guard here too, although nothing in this try touches the database today — so a later change to it cannot make this catch swallow an error that has ended the transaction */
             return null;
         }
     }
