@@ -57,7 +57,7 @@ console.log('\n1 - the pull gate\n');
 }
 
 /* ---- the real Settings class ---- */
-async function drive(modulePath) {
+async function drive(modulePath, opts = {}) {
     const dom = new JSDOM('<!doctype html><html><body></body></html>',
         { runScripts: 'dangerously', url: 'https://example.test/' });
     const { window } = dom;
@@ -74,6 +74,10 @@ async function drive(modulePath) {
     global.fetch = async (url, init = {}) => {
         const method = (init.method || 'GET').toUpperCase();
         calls.push(method + ' ' + String(url));
+        if (method === 'POST' && opts.postStatus) {
+            return new Response(JSON.stringify({ error: 'refused' }), { status: opts.postStatus });
+        }
+        if (method === 'POST' && opts.postNetworkError) { throw new TypeError('network down'); }
         if (method === 'POST') {
             server = JSON.parse(init.body).settings;
             return new Response(JSON.stringify({ ok: true }), { status: 200 });
@@ -135,6 +139,28 @@ assert(good.firstWrite !== -1 && good.firstRead !== -1 && good.firstWrite < good
     'a waiting change is sent BEFORE the download for a new person');
 assert(good.theme === 'high-contrast', 'and it is the new value that survives the pull');
 
+console.log('\n2a - a refused upload must not shut the pull gate for ever\n');
+/* Change a setting while the server refuses the upload, then announce a different person
+   (who must be pulled). Does the download still happen? */
+async function refusedUpload(modulePath, opts) {
+    const env = await drive(modulePath, opts);
+    const fire = async (u) => {
+        env.setUser(u);
+        env.window.document.dispatchEvent(new env.window.CustomEvent(EVT_AUTH_CHANGED, { detail: { loggedIn: true, user: u } }));
+        await new Promise((r) => setTimeout(r, 40));
+    };
+    await fire({ id: 1 });
+    env.settings.set('theme', 'dark');
+    await env.settings._pushSyncedSettings();          /* the refused (or failed) upload */
+    env.calls.length = 0;
+    await fire({ id: 2 });
+    return env.calls.filter((c) => c.startsWith('GET') && c.includes('namespace=ihymns.web')).length;
+}
+assert(await refusedUpload(SETTINGS, { postStatus: 413 }) >= 1, 'a 413 (too big) upload is dropped, so the next pull still happens');
+assert(await refusedUpload(SETTINGS, { postStatus: 409 }) >= 1, 'a 409 (paused site) upload is dropped, so the next pull still happens');
+assert(await refusedUpload(SETTINGS, { postStatus: 500 }) === 0, 'a 500 keeps the change waiting: the pull does NOT run ahead of it');
+assert(await refusedUpload(SETTINGS, { postNetworkError: true }) === 0, 'a network error keeps the change waiting: the pull does NOT run ahead of it');
+
 console.log('\n2b - list-sort uses the same gate\n');
 {
     const ls = fs.readFileSync(path.join(MODULES_DIR, 'list-sort.js'), 'utf8')
@@ -163,6 +189,21 @@ const noGate = await withMutant('if (!this._pullGate.begin(uid)) return;', '/* M
 assert(noGate.afterTwo === 2, `gate removed: two announcements download twice (got ${noGate.afterTwo})`);
 const noFlush = await withMutant('if (this._syncPushPending) {', 'if (false) {');
 assert(noFlush.theme !== 'high-contrast', `send-first removed: the waiting change is overwritten by the old account value (got ${noFlush.theme})`);
+
+/* mutation: any failed response keeps the change waiting (the old behaviour) */
+{
+    let mutant = null;
+    try {
+        const src = fs.readFileSync(SETTINGS, 'utf8');
+        const from = 'if (res.status === undefined || res.status >= 500) {';
+        if (!src.includes(from)) throw new Error('mutation setup: line not found, update this test');
+        mutant = path.join(MODULES_DIR, `zz_ihymns_test_settings_mutant_${Date.now()}_${Math.random().toString(16).slice(2)}.js`);
+        fs.writeFileSync(mutant, src.replace(from, 'if (true) { /* MUTATED: every failure keeps waiting */'));
+        assert(await refusedUpload(mutant, { postStatus: 413 }) === 0, 'old behaviour (any failure keeps waiting): a 413 shuts the pull gate (the test can fail)');
+    } finally {
+        if (mutant) fs.rmSync(mutant, { force: true });
+    }
+}
 
 console.log(failures === 0 ? '\nAll pull-gate checks pass.' : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

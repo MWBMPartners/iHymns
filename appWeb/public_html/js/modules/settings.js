@@ -305,7 +305,8 @@ export class Settings {
     async _pushSyncedSettings() {
         if (!this._isSyncEnabled()) return false;
         /* The waiting upload is being sent now (A2). It stays "waiting" again
-           below if the send fails, so a later pull still sends it first. */
+           below if the send fails in a way that could succeed on retry (a network
+           error or a 5xx), so a later pull still sends it first. */
         this._syncPushPending = false;
         try {
             /* #1806 — namespaced write: the server replaces ONLY the
@@ -324,7 +325,20 @@ export class Settings {
                     settings: this._collectSyncableSettings(),
                 }),
             });
-            if (res && res.ok === false) { this._syncPushPending = true; return false; }
+            if (res && res.ok === false) {
+                /* Keep the change "waiting" ONLY when sending it again could work: a
+                   server hiccup (5xx). A 4xx (too big, refused, paused site...) will
+                   be refused the same way every time, and leaving it waiting would
+                   keep the pull gate shut for ever, so settings would never download
+                   again. Drop that upload (it is sent afresh the next time the person
+                   changes a setting) and let pulls resume. */
+                if (res.status === undefined || res.status >= 500) {
+                    this._syncPushPending = true;
+                    return false;
+                }
+                console.warn('[settings] the server refused the settings upload (HTTP ' + res.status + '); not retrying it.');
+                return true;
+            }
             return true;
         } catch {
             /* offline / network error — non-fatal, but the change is still unsent */
