@@ -75,7 +75,8 @@
 
 import { announce } from '../utils/announce.js';
 import { multiKeyCompareMissingLast, normalizeSortSpec } from '../utils/sort-compare.js';
-import { STORAGE_LIST_SORT, EVT_LIST_SORT_CHANGED, EVT_AUTH_CHANGED, STORAGE_AUTH_TOKEN } from '../constants.js';
+import { STORAGE_LIST_SORT, EVT_LIST_SORT_CHANGED, EVT_AUTH_CHANGED, STORAGE_AUTH_TOKEN, STORAGE_AUTH_USER } from '../constants.js';
+import { createPullGate } from '../utils/pull-gate.js';
 /* #1786 Option B §7 — account sync rides the EXISTING namespaced
    `user_settings` endpoint (#1671 F5), namespace `list_sorts`. No new
    endpoint, no schema, no migration — `tblUsers.Settings` already exists
@@ -326,10 +327,26 @@ export function primeAccountListSorts() {
    directly by a Node test with no `document`) — the same posture
    admin-table-sort.js's own auto-wire side effect already takes. */
 if (typeof document !== 'undefined') {
-    document.addEventListener(EVT_AUTH_CHANGED, () => {
+    /* A2 (epic #2180): this event fires after EVERY page change, not just on a
+       real sign-in, and re-priming each time cost two extra requests per page.
+       Re-prime only when the signed-in person changed (or 30 minutes passed). */
+    const _sortPullGate = createPullGate();
+    document.addEventListener(EVT_AUTH_CHANGED, (e) => {
+        if (!e?.detail?.loggedIn && !_hasSignedInToken()) {
+            /* Signed out: drop the previous person's cached choices. */
+            _sortPullGate.reset();
+            _accountPrimePromise = null;
+            _accountMap = null;
+            return;
+        }
+        let uid = e?.detail?.user?.id;
+        if (uid === undefined || uid === null) {
+            try { uid = JSON.parse(localStorage.getItem(STORAGE_AUTH_USER))?.id; } catch (_e) { uid = null; }
+        }
+        if (!_sortPullGate.begin(uid)) return;
         _accountPrimePromise = null;
         _accountMap = null;
-        primeAccountListSorts();
+        primeAccountListSorts().then((r) => { if (r === null) _sortPullGate.fail(); });
     });
 }
 

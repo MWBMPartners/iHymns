@@ -38,6 +38,7 @@ import { apiFetch } from '../utils/api-client.js';
    the end of the DOM); this is how initConsentBanner() tells a screen-reader
    user it just appeared. */
 import { announce } from '../utils/announce.js';
+import { createPullGate } from '../utils/pull-gate.js';
 /* Offline-download behaviour is owned by offline-ui.js (CLAUDE.md rule #7) —
    Settings drives it, it does not re-implement it (#1597). */
 import {
@@ -213,13 +214,45 @@ export class Settings {
            the user is on the Settings page (no navigation triggered).
            When signing in, also pull any synced prefs from the server so
            the UI reflects choices made on other devices. */
+        /* A2 (epic #2180): the router fires this event after EVERY page change,
+           not only on a real sign-in. Pulling the account copy each time could
+           overwrite a setting changed a moment ago. So we pull only when the
+           signed-in person is different from last time, or 30 minutes have
+           passed (see utils/pull-gate.js). */
+        this._pullGate = createPullGate();
         document.addEventListener(EVT_AUTH_CHANGED, (e) => {
             this.refreshAccountSection();
             const loggedIn = !!e?.detail?.loggedIn;
-            if (loggedIn && this._isSyncEnabled()) {
-                this._pullSyncedSettings().catch(() => { /* non-fatal */ });
+            if (!loggedIn) {
+                /* Signed out: the next sign-in must always fetch. */
+                this._pullGate.reset();
+                return;
             }
+            if (!this._isSyncEnabled()) return;
+            const uid = e?.detail?.user?.id ?? this.app.userAuth?.getUser?.()?.id;
+            if (!this._pullGate.begin(uid)) return;
+            this._flushThenPull().catch(() => this._pullGate.fail());
         });
+    }
+
+    /**
+     * Send any change that is still waiting for its 1.5 second timer, THEN
+     * fetch the account copy. Pulling first would let the older account value
+     * overwrite the newer local one before it was ever sent. If the send fails
+     * (offline), skip the pull and keep the change waiting: losing it would be
+     * worse than showing slightly older settings.
+     */
+    async _flushThenPull() {
+        if (this._syncPushPending) {
+            clearTimeout(this._syncPushTimer);
+            const sent = await this._pushSyncedSettings();
+            if (!sent) {
+                this._pullGate.fail();
+                return;
+            }
+        }
+        const ok = await this._pullSyncedSettings();
+        if (!ok) this._pullGate.fail();
     }
 
     /* =====================================================================
@@ -264,18 +297,23 @@ export class Settings {
         if (fullKey && !SYNC_PREF_KEYS.includes(fullKey)) return;
         if (!this._isSyncEnabled()) return;
         clearTimeout(this._syncPushTimer);
+        /* A2: remember that an upload is waiting, so a pull never runs ahead of it. */
+        this._syncPushPending = true;
         this._syncPushTimer = setTimeout(() => this._pushSyncedSettings(), 1500);
     }
 
     async _pushSyncedSettings() {
-        if (!this._isSyncEnabled()) return;
+        if (!this._isSyncEnabled()) return false;
+        /* The waiting upload is being sent now (A2). It stays "waiting" again
+           below if the send fails, so a later pull still sends it first. */
+        this._syncPushPending = false;
         try {
             /* #1806 — namespaced write: the server replaces ONLY the
                'ihymns.web' subtree (userSettingsMergeNamespace()), so a
                push here can never again clobber list-sort.js's `list_sorts`
                shelf, push-notifications.js's `ihymns.push` shelf, or any
                future feature's namespace — structurally, not by convention. */
-            await apiFetch(`${this.app.config.apiUrl}?action=user_settings`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=user_settings`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -286,7 +324,13 @@ export class Settings {
                     settings: this._collectSyncableSettings(),
                 }),
             });
-        } catch { /* offline / network error — non-fatal */ }
+            if (res && res.ok === false) { this._syncPushPending = true; return false; }
+            return true;
+        } catch {
+            /* offline / network error — non-fatal, but the change is still unsent */
+            this._syncPushPending = true;
+            return false;
+        }
     }
 
     /**
@@ -351,7 +395,7 @@ export class Settings {
      * then re-apply visual settings so the UI updates without a reload.
      */
     async _pullSyncedSettings() {
-        if (!this.app.userAuth?.isLoggedIn?.()) return;
+        if (!this.app.userAuth?.isLoggedIn?.()) return false;
         let remote;
         try {
             /* #1806 — read only this client's own 'ihymns.web' subtree
@@ -360,16 +404,16 @@ export class Settings {
                 `${this.app.config.apiUrl}?action=user_settings&namespace=${USER_SETTINGS_NAMESPACE}`,
                 { headers: { ...this.app.userAuth.authHeaders() } }
             );
-            if (!res.ok) return;
+            if (!res.ok) return false;
             const payload = await res.json();
             remote = (payload?.settings && typeof payload.settings === 'object') ? payload.settings : {};
-        } catch { return; }
+        } catch { return false; }
 
         if (!this._legacySettingsMigrated()) {
             remote = await this._migrateLegacyRootSettings(remote);
         }
 
-        if (!remote || typeof remote !== 'object') return;
+        if (!remote || typeof remote !== 'object') return false;
 
         let appliedTheme = false;
         SYNC_PREF_KEYS.forEach((k) => {
@@ -392,6 +436,7 @@ export class Settings {
         this.applyReduceMotion(this.get('reduceMotion'));
         this.applyReduceTransparency(this.get('reduceTransparency'));
         this.applyFontSize(this.get('fontSize'));
+        return true;
     }
 
     /**
