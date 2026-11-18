@@ -1,0 +1,686 @@
+{
+    "schemaVersion": 1,
+    "entries": [
+        {
+            "id": "appearance.theme",
+            "section": "appearance",
+            "key": "theme",
+            "type": "enum",
+            "default": "system",
+            "scope": "account",
+            "platforms": [
+                "web",
+                "apple"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "ihymns_theme",
+            "since": 1,
+            "allowed": [
+                "system",
+                "light",
+                "dark",
+                "high-contrast"
+            ]
+        },
+        {
+            "id": "appearance.fontSize",
+            "section": "appearance",
+            "key": "fontSize",
+            "type": "int",
+            "default": 18,
+            "scope": "account",
+            "platforms": [
+                "web"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "ihymns_fontSize",
+            "since": 1,
+            "min": 14,
+            "max": 28,
+            "step": 2,
+            "from": 14
+        },
+        {
+            "id": "appearance.reduceMotion",
+            "section": "appearance",
+            "key": "reduceMotion",
+            "type": "bool",
+            "default": false,
+            "scope": "account",
+            "platforms": [
+                "all"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "ihymns_reduceMotion",
+            "since": 1
+        },
+        {
+            "id": "appearance.reduceTransparency",
+            "section": "appearance",
+            "key": "reduceTransparency",
+            "type": "bool",
+            "default": false,
+            "scope": "account",
+            "platforms": [
+                "web"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "ihymns_reduceTransparency",
+            "since": 1
+        },
+        {
+            "id": "appearance.transition",
+            "section": "appearance",
+            "key": "transition",
+            "type": "enum",
+            "default": "none",
+            "scope": "account",
+            "platforms": [
+                "web"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "ihymns_transition",
+            "since": 1,
+            "allowed": [
+                "none",
+                "fade",
+                "crossfade",
+                "slide",
+                "scale",
+                "lift",
+                "depth",
+                "blur"
+            ]
+        },
+        {
+            "id": "library.defaultSongbook",
+            "section": "library",
+            "key": "defaultSongbook",
+            "type": "string",
+            "default": null,
+            "scope": "account",
+            "platforms": [
+                "all"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "ihymns_default_songbook",
+            "since": 1,
+            "pattern": "^[A-Za-z0-9]{1,10}$",
+            "maxLength": 10
+        },
+        {
+            "id": "library.autoUpdateSongs",
+            "section": "library",
+            "key": "autoUpdateSongs",
+            "type": "bool",
+            "default": true,
+            "scope": "account",
+            "platforms": [
+                "web"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "ihymns_auto_update_songs",
+            "since": 1
+        },
+        {
+            "id": "search.numpadLiveSearch",
+            "section": "search",
+            "key": "numpadLiveSearch",
+            "type": "bool",
+            "default": false,
+            "scope": "account",
+            "platforms": [
+                "web"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "ihymns_numpad_live_search",
+            "since": 1
+        },
+        {
+            "id": "search.includeLyrics",
+            "section": "search",
+            "key": "includeLyrics",
+            "type": "bool",
+            "default": false,
+            "scope": "account",
+            "platforms": [
+                "all"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "ihymns_search_lyrics",
+            "since": 1
+        },
+        {
+            "id": "reading.display",
+            "section": "reading",
+            "key": "display",
+            "type": "json",
+            "default": null,
+            "scope": "account",
+            "platforms": [
+                "web"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "ihymns_display",
+            "since": 1,
+            "shape": {
+                "fontSize": {
+                    "type": "float",
+                    "min": 0.5,
+                    "max": 5
+                },
+                "lineSpacing": {
+                    "type": "enum",
+                    "allowed": [
+                        "compact",
+                        "normal",
+                        "spacious"
+                    ]
+                },
+                "showVerseNumbers": {
+                    "type": "bool"
+                },
+                "highlightChorus": {
+                    "type": "bool"
+                },
+                "autoScrollSpeed": {
+                    "type": "float",
+                    "min": 0,
+                    "max": 1000
+                }
+            }
+        },
+        {
+            "id": "appearance.cvd",
+            "section": "appearance",
+            "key": "cvd",
+            "type": "enum",
+            "default": null,
+            "scope": "account",
+            "platforms": [
+                "web",
+                "apple"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "ihymns_cvd_mode",
+            "since": 1,
+            "allowed": [
+                "protanopia",
+                "deuteranopia",
+                "tritanopia",
+                "achromatopsia"
+            ]
+        },
+        {
+            "id": "appearance.linkEmphasis",
+            "section": "appearance",
+            "key": "linkEmphasis",
+            "type": "enum",
+            "default": null,
+            "scope": "account",
+            "platforms": [
+                "web"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "ihymns_link_emphasis",
+            "since": 1,
+            "allowed": [
+                "on"
+            ]
+        },
+        {
+            "id": "input.keyboardShortcuts",
+            "section": "input",
+            "key": "keyboardShortcuts",
+            "type": "bool",
+            "default": true,
+            "scope": "account",
+            "platforms": [
+                "web"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "ihymns_keyboardShortcuts",
+            "since": 1
+        },
+        {
+            "id": "live.idleTimeoutMins",
+            "section": "live",
+            "key": "idleTimeoutMins",
+            "type": "int",
+            "default": null,
+            "scope": "account",
+            "platforms": [
+                "web"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": true,
+            "legacyWebKey": "liveIdleTimeoutMins",
+            "since": 1,
+            "min": 5,
+            "max": 240,
+            "step": 1,
+            "from": 5
+        },
+        {
+            "id": "chords.notation",
+            "section": "chords",
+            "key": "notation",
+            "type": "enum",
+            "default": "letters",
+            "scope": "account",
+            "platforms": [
+                "all"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": "ihymns_chord_notation",
+            "since": 1,
+            "allowed": [
+                "letters",
+                "nashville",
+                "solfege",
+                "solfege-fixed"
+            ]
+        },
+        {
+            "id": "chords.columns",
+            "section": "chords",
+            "key": "columns",
+            "type": "bool",
+            "default": false,
+            "scope": "account",
+            "platforms": [
+                "web"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": "ihymns_chord_columns",
+            "since": 1
+        },
+        {
+            "id": "reading.textScale",
+            "section": "reading",
+            "key": "textScale",
+            "type": "float",
+            "default": 1,
+            "scope": "account",
+            "platforms": [
+                "apple"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": null,
+            "since": 1,
+            "min": 0.5,
+            "max": 5
+        },
+        {
+            "id": "reading.showChords",
+            "section": "reading",
+            "key": "showChords",
+            "type": "bool",
+            "default": true,
+            "scope": "account",
+            "platforms": [
+                "apple"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": null,
+            "since": 1
+        },
+        {
+            "id": "reading.dyslexia",
+            "section": "reading",
+            "key": "dyslexia",
+            "type": "bool",
+            "default": false,
+            "scope": "account",
+            "platforms": [
+                "apple"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": null,
+            "since": 1
+        },
+        {
+            "id": "home.mostViewedPeriod",
+            "section": "home",
+            "key": "mostViewedPeriod",
+            "type": "enum",
+            "default": "12m",
+            "scope": "account",
+            "platforms": [
+                "all"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": null,
+            "since": 1,
+            "allowed": [
+                "30d",
+                "90d",
+                "12m",
+                "all"
+            ]
+        },
+        {
+            "id": "content.favorites",
+            "section": "content",
+            "key": "favorites",
+            "type": "list",
+            "default": null,
+            "scope": "account",
+            "platforms": [
+                "all"
+            ],
+            "sync": "content_sync",
+            "cap": 500,
+            "claim": true,
+            "clearAtSignOut": true,
+            "cookie": false,
+            "legacyWebKey": "ihymns_favorites",
+            "since": 1,
+            "item": {
+                "type": "string"
+            },
+            "maxItems": 500
+        },
+        {
+            "id": "content.setlists",
+            "section": "content",
+            "key": "setlists",
+            "type": "list",
+            "default": null,
+            "scope": "account",
+            "platforms": [
+                "all"
+            ],
+            "sync": "content_sync",
+            "cap": null,
+            "claim": true,
+            "clearAtSignOut": true,
+            "cookie": false,
+            "legacyWebKey": "ihymns_setlists",
+            "since": 1,
+            "item": {
+                "type": "json"
+            },
+            "maxItems": null
+        },
+        {
+            "id": "content.customTags",
+            "section": "content",
+            "key": "customTags",
+            "type": "list",
+            "default": null,
+            "scope": "account",
+            "platforms": [
+                "all"
+            ],
+            "sync": "content_sync",
+            "cap": 200,
+            "claim": true,
+            "clearAtSignOut": true,
+            "cookie": false,
+            "legacyWebKey": "ihymns_custom_tags",
+            "since": 1,
+            "item": {
+                "type": "string"
+            },
+            "maxItems": 200
+        },
+        {
+            "id": "content.history",
+            "section": "content",
+            "key": "history",
+            "type": "list",
+            "default": null,
+            "scope": "account",
+            "platforms": [
+                "all"
+            ],
+            "sync": "content_sync",
+            "cap": 50,
+            "claim": true,
+            "clearAtSignOut": true,
+            "cookie": false,
+            "legacyWebKey": "ihymns_history",
+            "since": 1,
+            "item": {
+                "type": "string"
+            },
+            "maxItems": 50
+        },
+        {
+            "id": "device.midiPedal",
+            "section": "device",
+            "key": "midiPedal",
+            "type": "bool",
+            "default": false,
+            "scope": "device",
+            "platforms": [
+                "web"
+            ],
+            "sync": "none",
+            "cap": null,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": "ihymns_midiPedal",
+            "since": 1
+        },
+        {
+            "id": "device.offlineIncludeAudio",
+            "section": "device",
+            "key": "offlineIncludeAudio",
+            "type": "bool",
+            "default": false,
+            "scope": "device",
+            "platforms": [
+                "web"
+            ],
+            "sync": "none",
+            "cap": null,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": "ihymns_offline_include_audio",
+            "since": 1
+        },
+        {
+            "id": "device.analyticsConsent",
+            "section": "device",
+            "key": "analyticsConsent",
+            "type": "string",
+            "default": null,
+            "scope": "device",
+            "platforms": [
+                "web",
+                "apple"
+            ],
+            "sync": "none",
+            "cap": null,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": "ihymns_analytics_consent",
+            "since": 1,
+            "pattern": "^[a-z]{1,16}$",
+            "maxLength": 16
+        },
+        {
+            "id": "device.disclaimerAccepted",
+            "section": "device",
+            "key": "disclaimerAccepted",
+            "type": "bool",
+            "default": false,
+            "scope": "device",
+            "platforms": [
+                "web"
+            ],
+            "sync": "none",
+            "cap": null,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": "ihymns_disclaimer_accepted",
+            "since": 1
+        },
+        {
+            "id": "device.pwaBannerDismissed",
+            "section": "device",
+            "key": "pwaBannerDismissed",
+            "type": "bool",
+            "default": false,
+            "scope": "device",
+            "platforms": [
+                "web"
+            ],
+            "sync": "none",
+            "cap": null,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": "ihymns_pwa_banner_dismissed",
+            "since": 1
+        },
+        {
+            "id": "device.searchHistory",
+            "section": "device",
+            "key": "searchHistory",
+            "type": "list",
+            "default": null,
+            "scope": "device",
+            "platforms": [
+                "web",
+                "apple"
+            ],
+            "sync": "none",
+            "cap": null,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": "ihymns_search_history",
+            "since": 1,
+            "item": {
+                "type": "string"
+            },
+            "maxItems": 20
+        },
+        {
+            "id": "device.syncBookkeeping",
+            "section": "device",
+            "key": "syncBookkeeping",
+            "type": "json",
+            "default": null,
+            "scope": "device",
+            "platforms": [
+                "web"
+            ],
+            "sync": "none",
+            "cap": null,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": "ihymns_xsite_stamps",
+            "since": 1,
+            "shape": {}
+        },
+        {
+            "id": "device.ownerId",
+            "section": "device",
+            "key": "ownerId",
+            "type": "string",
+            "default": null,
+            "scope": "device",
+            "platforms": [
+                "web"
+            ],
+            "sync": "none",
+            "cap": null,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": "ihymns_owner_id",
+            "since": 1,
+            "pattern": "^[A-Za-z0-9-]{8,64}$",
+            "maxLength": 64
+        }
+    ],
+    "aliases": {}
+}
