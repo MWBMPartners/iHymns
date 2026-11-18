@@ -59,7 +59,7 @@ declare(strict_types=1);
  * know about from elsewhere (an old link, a stray backlink) could keep
  * appearing in results as a bare "known page" entry with no description.
  * So a hidden channel's robots.txt stays exactly as permissive as a visible
- * channel's (`Allow: /`, the same `Disallow: /api` / `Disallow: /bridge.html`
+ * channel's (`Allow: /`, the same `Disallow: /api`
  * carve-outs) — the ONLY difference is the missing `Sitemap:` line. This is
  * mechanically enforced: tests/php/test-search-visibility.php PASS 5 bans a
  * bare `Disallow: /` from ever appearing in this file's source.
@@ -94,8 +94,7 @@ header('X-Content-Type-Options: nosniff');
  * Disallow line is ever added here, hidden channel or not. */
 $body = "User-agent: *\n"
       . "Allow: /\n"
-      . "Disallow: /api\n"
-      . "Disallow: /bridge.html\n";
+      . "Disallow: /api\n";
 
 try {
     if (searchEngineVisibleHere()) {

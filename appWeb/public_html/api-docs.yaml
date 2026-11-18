@@ -328,14 +328,12 @@ servers:
     description: Alpha channel (gated by `access_alpha` entitlement)
   - url: https://beta.ihymns.app
     description: Beta channel (gated by `access_beta` entitlement)
-  # Kept (#1472 audit): still a real, live reference, not dead — the
-  # cross-domain storage bridge's origin allow-list actively accepts
-  # postMessage from any *.ihymns.net origin (appWeb/public_html/bridge.html
-  # ALLOWED_ORIGINS regex `ihymns\.(app|net)`), and storage-bridge.js /
-  # subdomain-sync.js both name ihymns.net alongside ihymns.app in their
-  # cross-domain-sync comments.
+  # beta.ihymns.net is not a separate site: it redirects to beta.ihymns.app (owner,
+  # 2026-11-18). It stays listed only so older links and notes that name it still
+  # make sense. (The hidden-frame settings bridge that once accepted *.ihymns.net
+  # messages was removed in #2143, so nothing else depends on this entry.)
   - url: https://beta.ihymns.net
-    description: Legacy beta / dev
+    description: Legacy address (redirects to beta.ihymns.app)
 
 tags:
   - name: Songs

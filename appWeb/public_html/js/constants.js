@@ -120,6 +120,25 @@ export const STORAGE_CVD_MODE           = 'ihymns_cvd_mode';
    SAME literal key with no prefix mismatch. */
 export const STORAGE_LINK_EMPHASIS      = 'ihymns_link_emphasis';
 
+/* Keyboard shortcuts on/off (value 'true' | 'false'). One of the display
+   settings that follows a signed-in user between devices and, when the
+   cross-site sync is switched on, between iHymns's own sites (#2143). It was
+   typed out as a bare string in settings.js until the shared settings registry
+   (js/modules/settings-sync-registry.js) needed to import it. */
+export const STORAGE_KEYBOARD_SHORTCUTS = 'ihymns_keyboardShortcuts';
+
+/* #2143 — when each shared display setting was last changed on THIS site, as a
+   small JSON object { "<key>": <whole-number time stamp> }. Used by the
+   cross-site settings sync (js/modules/settings-sync-core.js) to tell which of
+   two copies of a setting is newer. DEVICE-LOCAL BY DESIGN: it is never in the
+   shared-settings registry, so it never travels between sites or into the
+   shared cookie. */
+export const STORAGE_XSITE_STAMPS       = 'ihymns_xsite_stamps';
+
+/* #2143 — set to '1' once the old `ihymns_sync` cookie has been read by the
+   rebuilt cookie sync, so that one-time import never repeats. Device-local. */
+export const STORAGE_XSITE_LEGACY_IMPORTED = 'ihymns_xsite_legacy_imported';
+
 /* Offline downloads — whether to also cache MIDI audio when bulk-saving songs.
    CANONICAL key, value '1' | '0'. */
 export const STORAGE_OFFLINE_INCLUDE_AUDIO = 'ihymns_offline_include_audio';
@@ -228,6 +247,13 @@ export const EVT_OFFLINE_SETTINGS_CHANGED = 'ihymns:offline-settings-changed';
    the page; now that list-sort.js owns sorting, the strip has to learn
    about a re-order it didn't itself perform. */
 export const EVT_LIST_SORT_CHANGED = 'ihymns:list-sort-changed';
+/* #2143 — fired on `document` by the cross-site settings sync
+   (settings-sync.js) after it has changed one or more local display settings
+   because a newer value arrived from another iHymns site, `detail: { keys }`.
+   Dispatcher: CrossSiteSync.init() / its visibility handler. Listener:
+   settings.js, which re-applies theme, text size and the other visual
+   settings so the change shows at once. */
+export const EVT_XSITE_SETTINGS_APPLIED = 'ihymns:xsite-settings-applied';
 
 /* ── Songbook Name Lookup ─────────────────────────────────────────────── */
 

@@ -47,8 +47,8 @@ import { bootHeaderBranding } from './modules/header-branding.js';   /* #1840 �
 import { openSongPrintDialog } from './modules/print.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
-import { StorageBridge } from './modules/storage-bridge.js';
 import { SubdomainSync } from './modules/subdomain-sync.js';
+import { CrossSiteSync } from './modules/settings-sync.js';
 import { Gestures } from './modules/gestures.js';
 import { PullToRefresh } from './modules/pull-to-refresh.js';
 import { Analytics } from './modules/analytics.js';
@@ -163,11 +163,11 @@ class iHymnsApp {
         /** @type {OfflineIndicator} Offline status indicator (#112) */
         this.offlineIndicator = null;
 
-        /** @type {StorageBridge} Cross-domain storage bridge (#133) */
-        this.storageBridge = null;
-
-        /** @type {SubdomainSync} Subdomain cookie sync (#133) */
+        /** @type {SubdomainSync} Subdomain cookie sync (#133) — used while the rebuilt sync is switched off */
         this.subdomainSync = null;
+
+        /** @type {CrossSiteSync|null} Rebuilt cross-site settings sync (#2143) — only when switched on for this channel */
+        this.crossSiteSync = null;
 
         /** @type {Gestures} Touch gesture navigation (#143) */
         this.gestures = null;
@@ -187,8 +187,18 @@ class iHymnsApp {
             /* Subdomain cookie sync — pull settings from other *.ihymns.app
              * subdomains BEFORE applying settings, so shared preferences
              * are available immediately (#133, Layer 1). */
-            this.subdomainSync = new SubdomainSync();
-            this.subdomainSync.init();
+            /* #2143 — when an admin has switched the rebuilt settings sync on for this
+             * channel, it replaces the old cookie sync. It must still run BEFORE
+             * `new Settings(this)` below, so a setting changed on another site is
+             * applied on the first paint. Off by default: then the old sync runs
+             * exactly as it always has. */
+            if (this.config.crossSiteSync?.enabled) {
+                this.crossSiteSync = new CrossSiteSync({ channel: this.config.crossSiteSync.channel });
+                this.crossSiteSync.init();
+            } else {
+                this.subdomainSync = new SubdomainSync();
+                this.subdomainSync.init();
+            }
 
             /* #1531 — populate the client songbook registry (abbr → full name)
                once, fire-and-forget, so every list view can show the full
@@ -201,42 +211,6 @@ class iHymnsApp {
             /* Settings must be first — it sets theme, motion prefs, etc. */
             this.settings = new Settings(this);
             this.settings.init();
-
-            /* Cross-domain storage bridge (#133) — initialise in background.
-             * Modules use localStorage directly (synchronous). The bridge
-             * syncs data across domains asynchronously without blocking.
-             *
-             * Both promise chains carry .catch() handlers so a network /
-             * iframe / postMessage failure becomes a logged warning rather
-             * than an unhandled rejection that some browsers surface as
-             * a console error or page-level event (#530). */
-            if (this.config.storageBridgeUrl) {
-                this.storageBridge = new StorageBridge(this.config.storageBridgeUrl);
-                this.storageBridge.init().then((connected) => {
-                    if (connected) {
-                        /* Pull any settings from other domains and re-apply */
-                        this.storageBridge.getAll().then((data) => {
-                            let needsRefresh = false;
-                            for (const [key, value] of Object.entries(data)) {
-                                if (localStorage.getItem(key) !== value) {
-                                    localStorage.setItem(key, value);
-                                    needsRefresh = true;
-                                }
-                            }
-                            if (needsRefresh) {
-                                /* Re-apply settings that may have been updated */
-                                this.settings.applyTheme(this.settings.get('theme'));
-                                this.settings.applyReduceMotion(this.settings.get('reduceMotion'));
-                                this.settings.applyFontSize(this.settings.get('fontSize'));
-                            }
-                        }).catch((err) => {
-                            console.warn('[iHymns] storageBridge.getAll failed (offline / cross-domain block):', err);
-                        });
-                    }
-                }).catch((err) => {
-                    console.warn('[iHymns] storageBridge.init failed (offline / iframe load):', err);
-                });
-            }
 
             /* Page transitions */
             this.transitions = new Transitions(this);
@@ -1051,6 +1025,7 @@ class iHymnsApp {
                 const remember = document.getElementById('quick-jump-remember')?.checked;
                 if (remember) {
                     localStorage.setItem(STORAGE_DEFAULT_SONGBOOK, bookId);
+                    this.syncStorage(STORAGE_DEFAULT_SONGBOOK);   /* #2143: a shared setting, so tell the sync */
                 }
                 closePicker();
                 const padded = number.padStart(4, '0');
@@ -1322,20 +1297,20 @@ class iHymnsApp {
      */
 
     /**
-     * Sync a localStorage key to the cross-domain storage bridge (#133).
+     * Sync a localStorage key to the shared settings cookie (#133, #2143).
      * Call this after any direct localStorage.setItem() for ihymns_ keys.
-     * Non-blocking — failures are silent.
+     * Non-blocking — failures are silent. Only the registered display settings
+     * travel; everything else is ignored.
      *
      * @param {string} key Full localStorage key (e.g. 'ihymns_favorites')
      */
     syncStorage(key) {
-        const value = localStorage.getItem(key);
-        /* Layer 1: Subdomain cookie sync (*.ihymns.app) */
-        this.subdomainSync?.sync(key);
-        /* Layer 2: Iframe bridge (cross-domain / large data) */
-        if (value !== null && this.storageBridge) {
-            this.storageBridge.set(key, value);
-        }
+        /* The shared settings cookie (*.ihymns.app): the rebuilt sync when it is switched on for
+           this channel, otherwise the old one. Either way only registered display settings travel
+           and everything else is ignored. The hidden-frame "bridge" that used to be a second layer
+           here never connected and was removed (#2143). */
+        if (this.crossSiteSync) this.crossSiteSync.recordLocalChange(key);
+        else this.subdomainSync?.sync(key);
     }
 
     /**

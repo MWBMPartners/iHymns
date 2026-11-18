@@ -1196,6 +1196,46 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_search_visibility] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_cross_site_sync') {
+            /* Per-channel switch for the cross-site settings sync (#2143). ONE
+               setting: the ticked subset of {alpha,beta,production} it is ON for,
+               stored as CSV exactly like search visibility above (same house
+               shape, rule #22). Off by default: no row means 'none'. An empty
+               tick-set stores the literal 'none' (never ''), because
+               setAppSetting() reads '' as "unset". The page's CSRF check and the
+               manage_configuration entitlement above already cover this action.
+               Requires cross_site_sync.php for the setting-key constant (rule #35). */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'cross_site_sync.php';
+            try {
+                /* Posted field name is deliberately DIFFERENT from the settings-key
+                   literal, so a tree-wide scan for that quoted key finds it in exactly
+                   one file (tests/php/test-cross-site-sync-switch.php). */
+                $postedSyncChans = (array)($_POST['cross_site_sync_ch'] ?? []);
+                $validSyncChans  = ['alpha', 'beta', 'production'];
+                $syncChansOut    = [];
+                foreach ($postedSyncChans as $c) {
+                    $c = trim((string)$c);
+                    if (in_array($c, $validSyncChans, true) && !in_array($c, $syncChansOut, true)) {
+                        $syncChansOut[] = $c;
+                    }
+                }
+                $syncCsv = $syncChansOut === [] ? 'none' : implode(',', $syncChansOut);
+                $saveSetting($db, CROSS_SITE_SYNC_SETTING_KEY, $syncCsv);
+                if (function_exists('logActivity')) {
+                    logActivity('app_setting.update', 'app_setting', CROSS_SITE_SYNC_SETTING_KEY,
+                        ['channels' => $syncCsv], 'success');
+                }
+                $syncNameFor = static fn(string $c): string => $c === 'alpha' ? 'Alpha (dev)' : ucfirst($c);
+                $syncOnNames  = array_map($syncNameFor, $syncChansOut);
+                $syncOffNames = array_map($syncNameFor, array_diff($validSyncChans, $syncChansOut));
+                $saveSuccess = 'Saved. Settings follow visitors on: '
+                    . ($syncOnNames === [] ? 'none' : implode(', ', $syncOnNames))
+                    . '. Off: ' . ($syncOffNames === [] ? 'none' : implode(', ', $syncOffNames))
+                    . '. A visitor\'s browser picks the change up the next time a page loads.';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_cross_site_sync] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -1254,6 +1294,13 @@ $envCurrent          = ihymns_environment();   // #1233 — per-env maintenance 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
 $searchVisChannels = ihymns_parse_channels_csv(
     (string)(getAppSetting(SEARCH_VISIBILITY_SETTING_KEY, SEARCH_VISIBILITY_DEFAULT_CSV) ?? SEARCH_VISIBILITY_DEFAULT_CSV)
+);
+
+/* Cross-site settings sync (#2143) — read through the SAME constant and parse the
+   runtime uses, so this card can never disagree with what actually happens. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'cross_site_sync.php';
+$crossSyncChannels = ihymns_parse_channels_csv(
+    (string)(getAppSetting(CROSS_SITE_SYNC_SETTING_KEY, CROSS_SITE_SYNC_DEFAULT) ?? CROSS_SITE_SYNC_DEFAULT)
 );
 
 $maintenanceSettings = $loadSettings($db, [
@@ -1611,6 +1658,61 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <button type="submit" class="btn btn-primary">
                     <i aria-hidden="true" class="bi bi-save me-1"></i>Save search engine visibility
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         CROSS-SITE SETTINGS SYNC (#2143)
+         =========================== -->
+    <div class="card bg-body-tertiary border-secondary mb-4" id="cross-site-sync">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i aria-hidden="true" class="bi bi-arrow-left-right me-2"></i>Settings that follow visitors between iHymns sites
+            </h2>
+            <span class="badge <?= $crossSyncChannels === [] ? 'bg-secondary' : 'bg-success' ?>">
+                <?= $crossSyncChannels === [] ? 'Off everywhere' : 'On for ' . count($crossSyncChannels) . ' of 3 sites' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-2">
+                When this is on, a visitor&rsquo;s display choices &mdash; theme, text size, motion,
+                colour-blindness filter and a few more &mdash; follow them from one iHymns site to the
+                others, using a small cookie shared by all the sites. Newest change wins, setting by
+                setting, and a reset is passed on too.
+            </p>
+            <p class="small text-secondary mb-3">
+                <strong>Nothing private travels.</strong> Favourites, set lists, history, sign-in
+                details and consent choices never go into the cookie. Signed-in people already get all
+                of that from their account; this is mainly for visitors who are not signed in. A
+                visitor&rsquo;s browser picks up a change the next time a page loads. While a site is
+                switched off here, it keeps using the older, simpler shared cookie exactly as before.
+            </p>
+            <form method="post">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_cross_site_sync">
+                <div class="mb-2">
+                    <label class="form-label mb-1" id="cross-sync-channels-label">Switched on for</label>
+                    <div class="d-flex flex-column gap-2" role="group" aria-labelledby="cross-sync-channels-label">
+                        <?php foreach (['production' => 'Production (ihymns.app)', 'beta' => 'Beta (beta.ihymns.app)', 'alpha' => 'Alpha &mdash; dev (dev.ihymns.app)'] as $syncOpt => $syncLabel): ?>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" name="cross_site_sync_ch[]"
+                                       value="<?= $syncOpt ?>" id="css_ch_<?= $syncOpt ?>"<?= in_array($syncOpt, $crossSyncChannels, true) ? ' checked' : '' ?>>
+                                <label class="form-check-label" for="css_ch_<?= $syncOpt ?>">
+                                    <?= $syncLabel /* fixed, safe strings from the loop above: no user input */ ?>
+                                    <?php if ($syncOpt === $envCurrent): ?><span class="badge bg-info text-dark ms-1">this site</span><?php endif; ?>
+                                </label>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <div class="form-text">
+                        Suggested order: switch on dev and beta first, check it on a real phone and
+                        computer, then Production. Switching a site off again takes effect on the next page load.
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save settings sync
                 </button>
             </form>
         </div>

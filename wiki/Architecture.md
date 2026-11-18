@@ -91,8 +91,8 @@ iHymnsApp
 ├── SongOfTheDay    — Daily featured song
 ├── OfflineIndicator— Online/offline status
 ├── ErrorMonitor    — Catches uncaught errors/rejections, one toast + scrubbed beacon (#1582)
-├── StorageBridge   — Cross-domain localStorage sync
-├── SubdomainSync   — Subdomain cookie sync
+├── CrossSiteSync   — Display settings follow a visitor between iHymns sites via one shared cookie (#2143; off until an admin switches a channel on)
+├── SubdomainSync   — The older shared cookie, used while CrossSiteSync is switched off
 ├── Gestures        — Touch swipe navigation
 ├── Analytics       — GA4, Plausible, Clarity, Matomo, Fathom
 └── Request         — Missing song request form

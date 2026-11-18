@@ -160,6 +160,7 @@ enforceMaintenanceForPublicSite();
    computed once here and reused by the <head> block below so the two can
    never disagree with each other. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'cross_site_sync.php'; /* #2143 — per-channel switch for the settings sync */
 $searchEngineHidden = !searchEngineVisibleHere();
 searchVisibilityEmitNoindexHeader();
 
@@ -320,7 +321,7 @@ $cspDirectives = [
     "object-src 'none'",
     "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     "connect-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.google-analytics.com https://plausible.io https://www.clarity.ms https://*.usefathom.com{$cspMatomoUrl}{$cspCaptchaConnect}",
-    "frame-src 'self' " . APP_CONFIG['storage_bridge']['origin'] . " https://*.ihymns.app{$cspCaptchaFrame}",
+    "frame-src 'self'{$cspCaptchaFrame}",   /* #2143: the hidden settings frame (and its *.ihymns.app allowance) is gone; only the CAPTCHA frame remains */
     "worker-src 'self' https://cdn.jsdelivr.net blob:",
     "manifest-src 'self'",
     "base-uri 'self'",
@@ -2218,7 +2219,9 @@ if (!empty($breadcrumbItems)) {
             'locale'          => $locale,
             'initialPath'     => $requestPath,
             'songbooks'       => $iHymnsConfigSongbooks,
-            'storageBridgeUrl'=> APP_CONFIG['storage_bridge']['url'],
+            /* #2143 — the cross-site settings sync switch for THIS channel. Off by default; the old
+               `storageBridgeUrl` (a hidden frame that never connected) is gone. */
+            'crossSiteSync'   => ['enabled' => crossSiteSyncEnabledHere(), 'channel' => ihymns_environment()],
             'analytics'       => [
                 'hasGa4'       => !empty(APP_CONFIG['analytics']['google_analytics_id']),
                 'hasClarity'   => !empty(APP_CONFIG['analytics']['clarity_id']),

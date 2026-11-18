@@ -27,8 +27,10 @@ import {
     CACHE_SONGS_RECENT,
     EVT_AUTH_CHANGED,
     EVT_OFFLINE_SETTINGS_CHANGED,
+    EVT_XSITE_SETTINGS_APPLIED,
 } from '../constants.js';
 import { escapeHtml } from '../utils/html.js';
+import { CROSS_SITE_KEYS } from './settings-sync-registry.js';
 /* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
    on every same-origin request, replacing the old global fetch monkey-patch. */
 import { apiFetch } from '../utils/api-client.js';
@@ -57,24 +59,13 @@ import {
  * would just mean that phone silently prompts for MIDI permission
  * the next time it loads a song page, for hardware it can't see.
  */
-const SYNC_PREF_KEYS = Object.freeze([
-    'ihymns_theme',
-    'ihymns_fontSize',
-    'ihymns_reduceMotion',
-    'ihymns_reduceTransparency',
-    'ihymns_transition',
-    'ihymns_default_songbook',
-    'ihymns_auto_update_songs',
-    'ihymns_numpad_live_search',
-    'ihymns_search_lyrics',
-    'ihymns_display',
-    STORAGE_CVD_MODE,
-    STORAGE_LINK_EMPHASIS,
-    'ihymns_keyboardShortcuts',
-    /* #1770 §4.7 — unprefixed on purpose; see the constant's own doc-comment
-       in constants.js for why it must NOT gain the ihymns_ prefix. */
-    STORAGE_LIVE_IDLE_TIMEOUT_MINS,
-]);
+const SYNC_PREF_KEYS = CROSS_SITE_KEYS;
+/* ^ #2143 — the ONE list of display settings that may travel (rule #35). It used
+   to be typed out here. The rebuilt cross-site sync (settings-sync.js) reads the
+   same list, and tests/test-settings-sync-registry.js checks it against the
+   tree. (The old cookie module, subdomain-sync.js, keeps its own shorter list
+   until the rebuilt sync replaces it.) Adding a setting means one line, and its
+   check, in settings-sync-registry.js. */
 
 /** localStorage key for the user's opt-in toggle. Default = on. */
 const SYNC_TOGGLE_KEY = 'ihymns_sync_app_settings';
@@ -213,6 +204,10 @@ export class Settings {
                 }
             });
         }
+
+        /* #2143 — the cross-site settings sync adopted a newer value from another
+           iHymns site (settings-sync.js): re-apply everything visual so it shows at once. */
+        document.addEventListener(EVT_XSITE_SETTINGS_APPLIED, () => this.reapplyAll());
 
         /* Re-apply the Account section whenever auth state changes, even if
            the user is on the Settings page (no navigation triggered).
@@ -385,6 +380,9 @@ export class Settings {
                 } else {
                     localStorage.setItem(k, v);
                 }
+                /* #2143 — the account's value is now the newest change on this site, so tell the
+                   cross-site sync (an account wins over the cookie, as it always has). */
+                this.app.syncStorage(k);
                 if (k === 'ihymns_theme') appliedTheme = true;
             }
         });
@@ -705,6 +703,18 @@ export class Settings {
     }
 
     /**
+     * Re-apply every visual setting from what is stored now (#2143). Called when
+     * the cross-site sync adopts a newer value from another site. applyTheme() also
+     * re-applies the colour-blindness filter and the link-emphasis mode.
+     */
+    reapplyAll() {
+        this.applyTheme(this.get('theme'));
+        this.applyReduceMotion(this.get('reduceMotion'));
+        this.applyReduceTransparency(this.get('reduceTransparency'));
+        this.applyFontSize(this.get('fontSize'));
+    }
+
+    /**
      * Apply a theme to the document.
      *
      * @param {string} theme Theme name: 'light', 'dark', 'high-contrast', or 'system'
@@ -1019,6 +1029,7 @@ export class Settings {
                     localStorage.removeItem(STORAGE_CVD_MODE);
                     document.documentElement.removeAttribute('data-ihymns-cvd');
                 }
+                this.app.syncStorage(STORAGE_CVD_MODE);   /* #2143: it never reached the shared cookie before */
                 this._maybePushSync(STORAGE_CVD_MODE);
             });
         }
@@ -1040,6 +1051,7 @@ export class Settings {
                     localStorage.removeItem(STORAGE_LINK_EMPHASIS);
                     document.documentElement.removeAttribute('data-ihymns-linkcue');
                 }
+                this.app.syncStorage(STORAGE_LINK_EMPHASIS);   /* #2143: it never reached the shared cookie before */
                 this._maybePushSync(STORAGE_LINK_EMPHASIS);
             });
         }
@@ -1164,6 +1176,13 @@ export class Settings {
                     localStorage.removeItem(Settings.CONSENT_KEY);
                     /* Clear shared subdomain cookie (#133) */
                     this.app.subdomainSync?.clear();
+                    /* #2143 — record a deletion for exactly the shared settings removed above, so
+                       other iHymns sites remove them too instead of handing the old values back. */
+                    const removedKeys = [
+                        ...Object.keys(this.defaults).map((key) => this.storagePrefix + key),
+                        STORAGE_DEFAULT_SONGBOOK, STORAGE_TRANSITION, STORAGE_AUTO_UPDATE_SONGS,
+                    ].filter((key) => CROSS_SITE_KEYS.includes(key));
+                    this.app.crossSiteSync?.recordRemoval(removedKeys);
                     /* Re-apply defaults */
                     this.applyTheme(this.defaults.theme);
                     this.applyReduceMotion(this.defaults.reduceMotion);
