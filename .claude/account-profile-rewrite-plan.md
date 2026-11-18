@@ -4,7 +4,7 @@
 
 | Step | Commit | Status |
 |---|---|---|
-| A1 one locked settings writer | a427c47 | done |
+| A1 one locked settings writer | a427c47 | done, needs Opus review |
 | A2 stop re-fetching settings every page | 5e021c6 | done |
 | A3 keep visitor language choice | 3bc9b2b | done |
 | A4 stop recording who searched | 21a7e6c | done |
@@ -13,10 +13,25 @@
 | A7 never merge one person's data into another's | cac1080 | done, needs Opus review |
 | A8 old builds cannot delete by omission | a3dbecd | done, needs Opus review |
 | A9 switch to refuse whole-box saves | c6b12a4 | done |
+| Phase A close-out (WHATS-NEW bullets, this table) | 24e96ce | done |
+| B1 one migration for the foundation tables and columns | 4738c28 | done, needs Opus review, 👤 owner runs it |
+| B2 blank old privacy links (manual, destructive) | 56dd69d | done, needs Opus review, 👤 owner runs it |
+| C1 shared channel switch + account-writes switch | 02db35f | done, needs Opus review |
+| C2 every personal-data write checks the switch | 4b058fa | done, needs Opus review |
+| C3 one token maker | b833b6f | done, needs Opus review |
+| C4 profile registry | ff1942e | done |
+| C5 `GET ?action=profile_schema` | 139e5bb | done |
+| C6 lockstep guards + Apple snapshot | 51e9e1d | done |
 
-2026-11-18. Builds on `.claude/account-profile-architecture-review-2026-11-18.md` (the "review") and `.claude/settings-sync-2143-plan.md`. Plan only; nothing built.
-
----
+Deviations from the plan (all explained in the commit messages): A2 touches only
+`settings.js` and `list-sort.js` plus a new shared helper `utils/pull-gate.js`; A3
+changed only `songbook-language-filter.js` (the settings page's language picker
+never adopts the account's value, so it needed no change); A4 drops the `UserId`
+column from the search insert instead of binding null; B2 also blanks the
+forwarded-address chain and proxy-detail columns and adds a dry-run mode; C1 takes
+`$onError` as a bool or a function and defaults to all three channels; C2 does not
+gate the admin user-management actions (operator actions, like `/manage/users`),
+password recovery, or the two read endpoints with incidental housekeeping writes.
 
 ## 0. Owner decisions, and what they mean here
 
