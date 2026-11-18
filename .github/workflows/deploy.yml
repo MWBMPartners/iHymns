@@ -150,10 +150,33 @@ jobs:
         --exclude ^data/music/
 
     steps:
+      # -- Token for the version commit (#2143) --
+      # The "Classify and bump committed version" step below pushes a small
+      # `chore(version)` commit straight to alpha. The built-in token cannot do
+      # that: alpha's branch rules require three passing checks on every commit,
+      # and a brand-new commit has none yet, so the push was refused on every
+      # deploy and the version stayed stuck. The "iHymns Automation" GitHub App is
+      # on that ruleset's bypass list, so a token from it can. Alpha only: beta and
+      # main never write a version commit.
+      # continue-on-error + the fallback on the checkout below mean that if the app
+      # is missing, its secrets are wrong or it is not on the bypass list, the
+      # deploy behaves exactly as it did before (the push is refused and shows the
+      # same warning). A problem with the app can never fail a deploy.
+      - name: Get a token from the GitHub App (alpha only)
+        id: app-token
+        if: github.ref_name == 'alpha'
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+
       # -- Checkout code --
       - name: Checkout code
         uses: actions/checkout@v7
         with:
+          # The app's token when we have one (alpha), otherwise the built-in token.
+          token: ${{ steps.app-token.outputs.token || github.token }}
           fetch-depth: 0
           # fetch-depth: 0 (full history) is required tag-free (#1965): the
           # build number is `git rev-list --count HEAD` and the version anchor
