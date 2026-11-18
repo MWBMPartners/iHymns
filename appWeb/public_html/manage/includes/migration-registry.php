@@ -53,6 +53,12 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
            . DIRECTORY_SEPARATOR . 'song_relocate.php';
 
+/* B2 (account/profile rewrite, epic #2180): the ONE description of "old personal
+   links still to blank", shared by the manual migration below and its probe so
+   the two can never disagree. Declares functions and constants only. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+           . DIRECTORY_SEPARATOR . 'privacy_legacy_blank.php';
+
 /**
  * Does a live FK constraint exist on this table, and if so is its UPDATE_RULE
  * something other than CASCADE?
@@ -5202,5 +5208,87 @@ return [
         'probe' => static fn(\mysqli $db): bool =>
                _migProbe_constraintExists($db, 'tblSongTranslations', 'fk_Trans_Lang')
             || _migProbe_indexExists($db, 'tblSongTranslations', 'fk_Trans_Lang'),
+    ],
+
+    /* Account/profile rewrite, epic #2180, step B1 - ONE migration for the whole
+       feature family (rule #20): three dormant tables plus a few additive
+       columns, designed in one pass. Everything is empty and unused until later
+       steps read or write it, so applying it is a verified no-op for every
+       existing page. Normal (non-manual) card: purely additive, so safe in
+       "Apply all". OWNER ACTION: check the MySQL version, take a backup, run it
+       once from alpha (the database is shared). */
+    'account-profile-foundation' => [
+        'script' => 'migrate-account-profile-foundation.php',
+        'card' => [
+            'title'  => 'Account and profile foundation (#2180)',
+            'body'   => 'Creates three empty tables &mdash; <code>tblUserProfileItems</code>'
+                      . ' (small per-person settings with a change counter and delete markers),'
+                      . ' <code>tblUserSyncTombstones</code> (delete markers for favourites and'
+                      . ' custom tags) and <code>tblAccountEnrolKeys</code> (keys a phone app can'
+                      . ' swap only for its own sign-in) &mdash; and adds a few optional columns:'
+                      . ' <code>tblApiTokens.DeviceInstallId</code>/<code>IssuedVia</code>,'
+                      . ' <code>tblApnsTokens.ApiTokenHash</code>,'
+                      . ' <code>tblPushSubscriptions.Channel</code> and'
+                      . ' <code>tblSongHistory.Source</code>/<code>Channel</code>/<code>Platform</code>.'
+                      . ' <strong>Nothing uses them yet</strong>, so nothing changes for anyone.'
+                      . ' <strong>Before running:</strong> check the MySQL version (8.0.12 or later adds'
+                      . ' the columns almost instantly; an older server copies'
+                      . ' <code>tblSongHistory</code>, which can be slow) and take a backup. The'
+                      . ' history columns are added last. Idempotent &mdash; an interrupted run is'
+                      . ' finished by running it again.',
+            'button' => 'Run Account and Profile Foundation Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending while ANY table, column or
+           index is missing, so a partial apply never shows the card as done.
+           Read from the live schema - never `=> true`. */
+        'probe' => static fn(\mysqli $db): bool =>
+               !_migProbe_tableExists($db, 'tblUserProfileItems')
+            || !_migProbe_tableExists($db, 'tblUserSyncTombstones')
+            || !_migProbe_tableExists($db, 'tblAccountEnrolKeys')
+            || !_migProbe_columnExists($db, 'tblApiTokens', 'DeviceInstallId')
+            || !_migProbe_columnExists($db, 'tblApiTokens', 'IssuedVia')
+            || !_migProbe_indexExists($db, 'tblApiTokens', 'idx_UserInstall')
+            || !_migProbe_columnExists($db, 'tblApnsTokens', 'ApiTokenHash')
+            || !_migProbe_indexExists($db, 'tblApnsTokens', 'idx_ApiToken')
+            || !_migProbe_columnExists($db, 'tblPushSubscriptions', 'Channel')
+            || !_migProbe_columnExists($db, 'tblSongHistory', 'Source')
+            || !_migProbe_columnExists($db, 'tblSongHistory', 'Channel')
+            || !_migProbe_columnExists($db, 'tblSongHistory', 'Platform'),
+    ],
+
+    /* Account/profile rewrite, epic #2180, step B2 - DESTRUCTIVE, run once.
+       Blanks old personal links: it unlinks every old search row from the
+       person who made it, and, for accounts already erased, blanks the address,
+       browser, referrer, country and proxy details in the audit log and removes
+       username/email from its details. 'manual' => true: EXCLUDED from "Apply
+       all" and the pending counter; dry-run by default, ?confirm=1 to change a
+       row. No schema change, so no schema.sql edit. OWNER ACTION: run only
+       after step A4 is live on PRODUCTION (so no new links appear) and after a
+       backup. UNDO: only from the backup. */
+    'privacy-blank-legacy-links' => [
+        'script' => 'migrate-privacy-blank-legacy-links.php',
+        'manual' => true,
+        'dryRunnable' => true,
+        'card' => [
+            'title'  => '&#9888; Blank old personal links in searches and the audit log (#2180)',
+            'body'   => 'DATA CHANGE, run once &mdash; unlinks every old search in'
+                      . ' <code>tblSearchQueries</code> from the person who made it (the search'
+                      . ' text stays), and for accounts that are already erased blanks the internet'
+                      . ' address, browser, referrer, country and proxy details in'
+                      . ' <code>tblActivityLog</code> and removes <code>username</code>/'
+                      . '<code>email</code> from its details (the rows stay, so what happened is'
+                      . ' still recorded, just not who). Works in batches of 5,000.'
+                      . ' <strong>Run it only after the &ldquo;stop recording who searched&rdquo;'
+                      . ' change is live on production, and after a backup.</strong> It cannot be'
+                      . ' undone except from the backup. Do NOT run via &ldquo;Apply all&rdquo;.'
+                      . ' Defaults to <strong>dry-run</strong> (reports how many rows it would'
+                      . ' change); pass <code>&amp;confirm=1</code> to apply. Idempotent &mdash; a'
+                      . ' re-run finds nothing once done.',
+            'button' => 'Blank Old Personal Links (dry-run unless confirmed)',
+        ],
+        /* Real data-derived probe (rule #19), never `=> true`: pending while any
+           search row still names a person, or an erased account's audit row still
+           holds personal details. Uses the SAME functions the run uses. */
+        'probe' => static fn(\mysqli $db): bool => privacyLegacyPending($db),
     ],
 ];

@@ -105,6 +105,21 @@ export const STORAGE_FAVORITES_SYNCED_AT = 'ihymns_favorites_synced_at';
    actually accepted (see UserAuth.syncSetlists). */
 export const STORAGE_SETLISTS_DELETED    = 'ihymns_setlists_deleted';
 
+/* Whose saved songs are currently on THIS device (account/profile rewrite A7,
+   epic #2180). The id of the account whose favourites, set lists, custom tags
+   and history the device's local copies belong to, recorded when that account's
+   data was last absorbed. If a DIFFERENT person signs in on the same device, the
+   previous person's data is moved aside (see js/modules/account-data-owner.js)
+   instead of being merged into the new account. DEVICE-LOCAL BY DESIGN: it names
+   an account, so it must never travel in the shared settings cookie (it is not
+   in settings-sync-registry.js, and the name contains "owner_id" so the
+   registry guard treats it as private). */
+export const STORAGE_DATA_OWNER_UID     = 'ihymns_data_owner_id';
+
+/* The one safe-keeping place for the previous person's data on a shared device
+   (A7). Full key is this prefix plus the account id; at most ONE exists. */
+export const STORAGE_STASH_PREFIX       = 'ihymns_stash_';
+
 /* Accessibility — Colour Vision Deficiency mode (#319) */
 export const STORAGE_CVD_MODE           = 'ihymns_cvd_mode';
 
@@ -236,6 +251,16 @@ export const EVT_REFRESH_REQUESTED        = 'ihymns:refresh-requested';
 export const EVT_REFRESH_COMPLETE         = 'ihymns:refresh-complete';
 export const EVT_FETCH_FAILED             = 'ihymns:fetch-failed';
 export const EVT_FETCH_SUCCEEDED          = 'ihymns:fetch-succeeded';
+/* Account/profile rewrite C2 (epic #2180): fired on `window` by apiFetch() when
+   the server answers a same-origin request with 409 + reason
+   ACCOUNT_WRITES_OFF_REASON, meaning "saving to accounts is paused on this
+   site". app.js listens and shows ONE quiet notice per page load; the change
+   itself stays on the device. */
+export const EVT_ACCOUNT_WRITES_OFF       = 'ihymns:account-writes-off';
+/* The reason code the server puts on that 409. MUST equal ACCOUNT_WRITES_OFF_REASON in
+   includes/account_write_gate.php (tests/php/test-account-write-gate.php compares
+   them, rule #35). Clients branch on the 409 status and this code, never the sentence. */
+export const ACCOUNT_WRITES_OFF_REASON    = 'account_writes_off_here';
 export const EVT_LANGUAGE_FILTER_CHANGED  = 'ihymns:language-filter-changed';
 export const EVT_OFFLINE_SETTINGS_CHANGED = 'ihymns:offline-settings-changed';
 /* #1786 Option B — fired on `document` by list-sort.js every time a

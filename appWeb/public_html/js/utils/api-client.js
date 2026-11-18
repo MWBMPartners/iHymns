@@ -50,7 +50,7 @@
  * @see https://fetch.spec.whatwg.org/#request-class
  */
 
-import { EVT_FETCH_FAILED, EVT_FETCH_SUCCEEDED, STORAGE_LANGUAGE_FILTER } from '../constants.js';
+import { EVT_FETCH_FAILED, EVT_FETCH_SUCCEEDED, EVT_ACCOUNT_WRITES_OFF, ACCOUNT_WRITES_OFF_REASON, STORAGE_LANGUAGE_FILTER } from '../constants.js';
 import { usablePreferenceList } from './language-tags.js';
 
 /**
@@ -268,6 +268,20 @@ export async function apiFetch(input, init = {}) {
     safely(() => window.dispatchEvent(new CustomEvent(EVT_FETCH_SUCCEEDED, {
         detail: { url, status: response.status },
     })));
+
+    /* Account/profile rewrite C2 (epic #2180): "saving to accounts is paused on
+       this site" arrives as 409 + reason. Tell the app ONCE here, for every caller,
+       rather than each module learning to read it. Read from a CLONE so the caller
+       still gets an unread body. Only our own origin can carry this meaning. */
+    if (response.status === 409 && sameOrigin) {
+        safely(() => {
+            response.clone().json().then((j) => {
+                if (j && j.reason === ACCOUNT_WRITES_OFF_REASON) {
+                    window.dispatchEvent(new CustomEvent(EVT_ACCOUNT_WRITES_OFF));
+                }
+            }).catch(() => { /* not JSON: nothing to report */ });
+        });
+    }
     return response;
 }
 

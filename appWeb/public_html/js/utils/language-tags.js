@@ -88,6 +88,37 @@ export function usablePreferenceList(list) {
 }
 
 /**
+ * What to do with the account's answer to "what languages has this person
+ * chosen?" (account/profile rewrite A3, epic #2180).
+ *
+ * ELI5: when someone signs in for the first time, their account has no language
+ * choice yet, but the device they are using already has one they made as a
+ * visitor. The old code took the account's empty answer as "show all
+ * languages" and threw the device's choice away. Now, if the server says "no
+ * choice was ever saved" (`isSet: false`) and this device HAS a choice, the
+ * device's choice is sent up to the account instead.
+ *
+ * `isSet` is false when nothing was ever saved (the server stores "all
+ * languages" the same way, as nothing). That is the best the server can tell
+ * apart, and keeping a device's choice is the safer way to be wrong. An older
+ * server that does not send `isSet` at all gets exactly the old behaviour.
+ *
+ * @param {?{languages?: unknown, subtags?: unknown, isSet?: unknown}} payload the server's answer, or null
+ * @param {string[]} local this device's saved list
+ * @returns {{action: 'keep'} | {action: 'adopt', list: string[]} | {action: 'push', list: string[]}}
+ */
+export function decideAccountLanguages(payload, local) {
+    const list = (payload && Array.isArray(payload.languages)) ? payload.languages
+        : ((payload && Array.isArray(payload.subtags)) ? payload.subtags : null);
+    if (!list) return { action: 'keep' };
+    const mine = usablePreferenceList(local);
+    if (payload.isSet === false && mine.length > 0) {
+        return { action: 'push', list: mine };
+    }
+    return { action: 'adopt', list: usablePreferenceList(list) };
+}
+
+/**
  * The language GROUP a tag belongs to, lower-cased: its first part for an
  * ordinary tag (`pt-BR` → `pt`), or the whole tag for a private-use or old
  * "grandfathered" one (`x-hymnal`, `i-default`), matching the server's

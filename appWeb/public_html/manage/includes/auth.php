@@ -108,6 +108,12 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
    direct-access guard, so loading it in the bootstrap is side-effect-free. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
           . DIRECTORY_SEPARATOR . 'rate_limit.php';
+/* The ONE sign-in token maker (C3, epic #2180). mintCrossSurfaceAuthToken() and
+   _completeEmailLoginTxn() below both make tokens through apiTokenMint(), so it
+   must be loaded whenever this bootstrap is. Pure function and constant
+   definitions, so loading it here is side-effect-free. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+          . DIRECTORY_SEPARATOR . 'api_tokens.php';
 /* Mirror every uncaught \Throwable + PHP fatal across the entire
    /manage/* admin surface into tblActivityLog. Every admin page
    requires this auth bootstrap first, so installing the global
@@ -734,22 +740,13 @@ function mintCrossSurfaceAuthToken(int $userId): void
         /* Same generation as api.php: 32 random bytes → 64 hex chars. The
            RAW token goes in the cookie; the DB stores only its sha256 hash so
            a DB dump can't be replayed as a live bearer token. */
-        $rawToken    = bin2hex(random_bytes(32));
-        $tokenHash   = hash('sha256', $rawToken);
-        $expiresAtTs = time() + 30 * 86400;            /* 30 days — see docblock. */
-        $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
-
-        /* Bound INSERT — UserId is an int, Token/ExpiresAt are strings, mirroring
-           the 'sis' bind api.php uses for the same statement.
+        /* C3 (epic #2180): through the ONE token maker (30 days, see docblock).
            #1975 no-device-meta: internal admin↔public cross-surface BRIDGE token,
            not a user sign-in — the user's real sign-in already produced a named
            device row, and naming this internal token would list a confusing
-           duplicate. Deliberately carries no device metadata (guarded by
+           duplicate. Deliberately carries no device metadata (`null`; guarded by
            tests/php/test-api-token-device-meta.php's mint-coverage check). */
-        $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-        $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
-        $stmt->execute();
-        $stmt->close();
+        $rawToken = apiTokenMint($db, $userId, null, 'cross_surface', $expiresAtTs);
 
         /* Set the cross-subdomain cookie with the RAW token + the shared cookie
            options (domain `.ihymns.app`, path `/`, HttpOnly, SameSite=Lax,
@@ -2252,13 +2249,9 @@ function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId): array
        apiTokenDeviceMetaStore() once this txn returns the token (see the
        apiTokenDeviceMetaStore call above), so this inner mint intentionally
        does not write it itself. */
-    $token = bin2hex(random_bytes(32));
-    $expiresAt = gmdate('Y-m-d H:i:s', time() + 30 * 86400);
-    $tokenHash = hash('sha256', $token);
-    $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-    $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
-    $stmt->execute();
-    $stmt->close();
+    /* C3 (epic #2180): through the ONE token maker; `null` meta because the caller
+       writes the device details after this transaction (see above). */
+    $token = apiTokenMint($db, (int)$userId, null, 'email');
 
     return [
         'token' => $token,

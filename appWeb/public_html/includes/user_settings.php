@@ -88,7 +88,7 @@ declare(strict_types=1);
  * coupling namespaces exist to remove: iLyricsDB filling the row would start
  * failing iHymns' saves.
  *
- * EVERYTHING HERE IS PURE
+ * THE BEHAVIOUR HERE IS PURE (one exception at the bottom)
  * -----------------------
  * No database, no superglobals, no I/O. That is deliberate: these are the
  * behaviours worth pinning (isolation, root-not-deep merge, key deletion, the
@@ -245,4 +245,109 @@ function userSettingsSubtree(array $current, string $ns)
        happened to use this key). Emit `{}` for the same round-trip reason as
        above — the write path never stores a meaningful empty list here. */
     return $value === [] ? new \stdClass() : $value;
+}
+
+/* ======================================================================
+ * THE ONE LOCKED WRITER (account/profile rewrite, step A1, epic #2180)
+ * ======================================================================
+ *
+ * ELI5
+ * ----
+ * The settings box on a person's account is shared by several features: the
+ * settings page, list sorts, push choices, card layouts and iLyricsDB. Each
+ * used to do "read the whole box, change my shelf, write the whole box back".
+ * If two of those happened at the same moment, the second one wrote back its
+ * stale copy of the box and quietly erased the first one's change. The fix is a
+ * single door: ONE function that takes a lock on the person's row, reads the
+ * box, lets the caller change it, writes it back and lets go. A second writer
+ * simply waits its turn and then sees the first writer's change.
+ *
+ * Detailed
+ * --------
+ * `SELECT ... FOR UPDATE` inside a transaction holds an exclusive row lock on
+ * `tblUsers.Id = ?` until commit/rollback (InnoDB), so concurrent mutators on
+ * the SAME person serialise; different people never block each other. The
+ * decision of what the new box looks like is split out into the PURE function
+ * `userSettingsApplyMutation()` so a test can call it (this file's header
+ * explains why behaviour beats source-matching). Only this file and the
+ * account-erasure statement in `account_lifecycle.php` may write
+ * `tblUsers.Settings`; `tests/php/test-settings-box-single-writer.php` fails
+ * the build if any other file does.
+ *
+ * @see https://dev.mysql.com/doc/refman/8.0/en/innodb-locking-reads.html
+ */
+
+/**
+ * PURE: run the caller's change against the current box and decide the outcome.
+ *
+ * The callback receives the current box (an array, `[]` when empty) and returns
+ * EITHER the new box (array) OR a string reason code meaning "refuse" (the
+ * whole write is then abandoned, nothing is stored). The whole-box backstop
+ * (`USER_SETTINGS_TOTAL_MAX_BYTES`) is applied to every result here, so no
+ * writer can bypass it by going through a different door.
+ *
+ * @param array<string,mixed> $current
+ * @param callable(array<string,mixed>): (array<string,mixed>|string) $fn
+ * @return array{ok:bool, settings:array<string,mixed>, reason:?string}
+ */
+function userSettingsApplyMutation(array $current, callable $fn): array
+{
+    $result = $fn($current);
+    if (is_string($result)) {
+        return ['ok' => false, 'settings' => $current, 'reason' => $result];
+    }
+    if (!is_array($result)) {
+        /* A callback that returns neither is a programming error; refuse
+           rather than write garbage over a person's settings. */
+        return ['ok' => false, 'settings' => $current, 'reason' => 'invalid_mutation'];
+    }
+    if (strlen(userSettingsEncode($result)) > USER_SETTINGS_TOTAL_MAX_BYTES) {
+        return ['ok' => false, 'settings' => $current, 'reason' => 'total_too_large'];
+    }
+    return ['ok' => true, 'settings' => $result, 'reason' => null];
+}
+
+/**
+ * Change one person's settings box under a row lock. THE only writer.
+ *
+ * Returns `['ok'=>true,'settings'=>…]` after a successful commit, or
+ * `['ok'=>false,'reason'=>…]` when the callback refused (nothing stored).
+ * Any database error rolls the transaction back and is re-thrown, so a failed
+ * save is never reported as a success.
+ *
+ * @param callable(array<string,mixed>): (array<string,mixed>|string) $fn
+ * @return array{ok:bool, settings:array<string,mixed>, reason:?string}
+ * @throws \Throwable
+ */
+function userSettingsMutate(\mysqli $db, int $uid, callable $fn): array
+{
+    $db->begin_transaction();
+    try {
+        /* Lock FIRST, read second: the lock is what makes the read trustworthy. */
+        $sel = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ? FOR UPDATE');
+        $sel->bind_param('i', $uid);
+        $sel->execute();
+        $row = $sel->get_result()->fetch_row();
+        $sel->close();
+        $raw = (string)($row[0] ?? '');
+        $current = $raw !== '' ? json_decode($raw, true) : [];
+        if (!is_array($current)) { $current = []; }
+
+        $outcome = userSettingsApplyMutation($current, $fn);
+        if (!$outcome['ok']) {
+            $db->rollback();
+            return $outcome;
+        }
+
+        $json = userSettingsEncode($outcome['settings']);
+        $upd = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
+        $upd->bind_param('si', $json, $uid);
+        $upd->execute();
+        $upd->close();
+        $db->commit();
+        return $outcome;
+    } catch (\Throwable $e) {
+        try { $db->rollback(); } catch (\Throwable $_r) { /* already gone */ }
+        throw $e;
+    }
 }

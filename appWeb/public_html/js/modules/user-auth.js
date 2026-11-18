@@ -20,6 +20,7 @@ import {
     STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT,
 } from '../constants.js';
 import { performAppleSignIn } from './apple-signin.js';
+import { reconcileDataOwner, recordDataOwner, protectOnUnplannedSignOut } from './account-data-owner.js';
 import { apiFetch } from '../utils/api-client.js';
 /* #947/#340 — dormant CAPTCHA widget, wired into the four gated auth forms
    (registration / login / password_reset / email_login) below. No-op unless
@@ -159,6 +160,10 @@ export class UserAuth {
     saveCredentials(token, user) {
         localStorage.setItem(STORAGE_AUTH_TOKEN, token);
         localStorage.setItem(STORAGE_AUTH_USER, JSON.stringify(user));
+        /* A7 (epic #2180): BEFORE anything can merge this device's saved songs
+           into the account that just signed in, make sure they are not
+           somebody else's. Every sign-in route ends here. */
+        this._reconcileDataOwner();
         /* A fresh sign-in must re-run the one-time user-data backfill for the
            new session AND re-gate destructive 'replace' pushes until that new
            merge reconcile has hydrated the cache (a different account's data
@@ -170,11 +175,42 @@ export class UserAuth {
     /**
      * Clear auth credentials from localStorage.
      */
-    clearCredentials() {
+    clearCredentials({ planned = false } = {}) {
+        /* A7 (epic #2180): when the session ended WITHOUT the person choosing
+           to sign out (the server rejected the token, or it expired), put
+           their saved songs aside so the next person on this device never sees
+           them; the same person signing back in gets them restored. A planned
+           sign-out is handled separately (step G5 asks first, then clears). */
+        if (!planned) {
+            try { protectOnUnplannedSignOut(localStorage, this.getUser()?.id); }
+            catch (e) { console.warn('[user-auth] could not set saved data aside:', e); }
+        }
         localStorage.removeItem(STORAGE_AUTH_TOKEN);
         localStorage.removeItem(STORAGE_AUTH_USER);
         this._resetUserDataSyncState();
         this._broadcastAuthChanged();
+    }
+
+    /**
+     * A7 (epic #2180): make sure the saved songs on this device belong to the
+     * account that is signed in now. If they belonged to somebody else they are
+     * set aside (not merged), and this person's own set-aside copy, if any, is
+     * put back. Idempotent and cheap, so it is called wherever a sync could
+     * otherwise start: at sign-in, and at the start of each reconcile.
+     */
+    _reconcileDataOwner() {
+        try {
+            const uid = this.getUser()?.id;
+            const r = reconcileDataOwner(localStorage, uid);
+            if (r.action === 'switched') {
+                /* The cached lists in memory (if any) are re-read from storage on use. */
+                this._dataOwnerSwitched = true;
+            }
+            return r;
+        } catch (e) {
+            console.warn('[user-auth] data-owner check failed:', e);
+            return { action: 'none' };
+        }
     }
 
     /**
@@ -391,7 +427,7 @@ export class UserAuth {
             /* Non-critical — clear local creds regardless */
         }
 
-        this.clearCredentials();
+        this.clearCredentials({ planned: true });
 
         /* #1388 — ask the service worker to drop the per-user caches.
            clearCredentials() only touches localStorage; the Cache Storage
@@ -609,6 +645,40 @@ export class UserAuth {
     }
 
     /**
+     * Is this reply still for the person who is signed in?
+     *
+     * ELI5: a sync takes a moment. If Ben asked and Carol signed in while the
+     * answer was on its way, Ben's answer must not be stored as Carol's data, and
+     * Carol must not be recorded as the owner of it.
+     *
+     * @param {?(string|number)} requesterUid who made the request (captured before it was sent)
+     * @returns {boolean} true when it is safe to use the reply
+     */
+    _replyIsStillForRequester(requesterUid) {
+        if (requesterUid === undefined || requesterUid === null) return true; /* a caller that did not say: old behaviour */
+        const now = this.getUser()?.id;
+        return this.isLoggedIn() && now !== undefined && now !== null && String(now) === String(requesterUid);
+    }
+
+    /**
+     * Note that the server answered a sync as READ-ONLY.
+     *
+     * ELI5: when an admin has paused saving on this site, the server still lets
+     * a new device PULL the person's saved data down, but changes nothing and
+     * sends no "synced up to here" mark. This remembers that it happened, so the
+     * reconcile does not arm its deleting syncs, and does not retry on every
+     * page change.
+     *
+     * @param {object} data decoded server response
+     * @returns {boolean} true when the response was a read-only one
+     */
+    _noteReadOnly(data) {
+        if (data?.readOnly !== true) return false;
+        this._readOnlyThisRun = true;
+        return true;
+    }
+
+    /**
      * Tell the user once per session that their collection exceeds the server
      * cap, so the overflow lives on this device only.
      *
@@ -647,6 +717,9 @@ export class UserAuth {
      */
     _absorbSetlistSync(res) {
         if (!res || !Array.isArray(res.setlists) || !this.app.setList) return false;
+        /* The reply belongs to whoever ASKED. If someone else is signed in now (a fast
+           account switch while the request was in flight), drop it entirely. */
+        if (!this._replyIsStillForRequester(res.uid)) return false;
         /* #1661 — PRUNE BEFORE UNION, and the order is load-bearing. The union
            lets the CURRENT local copy win for a shared id (it may carry an
            in-flight edit), so a set list another device deleted would survive
@@ -677,6 +750,10 @@ export class UserAuth {
         const final = this._unionSetlists(localSide, res.setlists);
         this.app.setList.saveAll(final, { sync: false });
         this._setSyncedAt(STORAGE_SETLISTS_SYNCED_AT, res.syncedAt);
+        /* A7: the device's set lists now mirror the REQUESTER's account (not whoever is
+           signed in now: the check above makes those the same person, and recording
+           the requester keeps it right even if that check is ever loosened). */
+        recordDataOwner(localStorage, res.uid ?? this.getUser()?.id);
 
         /* One toast per absorb (not per row). The refused edit is replaced by
            the newer server copy; the user re-applies it and the next push finds
@@ -708,11 +785,14 @@ export class UserAuth {
      */
     _absorbFavoritesSync(res) {
         if (!res || !Array.isArray(res.favorites) || !this.app.favorites) return false;
+        if (!this._replyIsStillForRequester(res.uid)) return false; /* fast account switch: drop it */
         this.app.favorites.saveAll(
             this._mergeFavorites(this.app.favorites.getAll(), res.favorites),
             { sync: false }
         );
         this._setSyncedAt(STORAGE_FAVORITES_SYNCED_AT, res.syncedAt);
+        /* A7: the device's favourites now mirror the REQUESTER's account. */
+        recordDataOwner(localStorage, res.uid ?? this.getUser()?.id);
         return true;
     }
 
@@ -736,6 +816,9 @@ export class UserAuth {
      */
     async syncSetlists(localSetlists, mode = 'replace') {
         if (!this.isLoggedIn()) return null;
+        /* Who is asking: captured BEFORE the request, handed back on the result so the
+           absorb step can tell if somebody else signed in while it was in flight. */
+        const uid = this.getUser()?.id;
 
         /* Offline → mark a pending sync in the queue. bindOfflineDrains()
            replays with the LATEST local state when connectivity returns,
@@ -853,6 +936,9 @@ export class UserAuth {
                 /* #1675 — per-row overwrite refusals for _absorbSetlistSync() to
                    take the server copy of (and toast). [] when none. */
                 conflicts: Array.isArray(data.conflicts) ? data.conflicts : [],
+                /* A paused site answered as a read-only pull (see _noteReadOnly). */
+                readOnly: this._noteReadOnly(data),
+                uid,
             };
         } catch (err) {
             /* Network error mid-fetch — queue a sync marker so it runs
@@ -884,6 +970,7 @@ export class UserAuth {
      */
     async syncFavorites(localFavorites, mode = 'replace') {
         if (!this.isLoggedIn()) return null;
+        const uid = this.getUser()?.id; /* who is asking; see syncSetlists() */
 
         if (!navigator.onLine) {
             try { await offlineQueue.enqueue('favorites-sync', { ts: Date.now() }); } catch (_e) {}
@@ -922,6 +1009,8 @@ export class UserAuth {
                 favorites: data.favorites,
                 syncedAt: typeof data.syncedAt === 'string' ? data.syncedAt : null,
                 truncated: data.truncated === true,
+                readOnly: this._noteReadOnly(data),
+                uid,
             };
         } catch (err) {
             if (err instanceof TypeError) {
@@ -965,6 +1054,7 @@ export class UserAuth {
             }
 
             const data = await res.json();
+            this._noteReadOnly(data);
             return Array.isArray(data.tags) ? data.tags : null;
         } catch (err) {
             if (err instanceof TypeError) {
@@ -1028,7 +1118,9 @@ export class UserAuth {
             /* MERGE, not replace: custom tags are add-only today (no removal
                UI), so union is correct and needs no _syncReady gate — it can
                never wipe another device's tags (review #4). */
+            const uid = this.getUser()?.id; /* who is asking; the reply is dropped if that changes */
             const merged = await this.syncCustomTags(this.app.favorites.getCustomTags(), 'merge');
+            if (!this._replyIsStillForRequester(uid)) return false;
             if (merged && Array.isArray(merged)) {
                 this.app.favorites.saveCustomTags(merged);
                 return true;
@@ -2375,6 +2467,7 @@ export class UserAuth {
      */
     async triggerSetlistSync(silent = false) {
         if (!this.app.setList) return false;
+        this._reconcileDataOwner();
 
         const uid = this.getUser()?.id;
         const res = await this.syncSetlists(this.app.setList.getAll(), 'merge');
@@ -2389,6 +2482,10 @@ export class UserAuth {
            so no caller can advance the watermark without keeping the data. */
         if (!this._absorbSetlistSync(res)) return false;
         const final = this.app.setList.getAll();
+        /* A paused site answered with a read-only pull: the account's lists are now
+           on this device, but nothing may be pushed back, so the deleting auto-sync
+           stays unarmed (it would only be refused with a 409). */
+        if (res.readOnly) return true;
         this.app.setList._syncReady = true;
         /* Only announce when the user did something deliberate (login, the
            "Sync Now" button, a settings action). The automatic per-boot
@@ -2422,6 +2519,7 @@ export class UserAuth {
      */
     async triggerFavoritesSync() {
         if (!this.app.favorites) return false;
+        this._reconcileDataOwner();
 
         const uid = this.getUser()?.id;
         const payload = (this.app.favorites.getAll() || []).map(f => ({ id: f.id, tags: f.tags || [] }));
@@ -2431,6 +2529,7 @@ export class UserAuth {
 
         /* Merge + watermark advance, in that order (#1649). */
         if (!this._absorbFavoritesSync(res)) return false;
+        if (res.readOnly) return true; /* paused site: pulled only, do not arm the deleting sync */
         this.app.favorites._syncReady = true;
         return true;
     }
@@ -2441,9 +2540,12 @@ export class UserAuth {
      */
     async triggerCustomTagsSync() {
         if (!this.app.favorites?.getCustomTags) return false;
+        this._reconcileDataOwner();
 
+        const uid = this.getUser()?.id; /* who is asking; the reply is dropped if that changes */
         const local = this.app.favorites.getCustomTags();
         const merged = await this.syncCustomTags(local, 'merge');
+        if (!this._replyIsStillForRequester(uid)) return false;
 
         if (merged && Array.isArray(merged)) {
             this.app.favorites.saveCustomTags(merged);
@@ -2471,7 +2573,15 @@ export class UserAuth {
     async triggerUserDataSync() {
         if (this._userDataSynced || this._userDataSyncing) return;
         if (!this.isLoggedIn()) return;
+        /* A paused site only ever answers with a read-only pull. Having just done
+           one, wait a few minutes before the next, instead of re-asking on every
+           page change. */
+        if (this._userDataReadOnlyAt && Date.now() - this._userDataReadOnlyAt < 5 * 60 * 1000) return;
+        /* A7: before anything merges, make sure these saved songs are this
+           person's (see _reconcileDataOwner). */
+        this._reconcileDataOwner();
         this._userDataSyncing = true;
+        this._readOnlyThisRun = false;
 
         let allOk = false;
         try {
@@ -2495,6 +2605,16 @@ export class UserAuth {
            the rest. */
         this.app.setList?._scheduleSync?.();
         this.app.favorites?._scheduleSync?.();
+
+        /* Read-only pull on a paused site: the data was pulled, but we are NOT fully
+           reconciled (nothing is armed), so do not latch. Remember when, so the next
+           attempt waits a few minutes. When saving is switched back on the next
+           attempt does the full, arming reconcile. */
+        if (allOk && this._readOnlyThisRun) {
+            this._userDataReadOnlyAt = Date.now();
+            return;
+        }
+        this._userDataReadOnlyAt = 0;
 
         /* Latch only on full success so failures retry next navigation. */
         if (allOk) {

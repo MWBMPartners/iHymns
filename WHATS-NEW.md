@@ -12,6 +12,30 @@ with none of the behind-the-scenes technical detail.
 
 ## 1.4.0 — 28 September 2026
 
+- **Shared computers keep your songs private** — If someone else signs in on
+  the same computer after you, your saved songs, set lists and history are no
+  longer mixed into their account. They are put safely aside and come back if
+  you sign in again.
+
+- **Your language choice survives signing in** — If you picked a language
+  before you had an account, signing in for the first time no longer throws
+  that choice away.
+
+- **Settings changes stick** — Changing a setting and then moving to another
+  page, or changing two settings at nearly the same moment, no longer undoes
+  one of them.
+
+- **Searches are no longer linked to you** — When you search, iHymns no longer
+  keeps a note of who searched. Clearing your history now also takes your name
+  off your past views without changing how popular songs look.
+
+- **Signing out of a browser no longer silences your phone** — Signing out of
+  a web browser, or removing it from your list of devices, no longer stops
+  notifications arriving on your iPhone.
+
+- **Set lists made on the web stay put** — A set list you make on the web is no
+  longer lost when an older version of the iPhone app syncs.
+
 - **Language choices that respect writing systems** — If you choose a
   language in one particular script, such as Chinese in Simplified
   characters or Serbian in Latin letters, the song lists no longer show you

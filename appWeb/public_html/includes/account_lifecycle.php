@@ -109,6 +109,7 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'sql_identifier.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'user_status.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'privacy_legacy_blank.php'; /* privacyLegacyBlankUserAuditRows(): the ONE list of what to blank in the audit log (rule #22) */
 /* The re-freeze step reuses the share module's live-link column gate and its
    song-id allow-list rather than re-deriving either — two copies of "is this id
    safe to render into an attribute" is precisely the drift the modularity rule
@@ -477,7 +478,7 @@ function accountEraseRefreezeShares(\mysqli $db, int $userId): int
  *
  * @param \mysqli $db     Live connection, inside an open transaction.
  * @param int     $userId The account to erase.
- * @return array{tokensRevoked:int,sharesRefrozen:int,deleted:array<string,int>,nulled:array<string,int>,kept:int}
+ * @return array{tokensRevoked:int,sharesRefrozen:int,deleted:array<string,int>,nulled:array<string,int>,kept:int,auditBlanked:int}
  * @throws AccountEraseException when the migration has not run, or the live FK
  *         graph contains a rule this design has no policy for.
  */
@@ -604,6 +605,14 @@ function accountErase(\mysqli $db, int $userId): array
         }
     }
 
+    /* --- 5b. The audit log. ------------------------------------------------
+     * tblActivityLog.UserId is a 'keep' column (the rows stay, pointing at the
+     * tombstone), but each row also holds the person's address, browser, country
+     * and sometimes their username / email. Blank those for THIS account now,
+     * with the same list the one-off migration uses, so that migration never
+     * needs re-running for accounts erased from here on. */
+    $auditBlanked = privacyLegacyBlankUserAuditRows($db, $userId);
+
     /* --- 6. The tombstone. ------------------------------------------------
      * Every identifying column blanked in ONE statement, so there is no window
      * in which the row is half-anonymous. `Role` drops to 'user' because a
@@ -662,5 +671,6 @@ function accountErase(\mysqli $db, int $userId): array
         'deleted'        => $deleted,
         'nulled'         => $nulled,
         'kept'           => $kept,
+        'auditBlanked'   => $auditBlanked,
     ];
 }

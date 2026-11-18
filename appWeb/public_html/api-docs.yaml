@@ -3260,6 +3260,8 @@ paths:
                     response's `editAudience` reports the value actually stored (which
                     may differ from the request if it was clamped).
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Setlist created or updated
           content:
@@ -3411,6 +3413,14 @@ paths:
       tags: [Setlists]
       summary: Sync setlists with server
       description: |
+        **Paused site (account-writes switch off): a plain `merge` still works,
+        read-only.** The server returns what the account holds and changes
+        nothing (no inserts, no deletes, no clean-up). The response carries
+        `readOnly: true` and `syncedAt: null`: do NOT record a "synced up to
+        here" mark from it, and do not start sending deleting `replace` syncs
+        on the strength of it. Every other request (`replace`, or any mode other
+        than `merge`) still gets the 409 `account_writes_off_here`.
+
         Reconcile local setlists with server-side storage.
 
         **There are two protocols, and the server picks between them by the
@@ -3433,7 +3443,14 @@ paths:
         is exactly as before (WS-F #1018, guarded by #1649):
           * `replace` — the client's full current list is authoritative;
             server setlists absent from the payload are DELETED, subject to
-            the `since` watermark guard.
+            the `since` watermark guard. **A `replace` with no `since` (and no
+            `deleted`) deletes NOTHING** (account/profile rewrite A8): a device
+            that cannot say what it has seen tells us nothing about deletions.
+            A setlist deleted on such a device therefore comes back on the next
+            sync until the client sends `since` or moves to protocol 2. The
+            behaviour is on by default; the owner can switch it off with the
+            `sync_absence_delete_requires_since` app setting (`'0'`). The same
+            rule applies to `favorites_sync` and `custom_tags_sync` `replace`.
           * `merge` (default) — union; server-only setlists are preserved.
 
         `mode` governs only the absence inference. An explicit `deleted` list
@@ -3523,6 +3540,8 @@ paths:
                         items:
                           $ref: "#/components/schemas/SetlistSongEntry"
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Merged setlists
           content:
@@ -3812,6 +3831,14 @@ paths:
       tags: [Favorites]
       summary: Sync favorites
       description: |
+        **Paused site (account-writes switch off): a plain `merge` still works,
+        read-only.** The server returns what the account holds and changes
+        nothing (no inserts, no deletes, no clean-up). The response carries
+        `readOnly: true` and `syncedAt: null`: do NOT record a "synced up to
+        here" mark from it, and do not start sending deleting `replace` syncs
+        on the strength of it. Every other request (`replace`, or any mode other
+        than `merge`) still gets the 409 `account_writes_off_here`.
+
         Reconcile local favorites with server-side storage (WS-G #1019).
         Behaviour depends on `mode`:
           * `replace` (default for per-edit auto-sync) — the client's list is
@@ -3857,6 +3884,8 @@ paths:
                       - $ref: "#/components/schemas/FavoriteEntry"
                   example: [{ "id": "CP-0202", "tags": ["Easter"] }, "MP-0042"]
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Stored favorites as {id, tags} objects
           content:
@@ -3910,6 +3939,8 @@ paths:
                   pattern: "^[A-Za-z]+-\\d+$"
                   example: CP-0202
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Favorite removed
           content:
@@ -3976,6 +4007,14 @@ paths:
       tags: [Favorites]
       summary: Sync the user's custom tag pool
       description: |
+        **Paused site (account-writes switch off): a plain `merge` still works,
+        read-only.** The server returns what the account holds and changes
+        nothing (no inserts, no deletes, no clean-up). The response carries
+        `readOnly: true` and `syncedAt: null`: do NOT record a "synced up to
+        here" mark from it, and do not start sending deleting `replace` syncs
+        on the strength of it. Every other request (`replace`, or any mode other
+        than `merge`) still gets the 409 `account_writes_off_here`.
+
         Reconcile the local custom-tag pool with the server (WS-G #1019).
         `mode=replace` (default for edits) deletes tags absent from the
         payload; `mode=merge` (first-login backfill) only adds. Max 200 tags.
@@ -4006,6 +4045,8 @@ paths:
                   items: { type: string, maxLength: 50 }
                   example: ["Easter", "Quiet Time"]
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Stored tag list
           content:
@@ -4177,6 +4218,7 @@ paths:
             `tblUserSongMarkup` has not been migrated on this server yet.
             Distinct from `422` (rule #35) so a client branches on STATUS,
             never on this file's error prose.
+            Also returned (reason account_writes_off_here) when saving to accounts is paused on this site.
           content:
             application/json:
               schema:
@@ -4241,7 +4283,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: "`tblUserSongMarkup` has not been migrated on this server yet."
+          description: "`tblUserSongMarkup` has not been migrated on this server yet. Also returned (reason account_writes_off_here) when saving to accounts is paused on this site."
           content:
             application/json:
               schema:
@@ -4771,7 +4813,11 @@ paths:
       operationId: logout
       tags: [Authentication]
       summary: Log out
-      description: Invalidate the current bearer token.
+      description: |
+        Invalidate the current bearer token. Also clears the caller's APNs push
+        tokens, but only when this session declared `platform: apple` (account/
+        profile rewrite A6); signing out a browser leaves the person's iPhone
+        notification registrations alone.
       security:
         - bearerAuth: []
       parameters:
@@ -4895,6 +4941,8 @@ paths:
                   nullable: true
                   description: Resolver name (gravatar / libravatar / dicebear / none), or null to inherit the project default.
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Preference saved
           content:
@@ -4949,6 +4997,8 @@ paths:
                   maxLength: 255
                   example: john@example.com
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Profile updated
           content:
@@ -5008,6 +5058,8 @@ paths:
                   format: password
                   minLength: 8
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Password changed
           content:
@@ -5668,9 +5720,14 @@ paths:
         never touch another user's token, regardless of what `id` is
         supplied. Requires authentication plus the same-origin CSRF check
         (`validateCsrfRequest()`, rule #29). Rate-limited to 30 / hour per
-        user. Best-effort also clears any APNs push tokens for the caller
+        user. Best-effort also clears the caller's APNs push tokens
         (#1429 F3b — "push tokens deleted on sign-out"), wrapped so that
         cleanup failure never turns a successful sign-out into a 500.
+        Account/profile rewrite A6: the APNs tokens are cleared ONLY when the
+        session being removed declared `platform: apple`. Removing a browser
+        (or any session of another or unknown platform) leaves the person's
+        iPhone notification registrations alone. The same rule applies to
+        `auth_logout`.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -7532,7 +7589,10 @@ paths:
       description: |
         Fire-and-forget analytics ping. Writes one row to `tblSongHistory`
         so the dashboard's view counts + `popular_songs` can aggregate.
-        Never blocks the response.
+        Never blocks the response. Account/profile rewrite C2: when an admin has
+        paused saving to accounts on this site, the view is still counted but
+        WITHOUT the signed-in person (as an anonymous view), and the answer is
+        still 200 (this action never returns the `account_writes_off_here` 409).
       parameters:
         - name: action
           in: query
@@ -7600,6 +7660,102 @@ paths:
   # filter applies to anonymous requests too).
   # ===========================================================================
 
+  /api.php?action=profile_schema:
+    get:
+      operationId: getProfileSchema
+      tags: [Preferences]
+      summary: The list of every personal setting and its rules (account/profile rewrite C5)
+      description: |
+        The ONE written-down list of what iHymns remembers about a person and
+        the rules for each item: its platform-neutral id (`appearance.theme`),
+        type and allowed values, default, whether it stays on the device or
+        follows the account, which kinds of app use it, whether an anonymous
+        visitor's value is claimed at first sign-in, whether it is cleared at
+        sign-out, whether it travels in the shared cross-site cookie, and the
+        old web storage key it came from.
+
+        **Public** (no sign-in: it describes rules and holds nobody's data) and
+        **cacheable**: `Cache-Control: public, max-age=300, must-revalidate`
+        plus an `ETag`. Send the tag back as `If-None-Match` and an unchanged
+        list is answered `304` with no body. The server's own fields (how it
+        stores the item, whether it is exported, what erasure does) are never
+        included.
+
+        Native apps bundle a snapshot of this answer for their first offline
+        launch and refresh it from here later. The list only ever grows:
+        entries are added, never removed or renamed (a rename is a new entry
+        plus a row in `aliases`). A client must ignore entries and fields it
+        does not know, and must never write back a value it could only show as
+        a fallback.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [profile_schema] }
+        - name: If-None-Match
+          in: header
+          required: false
+          description: The `ETag` of the copy the client already holds.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The list
+          headers:
+            ETag:
+              description: A tag for this exact answer. Send it back as `If-None-Match`.
+              schema: { type: string }
+            Cache-Control:
+              description: "`public, max-age=300, must-revalidate`"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  schemaVersion:
+                    type: integer
+                    description: Goes up when entries are ADDED. Compare it with the snapshot bundled in the app.
+                    example: 1
+                  aliases:
+                    type: object
+                    additionalProperties: { type: string }
+                    description: Old id to new id, for renamed entries. Empty today.
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, section, key, type, default, scope, platforms, sync, cap, claim, clearAtSignOut, cookie, legacyWebKey, since]
+                      properties:
+                        id:        { type: string, example: appearance.theme, description: "Always `section.key`." }
+                        section:   { type: string, example: appearance }
+                        key:       { type: string, example: theme }
+                        type:      { type: string, enum: [bool, int, float, enum, string, json, list] }
+                        default:   { description: The value when nothing was chosen. Null means none. }
+                        scope:     { type: string, enum: [device, account, shared], description: "`device` never leaves the device; `account` follows the signed-in person; `shared` is visible to others (for example through shares)." }
+                        platforms: { type: array, items: { type: string }, description: "Any of `web`, `apple`, `android`, `tv`, or just `all`." }
+                        sync:      { type: string, enum: [profile_sync, content_sync, none], description: "How it travels: small items through `profile_sync`; favourites and set lists through their own content sync; `none` for device entries." }
+                        cap:       { type: integer, nullable: true, description: Largest number of items, if any. }
+                        claim:     { type: boolean, description: An anonymous visitor's local value is claimed by the account at first sign-in. }
+                        clearAtSignOut: { type: boolean, description: The browser clears it when the person signs out (saved content only). }
+                        cookie:    { type: boolean, description: Travels in the shared cross-site settings cookie (web only). }
+                        legacyWebKey: { type: string, nullable: true, description: The old web storage key, for the one-time import. }
+                        since:     { type: integer, description: The schema version the entry first appeared in. }
+                        allowed:   { type: array, items: { type: string }, description: "For `enum`: the allowed values." }
+                        min:       { type: number, description: "For `int` and `float`." }
+                        max:       { type: number }
+                        step:      { type: integer, description: "For `int`: only values `from + n * step` are allowed." }
+                        from:      { type: integer }
+                        pattern:   { type: string, description: "For `string`: a regular expression written without delimiters, matched against the whole value." }
+                        maxLength: { type: integer }
+                        shape:     { type: object, description: "For `json`: allowed keys, each with its own spec. An empty shape means any object." }
+                        item:      { type: object, description: "For `list`: the spec each item must meet." }
+                        maxItems:  { type: integer, nullable: true }
+        "304":
+          description: The client's copy (`If-None-Match`) is current. No body.
+        "405":
+          description: Not a GET (or HEAD) request
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   /api.php?action=user_preferred_languages:
     get:
       operationId: getUserPreferredLanguages
@@ -7644,6 +7800,17 @@ paths:
                     description: Added in #2137. Whole tags in the user's priority order.
                     items: { type: string }
                     example: ["pt-BR", "en"]
+                  isSet:
+                    type: boolean
+                    description: |
+                      Added in the account/profile rewrite (A3). True when the
+                      account has a saved language list; false when none was
+                      ever saved. Saving an empty list ("all languages") is
+                      stored as nothing, so it also reads false. A client that
+                      has its own choice and is told `false` should send its
+                      choice up with the save action rather than adopt the
+                      empty `languages`. Older servers omit the field, which a
+                      client should treat as "unknown, adopt as before".
                   migration_needed:
                     type: boolean
                     description: Present and true on pre-#736 deployments only.
@@ -7697,6 +7864,8 @@ paths:
                   items: { type: string }
                   example: ["en", "es"]
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Saved (canonical normalised list returned)
           content:
@@ -7762,6 +7931,8 @@ paths:
                   description: Optional free-text notes
                   example: "Sunday 10am — Communion service"
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Scheduled
           content:
@@ -7796,6 +7967,8 @@ paths:
               properties:
                 setlistId: { type: string, example: slist-abc123 }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Cleared (no-op if nothing was scheduled)
           content:
@@ -7934,6 +8107,8 @@ paths:
                   enum: [view, edit]
                   default: edit
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Invitation accepted / permission updated
           content:
@@ -8030,7 +8205,7 @@ paths:
                   error:  { type: string, example: "Sign in to edit this set list." }
                   reason: { type: string, enum: [signin_required], example: signin_required }
         "403": { description: View-only link, cross-origin, or owner locked }
-        "409": { description: Edit links not migrated on this server }
+        "409": { description: "Edit links not migrated on this server. Also returned (reason account_writes_off_here) when saving to accounts is paused on this site." }
         "410": { description: Link revoked or expired }
         "413":
           description: >
@@ -8123,7 +8298,7 @@ paths:
                   revoked: { type: boolean }
         "403": { description: Caller does not own this link }
         "404": { description: No such link }
-        "409": { description: Edit links not migrated on this server }
+        "409": { description: "Edit links not migrated on this server. Also returned (reason account_writes_off_here) when saving to accounts is paused on this site." }
         "401":
           description: >-
             Not signed in.
@@ -8203,6 +8378,8 @@ paths:
                 setlistId:      { type: string }
                 collaboratorId: { type: integer }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Removed (reports how many rows were deleted)
           content:
@@ -8384,6 +8561,8 @@ paths:
                         type: array
                         items: { type: integer, minimum: 0 }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Saved; echoes the sanitised song list actually stored
           content:
@@ -9674,6 +9853,8 @@ paths:
                       song_id:   { type: string, pattern: "^[A-Za-z0-9_-]{1,32}$" }
                       viewed_at: { type: string, format: date-time }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Imported count
           content:
@@ -9696,10 +9877,13 @@ paths:
       tags: [Song Metadata]
       summary: Clear the caller's recently-viewed history (WS-G #1019)
       description: |
-        Deletes the authenticated user's own `tblSongHistory` rows so a
-        "Clear" propagates across devices instead of repopulating from the
-        server on the next pull. Anonymous (UserId NULL) rows — which drive
-        aggregate popularity — are untouched.
+        Removes the authenticated user's name from their own `tblSongHistory`
+        rows (sets `UserId` to NULL) so a "Clear" propagates across devices
+        instead of repopulating from the server on the next pull. The rows
+        themselves are kept, as anonymous views, so song popularity and
+        organisation licence report counts do not drop when someone clears
+        their history (account/profile rewrite A5). `cleared` is the number of
+        the person's rows that were unlinked.
       security:
         - bearerAuth: []
       parameters:
@@ -9708,6 +9892,8 @@ paths:
           required: true
           schema: { type: string, enum: [song_history_clear] }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Cleared count
           content:
@@ -19300,9 +19486,19 @@ paths:
         a client reading its own settings before it has ever written any
         is the normal first-run case.
 
-        This is the **only** user-preference store. `user_preferences` /
-        `user_preferences_sync` were an un-namespaced duplicate of it and
-        were removed in #1671 F5; both now return `400 Unknown action`.
+        This is the shared per-account **settings box** that several
+        features write into (display settings, list sorts, push choices,
+        card layouts, iLyricsDB). It is NOT the only place an account keeps
+        preferences: the preferred-language list lives in its own column
+        (`user_preferred_languages`), and card layouts are stored under the
+        `cardLayouts` key, which cannot be read back by `namespace` because
+        its capital letter fails the namespace name rule (use the
+        `card_layout_*` actions). `user_preferences` / `user_preferences_sync`
+        were an un-namespaced duplicate of this store and were removed in
+        #1671 F5; both now return `400 Unknown action`. Every write to the box
+        goes through one locked writer, so two saves made at the same moment
+        take turns rather than overwriting each other (account/profile
+        rewrite A1).
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -19365,7 +19561,13 @@ paths:
 
         ⚠ A namespace-less POST still replaces the WHOLE blob, so it clears
         every namespace. Isolation between products holds once all writers
-        name a namespace.
+        name a namespace. Account/profile rewrite A9: the owner can switch
+        whole-blob saves OFF by setting the `user_settings_legacy_blob_writes`
+        app setting to `'0'` (default `'1'`, nothing changes). While off, a
+        namespace-less POST is refused with **409** and
+        `{ "reason": "namespace_required" }` and nothing is stored. A client
+        should branch on the 409 status and the `reason` code, never on the
+        error sentence.
 
         Known iHymns-owned namespaces (not an exhaustive/enforced list — any
         name matching the grammar is accepted): `ihymns.push` (notification
@@ -19428,6 +19630,13 @@ paths:
         "401":
           description: Not authenticated
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: |
+            Whole-blob saves are switched off (`user_settings_legacy_blob_writes`
+            is `'0'`) and the request named no namespace. Body carries
+            `reason: namespace_required`. Resend with a `namespace`.
+            Also returned (reason account_writes_off_here) when saving to accounts is paused on this site.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "403":
           description: |
             NAMESPACED write only — validateCsrfRequest() rejected the
@@ -19476,6 +19685,8 @@ paths:
                   format: password
                   description: Caller's current password (re-auth).
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Username changed
           content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
@@ -19576,7 +19787,7 @@ paths:
           description: Cross-origin request rejected (CSRF gate)
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "409":
-          description: Caller is the last active global_admin — transfer first
+          description: "Caller is the last active global_admin — transfer first. Also returned (reason account_writes_off_here) when saving to accounts is paused on this site."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
           description: Too many re-auth attempts from this IP
@@ -19661,6 +19872,8 @@ paths:
                 order:   { type: array, items: { type: string } }
                 hidden:  { type: array, items: { type: string } }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Saved
           content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
@@ -19691,6 +19904,8 @@ paths:
               properties:
                 surface: { type: string }
       responses:
+        "409":
+          $ref: "#/components/responses/AccountWritesOff"
         "200":
           description: Override cleared
           content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
@@ -25086,6 +25301,23 @@ components:
         `X-API-Key: ihdrv_live_…`.
 
   responses:
+    AccountWritesOff:
+      description: |
+        Saving to accounts is paused on this site (account/profile rewrite C2).
+        An admin can pause it per site (live, beta or dev) as an emergency brake,
+        because all three sites share one set of accounts. The response is
+        **409** with `reason: account_writes_off_here`. NOTHING was changed.
+        Reading data, signing in and signing out still work. A client should
+        branch on the 409 status and the `reason` code (never the sentence), keep
+        the change on the device, and try again later. Not sent by any action
+        that only reads, nor by sign-in, sign-out or registration.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:  { type: string }
+              reason: { type: string, enum: [account_writes_off_here], example: account_writes_off_here }
     RateLimited:
       description: |
         Too Many Requests — the per-window read rate limit was exceeded

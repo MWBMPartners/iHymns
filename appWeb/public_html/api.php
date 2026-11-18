@@ -263,6 +263,8 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    tblUserPreferences was deleted in the same change — two stores for one
    concept is a data-integrity trap, not a dormant feature. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_settings.php';
+/* C2 (epic #2180): the per-channel brake every personal-data write checks first. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'account_write_gate.php';
 /* Per-user song markup / notes (#1266 Phase 1) — vocab + pure validators +
    read/write layer for a signed-in user's PRIVATE notes/highlights on a song
    or lyric line. DORMANT: the three user_markup_* actions below are the only
@@ -1155,14 +1157,19 @@ if ($action !== null) {
             if ($offset === 0) {
                 try {
                     $logDb = getDbMysqli();
-                    $uid   = null;
-                    $logAuth = getAuthenticatedUser();
-                    if ($logAuth) $uid = (int)$logAuth['Id'];
+                    /* A4 (epic #2180): the search text is recorded WITHOUT who
+                       typed it. This used to store the signed-in person's id
+                       next to every search, but nothing in the whole codebase
+                       ever read that id, and the privacy page tells people
+                       their recent searches stay on their own device. So the
+                       UserId column is simply not written any more (it stays
+                       NULL). Old rows are blanked later by the manual step B2.
+                       tests/php/test-privacy-minimisation.php guards this. */
                     $logStmt = $logDb->prepare(
-                        'INSERT INTO tblSearchQueries (Query, ResultCount, UserId) VALUES (?, ?, ?)'
+                        'INSERT INTO tblSearchQueries (Query, ResultCount) VALUES (?, ?)'
                     );
                     $resultCount = count($results);
-                    $logStmt->bind_param('sii', $query, $resultCount, $uid);
+                    $logStmt->bind_param('si', $query, $resultCount);
                     $logStmt->execute();
                     $logStmt->close();
                 } catch (\Throwable $_e) {
@@ -2161,6 +2168,39 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * profile_schema (account/profile rewrite C5, epic #2180) - the list of
+         * every personal setting and its rules, for any client to download.
+         *
+         * GET only, PUBLIC (no sign-in: it describes rules, holds nobody's data),
+         * cacheable (`public, max-age=300`) with an ETag so a client that already
+         * has the current list is answered 304 with no body. The three
+         * server-only fields (storage, export, erase) never leave the server
+         * (profileRegistryPublic()). Apps bundle a snapshot for their first
+         * offline launch and refresh from here later (tests keep the snapshot
+         * equal to this answer, step C6).
+         * ----------------------------------------------------------------- */
+        case 'profile_schema':
+            if ($_SERVER['REQUEST_METHOD'] !== 'GET' && $_SERVER['REQUEST_METHOD'] !== 'HEAD') {
+                sendJson(['error' => 'GET method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_registry.php';
+            $psData = profileRegistryPublic();
+            /* An empty alias map must travel as `{}` (a map), not `[]` (a list). */
+            if ($psData['aliases'] === []) { $psData['aliases'] = new \stdClass(); }
+            /* The ETag covers the answer AND the response shape version (a v2 client
+               gets an envelope), so two shapes never share a tag. */
+            $psEtag = profileRegistryEtag($psData, apiContractVersion());
+            header('ETag: ' . $psEtag);
+            header('Cache-Control: public, max-age=300, must-revalidate');
+            if (trim((string)($_SERVER['HTTP_IF_NONE_MATCH'] ?? '')) === $psEtag) {
+                http_response_code(304);
+                exit;
+            }
+            sendJson($psData, 200, 'public, max-age=300, must-revalidate');
+            break;
+
+        /* -----------------------------------------------------------------
          * Get collection statistics
          * ----------------------------------------------------------------- */
         case 'stats':
@@ -2689,6 +2729,10 @@ if ($action !== null) {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             /* Parse JSON request body */
             $rawBody = file_get_contents('php://input');
@@ -3480,21 +3524,14 @@ if ($action !== null) {
                 break;
             }
 
-            /* Generate API token (64-character hex string, 30-day expiry) */
-            $token = bin2hex(random_bytes(32));
-            $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
-            $tokenHash = hash('sha256', $token);
-            $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-            $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
-            $stmt->execute();
-            $stmt->close();
-
-            /* #1975 — device metadata (+ the web auto-name UA fallback inside
-               apiTokenDeviceMetaStore) so a brand-new registration is never
-               listed as "Unnamed device". Best-effort, never blocks sign-up. */
+            /* Generate API token (64-character hex string, 30-day expiry) through the
+               ONE token maker (C3, epic #2180). #1975 — device metadata (+ the web
+               auto-name UA fallback inside apiTokenDeviceMetaStore) so a brand-new
+               registration is never listed as "Unnamed device". Best-effort, never
+               blocks sign-up. */
             $regDeviceMeta = apiTokenDeviceMetaFromBody($body);
-            apiTokenDeviceMetaStore($db, $tokenHash, $regDeviceMeta['deviceName'], $regDeviceMeta['platform'], $regDeviceMeta['appVersion']);
+            $token = apiTokenMint($db, (int)$userId, $regDeviceMeta, 'password', $expiresAtTs);
+            $tokenHash = hash('sha256', $token);
 
             /* Cross-subdomain cookie — keeps sign-in state on every
                *.ihymns.app subdomain and survives iOS ITP longer than
@@ -3800,24 +3837,16 @@ if ($action !== null) {
             $stmt->execute();
             $stmt->close();
 
-            /* Generate API token */
-            $token = bin2hex(random_bytes(32));
-            $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
-            $tokenHash = hash('sha256', $token);
-            $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-            $stmt->bind_param('sis', $tokenHash, $userIdInt, $expiresAt);
-            $stmt->execute();
-            $stmt->close();
-
-            /* #1409 — OPTIONAL device metadata (deviceName/platform/
+            /* Generate API token through the ONE token maker (C3, epic #2180).
+               #1409 — OPTIONAL device metadata (deviceName/platform/
                appVersion). Every field is genuinely optional: a client that
                omits them (every existing caller today) signs in
                byte-identically to before this change. Best-effort, never
                blocks sign-in on a write failure (see
                apiTokenDeviceMetaStore()'s docblock). */
             $deviceMeta = apiTokenDeviceMetaFromBody($body);
-            apiTokenDeviceMetaStore($db, $tokenHash, $deviceMeta['deviceName'], $deviceMeta['platform'], $deviceMeta['appVersion']);
+            $token = apiTokenMint($db, $userIdInt, $deviceMeta, 'password', $expiresAtTs);
+            $tokenHash = hash('sha256', $token);
 
             /* Cross-subdomain cookie (#390) */
             setAuthTokenCookie($token, $expiresAtTs);
@@ -3863,8 +3892,14 @@ if ($action !== null) {
             $authedUser = $token ? getAuthenticatedUser() : null;
             if ($token) {
                 $db = getDbMysqli();
-                $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE Token = ?');
                 $tokenHash = hash('sha256', $token);
+                /* A6 (epic #2180): read this session's platform BEFORE deleting
+                   its row. Apple push registrations are removed below only when
+                   this session is an Apple one. */
+                $signedOutPlatform = $authedUser
+                    ? apiTokenSessionPlatform($db, (int)$authedUser['Id'], $tokenHash, false)
+                    : null;
+                $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE Token = ?');
                 $stmt->bind_param('s', $tokenHash);
                 $stmt->execute();
                 $stmt->close();
@@ -3876,7 +3911,11 @@ if ($action !== null) {
                    itself must NEVER 500 because of this best-effort
                    cleanup (mirrors live_activity_push.php's own "never let
                    a push-bridge failure surface" posture). */
-                if ($authedUser) {
+                /* A6: signing out of a WEB browser must not remove the person's
+                   iPhone notification registrations (it used to delete every
+                   Apple device's row). Step G4 later ties each registration to
+                   its own session. */
+                if ($authedUser && apiTokenSessionOwnsApplePush($signedOutPlatform)) {
                     try {
                         require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
                         if (apnsTokensTableExists($db)) {
@@ -4077,6 +4116,13 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made - EXCEPT a plain "merge", which runs READ-ONLY ($readOnly)
+               so a person on a new device still sees their account data. Reads,
+               sign-in and sign-out are never gated. */
+            $readOnly = false;
+            if (accountWritesRefuseUnlessMergeRead($readOnly)) { break; }
 
             $rawBody = file_get_contents('php://input');
 
@@ -4191,6 +4237,55 @@ if ($action !== null) {
 
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
+
+            /* READ-ONLY merge on a paused site: hand back what the account holds and
+               change NOTHING - no expiry clean-up, no deletes, no inserts. No `syncedAt`
+               (so the device does not record "I have seen everything up to now" and
+               arm its own deleting syncs) and no conflicts (nothing was written).
+               Expired lists are left out of the answer, using the same UTC clock and
+               rule the normal path uses to expire them. */
+            if ($readOnly) {
+                $roExpiry = userSyncExpiryReady($db);
+                $roSlots  = setlistSlotsColumnReady($db);
+                $stmt = $db->prepare(
+                    'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt'
+                    . ($roExpiry ? ', ExpiresAt' : '') . ($roSlots ? ', SlotsJson' : '')
+                    . ' FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC'
+                );
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $roRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+                $roExpired = $roExpiry
+                    ? userSyncExpiredIds(
+                        array_map(static fn(array $r): array => ['id' => $r['SetlistId'], 'expiresAt' => $r['ExpiresAt'] ?? null], $roRows),
+                        userSyncUtcNow($db)
+                    )
+                    : [];
+                $roSetlists = [];
+                foreach ($roRows as $row) {
+                    if (in_array(userSyncSanitiseId($row['SetlistId']), $roExpired, true)) { continue; }
+                    $roSetlists[] = [
+                        'id'        => $row['SetlistId'],
+                        'name'      => $row['Name'],
+                        'songs'     => json_decode($row['SongsJson'], true) ?: [],
+                        'createdAt' => $row['CreatedAt'],
+                        'updatedAt' => $row['UpdatedAt'],
+                        'expiresAt' => $row['ExpiresAt'] ?? null,
+                        'plan'      => setlistTemplateDecodePlan($row['SlotsJson'] ?? null),
+                    ];
+                }
+                sendJson([
+                    'setlists'   => $roSetlists,
+                    'syncedAt'   => null,
+                    'truncated'  => false,
+                    'cap'        => null,
+                    'tombstones' => userSyncTombstoneList($db, $userId, $since),
+                    'conflicts'  => [],
+                    'readOnly'   => true,
+                ]);
+                break;
+            }
 
             /* #1661 — PROTOCOL 2 REQUIRES SOMEWHERE TO RECORD A DELETION.
                Migrations here are web-run, so between a deploy and someone
@@ -4542,7 +4637,10 @@ if ($action !== null) {
                    inference from absence is retired entirely for it. Legacy
                    clients (the native apps, which never send `deleted`) pass
                    false here and keep today's behaviour untouched. */
-                $explicitProtocol
+                $explicitProtocol,
+                /* A8 — no watermark and no explicit list means we delete
+                   nothing (the Easter scenario); switchable, default on. */
+                userSyncAbsenceDeleteRequiresSince()
             );
             $deleted = 0;
             if (count($deletableIds) > 0) {
@@ -4755,6 +4853,10 @@ if ($action !== null) {
             }
 
             if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+                /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+                   paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+                   change is made. Reads, sign-in and sign-out are never gated. */
+                if (accountWritesRefuseIfOff()) { break; }
                 $rawBody = file_get_contents('php://input');
                 $body = json_decode($rawBody, true);
                 $settings = is_array($body) ? ($body['settings'] ?? null) : null;
@@ -4809,25 +4911,32 @@ if ($action !== null) {
                         break;
                     }
 
-                    /* Read-modify-write of ONE subtree. Not a transaction: the
-                       blob is per-user and a user's own devices racing each
-                       other is last-write-wins by design (identical to the
-                       legacy path). What the namespace buys is that a race
-                       between two PRODUCTS is no longer possible at all,
-                       because they never touch the same subtree. */
-                    $sel = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ?');
-                    $sel->bind_param('i', $authUserId);
-                    $sel->execute();
-                    $curRow = $sel->get_result()->fetch_row();
-                    $sel->close();
-                    $curRaw = (string)($curRow[0] ?? '');
-                    $current = $curRaw !== '' ? json_decode($curRaw, true) : [];
-                    if (!is_array($current)) { $current = []; }
+                    /* Read-modify-write of ONE subtree, through the ONE locked
+                       writer (account/profile rewrite A1, epic #2180).
+                       userSettingsMutate() locks this person's row, reads the
+                       whole box, lets us swap our shelf, writes it back and
+                       releases. Two saves landing at the same moment therefore
+                       take turns instead of one erasing the other.
+                       (The old comment here said a race was "no longer possible
+                       at all"; that was wrong. Two saves to DIFFERENT shelves
+                       that overlapped each wrote back their own stale copy of
+                       the whole box. That is what the lock fixes.)
 
-                    /* ONE decision function. The reason code — never the
-                       sentence — chooses the status, so a client branches on
-                       the HTTP status and never on our prose (rule #35). */
-                    $reason = userSettingsRejectReason($current, $nsPost, $settings);
+                       ONE decision function. The reason code, never the
+                       sentence, chooses the status, so a client branches on
+                       the HTTP status and never on our prose (rule #35).
+                       REJECTED, never truncated: a silently amputated payload
+                       is how #1649 / #1662 destroyed users' set lists. */
+                    $mutated = userSettingsMutate(
+                        $db,
+                        $authUserId,
+                        static function (array $current) use ($nsPost, $settings) {
+                            $reason = userSettingsRejectReason($current, $nsPost, $settings);
+                            if ($reason !== null) { return $reason; }
+                            return userSettingsMergeNamespace($current, $nsPost, $settings);
+                        }
+                    );
+                    $reason = $mutated['reason'];
                     if ($reason === 'invalid_namespace') {
                         sendJson(['error' => 'Invalid namespace.'], 400);
                         break;
@@ -4840,16 +4949,6 @@ if ($action !== null) {
                         sendJson(['error' => 'Stored settings would exceed the per-account limit.'], 413);
                         break;
                     }
-
-                    /* REJECTED, never truncated — a silently amputated payload
-                       is how #1649 / #1662 destroyed users' set lists. */
-                    $json = userSettingsEncode(
-                        userSettingsMergeNamespace($current, $nsPost, $settings)
-                    );
-                    $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
-                    $stmt->bind_param('si', $json, $authUserId);
-                    $stmt->execute();
-                    $stmt->close();
                     sendJson(['ok' => true, 'namespace' => $nsPost]);
                     break;
                 }
@@ -4862,15 +4961,30 @@ if ($action !== null) {
                    sibling namespace. The isolation property only holds once
                    every writer is namespaced; migrating settings.js to
                    `namespace: 'ihymns.web'` is the remaining step. */
-                $json = json_encode($settings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-                if (strlen($json) > 16384) {
+                /* A9 (epic #2180): the owner's switch to REFUSE whole-box saves.
+                   Default '1' = nothing changes. Set to '0' and a save that
+                   names no shelf is answered 409 `namespace_required` and
+                   nothing is stored, because it would wipe every other shelf
+                   (push choices, list sorts, card layouts, iLyricsDB). The
+                   reason code, not the sentence, is the contract (rule #35).
+                   Only the exact text '0' turns it off, so a missing row or a
+                   typo leaves things as they are. */
+                if (getAppSetting('user_settings_legacy_blob_writes', '1') === '0') {
+                    sendJson([
+                        'error'  => 'This save must name a namespace.',
+                        'reason' => 'namespace_required',
+                    ], 409);
+                    break;
+                }
+                if (strlen(userSettingsEncode($settings)) > 16384) {
                     sendJson(['error' => 'Settings payload too large.'], 413);
                     break;
                 }
-                $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
-                $stmt->bind_param('si', $json, $authUserId);
-                $stmt->execute();
-                $stmt->close();
+                /* Still a whole-box replace, but now through the ONE locked
+                   writer (A1) so it cannot interleave with a shelf save. */
+                userSettingsMutate($db, $authUserId, static function (array $_current) use ($settings) {
+                    return $settings;
+                });
                 sendJson(['ok' => true]);
                 break;
             }
@@ -5739,22 +5853,14 @@ if ($action !== null) {
                 }
             }
 
-            /* Mint the standard bearer token — byte-identical machinery to
-               auth_login (api.php ~2151). */
-            $token = bin2hex(random_bytes(32));
-            $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
-            $tokenHash   = hash('sha256', $token);
-            $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-            $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
-            $stmt->execute();
-            $stmt->close();
-
-            /* #1409 — OPTIONAL device metadata, same discipline as
+            /* Mint the standard bearer token through the ONE token maker (C3,
+               epic #2180), the same machinery as auth_login.
+               #1409 — OPTIONAL device metadata, same discipline as
                auth_login above (never required, best-effort, never blocks
                sign-in). */
             $deviceMeta = apiTokenDeviceMetaFromBody($body);
-            apiTokenDeviceMetaStore($db, $tokenHash, $deviceMeta['deviceName'], $deviceMeta['platform'], $deviceMeta['appVersion']);
+            $token = apiTokenMint($db, (int)$userId, $deviceMeta, 'apple', $expiresAtTs);
+            $tokenHash = hash('sha256', $token);
 
             setAuthTokenCookie($token, $expiresAtTs);
 
@@ -6148,6 +6254,10 @@ if ($action !== null) {
                input, and a same-user prefix collision (astronomically
                unlikely at 64 bits) would only ever let someone sign out one
                of their OWN other devices — never cross a user boundary. */
+            /* A6 (epic #2180): note the platform of the session being removed
+               BEFORE its row is deleted, so a stale browser can be removed from
+               the device list without stopping the iPhone's notifications. */
+            $signedOutPlatform = apiTokenSessionPlatform($db, $userId, $deviceId, true);
             $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token LIKE CONCAT(?, "%")');
             $stmt->bind_param('is', $userId, $deviceId);
             $stmt->execute();
@@ -6165,16 +6275,18 @@ if ($action !== null) {
                sign-out/410") — same cleanup as auth_logout above, wrapped
                defensively so a signed-out device never sees a 500 because
                of this best-effort cleanup. */
-            try {
-                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
-                if (apnsTokensTableExists($db)) {
-                    $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
-                    $delApns->bind_param('i', $userId);
-                    $delApns->execute();
-                    $delApns->close();
+            if (apiTokenSessionOwnsApplePush($signedOutPlatform)) {
+                try {
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+                    if (apnsTokensTableExists($db)) {
+                        $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
+                        $delApns->bind_param('i', $userId);
+                        $delApns->execute();
+                        $delApns->close();
+                    }
+                } catch (\Throwable $e) {
+                    error_log('[api/device_signout] apns token cleanup failed: ' . $e->getMessage());
                 }
-            } catch (\Throwable $e) {
-                error_log('[api/device_signout] apns token cleanup failed: ' . $e->getMessage());
             }
 
             sendJson(['ok' => true]);
@@ -6680,6 +6792,13 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made - EXCEPT a plain "merge", which runs READ-ONLY ($readOnly)
+               so a person on a new device still sees their account data. Reads,
+               sign-in and sign-out are never gated. */
+            $readOnly = false;
+            if (accountWritesRefuseUnlessMergeRead($readOnly)) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -6702,6 +6821,30 @@ if ($action !== null) {
 
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
+
+            /* READ-ONLY merge on a paused site: return the stored favourites and change
+               NOTHING (no inserts, no deletes, no `syncedAt`, so the device does not
+               arm its deleting syncs). */
+            if ($readOnly) {
+                $stmt = $db->prepare(
+                    'SELECT SongId, Tags FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
+                );
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $roRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+                sendJson([
+                    'favorites' => array_map(static function ($row) {
+                        $t = $row['Tags'] !== null ? json_decode($row['Tags'], true) : [];
+                        return ['id' => $row['SongId'], 'tags' => is_array($t) ? array_values($t) : []];
+                    }, $roRows),
+                    'syncedAt'  => null,
+                    'truncated' => false,
+                    'cap'       => 500,
+                    'readOnly'  => true,
+                ]);
+                break;
+            }
 
             /* Cap at 500 favourites, recording whether the cap BIT (#1649).
                Computed from the pre-slice count, because a truncated payload is
@@ -6776,7 +6919,9 @@ if ($action !== null) {
                 array_keys($localFavs),
                 $syncMode,
                 $truncated,
-                $since
+                $since,
+                false,
+                userSyncAbsenceDeleteRequiresSince() /* A8 */
             );
             $deleted = 0;
             if (count($deletableIds) > 0) {
@@ -6896,6 +7041,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -6983,6 +7132,13 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made - EXCEPT a plain "merge", which runs READ-ONLY ($readOnly)
+               so a person on a new device still sees their account data. Reads,
+               sign-in and sign-out are never gated. */
+            $readOnly = false;
+            if (accountWritesRefuseUnlessMergeRead($readOnly)) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -6999,6 +7155,24 @@ if ($action !== null) {
 
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
+
+            /* READ-ONLY merge on a paused site: return the stored tags and change
+               NOTHING (no inserts, no `syncedAt`). */
+            if ($readOnly) {
+                $stmt = $db->prepare('SELECT Tag FROM tblUserCustomTags WHERE UserId = ? ORDER BY Tag ASC');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $roTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
+                $stmt->close();
+                sendJson([
+                    'tags'      => $roTags,
+                    'syncedAt'  => null,
+                    'truncated' => false,
+                    'cap'       => 200,
+                    'readOnly'  => true,
+                ]);
+                break;
+            }
 
             /* Sanitise: trim, cap length at 50, drop empties, de-dupe,
                cap the pool at 200 tags. The 200-cap is applied to the DEDUPED
@@ -7041,7 +7215,9 @@ if ($action !== null) {
                     $localTags,
                     $syncMode,
                     $truncated,
-                    $since
+                    $since,
+                    false,
+                    userSyncAbsenceDeleteRequiresSince() /* A8 */
                 );
                 if (count($deletableTags) > 0) {
                     $del = $db->prepare('DELETE FROM tblUserCustomTags WHERE UserId = ? AND Tag = ?');
@@ -7171,6 +7347,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $db = getDbMysqli();
             if (!userMarkupTableReady($db)) {
@@ -7226,6 +7406,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $db = getDbMysqli();
             if (!userMarkupTableReady($db)) {
@@ -8218,6 +8402,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -8275,6 +8463,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -8347,6 +8539,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -8414,6 +8610,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -8562,6 +8762,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             $authUserId = (int)$authUser['Id'];
             $db = getDbMysqli();
             $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -8930,14 +9134,9 @@ if ($action !== null) {
                not a browser — the web auto-name fallback would mislabel it, so
                naming is left to that device's own client sending platform +
                device name. Guarded by tests/php/test-api-token-device-meta.php. */
-            $token       = bin2hex(random_bytes(32));
-            $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
-            $tokenHash   = hash('sha256', $token);
-            $tstmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-            $tstmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
-            $tstmt->execute();
-            $tstmt->close();
+            /* C3 (epic #2180): through the ONE token maker. `null` meta = no-device-meta
+               (the reason is the paragraph above). */
+            $token       = apiTokenMint($db, (int)$userId, null, 'device_code', $expiresAtTs);
             setAuthTokenCookie($token, $expiresAtTs);
             $updLogin = $db->prepare('UPDATE tblUsers SET LastLoginAt = NOW(), LoginCount = LoginCount + 1 WHERE Id = ?');
             $updLogin->bind_param('i', $userId);
@@ -9733,6 +9932,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Auth required.'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             $user = [
                 'id'       => $authUser['Id'] ?? null,
                 'role'     => $authUser['Role'] ?? null,
@@ -9763,6 +9966,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Auth required.'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             $body    = json_decode((string)file_get_contents('php://input'), true) ?: [];
             $surface = (string)($body['surface'] ?? '');
             if (!in_array($surface, CARD_LAYOUT_SURFACES, true)) {
@@ -10689,7 +10896,10 @@ if ($action !== null) {
             }
 
             $authUser = getAuthenticatedUser();
-            $viewUserId = $authUser ? $authUser['Id'] : null;
+            /* C2 (epic #2180): when saving to accounts is paused on this site the view is
+               still counted, but WITHOUT the person (the same as an anonymous view), so a
+               test site cannot put views into a real person's history. */
+            $viewUserId = ($authUser && accountWritesAllowedHere()) ? $authUser['Id'] : null;
 
             try {
                 $db = getDbMysqli();
@@ -10809,6 +11019,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
@@ -10880,9 +11094,19 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $db = getDbMysqli();
-            $stmt = $db->prepare('DELETE FROM tblSongHistory WHERE UserId = ?');
+            /* A5 (epic #2180): "Clear history" removes the person's NAME from
+               their past views; it does not delete the view rows. A row with no
+               person still counts toward how popular a song is and toward the
+               organisation licence reports, which a delete used to lower
+               quietly. `cleared` still means "how many of your rows were
+               cleared". */
+            $stmt = $db->prepare('UPDATE tblSongHistory SET UserId = NULL WHERE UserId = ?');
             $authUserId = (int)$authUser['Id'];
             $stmt->bind_param('i', $authUserId);
             $stmt->execute();
@@ -11121,6 +11345,8 @@ if ($action !== null) {
                     sendJson([
                         'subtags'          => [],
                         'languages'        => [],
+                        /* A3: nothing can be saved here yet, so "not set". */
+                        'isSet'            => false,
                         'migration_needed' => true,
                     ]);
                     break;
@@ -11144,9 +11370,17 @@ if ($action !== null) {
                         );
                     }
                 }
+                /* A3 (epic #2180): `isSet` tells a client whether the account
+                   was EVER given a choice. `[]` alone cannot say: it comes back
+                   both for "never saved" and for "chose all languages" (saving
+                   an empty list stores NULL on purpose, so both read as NULL
+                   here). A client that has a choice of its own, and is told
+                   `isSet: false`, sends its choice up instead of letting the
+                   empty answer wipe it. Older clients ignore the extra key. */
                 sendJson([
                     'subtags'   => preferredLanguageBaseSubtags($languages),
                     'languages' => $languages,
+                    'isSet'     => $raw !== null && $raw !== '',
                 ]);
             } catch (\Throwable $e) {
                 error_log('[user_preferred_languages] ' . $e->getMessage());
@@ -11181,6 +11415,10 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authenticated.'], 401);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
             /* #2137 — `languages` is the new key (whole tags, in order);
@@ -12462,6 +12700,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $body      = json_decode((string)file_get_contents('php://input'), true) ?? [];
             $setlistId = trim((string)($body['setlistId'] ?? ''));
@@ -12523,6 +12765,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
             $setlistId = trim((string)($body['setlistId'] ?? ''));
             if ($setlistId === '') { sendJson(['error' => 'setlistId required.'], 400); break; }
@@ -12615,6 +12861,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             /* Per-user rate limit (#321) — caps invite-spam at 20 per
                hour per signed-in user. checkRateLimit() returns true
@@ -12801,6 +13051,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
             $setlistId = trim((string)($body['setlistId'] ?? ''));
             $collabId  = (int)($body['collaboratorId'] ?? 0);
@@ -12980,6 +13234,10 @@ if ($action !== null) {
             }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
 
             $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
             $setlistId = trim((string)($body['setlistId'] ?? ''));
@@ -13088,6 +13346,10 @@ if ($action !== null) {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
             }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
             if (!_sharedSetlistTokenColumns()) {
                 sendJson(['error' => 'Edit links are not available on this server yet.'], 409);
@@ -13318,6 +13580,10 @@ if ($action !== null) {
             }
             $rvUser = getAuthenticatedUser();
             if (!$rvUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+            /* C2 (epic #2180): the per-channel emergency brake. When saving to accounts is
+               paused on this site, refuse with 409 `account_writes_off_here` BEFORE any
+               change is made. Reads, sign-in and sign-out are never gated. */
+            if (accountWritesRefuseIfOff()) { break; }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
             if (!_sharedSetlistTokenColumns()) { sendJson(['error' => 'Not available yet.'], 409); break; }
             $rvBody = json_decode((string)file_get_contents('php://input'), true) ?? [];
@@ -26939,12 +27205,15 @@ sendJson(['error' => 'Missing required parameter: page or action'], 400);
  * @param array $data       Data to encode as JSON
  * @param int   $statusCode HTTP status code (default: 200)
  */
-function sendJson(array $data, int $statusCode = 200): void
+function sendJson(array $data, int $statusCode = 200, ?string $cacheControl = null): void
 {
     http_response_code($statusCode);
     header('Content-Type: application/json; charset=UTF-8');
     header('X-Content-Type-Options: nosniff');
-    header('Cache-Control: no-cache, must-revalidate');
+    /* Every answer is "check with me first" unless the caller says otherwise. The
+       one caller that does (C5, `profile_schema`, a public list that changes only
+       when the code does) asks for a short shared cache plus an ETag. */
+    header('Cache-Control: ' . ($cacheControl ?? 'no-cache, must-revalidate'));
 
     $version = apiContractVersion();
     if ($version >= 2) {

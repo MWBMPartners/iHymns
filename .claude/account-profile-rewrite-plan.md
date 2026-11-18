@@ -1,8 +1,75 @@
 # Plan: rewriting accounts, profiles and personal-data sync (iHymns)
 
-2026-11-18. Builds on `.claude/account-profile-architecture-review-2026-11-18.md` (the "review") and `.claude/settings-sync-2143-plan.md`. Plan only; nothing built.
+## Progress (PR 1: phases A, B, C; branch `claude/account-profile-sync-pr1`)
 
----
+| Step | Commit | Status |
+|---|---|---|
+| A1 one locked settings writer | a427c47 | done, needs Opus review |
+| A2 stop re-fetching settings every page | 5e021c6 | done |
+| A3 keep visitor language choice | 3bc9b2b | done |
+| A4 stop recording who searched | 21a7e6c | done |
+| A5 clear history unlinks | 218371e | done |
+| A6 sign-out no longer kills iPhone push (part 1) | f0752cb | done |
+| A7 never merge one person's data into another's | cac1080 | done, needs Opus review |
+| A8 old builds cannot delete by omission | a3dbecd | done, needs Opus review |
+| A9 switch to refuse whole-box saves | c6b12a4 | done |
+| Phase A close-out (WHATS-NEW bullets, this table) | 24e96ce | done |
+| B1 one migration for the foundation tables and columns | 4738c28 | done, needs Opus review, 👤 owner runs it |
+| B2 blank old privacy links (manual, destructive) | 56dd69d | done, needs Opus review, 👤 owner runs it |
+| C1 shared channel switch + account-writes switch | 02db35f | done, needs Opus review |
+| C2 every personal-data write checks the switch | 4b058fa | done, needs Opus review |
+| C3 one token maker | b833b6f | done, needs Opus review |
+| C4 profile registry | ff1942e | done |
+| C5 `GET ?action=profile_schema` | 139e5bb | done |
+| C6 lockstep guards + Apple snapshot | 51e9e1d | done |
+
+Deviations from the plan (all explained in the commit messages): A2 touches only
+`settings.js` and `list-sort.js` plus a new shared helper `utils/pull-gate.js`; A3
+changed only `songbook-language-filter.js` (the settings page's language picker
+never adopts the account's value, so it needed no change); A4 drops the `UserId`
+column from the search insert instead of binding null; B2 also blanks the
+forwarded-address chain and proxy-detail columns and adds a dry-run mode; C1 takes
+`$onError` as a bool or a function and defaults to all three channels; C2 does not
+gate the admin user-management actions (operator actions, like `/manage/users`),
+password recovery, or the two read endpoints with incidental housekeeping writes.
+
+### Fixes after the independent Opus review (same branch)
+
+Eight confirmed findings were fixed, one commit each:
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | The shipped Apple app declares no platform, so its sessions were treated as non-Apple and kept their push rows at sign-out | `apiTokenSessionOwnsApplePush()` now keeps push rows only for sessions KNOWN to be `web` or `android` |
+| 2 | The channel switch read through `getAppSetting()`, which hides errors, so "cannot read means alpha/beta refuse" never ran | New `getAppSettingStrict()`; the switch uses it; a real-reader test added |
+| 3 | A paused site answered the three sync actions with 409 before reading, so a new device saw nothing and re-tried on every page change | A plain `merge` runs read-only on a paused site; the browser waits five minutes between tries |
+| 4 | Erasing an account left that person's audit-log details, so B2 would need re-running for ever | `accountErase()` blanks that person's rows using the shared B2 include |
+| 5 | The account-writes card showed pre-save values | `setAppSetting()` forgets the key it wrote |
+| 6 | A late sync reply could land in the next person's cache, and the wrong person was recorded as owner | The result carries the requester's id; a reply for someone else is dropped |
+| 7 | A refused (4xx) settings upload kept the pull gate shut for ever | Only network errors and 5xx keep the change waiting |
+| 8 | The B2 probe used `COUNT(*)` and hid errors | `LIMIT 1` existence checks; errors are logged and returned |
+
+#### Follow-ups still to file as GitHub issues (not done here)
+
+1. **iLyricsDB writes the same settings box without `FOR UPDATE`** (review finding 8). The
+   single-writer guard from A1 only scans `appWeb/`, so a second application writing
+   `tblUsers.Settings` without the row lock is invisible to it. Decide: bring that writer
+   under the same lock, or extend the guard to scan it.
+2. **Deletion is refused while a site is paused.** With the account-writes switch off, an
+   account-deletion request gets the 409 like any other write. Decide whether erasure
+   (a legal right) should be exempt from the brake, or the refusal should say clearly when it
+   will work again.
+3. **A3 can override a deliberate "all languages" choice.** Keeping the visitor's language
+   choice at sign-in can replace a person's deliberate empty "all languages" selection with the
+   old stored list. Needs a way to tell "never chose" from "chose all".
+4. **A8 also affects favourites and custom tags on old Apple builds.** The rule that stops old
+   builds deleting by omission was written with set lists in mind; old Apple builds send
+   `replace` for favourites and custom tags too, so their removals may now quietly not
+   propagate. Check the Apple app's behaviour and decide whether it needs the same explicit
+   deletion list.
+5. **Audit rows with no user attached** still hold addresses and browsers. The erasure fix
+   (finding 4) blanks only rows attributed to the erased person; unattributed rows (failed
+   sign-ins, signed-out actions) are a separate question: how long to keep them, and whether to
+   blank them on a schedule.
 
 ## 0. Owner decisions, and what they mean here
 

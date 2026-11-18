@@ -1236,6 +1236,59 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_cross_site_sync] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_account_writes') {
+            /* Per-channel switch for WRITING into real accounts (account/profile
+               rewrite C1, decision O3): the emergency brake that stops a test
+               copy of the site changing real people's saved data. ONE setting,
+               the ticked subset of {alpha,beta,production}, stored as CSV like
+               the two cards above (shared shape, includes/channel_switch.php).
+               No row means all three, so deploying changes nothing. An empty
+               tick-set stores the literal 'none'. Turning PRODUCTION off needs a
+               typed confirmation, because it stops every real person's changes
+               being saved. The page's CSRF check and the manage_configuration
+               entitlement above already cover this action. */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'account_write_gate.php';
+            try {
+                /* Posted field name is deliberately DIFFERENT from the settings-key
+                   literal, so a tree-wide scan for that quoted key finds it in
+                   exactly one file (tests/php/test-account-write-gate.php). */
+                $postedAwChans = (array)($_POST['account_writes_ch'] ?? []);
+                $validAwChans  = ['alpha', 'beta', 'production'];
+                $awChansOut    = [];
+                foreach ($postedAwChans as $c) {
+                    $c = trim((string)$c);
+                    if (in_array($c, $validAwChans, true) && !in_array($c, $awChansOut, true)) {
+                        $awChansOut[] = $c;
+                    }
+                }
+                $awWasOn = ihymns_parse_channels_csv(
+                    (string)(getAppSetting(ACCOUNT_WRITES_SETTING_KEY, ACCOUNT_WRITES_DEFAULT) ?? ACCOUNT_WRITES_DEFAULT)
+                );
+                $awTurningProductionOff = in_array('production', $awWasOn, true) && !in_array('production', $awChansOut, true);
+                $awTyped = strtolower(trim((string)($_POST['account_writes_confirm'] ?? '')));
+                if ($awTurningProductionOff && $awTyped !== ACCOUNT_WRITES_PRODUCTION_OFF_PHRASE) {
+                    /* Refused, nothing stored. The card shows the old state. */
+                    $saveError = 'Not saved. Switching Production off stops every real person\'s changes being saved. '
+                        . 'To do it on purpose, type "' . ACCOUNT_WRITES_PRODUCTION_OFF_PHRASE . '" in the confirmation box and save again.';
+                } else {
+                    $awCsv = $awChansOut === [] ? 'none' : implode(',', $awChansOut);
+                    $saveSetting($db, ACCOUNT_WRITES_SETTING_KEY, $awCsv);
+                    if (function_exists('logActivity')) {
+                        logActivity('app_setting.update', 'app_setting', ACCOUNT_WRITES_SETTING_KEY,
+                            ['channels' => $awCsv], 'success');
+                    }
+                    $awNameFor = static fn(string $c): string => $c === 'alpha' ? 'Alpha (dev)' : ucfirst($c);
+                    $awOnNames  = array_map($awNameFor, $awChansOut);
+                    $awOffNames = array_map($awNameFor, array_diff($validAwChans, $awChansOut));
+                    $saveSuccess = 'Saved. These sites may save changes to accounts: '
+                        . ($awOnNames === [] ? 'none' : implode(', ', $awOnNames))
+                        . '. Paused: ' . ($awOffNames === [] ? 'none' : implode(', ', $awOffNames))
+                        . '. A paused site still lets people read, sign in and sign out.';
+                }
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_account_writes] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -1301,6 +1354,13 @@ $searchVisChannels = ihymns_parse_channels_csv(
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'cross_site_sync.php';
 $crossSyncChannels = ihymns_parse_channels_csv(
     (string)(getAppSetting(CROSS_SITE_SYNC_SETTING_KEY, CROSS_SITE_SYNC_DEFAULT) ?? CROSS_SITE_SYNC_DEFAULT)
+);
+
+/* Account writes (account/profile rewrite C1) — read through the SAME constant and parse the
+   runtime gate uses, so this card can never disagree with what actually happens. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'account_write_gate.php';
+$accountWritesChannels = ihymns_parse_channels_csv(
+    (string)(getAppSetting(ACCOUNT_WRITES_SETTING_KEY, ACCOUNT_WRITES_DEFAULT) ?? ACCOUNT_WRITES_DEFAULT)
 );
 
 $maintenanceSettings = $loadSettings($db, [
@@ -1713,6 +1773,67 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <button type="submit" class="btn btn-primary">
                     <i aria-hidden="true" class="bi bi-save me-1"></i>Save settings sync
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         ACCOUNT WRITES — per-channel emergency brake (account/profile rewrite C1)
+         =========================== -->
+    <div class="card bg-body-tertiary border-secondary mb-4" id="account-writes">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i aria-hidden="true" class="bi bi-person-lock me-2"></i>Saving changes to people&rsquo;s accounts
+            </h2>
+            <span class="badge <?= count($accountWritesChannels) === 3 ? 'bg-success' : 'bg-warning text-dark' ?>">
+                <?= count($accountWritesChannels) === 3 ? 'On for all 3 sites' : 'Paused on ' . (3 - count($accountWritesChannels)) . ' of 3 sites' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-2">
+                All three iHymns sites share one set of accounts, so a person&rsquo;s favourites, set
+                lists and settings are the same on each. This is the emergency brake: if a test site
+                misbehaves, untick it here and that site stops changing real people&rsquo;s saved data.
+            </p>
+            <p class="small text-secondary mb-3">
+                A paused site still lets people read their data, sign in and sign out. Someone signing
+                in on a new device there still sees their favourites, set lists and tags (pulled down,
+                nothing saved). Changes they make are kept on their own device until the site is
+                switched back on. Everything is switched on by default.
+            </p>
+            <form method="post">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_account_writes">
+                <div class="mb-3">
+                    <label class="form-label mb-1" id="account-writes-channels-label">May save changes to accounts</label>
+                    <div class="d-flex flex-column gap-2" role="group" aria-labelledby="account-writes-channels-label">
+                        <?php foreach (['production' => 'Production (ihymns.app)', 'beta' => 'Beta (beta.ihymns.app)', 'alpha' => 'Alpha &mdash; dev (dev.ihymns.app)'] as $awOpt => $awLabel): ?>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" name="account_writes_ch[]"
+                                       value="<?= $awOpt ?>" id="aw_ch_<?= $awOpt ?>"<?= in_array($awOpt, $accountWritesChannels, true) ? ' checked' : '' ?>>
+                                <label class="form-check-label" for="aw_ch_<?= $awOpt ?>">
+                                    <?= $awLabel /* fixed, safe strings from the loop above: no user input */ ?>
+                                    <?php if ($awOpt === $envCurrent): ?><span class="badge bg-info text-dark ms-1">this site</span><?php endif; ?>
+                                </label>
+                                <?php if ($awOpt === 'production'): ?>
+                                    <div class="form-text text-warning-emphasis">
+                                        <i aria-hidden="true" class="bi bi-exclamation-triangle me-1"></i>Switching Production off
+                                        stops every real person&rsquo;s changes being saved. You will be asked to type a confirmation.
+                                    </div>
+                                <?php endif; ?>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label mb-1" for="account-writes-confirm">Confirmation (only needed to switch Production off)</label>
+                    <input type="text" class="form-control" id="account-writes-confirm" name="account_writes_confirm"
+                           autocomplete="off" placeholder="<?= htmlspecialchars(ACCOUNT_WRITES_PRODUCTION_OFF_PHRASE, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">Type <strong><?= htmlspecialchars(ACCOUNT_WRITES_PRODUCTION_OFF_PHRASE, ENT_QUOTES, 'UTF-8') ?></strong> to confirm.</div>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save account switch
                 </button>
             </form>
         </div>
