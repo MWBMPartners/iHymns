@@ -20,6 +20,7 @@ import {
     STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT,
 } from '../constants.js';
 import { performAppleSignIn } from './apple-signin.js';
+import { reconcileDataOwner, recordDataOwner, protectOnUnplannedSignOut } from './account-data-owner.js';
 import { apiFetch } from '../utils/api-client.js';
 /* #947/#340 — dormant CAPTCHA widget, wired into the four gated auth forms
    (registration / login / password_reset / email_login) below. No-op unless
@@ -159,6 +160,10 @@ export class UserAuth {
     saveCredentials(token, user) {
         localStorage.setItem(STORAGE_AUTH_TOKEN, token);
         localStorage.setItem(STORAGE_AUTH_USER, JSON.stringify(user));
+        /* A7 (epic #2180): BEFORE anything can merge this device's saved songs
+           into the account that just signed in, make sure they are not
+           somebody else's. Every sign-in route ends here. */
+        this._reconcileDataOwner();
         /* A fresh sign-in must re-run the one-time user-data backfill for the
            new session AND re-gate destructive 'replace' pushes until that new
            merge reconcile has hydrated the cache (a different account's data
@@ -170,11 +175,42 @@ export class UserAuth {
     /**
      * Clear auth credentials from localStorage.
      */
-    clearCredentials() {
+    clearCredentials({ planned = false } = {}) {
+        /* A7 (epic #2180): when the session ended WITHOUT the person choosing
+           to sign out (the server rejected the token, or it expired), put
+           their saved songs aside so the next person on this device never sees
+           them; the same person signing back in gets them restored. A planned
+           sign-out is handled separately (step G5 asks first, then clears). */
+        if (!planned) {
+            try { protectOnUnplannedSignOut(localStorage, this.getUser()?.id); }
+            catch (e) { console.warn('[user-auth] could not set saved data aside:', e); }
+        }
         localStorage.removeItem(STORAGE_AUTH_TOKEN);
         localStorage.removeItem(STORAGE_AUTH_USER);
         this._resetUserDataSyncState();
         this._broadcastAuthChanged();
+    }
+
+    /**
+     * A7 (epic #2180): make sure the saved songs on this device belong to the
+     * account that is signed in now. If they belonged to somebody else they are
+     * set aside (not merged), and this person's own set-aside copy, if any, is
+     * put back. Idempotent and cheap, so it is called wherever a sync could
+     * otherwise start: at sign-in, and at the start of each reconcile.
+     */
+    _reconcileDataOwner() {
+        try {
+            const uid = this.getUser()?.id;
+            const r = reconcileDataOwner(localStorage, uid);
+            if (r.action === 'switched') {
+                /* The cached lists in memory (if any) are re-read from storage on use. */
+                this._dataOwnerSwitched = true;
+            }
+            return r;
+        } catch (e) {
+            console.warn('[user-auth] data-owner check failed:', e);
+            return { action: 'none' };
+        }
     }
 
     /**
@@ -391,7 +427,7 @@ export class UserAuth {
             /* Non-critical — clear local creds regardless */
         }
 
-        this.clearCredentials();
+        this.clearCredentials({ planned: true });
 
         /* #1388 — ask the service worker to drop the per-user caches.
            clearCredentials() only touches localStorage; the Cache Storage
@@ -677,6 +713,8 @@ export class UserAuth {
         const final = this._unionSetlists(localSide, res.setlists);
         this.app.setList.saveAll(final, { sync: false });
         this._setSyncedAt(STORAGE_SETLISTS_SYNCED_AT, res.syncedAt);
+        /* A7: the device's set lists now mirror THIS account's. */
+        recordDataOwner(localStorage, this.getUser()?.id);
 
         /* One toast per absorb (not per row). The refused edit is replaced by
            the newer server copy; the user re-applies it and the next push finds
@@ -713,6 +751,8 @@ export class UserAuth {
             { sync: false }
         );
         this._setSyncedAt(STORAGE_FAVORITES_SYNCED_AT, res.syncedAt);
+        /* A7: the device's favourites now mirror THIS account's. */
+        recordDataOwner(localStorage, this.getUser()?.id);
         return true;
     }
 
@@ -2375,6 +2415,7 @@ export class UserAuth {
      */
     async triggerSetlistSync(silent = false) {
         if (!this.app.setList) return false;
+        this._reconcileDataOwner();
 
         const uid = this.getUser()?.id;
         const res = await this.syncSetlists(this.app.setList.getAll(), 'merge');
@@ -2422,6 +2463,7 @@ export class UserAuth {
      */
     async triggerFavoritesSync() {
         if (!this.app.favorites) return false;
+        this._reconcileDataOwner();
 
         const uid = this.getUser()?.id;
         const payload = (this.app.favorites.getAll() || []).map(f => ({ id: f.id, tags: f.tags || [] }));
@@ -2441,6 +2483,7 @@ export class UserAuth {
      */
     async triggerCustomTagsSync() {
         if (!this.app.favorites?.getCustomTags) return false;
+        this._reconcileDataOwner();
 
         const local = this.app.favorites.getCustomTags();
         const merged = await this.syncCustomTags(local, 'merge');
@@ -2471,6 +2514,9 @@ export class UserAuth {
     async triggerUserDataSync() {
         if (this._userDataSynced || this._userDataSyncing) return;
         if (!this.isLoggedIn()) return;
+        /* A7: before anything merges, make sure these saved songs are this
+           person's (see _reconcileDataOwner). */
+        this._reconcileDataOwner();
         this._userDataSyncing = true;
 
         let allOk = false;
