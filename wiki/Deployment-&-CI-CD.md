@@ -66,7 +66,17 @@ Other deploy behaviour:
 - `[skip ci]` in commit message skips all workflows
 - Kill switch: `vars.SFTP_ENABLED` must be `true`
 - **Only runs when a push changes `appWeb/**` or `deploy.yml` itself.** A push that only changes documentation (for example `.claude/`, `.importers/`, `wiki/`) runs no deploy at all. When a deploy does start but finds no deployable files changed, the run still shows green, with every upload step "skipped". Both are expected, not failures.
-- **The version commit can be refused.** The branch rules on `alpha` require three checks (*Lint & Validate*, *PHP 8.4*, *PHP 8.5*), and the bot's version commit cannot satisfy them. The deploy shows the warning *Failed to push version bump after 5 attempts*. The site still deploys fine; the visible version just stays put until the owner lets the bump commit through (#2143).
+- **The version commit can be refused.** The branch rules on `alpha` require three checks (*Lint & Validate*, *PHP 8.4*, *PHP 8.5*; *PHP 8.6* is deliberately not required yet — see below), and the bot's version commit cannot satisfy them. The deploy shows the warning *Failed to push version bump after 5 attempts*. The site still deploys fine; the visible version just stays put until the owner lets the bump commit through (#2143).
+
+### PHP 8.6 check (advisory, with one switch)
+
+The PHP forward-compatibility job (`php-compat` in `.github/workflows/test.yml`) runs on PHP 8.4, 8.5 and **8.6**. The 8.6 run appears as its own check called **PHP 8.6**.
+
+- **Today it only advises.** Every step that could fail is marked so the check stays green while the repository Actions variable **`PHP86_ENFORCE`** is unset (or is anything other than the text `true`). A final step still prints a warning naming each step that would have failed, so nothing is hidden.
+- **The switch.** Set `PHP86_ENFORCE` to `true` (`gh variable set PHP86_ENFORCE --body true`) and the same steps turn the check red when they fail. Delete the variable to go back to advisory.
+- **Making it required** is a separate setting: add *PHP 8.6* to the required checks of the `alpha` branch ruleset (Settings, Rules, Rulesets). It is safe to add that now, because while the variable is unset the check cannot go red. Then the variable alone is the one switch.
+- **What the 8.6 run adds.** A log of every PHP "deprecated" warning raised while the PHP tests run (`tools/ci/deprecation-trap.php`), a report that fails on warnings from our own code but only warns for the vendored PDF library (`tools/ci/deprecation-report.php`), and a syntax-check pass that looks for deprecations found at compile time.
+- **Turn it on only after** PHP 8.6 is released, setup-php offers it as a stable version, and the 8.6 run has been green for about a week.
 
 ### Pull requests opened by our own workflows are held (#2127)
 

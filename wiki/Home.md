@@ -22,7 +22,7 @@ iHymns provides searchable hymn and worship song lyrics from multiple songbooks,
 
 | Platform | Technology | Status |
 |---|---|---|
-| Web PWA | PHP 8.4 / 8.5, MySQL, Bootstrap 5.3.6, vanilla JS (ES modules) | Core + Enhanced complete |
+| Web PWA | PHP 8.4 / 8.5 (8.6 prepared, advisory in CI), MySQL, Bootstrap 5.3.6, vanilla JS (ES modules) | Core + Enhanced complete |
 | Apple (iOS/iPadOS/tvOS/visionOS/macOS/watchOS) | Swift 6 language mode, SwiftUI | Phase 1+2 code-complete, unreleased |
 | Android (+ Fire OS, Android TV) | Kotlin 2.4, Jetpack Compose | Scaffold / in progress |
 

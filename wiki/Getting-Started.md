@@ -86,7 +86,7 @@ An account is optional but enables cross-device setlist sync:
 ### Prerequisites
 
 - Node.js v22+ and npm v10+
-- PHP 8.4 or 8.5 (for the local web server) — those are the two versions CI runs the PHP suite on; this line said "8.5+" until 2026-09-08
+- PHP 8.4 or 8.5 (for the local web server; 8.6 is prepared and checked as advisory in CI) — those are the two versions CI runs the PHP suite on; this line said "8.5+" until 2026-09-08
 - Git
 
 ### Quick Start

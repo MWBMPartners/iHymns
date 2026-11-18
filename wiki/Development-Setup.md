@@ -55,7 +55,7 @@ npm test
 
 ### Running the Web PWA Locally
 
-The PWA needs PHP 8.4 or 8.5. Options for local development:
+The PWA needs PHP 8.4 or 8.5 (8.6 is prepared; CI runs it as an advisory check). Options for local development:
 
 ```bash
 # Option 1: PHP built-in server
