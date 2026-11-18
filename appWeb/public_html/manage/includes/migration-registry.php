@@ -53,6 +53,12 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
            . DIRECTORY_SEPARATOR . 'song_relocate.php';
 
+/* B2 (account/profile rewrite, epic #2180): the ONE description of "old personal
+   links still to blank", shared by the manual migration below and its probe so
+   the two can never disagree. Declares functions and constants only. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+           . DIRECTORY_SEPARATOR . 'privacy_legacy_blank.php';
+
 /**
  * Does a live FK constraint exist on this table, and if so is its UPDATE_RULE
  * something other than CASCADE?
@@ -5248,5 +5254,41 @@ return [
             || !_migProbe_columnExists($db, 'tblSongHistory', 'Source')
             || !_migProbe_columnExists($db, 'tblSongHistory', 'Channel')
             || !_migProbe_columnExists($db, 'tblSongHistory', 'Platform'),
+    ],
+
+    /* Account/profile rewrite, epic #2180, step B2 - DESTRUCTIVE, run once.
+       Blanks old personal links: it unlinks every old search row from the
+       person who made it, and, for accounts already erased, blanks the address,
+       browser, referrer, country and proxy details in the audit log and removes
+       username/email from its details. 'manual' => true: EXCLUDED from "Apply
+       all" and the pending counter; dry-run by default, ?confirm=1 to change a
+       row. No schema change, so no schema.sql edit. OWNER ACTION: run only
+       after step A4 is live on PRODUCTION (so no new links appear) and after a
+       backup. UNDO: only from the backup. */
+    'privacy-blank-legacy-links' => [
+        'script' => 'migrate-privacy-blank-legacy-links.php',
+        'manual' => true,
+        'dryRunnable' => true,
+        'card' => [
+            'title'  => '&#9888; Blank old personal links in searches and the audit log (#2180)',
+            'body'   => 'DATA CHANGE, run once &mdash; unlinks every old search in'
+                      . ' <code>tblSearchQueries</code> from the person who made it (the search'
+                      . ' text stays), and for accounts that are already erased blanks the internet'
+                      . ' address, browser, referrer, country and proxy details in'
+                      . ' <code>tblActivityLog</code> and removes <code>username</code>/'
+                      . '<code>email</code> from its details (the rows stay, so what happened is'
+                      . ' still recorded, just not who). Works in batches of 5,000.'
+                      . ' <strong>Run it only after the &ldquo;stop recording who searched&rdquo;'
+                      . ' change is live on production, and after a backup.</strong> It cannot be'
+                      . ' undone except from the backup. Do NOT run via &ldquo;Apply all&rdquo;.'
+                      . ' Defaults to <strong>dry-run</strong> (reports how many rows it would'
+                      . ' change); pass <code>&amp;confirm=1</code> to apply. Idempotent &mdash; a'
+                      . ' re-run finds nothing once done.',
+            'button' => 'Blank Old Personal Links (dry-run unless confirmed)',
+        ],
+        /* Real data-derived probe (rule #19), never `=> true`: pending while any
+           search row still names a person, or an erased account's audit row still
+           holds personal details. Uses the SAME functions the run uses. */
+        'probe' => static fn(\mysqli $db): bool => privacyLegacyPending($db),
     ],
 ];
