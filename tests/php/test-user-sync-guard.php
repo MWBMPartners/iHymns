@@ -273,6 +273,73 @@ _usgAssert(
     'LEGACY vs PROTOCOL 2: same inputs, the flag alone decides (native apps keep today\'s behaviour)'
 );
 
+
+/* ====================================================================== *
+ * 3d. A8 (account/profile rewrite, epic #2180) - the "Easter" scenario
+ *
+ * Anna makes the set list "Easter" on the web. Her iPhone last refreshed
+ * before that. She edits any set list on the iPhone and the (older) app sends
+ * a REPLACE with no `since` and no `deleted`. Before A8 the server read every
+ * set list the phone did not mention as deleted, so "Easter" was gone.
+ * ====================================================================== */
+
+echo "\n-- A8: no `since` and no `deleted` means delete nothing --\n";
+
+$easterRows = [
+    ['id' => 'easter',  'ts' => '2026-11-01 09:00:00'],   /* made on the web; the phone never saw it */
+    ['id' => 'sunday',  'ts' => '2026-10-01 09:00:00'],
+];
+_usgAssert(
+    userSyncDeletableIds($easterRows, ['sunday'], 'replace', false, null, false, false) === ['easter'],
+    'A8 OFF (the switch set to 0): the old behaviour, Easter is judged deleted (proves the scenario is real)'
+);
+_usgAssert(
+    userSyncDeletableIds($easterRows, ['sunday'], 'replace', false, null, false, true) === [],
+    'A8 ON: a replace with no since and no deleted deletes NOTHING - Easter survives'
+);
+_usgAssert(
+    userSyncDeletableIds($easterRows, [], 'replace', false, null, false, true) === [],
+    'A8 ON: even an EMPTY payload with no since deletes nothing'
+);
+_usgAssert(
+    userSyncDeletableIds($easterRows, ['sunday'], 'replace', false, '2026-10-15 00:00:00', false, true) === [],
+    'A8 ON: with a since, a row NEWER than it (Easter) is still kept by guard 3'
+);
+_usgAssert(
+    userSyncDeletableIds($easterRows, ['sunday'], 'replace', false, '2026-11-02 00:00:00', false, true) === ['easter'],
+    'A8 ON: with a since newer than the row, a genuine absence still deletes (protocol 1 clients that DO send since keep working)'
+);
+_usgAssert(
+    userSyncDeletableIds($easterRows, ['sunday'], 'replace', false, null, true, true) === [],
+    'protocol 2 still deletes nothing by absence (unchanged)'
+);
+
+/* The switch reaches every call site, and it is read through the one helper.
+   Derived from api.php: EVERY call to userSyncDeletableIds( must end with the
+   switch as its last argument. */
+$codeAll = _usgStripComments($apiSrc);
+$callCount = 0;
+$withSwitch = 0;
+$off = 0;
+while (($pos = strpos($codeAll, 'userSyncDeletableIds(', $off)) !== false) {
+    $off = $pos + 10;
+    /* Find the matching close paren of this call. */
+    $depth = 0; $i = $pos + strlen('userSyncDeletableIds');
+    for ($n = strlen($codeAll); $i < $n; $i++) {
+        if ($codeAll[$i] === '(') { $depth++; }
+        elseif ($codeAll[$i] === ')') { $depth--; if ($depth === 0) { break; } }
+    }
+    $call = substr($codeAll, $pos, $i - $pos + 1);
+    $callCount++;
+    if (preg_match('/userSyncAbsenceDeleteRequiresSince\(\)\s*\)\z/', $call)) { $withSwitch++; }
+}
+_usgAssert($callCount >= 3, "api.php has the three userSyncDeletableIds() call sites (found $callCount)");
+_usgAssert($withSwitch === $callCount, "EVERY userSyncDeletableIds() call in api.php ends with the A8 switch ($withSwitch of $callCount)");
+_usgAssert(
+    userSyncAbsenceDeleteRequiresSince() === true,
+    'the switch is ON by default (no settings row reachable here: protective)'
+);
+
 /* ====================================================================== *
  * 3c. #1661 — protocol detection: PRESENCE of the key, not a version
  * ====================================================================== */
@@ -644,8 +711,8 @@ foreach ([
    wrong-but-green shape rule #34 names. `$explicitProtocol` must be the
    argument immediately after `$since`. */
 _usgAssert(
-    (bool)preg_match('/userSyncDeletableIds\([^;]*\$since,\s*\$explicitProtocol\s*\)\s*;/', $setlistSync),
-    'user_setlists_sync PASSES $explicitProtocol as the argument after $since (not merely computes it)'
+    (bool)preg_match('/userSyncDeletableIds\([^;]*\$since,\s*\$explicitProtocol\s*,\s*userSyncAbsenceDeleteRequiresSince\(\)\s*\)\s*;/', _usgStripComments($setlistSync)),
+    'user_setlists_sync PASSES $explicitProtocol as the argument after $since, then the A8 switch (not merely computes them)'
 );
 
 /* PROTOCOL 2 MUST BE QUALIFIED BY THE SCHEMA GATE. Migrations are web-run, so

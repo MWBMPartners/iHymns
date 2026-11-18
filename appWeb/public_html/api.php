@@ -4557,7 +4557,10 @@ if ($action !== null) {
                    inference from absence is retired entirely for it. Legacy
                    clients (the native apps, which never send `deleted`) pass
                    false here and keep today's behaviour untouched. */
-                $explicitProtocol
+                $explicitProtocol,
+                /* A8 — no watermark and no explicit list means we delete
+                   nothing (the Easter scenario); switchable, default on. */
+                userSyncAbsenceDeleteRequiresSince()
             );
             $deleted = 0;
             if (count($deletableIds) > 0) {
@@ -6794,7 +6797,9 @@ if ($action !== null) {
                 array_keys($localFavs),
                 $syncMode,
                 $truncated,
-                $since
+                $since,
+                false,
+                userSyncAbsenceDeleteRequiresSince() /* A8 */
             );
             $deleted = 0;
             if (count($deletableIds) > 0) {
@@ -7059,7 +7064,9 @@ if ($action !== null) {
                     $localTags,
                     $syncMode,
                     $truncated,
-                    $since
+                    $since,
+                    false,
+                    userSyncAbsenceDeleteRequiresSince() /* A8 */
                 );
                 if (count($deletableTags) > 0) {
                     $del = $db->prepare('DELETE FROM tblUserCustomTags WHERE UserId = ? AND Tag = ?');

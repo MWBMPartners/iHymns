@@ -3433,7 +3433,14 @@ paths:
         is exactly as before (WS-F #1018, guarded by #1649):
           * `replace` — the client's full current list is authoritative;
             server setlists absent from the payload are DELETED, subject to
-            the `since` watermark guard.
+            the `since` watermark guard. **A `replace` with no `since` (and no
+            `deleted`) deletes NOTHING** (account/profile rewrite A8): a device
+            that cannot say what it has seen tells us nothing about deletions.
+            A setlist deleted on such a device therefore comes back on the next
+            sync until the client sends `since` or moves to protocol 2. The
+            behaviour is on by default; the owner can switch it off with the
+            `sync_absence_delete_requires_since` app setting (`'0'`). The same
+            rule applies to `favorites_sync` and `custom_tags_sync` `replace`.
           * `merge` (default) — union; server-only setlists are preserved.
 
         `mode` governs only the absence inference. An explicit `deleted` list

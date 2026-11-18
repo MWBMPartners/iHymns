@@ -251,7 +251,27 @@ if (!function_exists('userSyncDeletableIds')) {
      * @param string        $mode       'merge' | 'replace'.
      * @param bool          $truncated  Did the cap bite? (userSyncCap()['truncated'])
      * @param string|null   $since      Canonical watermark, or null for legacy behaviour.
+     * ---------------------------------------------------------------------
+     * REFUSAL 4 (account/profile rewrite A8, epic #2180) — NO `since`, NO DELETE
+     * ---------------------------------------------------------------------
+     *
+     * ELI5: a device that cannot say "I have seen everything up to time T" and
+     * also does not name what it deleted has told us nothing about deletions,
+     * so we delete nothing.
+     *
+     * The older Apple app sends a "replace" with no `since` and no `deleted`.
+     * Before this refusal the server read every set list the phone did not
+     * mention as "deleted": make "Easter" on the web, edit anything on an iPhone
+     * that has not refreshed yet, and Easter was gone. With `$requireSince` true
+     * (the default at the call sites, via the `sync_absence_delete_requires_since`
+     * switch) a replace without a watermark deletes nothing. The cost: until the
+     * Apple app speaks protocol 2 (step I1), a set list deleted on an iPhone
+     * comes back. That is visible and recoverable, unlike the silent loss it
+     * replaces. The parameter defaults to false so a caller (or test) that does
+     * not opt in sees exactly the older answers.
+     *
      * @param bool          $explicitProtocol Client sent an explicit `deleted` list (#1661).
+     * @param bool          $requireSince     A8: with no `since`, delete nothing.
      * @return string[] Ids safe to DELETE — possibly empty, never null.
      */
     function userSyncDeletableIds(
@@ -260,10 +280,15 @@ if (!function_exists('userSyncDeletableIds')) {
         string $mode,
         bool $truncated,
         ?string $since,
-        bool $explicitProtocol = false
+        bool $explicitProtocol = false,
+        bool $requireSince = false
     ): array {
         /* Refusals 0 + 1 + 2 — nothing is deletable at all. */
         if ($explicitProtocol || $mode !== 'replace' || $truncated) {
+            return [];
+        }
+        /* Refusal 4 (A8) — no watermark, no explicit list: no deletions. */
+        if ($requireSince && $since === null) {
             return [];
         }
 
@@ -287,6 +312,25 @@ if (!function_exists('userSyncDeletableIds')) {
             $deletable[] = $id;
         }
         return $deletable;
+    }
+}
+
+if (!function_exists('userSyncAbsenceDeleteRequiresSince')) {
+    /**
+     * Is refusal 4 of userSyncDeletableIds() switched on? (A8, epic #2180)
+     *
+     * Reads `tblAppSettings.sync_absence_delete_requires_since`. Absent or
+     * anything other than the exact text '0' means ON, so a missing row, a
+     * typo, or an unreachable database all land on the PROTECTIVE side. Turning
+     * it off ('0') restores the older behaviour instantly, with no deploy.
+     */
+    function userSyncAbsenceDeleteRequiresSince(): bool
+    {
+        try {
+            return getAppSetting('sync_absence_delete_requires_since', '1') !== '0';
+        } catch (\Throwable $_e) {
+            return true;
+        }
     }
 }
 
