@@ -11118,6 +11118,8 @@ if ($action !== null) {
                     sendJson([
                         'subtags'          => [],
                         'languages'        => [],
+                        /* A3: nothing can be saved here yet, so "not set". */
+                        'isSet'            => false,
                         'migration_needed' => true,
                     ]);
                     break;
@@ -11141,9 +11143,17 @@ if ($action !== null) {
                         );
                     }
                 }
+                /* A3 (epic #2180): `isSet` tells a client whether the account
+                   was EVER given a choice. `[]` alone cannot say: it comes back
+                   both for "never saved" and for "chose all languages" (saving
+                   an empty list stores NULL on purpose, so both read as NULL
+                   here). A client that has a choice of its own, and is told
+                   `isSet: false`, sends its choice up instead of letting the
+                   empty answer wipe it. Older clients ignore the extra key. */
                 sendJson([
                     'subtags'   => preferredLanguageBaseSubtags($languages),
                     'languages' => $languages,
+                    'isSet'     => $raw !== null && $raw !== '',
                 ]);
             } catch (\Throwable $e) {
                 error_log('[user_preferred_languages] ' . $e->getMessage());

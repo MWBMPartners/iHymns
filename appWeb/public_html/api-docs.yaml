@@ -7644,6 +7644,17 @@ paths:
                     description: Added in #2137. Whole tags in the user's priority order.
                     items: { type: string }
                     example: ["pt-BR", "en"]
+                  isSet:
+                    type: boolean
+                    description: |
+                      Added in the account/profile rewrite (A3). True when the
+                      account has a saved language list; false when none was
+                      ever saved. Saving an empty list ("all languages") is
+                      stored as nothing, so it also reads false. A client that
+                      has its own choice and is told `false` should send its
+                      choice up with the save action rather than adopt the
+                      empty `languages`. Older servers omit the field, which a
+                      client should treat as "unknown, adopt as before".
                   migration_needed:
                     type: boolean
                     description: Present and true on pre-#736 deployments only.

@@ -74,7 +74,7 @@ import { EVT_LANGUAGE_FILTER_CHANGED, STORAGE_LANGUAGE_FILTER } from '../constan
 import { apiFetch } from '../utils/api-client.js';
 import {
     languageGroupOf, mergePreferenceOrder, preferenceMatchesTag,
-    MAX_PREFERENCES, TOO_MANY_LANGUAGES_MESSAGE, usablePreferenceList,
+    MAX_PREFERENCES, TOO_MANY_LANGUAGES_MESSAGE, usablePreferenceList, decideAccountLanguages,
 } from '../utils/language-tags.js';
 
 const STORAGE_KEY = STORAGE_LANGUAGE_FILTER;
@@ -485,14 +485,21 @@ export function bootSongbookLanguageFilter(root) {
             .then(j => {
                 /* #2137 — `languages` holds the whole tags in the account's
                    saved order; `subtags` (base codes) is the older field,
-                   used only if a server predates `languages`. */
-                const list = (j && Array.isArray(j.languages)) ? j.languages
-                    : ((j && Array.isArray(j.subtags)) ? j.subtags : null);
-                if (!list) return;
-                /* Round 5 — the first 32, as everywhere else. */
-                const remote = usablePreferenceList(list);
+                   used only if a server predates `languages`.
+                   A3 (epic #2180): when the account has never been given a
+                   choice (`isSet: false`) and this device already has one,
+                   send the device's choice UP instead of adopting the
+                   account's empty answer (which used to wipe it). The
+                   decision itself is the shared, tested function. */
+                const decision = decideAccountLanguages(j, loadSavedSubtags());
+                if (decision.action === 'keep') return;
+                if (decision.action === 'push') {
+                    saveSubtagsToAccount(decision.list);
+                    return;
+                }
                 /* Adopt the remote list — it's the canonical
                    "across all my devices" view. */
+                const remote = decision.list;
                 saveSubtags(remote);
                 syncUiFromSubtags(remote);
                 applyFilter(scope, remote);
