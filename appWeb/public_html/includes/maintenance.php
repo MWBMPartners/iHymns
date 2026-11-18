@@ -61,6 +61,22 @@ if (is_file($secretCryptoFile)) {
     require_once $secretCryptoFile;
 }
 
+/**
+ * The per-request memory behind getAppSetting(), shared so setAppSetting() can
+ * forget a value it has just changed.
+ *
+ * ELI5: getAppSetting() remembers each answer for the rest of the page load. If
+ * a page saves a setting and then draws itself, it would otherwise show the OLD
+ * remembered value. This gives both functions the same notebook.
+ *
+ * @return array<string, ?string>
+ */
+function &appSettingMemory(): array
+{
+    static $memory = [];
+    return $memory;
+}
+
 /** Env-suffixed settings key, e.g. maintenance_mode_alpha / _beta / _production. */
 function maintenanceSettingKey(string $base): string
 {
@@ -83,7 +99,7 @@ function maintenanceSettingKey(string $base): string
  */
 function getAppSetting(string $key, ?string $default = null): ?string
 {
-    static $cache = [];
+    $cache = &appSettingMemory();
     if (array_key_exists($key, $cache)) {
         return $cache[$key];
     }
@@ -183,9 +199,11 @@ function getAppSettingStrict(string $key, ?string $default = null, ?object $db =
  * require. A fatal is the correct outcome, and it happens on the developer's
  * first run rather than on a user's secret.
  *
- * ⚠️ getAppSetting() memoises per request, so a value read BEFORE this call is
- * not refreshed by it. Every current caller redirects (POST/Redirect/Get)
- * immediately after writing, so the stale window never reaches a render.
+ * getAppSetting() remembers values per request. This call FORGETS the key it
+ * just wrote, so a page that saves a setting and then draws itself in the same
+ * request (manage/configuration.php does not redirect) shows the new value, not
+ * the remembered old one. (The earlier version of this note claimed every caller
+ * redirects; that was wrong.)
  *
  * @param \mysqli $db
  * @param string  $key
@@ -207,6 +225,8 @@ function setAppSetting(\mysqli $db, string $key, string $value): void
     $stmt->bind_param('ss', $key, $stored);
     $stmt->execute();
     $stmt->close();
+    $memory = &appSettingMemory();
+    unset($memory[$key]);
 }
 
 /** Is THIS environment in admin-triggered maintenance mode? (false on a DB error.) */

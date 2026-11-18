@@ -97,6 +97,30 @@ chk('the switch reads through the strict reader, not getAppSetting()',
     str_contains(code((string)file_get_contents($web . '/includes/channel_switch.php')), 'getAppSettingStrict($key, $default)')
     && !str_contains(code((string)file_get_contents($web . '/includes/channel_switch.php')), 'getAppSetting('));
 
+/* ---- saving a setting must not leave the page showing the old remembered value (review finding 5) ---- */
+echo "the settings memory\n";
+class IhymnsWriteDb extends mysqli
+{
+    public function __construct() {}
+    #[\ReturnTypeWillChange]
+    public function prepare(string $query) { return new IhymnsWriteStmt(); }
+}
+class IhymnsWriteStmt { public function bind_param(...$a) { return true; } public function execute() { return true; } public function close() {} }
+/* getAppSetting() cannot reach a database here, so it remembers the DEFAULT it was given, exactly like a remembered old value. */
+chk('before the save, the remembered value is the old one', getAppSetting('mem_k', 'old') === 'old');
+setAppSetting(new IhymnsWriteDb(), 'mem_k', 'new');
+$memAfter = appSettingMemory();
+chk('setAppSetting() forgets the key it just wrote (so the next read is fresh, not the remembered old value)', !array_key_exists('mem_k', $memAfter));
+chk('...and only that key', array_key_exists('secret_encryption_active', $memAfter));
+$confSrc = code((string)file_get_contents($web . '/manage/configuration.php'));
+$hAt = strpos($confSrc, "\$action === 'save_account_writes'");
+$cardAt = strpos($confSrc, '$accountWritesChannels = ihymns_parse_channels_csv(');
+chk('the account-writes card reads its state AFTER the save handler runs', $hAt !== false && $cardAt !== false && $hAt < $cardAt);
+chk('the card reads through getAppSetting() (which the save now refreshes), not a value captured before the save',
+    $cardAt !== false && str_contains(substr($confSrc, $cardAt, 260), 'getAppSetting(ACCOUNT_WRITES_SETTING_KEY'));
+chk('the save goes through setAppSetting() (the function that refreshes the memory)',
+    (bool)preg_match('/\$saveSetting\s*=\s*static function[^{]*\{\s*setAppSetting\(/', $confSrc));
+
 /* ---- cross_site_sync still behaves, by delegation ---- */
 echo "cross_site_sync.php delegates\n";
 $cs = code((string)file_get_contents($web . '/includes/cross_site_sync.php'));
