@@ -80,3 +80,8 @@ important recurring one, worth knowing up front:
 > finds it. Wrong information is worse than missing information. If the identity is gone,
 > let the data go, keep a copy so it can be recovered, and flag anything that depended on
 > it.
+
+> **PHP: 8.4 and 8.5 are supported, 8.6 is being prepared** (rule #53 in `.claude/CLAUDE.md`).
+> Where behaviour must differ, check `PHP_VERSION_ID >= 80600` (the new way on 8.6, the old way on
+> 8.4/8.5); never use syntax that only 8.6 understands. Do not call `metaphone()` directly: use
+> `ihymns_metaphone()`. `tests/php/test-php86-deprecations.php` fails on anything 8.6 deprecates.
