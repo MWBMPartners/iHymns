@@ -4877,6 +4877,21 @@ if ($action !== null) {
                    sibling namespace. The isolation property only holds once
                    every writer is namespaced; migrating settings.js to
                    `namespace: 'ihymns.web'` is the remaining step. */
+                /* A9 (epic #2180): the owner's switch to REFUSE whole-box saves.
+                   Default '1' = nothing changes. Set to '0' and a save that
+                   names no shelf is answered 409 `namespace_required` and
+                   nothing is stored, because it would wipe every other shelf
+                   (push choices, list sorts, card layouts, iLyricsDB). The
+                   reason code, not the sentence, is the contract (rule #35).
+                   Only the exact text '0' turns it off, so a missing row or a
+                   typo leaves things as they are. */
+                if (getAppSetting('user_settings_legacy_blob_writes', '1') === '0') {
+                    sendJson([
+                        'error'  => 'This save must name a namespace.',
+                        'reason' => 'namespace_required',
+                    ], 409);
+                    break;
+                }
                 if (strlen(userSettingsEncode($settings)) > 16384) {
                     sendJson(['error' => 'Settings payload too large.'], 413);
                     break;

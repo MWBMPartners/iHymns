@@ -19330,9 +19330,19 @@ paths:
         a client reading its own settings before it has ever written any
         is the normal first-run case.
 
-        This is the **only** user-preference store. `user_preferences` /
-        `user_preferences_sync` were an un-namespaced duplicate of it and
-        were removed in #1671 F5; both now return `400 Unknown action`.
+        This is the shared per-account **settings box** that several
+        features write into (display settings, list sorts, push choices,
+        card layouts, iLyricsDB). It is NOT the only place an account keeps
+        preferences: the preferred-language list lives in its own column
+        (`user_preferred_languages`), and card layouts are stored under the
+        `cardLayouts` key, which cannot be read back by `namespace` because
+        its capital letter fails the namespace name rule (use the
+        `card_layout_*` actions). `user_preferences` / `user_preferences_sync`
+        were an un-namespaced duplicate of this store and were removed in
+        #1671 F5; both now return `400 Unknown action`. Every write to the box
+        goes through one locked writer, so two saves made at the same moment
+        take turns rather than overwriting each other (account/profile
+        rewrite A1).
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -19395,7 +19405,13 @@ paths:
 
         ⚠ A namespace-less POST still replaces the WHOLE blob, so it clears
         every namespace. Isolation between products holds once all writers
-        name a namespace.
+        name a namespace. Account/profile rewrite A9: the owner can switch
+        whole-blob saves OFF by setting the `user_settings_legacy_blob_writes`
+        app setting to `'0'` (default `'1'`, nothing changes). While off, a
+        namespace-less POST is refused with **409** and
+        `{ "reason": "namespace_required" }` and nothing is stored. A client
+        should branch on the 409 status and the `reason` code, never on the
+        error sentence.
 
         Known iHymns-owned namespaces (not an exhaustive/enforced list — any
         name matching the grammar is accepted): `ihymns.push` (notification
@@ -19457,6 +19473,12 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "401":
           description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: |
+            Whole-blob saves are switched off (`user_settings_legacy_blob_writes`
+            is `'0'`) and the request named no namespace. Body carries
+            `reason: namespace_required`. Resend with a `namespace`.
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "403":
           description: |
