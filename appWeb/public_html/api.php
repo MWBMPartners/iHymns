@@ -10884,7 +10884,13 @@ if ($action !== null) {
             }
 
             $db = getDbMysqli();
-            $stmt = $db->prepare('DELETE FROM tblSongHistory WHERE UserId = ?');
+            /* A5 (epic #2180): "Clear history" removes the person's NAME from
+               their past views; it does not delete the view rows. A row with no
+               person still counts toward how popular a song is and toward the
+               organisation licence reports, which a delete used to lower
+               quietly. `cleared` still means "how many of your rows were
+               cleared". */
+            $stmt = $db->prepare('UPDATE tblSongHistory SET UserId = NULL WHERE UserId = ?');
             $authUserId = (int)$authUser['Id'];
             $stmt->bind_param('i', $authUserId);
             $stmt->execute();

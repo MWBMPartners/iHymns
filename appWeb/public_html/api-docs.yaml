@@ -9707,10 +9707,13 @@ paths:
       tags: [Song Metadata]
       summary: Clear the caller's recently-viewed history (WS-G #1019)
       description: |
-        Deletes the authenticated user's own `tblSongHistory` rows so a
-        "Clear" propagates across devices instead of repopulating from the
-        server on the next pull. Anonymous (UserId NULL) rows — which drive
-        aggregate popularity — are untouched.
+        Removes the authenticated user's name from their own `tblSongHistory`
+        rows (sets `UserId` to NULL) so a "Clear" propagates across devices
+        instead of repopulating from the server on the next pull. The rows
+        themselves are kept, as anonymous views, so song popularity and
+        organisation licence report counts do not drop when someone clears
+        their history (account/profile rewrite A5). `cleared` is the number of
+        the person's rows that were unlinked.
       security:
         - bearerAuth: []
       parameters:

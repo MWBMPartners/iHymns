@@ -73,4 +73,16 @@ foreach ($searchInserts as [$file, $cols]) {
     chk("$file: the tblSearchQueries insert does not name UserId", stripos($cols, 'UserId') === false, $cols);
 }
 
+/* ---- A5: clearing history unlinks, never deletes ---- */
+$api = $all['api.php'] ?? '';
+chk('api.php was scanned', $api !== '');
+$deletesHistory = [];
+foreach ($all as $file => $text) {
+    if (preg_match('/DELETE\s+FROM\s+tblSongHistory\s+WHERE\s+UserId\s*=/i', $text)) { $deletesHistory[] = $file; }
+}
+chk('nothing deletes a person\'s tblSongHistory rows by UserId (account erasure walks the table links instead)',
+    $deletesHistory === [], implode(', ', $deletesHistory));
+chk('song_history_clear unlinks the rows (UPDATE ... SET UserId = NULL WHERE UserId = ?)',
+    (bool)preg_match('/UPDATE\s+tblSongHistory\s+SET\s+UserId\s*=\s*NULL\s+WHERE\s+UserId\s*=\s*\?/i', $api));
+
 exit($fail === 0 ? 0 : 1);
