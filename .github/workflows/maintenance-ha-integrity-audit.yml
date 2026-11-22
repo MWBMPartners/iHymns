@@ -64,11 +64,13 @@
 name: Maintenance — HA Integrity Audit
 
 on:
-  schedule:
-    # Run on the 14th of every month at 09:23 UTC. Two-week offset
-    # from the issues sweep on the 28th so the same Actions slot
-    # isn't bottlenecked.
-    - cron: '23 9 14 * *'
+  # PAUSED 2026-11-22 (owner decision). The monthly schedule (14th, 09:23 UTC)
+  # was switched off because four runs in a row (Sep to Nov 2026) gave the same
+  # answer: about 99.8% of the 526 hymns differ, almost all of it layout-only or
+  # "different edition", and nothing needed doing. To start it again, put back:
+  #   schedule:
+  #     - cron: '23 9 14 * *'
+  # It can still be run by hand from the Actions tab (workflow_dispatch below).
   workflow_dispatch:
 
 permissions:
