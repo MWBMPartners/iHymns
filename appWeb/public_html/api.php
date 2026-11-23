@@ -7096,8 +7096,9 @@ if ($action !== null) {
                     if ($upsert->affected_rows === 1) $newlyAdded++; /* 1=insert, 2=update, 0=no change */
                 } catch (\Throwable $_e) {
                     /* An error that ENDS the transaction must go up, never be skipped (PR 2a: this
-                       loop can now run inside one). */
-                    if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
+                       loop can now run inside one). Only then: with no transaction (the switch is off
+                       or the table is not there) one failed row is skipped exactly as before. */
+                    if ($markersReady && songRelocateIsTransactionFatal($_e)) { throw $_e; }
                     /* Orphan song id / transient error — skip, keep the batch. */
                 }
             }

@@ -1145,6 +1145,7 @@ foreach (['favorites_sync' => 'favorite', 'custom_tags_sync' => 'custom_tag'] as
 }
 $favCode = _usgStripComments((string)_usgCaseBody($apiSrc, 'favorites_sync'));
 _usgAssert((bool)preg_match('/songRelocateIsTransactionFatal\(\$_e\)/', $favCode), 'favorites_sync: an error that ends the transaction is passed up, not skipped as an "orphan song"');
+_usgAssert((bool)preg_match('/\$markersReady\s*&&\s*songRelocateIsTransactionFatal\(\$_e\)/', $favCode), 'favorites_sync: ...but only inside the new transaction; with the switch off one failed row is skipped exactly as before (byte-identical)');
 _usgAssert(str_contains($favCode, 'foreach ($plan[\'upsert\'] as $sid)'), 'favorites_sync: only the plan\'s ids are saved');
 /* Review fix 1: a row saved by OLDER code after a marker beats the marker, and a reply never lists a removal for an item it returns. */
 $tagCodeR = _usgStripComments((string)_usgCaseBody($apiSrc, 'custom_tags_sync'));
