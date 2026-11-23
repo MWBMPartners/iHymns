@@ -1398,6 +1398,60 @@ if (!function_exists('userSyncItemTombstoneList')) {
     }
 }
 
+if (!function_exists('userSyncItemTombstonesRevivedByRows')) {
+    /**
+     * PURE: which delete markers are out of date because the item was saved AFTER the removal?
+     *
+     * ELI5: a "removed on purpose" note is only true until somebody saves the item again.
+     * Older code (the live site before this change, a site with the switch off, a cached old
+     * web page) saves favourites without knowing about the notes, so a row can turn up that is
+     * NEWER than its own note. That row is the later truth: the note is torn up. A row that is
+     * older than (or the same second as) its note is left alone - the removal wins there.
+     *
+     * @param array<string,string>                $tombMap id => DeletedAt (userSyncItemTombstoneMap())
+     * @param array<int,array{id:string,ts:string}> $rows   the stored items with their saved-at time
+     * @return string[] marker ids (spelled as in $tombMap) to clear
+     */
+    function userSyncItemTombstonesRevivedByRows(array $tombMap, array $rows): array
+    {
+        $fold  = static fn(string $x): string => mb_strtolower($x, 'UTF-8');
+        $saved = [];
+        foreach ($rows as $r) {
+            $saved[$fold((string)$r['id'])] = substr((string)$r['ts'], 0, 19);
+        }
+        $clear = [];
+        foreach ($tombMap as $id => $deletedAt) {
+            $f = $fold((string)$id);
+            if (isset($saved[$f]) && $saved[$f] > substr((string)$deletedAt, 0, 19)) {
+                $clear[] = (string)$id;
+            }
+        }
+        return $clear;
+    }
+}
+
+if (!function_exists('userSyncItemTombstonesWithoutLive')) {
+    /**
+     * PURE: take out of a marker list every item the person still has.
+     *
+     * ELI5: never tell a device "this was removed" about something we are, in the same
+     * reply, telling it to keep.
+     *
+     * @param array<int,array{id:string,deletedAt:string,reason:string}> $list    from userSyncItemTombstoneList()
+     * @param string[]                                                  $liveIds the items being returned
+     * @return array<int,array{id:string,deletedAt:string,reason:string}>
+     */
+    function userSyncItemTombstonesWithoutLive(array $list, array $liveIds): array
+    {
+        $fold = static fn(string $x): string => mb_strtolower($x, 'UTF-8');
+        $live = [];
+        foreach ($liveIds as $id) {
+            $live[$fold((string)$id)] = true;
+        }
+        return array_values(array_filter($list, static fn(array $t): bool => !isset($live[$fold((string)$t['id'])])));
+    }
+}
+
 if (!function_exists('userSyncItemUpsertPlan')) {
     /**
      * PURE: of the items a device sent, which may be saved, which are held back by a

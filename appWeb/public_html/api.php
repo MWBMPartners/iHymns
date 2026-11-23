@@ -6988,6 +6988,21 @@ if ($action !== null) {
                 $serverTagMap[$r['SongId']] = is_array($decoded) ? $decoded : [];
             }
 
+            /* A row saved AFTER its delete marker was put there by older code that does not know
+               about markers (the live site before this change, a site with the switch off, a
+               cached old web page): the later save is the truth, so tear up the stale marker. Done
+               inside the lock, before the markers are used below. */
+            if ($markersReady && $tombMap !== []) {
+                $revived = userSyncItemTombstonesRevivedByRows(
+                    $tombMap,
+                    array_map(static fn(array $r): array => ['id' => (string)$r['SongId'], 'ts' => (string)$r['CreatedAt']], $serverRows)
+                );
+                if ($revived !== []) {
+                    userSyncItemTombstoneClear($db, $userId, 'favorite', $revived);
+                    $tombMap = array_diff_key($tombMap, array_flip($revived));
+                }
+            }
+
             /* Authoritative replace, guarded (#1649): delete server favourites
                the client no longer has — but ONLY when the payload was complete
                (not clipped by the 500 cap) and the row predates the client's
@@ -7100,7 +7115,12 @@ if ($action !== null) {
 
             /* The markers to hand back (so the device drops what was removed elsewhere), read inside
                the same transaction. */
-            $replyTombstones = $markersReady ? userSyncItemTombstoneList($db, $userId, 'favorite', $since) : [];
+            $replyTombstones = $markersReady
+                ? userSyncItemTombstonesWithoutLive(
+                    userSyncItemTombstoneList($db, $userId, 'favorite', $since),
+                    array_column($finalRows, 'SongId')
+                )
+                : [];
 
             if ($markersReady) {
                 $db->commit();
@@ -7383,6 +7403,23 @@ if ($action !== null) {
             }
             $tagTombMap = $markersReady ? userSyncItemTombstoneMap($db, $userId, 'custom_tag') : [];
 
+            /* Same as favourites: a tag saved AFTER its marker (by older code) beats the marker. */
+            if ($markersReady && $tagTombMap !== []) {
+                $stmt = $db->prepare('SELECT Tag, CreatedAt FROM tblUserCustomTags WHERE UserId = ?');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $tagAgeRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+                $revivedTags = userSyncItemTombstonesRevivedByRows(
+                    $tagTombMap,
+                    array_map(static fn(array $r): array => ['id' => (string)$r['Tag'], 'ts' => (string)$r['CreatedAt']], $tagAgeRows)
+                );
+                if ($revivedTags !== []) {
+                    userSyncItemTombstoneClear($db, $userId, 'custom_tag', $revivedTags);
+                    $tagTombMap = array_diff_key($tagTombMap, array_flip($revivedTags));
+                }
+            }
+
             /* Replace: delete tags the client no longer has — subject to the
                shared #1649 guards (a truncated payload deletes nothing; a tag
                created after the client's `since` watermark is another device's
@@ -7453,7 +7490,9 @@ if ($action !== null) {
             $finalTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
             $stmt->close();
 
-            $replyTagTombstones = $markersReady ? userSyncItemTombstoneList($db, $userId, 'custom_tag', $since) : [];
+            $replyTagTombstones = $markersReady
+                ? userSyncItemTombstonesWithoutLive(userSyncItemTombstoneList($db, $userId, 'custom_tag', $since), $finalTags)
+                : [];
 
             if ($markersReady) {
                 $db->commit();

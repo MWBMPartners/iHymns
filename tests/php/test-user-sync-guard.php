@@ -1146,6 +1146,17 @@ foreach (['favorites_sync' => 'favorite', 'custom_tags_sync' => 'custom_tag'] as
 $favCode = _usgStripComments((string)_usgCaseBody($apiSrc, 'favorites_sync'));
 _usgAssert((bool)preg_match('/songRelocateIsTransactionFatal\(\$_e\)/', $favCode), 'favorites_sync: an error that ends the transaction is passed up, not skipped as an "orphan song"');
 _usgAssert(str_contains($favCode, 'foreach ($plan[\'upsert\'] as $sid)'), 'favorites_sync: only the plan\'s ids are saved');
+/* Review fix 1: a row saved by OLDER code after a marker beats the marker, and a reply never lists a removal for an item it returns. */
+$tagCodeR = _usgStripComments((string)_usgCaseBody($apiSrc, 'custom_tags_sync'));
+foreach (['favorites_sync' => [$favCode, 'favorite', 'finalRows'], 'custom_tags_sync' => [$tagCodeR, 'custom_tag', 'finalTags']] as $caseR => [$codeR, $kindR, $liveVar]) {
+    _usgAssert((bool)preg_match("/userSyncItemTombstonesRevivedByRows\\(/", $codeR) && (bool)preg_match("/userSyncItemTombstoneClear\\(\\\$db, \\\$userId, '{$kindR}', \\\$revived/", $codeR), "{$caseR}: a row newer than its marker tears the marker up");
+    _usgAssert((bool)preg_match("/userSyncItemTombstonesWithoutLive\\([\\s\\S]{0,200}?\\\${$liveVar}/", $codeR), "{$caseR}: the reply never lists a removal for an item it also returns");
+}
+$rv = userSyncItemTombstonesRevivedByRows(['CP-0001' => '2026-11-20 10:00:00', 'CP-0002' => '2026-11-20 10:00:00', 'CP-0003' => '2026-11-20 10:00:00'], [
+    ['id' => 'cp-0001', 'ts' => '2026-11-20 10:00:01'], ['id' => 'CP-0002', 'ts' => '2026-11-20 10:00:00'], ['id' => 'CP-0003', 'ts' => '2026-11-20 09:00:00'],
+]);
+_usgAssert($rv === ['CP-0001'], 'only a row strictly newer than its marker revives it (same second or older: the removal stands, letter case ignored)');
+_usgAssert(userSyncItemTombstonesWithoutLive([['id' => 'CP-0001', 'deletedAt' => 'x', 'reason' => 'user'], ['id' => 'CP-0009', 'deletedAt' => 'x', 'reason' => 'user']], ['cp-0001']) === [['id' => 'CP-0009', 'deletedAt' => 'x', 'reason' => 'user']], 'a marker for an item that is being returned is dropped from the list');
 $rmCode = _usgStripComments((string)_usgCaseBody($apiSrc, 'favorites_remove'));
 $rmOrder = ['begin_transaction()', 'userSyncLockPerson(', 'DELETE FROM tblUserFavorites', "userSyncItemTombstoneWrite(\$db, \$authUserId, 'favorite'", '->commit()'];
 $last = -1; $ok = true;
@@ -1260,6 +1271,26 @@ if ($dbA === null) {
         $p = userSyncItemUpsertPlan(['easter'], ['Easter'], userSyncItemTombstoneMap($dbA, 1, 'custom_tag'), null, true);
         userSyncItemTombstoneClear($dbA, 1, 'custom_tag', $p['clear']);
         _usgAssert($p['upsert'] === ['easter'] && userSyncItemTombstoneMap($dbA, 1, 'custom_tag') === [], 'a custom tag added back on purpose is saved and its marker torn up (letter case ignored)');
+
+        /* Review fix 1, real database: marker written, THEN older code inserts the row by plain SQL, then a protocol-2 sync. */
+        $dbA->query("DELETE FROM tblUserFavorites WHERE UserId = 1");
+        $dbA->query("DELETE FROM tblUserSyncTombstones WHERE UserId = 1");
+        userSyncItemTombstoneWrite($dbA, 1, 'favorite', ['CP-0007', 'CP-0008'], '2026-11-20 10:00:00', 'user');
+        $dbA->query("INSERT INTO tblUserFavorites (UserId, SongId, CreatedAt) VALUES (1, 'CP-0007', '2026-11-20 11:00:00')");      /* newer than its marker: re-added by old code */
+        $dbA->query("INSERT INTO tblUserFavorites (UserId, SongId, CreatedAt) VALUES (1, 'CP-0008', '2026-11-20 09:00:00')");      /* older than its marker: still stale */
+        $dbA->begin_transaction();
+        userSyncLockPerson($dbA, 1);
+        $tm = userSyncItemTombstoneMap($dbA, 1, 'favorite');
+        $rows = $dbA->query("SELECT SongId, CreatedAt FROM tblUserFavorites WHERE UserId = 1")->fetch_all(MYSQLI_ASSOC);
+        $rev = userSyncItemTombstonesRevivedByRows($tm, array_map(static fn($r) => ['id' => $r['SongId'], 'ts' => $r['CreatedAt']], $rows));
+        userSyncItemTombstoneClear($dbA, 1, 'favorite', $rev);
+        $live = array_column($dbA->query("SELECT SongId FROM tblUserFavorites WHERE UserId = 1")->fetch_all(MYSQLI_ASSOC), 'SongId');
+        $toms = userSyncItemTombstonesWithoutLive(userSyncItemTombstoneList($dbA, 1, 'favorite', null), $live);
+        $dbA->commit();
+        _usgAssert(in_array('CP-0007', $live, true) && !isset(userSyncItemTombstoneMap($dbA, 1, 'favorite')['CP-0007']), 'row re-added by older code: the row is kept and its marker is gone');
+        _usgAssert(!in_array('CP-0007', array_column($toms, 'id'), true), '...and it is not listed in the removals handed back');
+        _usgAssert(isset(userSyncItemTombstoneMap($dbA, 1, 'favorite')['CP-0008']), 'a row OLDER than its marker does not tear the marker up');
+        _usgAssert(!in_array('CP-0008', array_column($toms, 'id'), true), '...yet it is still not listed while the row is being returned');
     } finally {
         mysqli_report(MYSQLI_REPORT_OFF);
         $dbA->query("DROP DATABASE IF EXISTS `{$dbName}`");
