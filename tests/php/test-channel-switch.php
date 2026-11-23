@@ -32,6 +32,7 @@ $_SERVER['SCRIPT_FILENAME'] = 'test';
 require_once $web . '/includes/channel_switch.php';
 require_once $web . '/includes/account_write_gate.php';
 require_once $web . '/includes/cross_site_sync.php';
+require_once $web . '/includes/profile_sync_gate.php';
 
 $fail = 0;
 function chk(string $label, bool $cond, string $detail = ''): void
@@ -171,5 +172,42 @@ chk('the page is gated by manage_configuration and CSRF before any action', (boo
     && strpos($conf, "userHasEntitlement('manage_configuration'") < (int)$h && (bool)preg_match('/validateCsrf(Request)?\(/', substr($conf, 0, (int)$h)));
 chk('the card posts to the same action', str_contains($conf, 'value="save_account_writes"'));
 chk('the API-coverage guard lists it as web-only', (bool)preg_match('/[\'"]save_account_writes[\'"]\s*=>\s*[\'"]web_only:/', (string)file_get_contents($repo . '/tests/php/test-manage-action-api-coverage.php')));
+
+
+/* ---- the new-account-behaviour switch (PR 2a step 2a-1) ---- */
+echo "profile sync switch\n";
+chk('the key and default are the agreed ones: OFF unless an admin ticks a channel',
+    PROFILE_SYNC_SETTING_KEY === 'profile_sync_channels' && PROFILE_SYNC_DEFAULT === 'none');
+chk('no row at all (the reader hands back the default it was given) is OFF on every channel',
+    profileSyncEnabledHere(static fn($k, $d) => $d, 'production') === false
+    && profileSyncEnabledHere(static fn($k, $d) => $d, 'beta') === false
+    && profileSyncEnabledHere(static fn($k, $d) => $d, 'alpha') === false);
+chk('ticking alpha turns it on for alpha only', profileSyncEnabledHere($ok('alpha'), 'alpha') && !profileSyncEnabledHere($ok('alpha'), 'beta') && !profileSyncEnabledHere($ok('alpha'), 'production'));
+chk('ticking all three turns it on everywhere', profileSyncEnabledHere($ok('production,beta,alpha'), 'production') && profileSyncEnabledHere($ok('production,beta,alpha'), 'beta') && profileSyncEnabledHere($ok('production,beta,alpha'), 'alpha'));
+chk('"none" is off everywhere', !profileSyncEnabledHere($ok('none'), 'production') && !profileSyncEnabledHere($ok('none'), 'alpha'));
+chk('an unreadable switch is OFF, even on production (fails closed)',
+    profileSyncEnabledHere($boom, 'production') === false && profileSyncEnabledHere($boom, 'alpha') === false);
+chk('the reason codes are the agreed ones', PROFILE_SYNC_DISABLED_REASON === 'profile_sync_disabled'
+    && PROFILE_SYNC_NOT_READY_REASON === 'profile_sync_not_ready' && profileSyncDisabledBody()['reason'] === 'profile_sync_disabled');
+$psHolders = [];
+$psIt = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($repo . '/appWeb', FilesystemIterator::SKIP_DOTS));
+foreach ($psIt as $f) {
+    $rel = substr($f->getPathname(), strlen($repo) + 1);
+    if (!$f->isFile() || !preg_match('/\.(php|js|html)$/', $rel) || str_contains($rel, 'private_html/lib/')) { continue; }
+    if (preg_match('/[\'"]profile_sync_channels[\'"]/', (string)@file_get_contents($f->getPathname()))) { $psHolders[] = $rel; }
+}
+chk('the quoted key appears in exactly one file under appWeb/ (' . implode(', ', $psHolders) . ')', $psHolders === ['appWeb/public_html/includes/profile_sync_gate.php']);
+$psGate = code((string)file_get_contents($web . '/includes/profile_sync_gate.php'));
+chk('it reads through the shared switch with onError=false, never a copy of the channel parse',
+    (bool)preg_match('/channelSwitchEnabledHere\(\s*PROFILE_SYNC_SETTING_KEY\s*,\s*PROFILE_SYNC_DEFAULT\s*,\s*false\s*,/', $psGate)
+    && !str_contains($psGate, 'ihymns_parse_channels_csv('));
+$psConf = code((string)file_get_contents($web . '/manage/configuration.php'));
+$psAt = strpos($psConf, "\$action === 'save_profile_sync'");
+chk('configuration.php has a save_profile_sync handler that saves through the constant', $psAt !== false && str_contains(substr($psConf, (int)$psAt, 3500), 'PROFILE_SYNC_SETTING_KEY'));
+chk('the handler stores "none" for nothing ticked', (bool)preg_match('/\$psChansOut\s*===\s*\[\]\s*\?\s*[\'"]none[\'"]/', substr($psConf, (int)$psAt, 3500)));
+chk('the card posts to the same action', str_contains($psConf, 'value="save_profile_sync"'));
+chk('the page tells the browser through profileSync.enabled, and only when the switch AND the table are ready',
+    (bool)preg_match('/[\'"]profileSync[\'"]\s*=>\s*\[\s*[\'"]enabled[\'"]\s*=>\s*profileSyncActiveHere\(\)/', code((string)file_get_contents($web . '/index.php'))));
+chk('the API-coverage guard lists it as web-only', (bool)preg_match('/[\'"]save_profile_sync[\'"]\s*=>\s*[\'"]web_only:/', (string)file_get_contents($repo . '/tests/php/test-manage-action-api-coverage.php')));
 
 exit($fail === 0 ? 0 : 1);

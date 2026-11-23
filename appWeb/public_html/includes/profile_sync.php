@@ -1,0 +1,85 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * profile_sync.php - the new per-person items table, and "has it been created here?"
+ * ============================================================================
+ * Account/profile rewrite (epic #2180). PR 2a only needs the readiness check;
+ * the sync core itself arrives in PR 2b and will live in this same file.
+ *
+ * ELI5
+ * ----
+ * The foundation migration (B1) creates a new table, `tblUserProfileItems`.
+ * Migrations are run by hand from the admin page, and the three copies of the
+ * site share one database, so code can be deployed before the table exists.
+ * With mysqli in STRICT mode, asking for a table that is not there THROWS and
+ * would blank the page. So before anything touches the table it asks
+ * `profileItemsReady()`, and if the answer is no it behaves exactly as it did
+ * before this work existed.
+ *
+ * @see includes/profile_sync_gate.php  the on/off switch
+ * @see tests/php/test-account-foundation-gating.php  the guard that every use of the table sits behind this check
+ */
+
+if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
+    http_response_code(403);
+    exit('Access denied.');
+}
+
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'profile_sync_gate.php';
+
+if (!function_exists('profileItemsReady')) {
+    /**
+     * Has the `tblUserProfileItems` table been created on this install?
+     *
+     * Remembered for the rest of the request (the answer cannot change mid-request).
+     * An error while asking counts as "not ready" (fail safe) and is NOT remembered,
+     * so a brief database hiccup does not switch the feature off for a whole request.
+     *
+     * @param \mysqli $db a live connection from getDbMysqli()
+     */
+    function profileItemsReady(\mysqli $db): bool
+    {
+        static $ready = null;
+        if ($ready !== null) {
+            return $ready;
+        }
+        try {
+            $stmt = $db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblUserProfileItems' LIMIT 1"
+            );
+            $stmt->execute();
+            $ready = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return $ready;
+        } catch (\Throwable $_e) {
+            return false;
+        }
+    }
+}
+
+if (!function_exists('profileSyncActiveHere')) {
+    /**
+     * Should THIS site use the new account behaviour right now? True only when the
+     * channel switch is ticked AND the new table has been created.
+     *
+     * ELI5: both lights must be green. The switch is checked first, so while it is
+     * off (the default) no database question is asked at all. Any database trouble
+     * counts as "not active" - the previous behaviour carries on.
+     *
+     * @param ?\mysqli $db optional connection; one is opened only if the switch is on
+     */
+    function profileSyncActiveHere(?\mysqli $db = null): bool
+    {
+        if (!profileSyncEnabledHere()) {
+            return false;
+        }
+        try {
+            return profileItemsReady($db ?? getDbMysqli());
+        } catch (\Throwable $_e) {
+            return false;
+        }
+    }
+}

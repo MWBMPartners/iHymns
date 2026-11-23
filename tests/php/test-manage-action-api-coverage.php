@@ -610,6 +610,7 @@ $MAPPING = [
         'save_live_follow_idle'            => 'web_only:configuration-secrets',
         'save_maintenance'                 => 'web_only:configuration-secrets',
         'save_native_apps'                 => 'web_only:configuration-secrets',
+        'save_profile_sync'                => 'web_only:configuration-secrets',
         'save_pd_publication_threshold'    => 'web_only:configuration-secrets',
         /* #2024/#2025 — a rare, deliberate, whole-installation SEO switch;
            native apps have no admin-configuration surface and no

@@ -161,6 +161,7 @@ enforceMaintenanceForPublicSite();
    never disagree with each other. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'cross_site_sync.php'; /* #2143 — per-channel switch for the settings sync */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_sync.php'; /* account/profile rewrite PR 2a — the new-account-behaviour switch + "table exists" check */
 $searchEngineHidden = !searchEngineVisibleHere();
 searchVisibilityEmitNoindexHeader();
 
@@ -2222,6 +2223,9 @@ if (!empty($breadcrumbItems)) {
             /* #2143 — the cross-site settings sync switch for THIS channel. Off by default; the old
                `storageBridgeUrl` (a hidden frame that never connected) is gone. */
             'crossSiteSync'   => ['enabled' => crossSiteSyncEnabledHere(), 'channel' => ihymns_environment()],
+            /* Account/profile rewrite PR 2a: true only when this channel's switch is ticked AND the
+               new table exists. Off by default, so nothing changes until an admin ticks a channel. */
+            'profileSync'     => ['enabled' => profileSyncActiveHere()],
             'analytics'       => [
                 'hasGa4'       => !empty(APP_CONFIG['analytics']['google_analytics_id']),
                 'hasClarity'   => !empty(APP_CONFIG['analytics']['clarity_id']),
