@@ -96,6 +96,31 @@ chk('the web module that calls them exists and calls both', strpos($mod, 'accoun
 $own = (string)file_get_contents($web . '/js/modules/account-data-owner.js');
 chk('the sign-out clearing the page describes exists', strpos($own, 'export function clearPersonalDataAtSignOut') !== false);
 $ua = (string)file_get_contents($web . '/js/modules/user-auth.js');
-chk('...and sign-out really uses it', strpos($ua, 'clearPersonalDataAtSignOut(localStorage)') !== false);
+/* PR 2c review: "somewhere in the file" is not enough (it was also called from the account-deleted path). The call must sit
+   inside the sign-out itself: logout() and the _logoutOnce() it hands over to. */
+$jsBody = static function (string $src, string $name): string {
+    if (preg_match('/^\s*(?:async\s+)?' . preg_quote($name, '/') . '\s*\([^)]*\)\s*\{/m', $src, $mm, PREG_OFFSET_CAPTURE) !== 1) { return ''; }
+    $o = $mm[0][1] + strlen($mm[0][0]) - 1; $depth = 0; $n = strlen($src);
+    for ($i = $o; $i < $n; $i++) { if ($src[$i] === '{') { $depth++; } elseif ($src[$i] === '}') { $depth--; if ($depth === 0) { return substr($src, $o, $i - $o + 1); } } }
+    return '';
+};
+$strip = static fn(string $js): string => (string)preg_replace(['#/\*.*?\*/#s', '#(?<![:\'"`])//[^\n]*#'], '', $js);
+$logout = $strip($jsBody($ua, 'logout')) . $strip($jsBody($ua, '_logoutOnce'));
+chk('...and sign-out really uses it: the clearing is called inside logout() / _logoutOnce(), not just somewhere in the file', $logout !== '' && strpos($logout, 'clearPersonalDataAtSignOut(localStorage)') !== false);
+chk('...and the same sign-out deletes the set-aside copy', strpos($logout, 'removeStash(localStorage') !== false);
+
+echo "7. the promises are worded so they stay true everywhere\n";
+/* PR 2c review: three sentences were true only in some places (the typed word in the app, sign-out clearing on every site, "anything you save is kept" even while saving is paused). */
+chk('the page does not say the iPhone/iPad/Apple TV app asks you to type DELETE (the app has no such step)',
+    stripos($text, 'and type DELETE') === false && preg_match('/on the website you also type the word DELETE/i', $text) === 1);
+$swift = (string)file_get_contents($repo . '/appApple/Packages/iHymnsKit/Sources/IHFeatures/AccountDeleteView.swift');
+chk('...and the app\'s delete screen really has no typed-word step (if it gains one, this wording can change)', $swift !== '' && preg_match('/TextField\(\s*"[^"]*(DELETE|confirm)/i', $swift) === 0);
+chk('the sign-out clearing is described as applying once saving to your account is switched on for the site (not on every site)', preg_match('/switched on for the site you are using, signing out on purpose also clears/i', $text) === 1 && stripos($text, 'leaves your lists in the browser, as it always did') !== false);
+chk('"anything you save is kept in that one account" carries the paused-site exception', preg_match('/anything you save while signed in on one is kept in that one account\. \(If saving to accounts has been paused/i', $text) === 1);
+chk('the page says a set-aside copy is deleted when you sign out on purpose', stripos($text, 'that set-aside copy is deleted as well') !== false);
+$set = (string)file_get_contents($settingsPath);
+chk('the Settings page comment does not claim the server re-checks the typed word for everybody', stripos($set, 're-checks both') === false && stripos($set, 'The typed word is checked HERE') !== false);
+$yaml = (string)file_get_contents($web . '/api-docs.yaml');
+chk('the OpenAPI limits sentence says the limits are per table', preg_match('/Limits, per table: at most 10,000 rows.*?and 32 MiB in all for the file/s', $yaml) === 1);
 
 exit($fail === 0 ? 0 : 1);

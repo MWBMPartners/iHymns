@@ -382,7 +382,9 @@ declare(strict_types=1);
 
             <!-- DELETE MY ACCOUNT (PR 2c-2). A panel, not a pop-up, so it is easy to reach with a keyboard.
                  Nothing is sent until the person has typed DELETE and given their password or an email code.
-                 The server (account_delete) re-checks both. -->
+                 The typed word is checked HERE, in the page: the server (account_delete) re-checks the password or
+                 the code, and only looks at a typed "DELETE" for an account that has no password, no email and no
+                 Apple sign-in to prove itself with (it does not re-check it for everybody else). -->
             <hr class="my-3">
             <h3 class="h6 text-danger">Delete my account</h3>
             <p class="text-muted small">

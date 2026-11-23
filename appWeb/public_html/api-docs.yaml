@@ -20257,8 +20257,12 @@ paths:
         even if nobody has reviewed it yet. Tables that are left out on purpose are listed in the file's
         `notIncluded` array with a plain reason.
 
-        Limits: at most 10,000 rows, 5 MiB and 32 MiB in all per file; a table that hit a limit says
-        `truncated: true`. Limited to 5 downloads an hour per person (429).
+        Limits, per table: at most 10,000 rows (fewer for the activity log, song revisions and the lyric
+        tables, whose rows are large) and 5 MiB of text; and 32 MiB in all for the file. A table that hit a
+        limit says `truncated: true`. The file is compact JSON written as it is read, so the server's memory
+        use stays small. Rows that only record you as the reviewer or approver of somebody else's work, the
+        network details of failed sign-in attempts, and API key last-used addresses are left out (the file
+        says why). Limited to 5 downloads an hour per person (429); a failed attempt still counts.
 
         Not behind the account sync switch (it reads only the person's own data), and not affected by the
         "pause saving" brake (it never changes anything). Requires the `X-Requested-With` header (rule

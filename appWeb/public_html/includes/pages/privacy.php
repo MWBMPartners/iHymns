@@ -110,7 +110,9 @@ $appUrl = $app["Application"]["Website"]["URL"];
             <p>
                 <strong>One account on all our sites.</strong> <?= htmlspecialchars($appName) ?>&rsquo;s live site and its
                 test sites (dev and beta) share one account database. The same account works on all of them, and
-                anything you save while signed in on one is kept in that one account.
+                anything you save while signed in on one is kept in that one account. (If saving to accounts has been
+                paused on a site for maintenance, what you save there stays on your device until it is switched back
+                on, and the site will say so before you sign out.)
             </p>
             <p>
                 <strong>Searches are not linked to you.</strong> When you search, the words you typed are counted
@@ -129,15 +131,17 @@ $appUrl = $app["Application"]["Website"]["URL"];
             </ul>
             <p>You can clear this at any time via the Settings page or by clearing your browser data.</p>
             <p>
-                <strong>When you sign out.</strong> Signing out on purpose also clears your personal data from
-                <em>that browser</em>: your favourites, set lists, tags, history, recent songbooks and, if you keep them
-                in your account, your recent searches. They stay safe in your account and come back when you sign in
-                again. So that nothing is lost, we first send anything that has not reached your account yet; if
-                something is still left (for example you have no signal), we tell you and you can try again, sign out
-                anyway, or stay signed in. Your display settings stay on the browser. If your session ends by itself
-                (for example it expires) your data is set aside in the browser instead, and given back when you sign in
-                again; if someone else signs in first, it is kept away from them (one person&rsquo;s set-aside copy is
-                kept at a time).
+                <strong>When you sign out.</strong> Once saving to your account is switched on for the site you are
+                using, signing out on purpose also clears your personal data from <em>that browser</em>: your
+                favourites, set lists, tags, history, recent songbooks and, if you keep them in your account, your recent
+                searches. They stay safe in your account and come back when you sign in again. (Until saving to your
+                account is switched on for that site, signing out leaves your lists in the browser, as it always did.)
+                So that nothing is lost, we first send anything that has not reached your account yet; if something is
+                still left (for example you have no signal), we tell you and you can try again, sign out anyway, or stay
+                signed in. Your display settings stay on the browser. If your session ends by itself (for example it
+                expires) your data is set aside in the browser instead, and given back when you sign in again; if
+                someone else signs in first, it is kept away from them (one person&rsquo;s set-aside copy is kept at a
+                time). If you then sign out on purpose, that set-aside copy is deleted as well.
             </p>
 
             <h3 class="small fw-bold mt-3">2.3 Server Logs &amp; Security Data</h3>
@@ -383,7 +387,8 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 <li><strong>Delete your account:</strong> Permanently delete your account yourself, on the
                     website (<strong>Settings &gt; Your data</strong>, then <strong>Delete my account</strong>) or in the
                     iHymns app for iPhone, iPad, or Apple TV (Account &gt; Danger Zone). Either way you confirm it is
-                    you first (with your password or an emailed code) and type DELETE. This removes your account
+                    you first, with your password or an emailed code, and on the website you also type the word
+                    DELETE. This removes your account
                     record and synced data from our live database and revokes any linked Sign in with Apple grant.
                     If you cannot sign in, use the contact link below</li>
                 <li><strong>Uninstall:</strong> Remove the PWA from your device at any time</li>
