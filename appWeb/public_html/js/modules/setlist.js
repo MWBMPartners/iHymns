@@ -20,8 +20,10 @@
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { shortTag, fullLabel, typeColor, typeTextColor } from '../utils/components.js';
-import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, SHARE_ID_RE, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
+import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_SETLISTS_UNSENT, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, SHARE_ID_RE, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
+import { readUnsent, markUnsent, clearUnsentIf } from './unsent-edits.js';
+import { offlineQueue } from './offline-queue.js';
 import { announce } from '../utils/announce.js';
 /* #2079 — keep the screen on while the set-list playback bar is showing.
    Shared helper, already wired into presentation mode (present-mode.js).
@@ -635,8 +637,20 @@ export class SetList {
     saveAll(lists, { sync = true } = {}) {
         localStorage.setItem(this.storageKey, JSON.stringify(lists));
         this.app.syncStorage(this.storageKey);
-        if (sync) this._scheduleSync();
+        if (sync) {
+            /* PR 2c review: a local edit the account has not heard about. Marked BEFORE the push is even scheduled, so
+               sign-out can tell "never reached the account" from "reached it" however the push ends (offline, a server
+               error, a paused site). Only the push's own absorbed, not-read-only reply takes the mark down. */
+            if (this.app?.userAuth?.isLoggedIn?.()) markUnsent(localStorage, STORAGE_SETLISTS_UNSENT);
+            this._scheduleSync();
+        }
     }
+
+    /** @returns {?string} the stamp of the oldest still-unsent local edit (null = everything has reached the account) */
+    getUnsentStamp() { return readUnsent(localStorage, STORAGE_SETLISTS_UNSENT); }
+
+    /** Take the "unsent" mark down, unless an edit happened after `stamp` was read. */
+    clearUnsent(stamp) { return clearUnsentIf(localStorage, STORAGE_SETLISTS_UNSENT, stamp); }
 
     /**
      * Debounced authoritative push of the current setlists to the server
@@ -652,18 +666,51 @@ export class SetList {
            any edits made meanwhile and then flushes this. */
         if (!this._syncReady) return;
         clearTimeout(this._syncTimer);
-        this._syncTimer = setTimeout(async () => {
-            const all = this.getAll();
-            if (this._loadError) return; /* corrupt cache — never replace (review #2) */
-            /* #1649 — absorb the response instead of discarding it. The server
-               may have kept rows this push didn't mention (another device's
-               newer additions, or the whole tail if we exceeded the cap), and
-               the absorb helper both merges them back in and advances the sync
-               watermark. Dropping the result on the floor left the local cache
-               permanently behind the server. */
-            const res = await this.app.userAuth.syncSetlists(all, 'replace');
-            this.app.userAuth._absorbSetlistSync(res);
+        /* PR 2c-3: remember that a push is waiting for its timer, so sign-out can send it first (flushNow). */
+        this._syncTimerPending = true;
+        this._syncTimer = setTimeout(() => {
+            this._syncTimerPending = false;
+            this._pushNow().catch(() => { /* retried by the offline queue; flushNow() reports it */ });
         }, 1500);
+    }
+
+    /**
+     * Send the current set lists to the server now (the body of the debounced push).
+     *
+     * @returns {Promise<boolean>} true only when the server took the change: the reply was absorbed AND it was not the
+     *   read-only answer a paused site gives (that one changes nothing, so nothing has been sent)
+     */
+    async _pushNow() {
+        const all = this.getAll();
+        if (this._loadError) return false; /* corrupt cache — never replace (review #2) */
+        /* #1649 — absorb the response instead of discarding it. The server
+           may have kept rows this push didn't mention (another device's
+           newer additions, or the whole tail if we exceeded the cap), and
+           the absorb helper both merges them back in and advances the sync
+           watermark. Dropping the result on the floor left the local cache
+           permanently behind the server. */
+        const res = await this.app.userAuth.syncSetlists(all, 'replace');
+        return this.app.userAuth._absorbSetlistSync(res) === true && res?.readOnly !== true;
+    }
+
+    /**
+     * Send everything still waiting, without waiting for the 1.5 second timer, and say whether it has ALL reached the
+     * account. Used by sign-out (PR 2c-3). "Waiting" means any of: the timer, a deletion not yet acknowledged, the
+     * "unsent edits" mark, or a "sync wanted" marker left by an offline attempt (PR 2c review: before this it knew only
+     * the timer and deletions, so an edit whose push had already failed was reported as sent).
+     *
+     * @returns {Promise<boolean>} true when nothing is left unsent
+     */
+    async flushNow() {
+        if (!this.app?.userAuth?.isLoggedIn?.()) return true;
+        const waiting = () => this.getPendingDeletes().length;
+        let marker = false;
+        try { marker = (Number(await offlineQueue.count('setlists-sync')) || 0) > 0; } catch { marker = false; }
+        if (!this._syncTimerPending && waiting() === 0 && this.getUnsentStamp() === null && !marker) return true;
+        clearTimeout(this._syncTimer);
+        this._syncTimerPending = false;
+        if (!this._syncReady) return false;   /* not safe to replace before the first reconcile (review #1) */
+        try { return (await this._pushNow()) && waiting() === 0 && this.getUnsentStamp() === null; } catch { return false; }
     }
 
     /**

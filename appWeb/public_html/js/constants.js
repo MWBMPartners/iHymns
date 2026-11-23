@@ -135,6 +135,15 @@ export const STORAGE_PROFILE_SCHEMA = 'ihymns_profile_schema';
    actually accepted (see UserAuth.syncSetlists). */
 export const STORAGE_SETLISTS_DELETED    = 'ihymns_setlists_deleted';
 
+/* "This store has edits the account has not been told about" marks (PR 2c review, epic #2180; js/modules/unsent-edits.js).
+   One per store: set lists, favourites (adds, removals and tag edits) and the custom-tag pool. The value is a stamp that
+   changes on every local edit; a push clears the mark only if the stamp is still the one it started with, so an edit made
+   while the push was in the air keeps the mark. Sign-out counts these as "not sent yet" (sign-out-guard.js). PERSONAL DATA:
+   stashed and cleared with the lists they describe (account-data-owner.js). */
+export const STORAGE_SETLISTS_UNSENT    = 'ihymns_setlists_unsent';
+export const STORAGE_FAVORITES_UNSENT   = 'ihymns_favorites_unsent';
+export const STORAGE_CUSTOM_TAGS_UNSENT = 'ihymns_custom_tags_unsent';
+
 /* Whose saved songs are currently on THIS device (account/profile rewrite A7,
    epic #2180). The id of the account whose favourites, set lists, custom tags
    and history the device's local copies belong to, recorded when that account's

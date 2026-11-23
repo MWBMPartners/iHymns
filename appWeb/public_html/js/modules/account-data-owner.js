@@ -44,6 +44,8 @@ import {
     STORAGE_SETLISTS_DELETED, STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT,
     STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED, STORAGE_RECENT_SONGBOOKS,
     STORAGE_DATA_OWNER_UID, STORAGE_STASH_PREFIX, STORAGE_SEARCH_HISTORY, STORAGE_SYNC_SEARCH_HISTORY,
+    STORAGE_PROFILE_OUTBOX, STORAGE_PROFILE_CURSOR,
+    STORAGE_SETLISTS_UNSENT, STORAGE_FAVORITES_UNSENT, STORAGE_CUSTOM_TAGS_UNSENT,
 } from '../constants.js';
 
 /** The personal-content keys that belong to ONE person. Stashed, cleared, restored. */
@@ -59,6 +61,8 @@ export const PERSONAL_DATA_KEYS = Object.freeze([
        then uploaded them into B's account. The LIST is only set aside while the choice is on (see searchListTravels()): while it
        is off the list is the older, device-only kind and stays where it is, as before. */
     STORAGE_SYNC_SEARCH_HISTORY, STORAGE_SEARCH_HISTORY,
+    /* PR 2c review: the "has edits the account has not seen" marks. They describe the lists above, so they travel and clear with them. */
+    STORAGE_SETLISTS_UNSENT, STORAGE_FAVORITES_UNSENT, STORAGE_CUSTOM_TAGS_UNSENT,
 ]);
 
 /** Cleared along with the data, never restored (see the file header). */
@@ -182,6 +186,52 @@ export function stashAndClear(storage, ownerUid) {
     clearLive(storage);
     remove(storage, STORAGE_DATA_OWNER_UID);
     return { stashed, cleared: true };
+}
+
+/**
+ * A person SIGNS OUT on purpose (PR 2c-3, owner decision O2): clear this browser's copy of their personal data.
+ * No set-aside copy is made: the account holds it, and a copy left behind is exactly what the next person on a
+ * shared computer must not find. (The question "has everything reached your account?" is asked BEFORE this, by
+ * sign-out-guard.js.)
+ *
+ * Removes: every personal key (favourites, set lists, custom tags, history, recent songbooks, the pending removals
+ * and additions, the search-history choice and, only when that choice was on, the list itself), both sync
+ * bookmarks, the profile sync's outbox and cursor, and the record of whose data this is. Display settings (theme,
+ * text size, language filter, per-song keys) are NOT personal data and stay.
+ *
+ * Idempotent, never throws (blocked storage must not stop a sign-out).
+ */
+export function clearPersonalDataAtSignOut(storage) {
+    clearLive(storage);
+    remove(storage, STORAGE_PROFILE_OUTBOX);
+    remove(storage, STORAGE_PROFILE_CURSOR);
+    remove(storage, STORAGE_DATA_OWNER_UID);
+}
+
+/**
+ * Does this person's set-aside copy hold changes that never reached their account? (PR 2c review.) A sign-in that ends in the
+ * middle of a sign-out (the token is refused while the changes are being sent) moves the person's data into the set-aside
+ * copy before the sign-out question is asked, so the question must look in there too, or those changes would be thrown away
+ * without a word. True when the copy carries an "unsent" mark or a still-waiting addition or removal.
+ */
+export function stashHoldsUnsent(storage, uid) {
+    const id = norm(uid);
+    if (id === null) return false;
+    const raw = get(storage, STORAGE_STASH_PREFIX + id);
+    if (raw === null) return false;
+    let data;
+    try { data = JSON.parse(raw); } catch (_e) { return false; }
+    if (!data || typeof data !== 'object') return false;
+    return [STORAGE_SETLISTS_UNSENT, STORAGE_FAVORITES_UNSENT, STORAGE_CUSTOM_TAGS_UNSENT,
+        STORAGE_SETLISTS_DELETED, STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED]
+        .some((k) => typeof data[k] === 'string' && !isEmptyValue(data[k]));
+}
+
+/** Delete this person's set-aside copy, if any. Used when they sign out on purpose: nothing of theirs may stay on the browser. */
+export function removeStash(storage, uid) {
+    const id = norm(uid);
+    if (id === null) return;
+    remove(storage, STORAGE_STASH_PREFIX + id);
 }
 
 /** Put a person's stash (if any) back into the live keys, then delete it. */

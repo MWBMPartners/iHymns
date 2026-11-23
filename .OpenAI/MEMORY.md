@@ -5,6 +5,13 @@ Short, lasting facts. Newest first within each section. Where this file and the 
 
 _Last updated: 2026-11-23._
 
+## Added 2026-11-23 (account rewrite part 2c)
+
+- **Part 2c is built on branch `claude/account-pr2c`** (not merged when this was written): download-my-data (`account_export`), delete-my-account on the web, sign-out that clears the browser after asking, and the privacy-page update. Rule #54 in `.claude/CLAUDE.md` has the shape.
+- **Owner decisions:** export and web deletion are NOT behind `profile_sync_channels`; sign-out clearing and the new sync still are. At sign-out, ask first if something has not synced.
+- **Promote the privacy page together with ticking production** (it is a cached shared page and cannot word itself per site). The user-release-notes bullets for 2a and 2c are added when production is ticked.
+- **Test database:** `IHYMNS_TEST_DSN="host=127.0.0.1;port=3306;user=root;pass="` runs the real-database checks (MariaDB 10.11 locally; `test-song-save-whole-rollback.php` still fails there, unrelated).
+
 ## Added 2026-11-23
 
 - **Newest handoff:** `.claude/sessions/2026-11-23-HANDOFF.md` (replaces the 18 November one).

@@ -397,6 +397,12 @@ same core: self-service `account_delete`, admin `admin_user_delete`, and `delete
 A refusal surfaces as **HTTP 503**, not 500 — the account is untouched and the condition is an
 operator action (an un-run migration, or schema drift). It never falls back to a hard row delete.
 
+### Download and delete your own data (account rewrite PR 2c)
+
+- **Download** — Settings → Your data → *Download everything we hold about you* (`POST /api?action=account_export`). One JSON file with the account details and every table that links to the person. It reads the same live foreign-key map as the erasure, so a table added later is included automatically; tables left out are listed in the file with a reason. Passwords, sign-in codes, push keys and other secrets are never included. Limits: 10,000 rows, 5 MiB a table, 32 MiB a file (a cut-short table says `truncated`); 5 downloads an hour. Code: `includes/account_export.php`; guard `tests/php/test-account-export-coverage.php`.
+- **Delete** — Settings → Your data → *Delete my account*. The person gives a password (or an emailed code) and types `DELETE`; the page posts to `account_delete`, which is the same erasure the apps use. A paused site (409 `account_writes_off_here`) is explained in plain words. Both export and web deletion are NOT behind the account sync switch.
+- **Sign out** — where the new account sync is switched on, signing out sends what is waiting, asks if anything still has not reached the account (try again / sign out anyway / stay signed in), then clears this browser's personal data. Display settings stay. Where the switch is off, sign-out is unchanged. Code: `js/modules/sign-out-guard.js`, `clearPersonalDataAtSignOut()` in `js/modules/account-data-owner.js`.
+
 ### Key files
 
 | File | Role |

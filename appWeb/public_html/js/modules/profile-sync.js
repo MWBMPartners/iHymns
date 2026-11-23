@@ -303,6 +303,19 @@ export class ProfileSync {
         return this.syncNow();
     }
 
+    /**
+     * Send what is waiting right now, without waiting for the 1.5 second timer. Used by sign-out (PR 2c-3).
+     * A site that is paused, or the sync being off, leaves the outbox as it was and says "not everything was sent".
+     *
+     * @returns {Promise<boolean>} true when nothing is left in the outbox
+     */
+    async flushNow() {
+        if (this.pendingCount() === 0) return true;
+        if (this._pushTimer) { this._clearTimer(this._pushTimer); this._pushTimer = null; }
+        try { await this.push(); } catch (_e) { /* the count below says what is left */ }
+        return this.pendingCount() === 0;
+    }
+
     schedulePush(delay = PUSH_DELAY_MS) {
         if (this._pushTimer) this._clearTimer(this._pushTimer);
         this._pushTimer = this._setTimer(() => { this._pushTimer = null; this.push().catch(() => { /* retried by the error path */ }); }, delay);

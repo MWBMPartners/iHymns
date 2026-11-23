@@ -272,7 +272,7 @@ async function withMutant(from, to, fn) {
 {
     /* clearing skipped: what was sent stays pending for ever */
     const ok = await withMutant(
-        'if (!res.readOnly) fav.clearPendingSent?.(res.sent);',
+        'if (!res.readOnly) { fav.clearPendingSent?.(res.sent); fav.clearUnsent?.(res.unsentStamp); }',
         '/* MUTATED: never clear what was sent */',
         async (mutant) => {
             const server = makeServer();

@@ -144,11 +144,13 @@ function _readRateLimitResolveKey(): string
  * @param int    $perDay  Optional per-day ceiling (0 = no daily cap; default).
  * @param string $keyOverride Optional bucket key to use instead of the token-or-address one
  *                        (e.g. 'uid:42' to limit per signed-in PERSON; account/profile rewrite 2a-6).
+ * @param int    $perHour Optional per-hour ceiling (0 = none; default). For the rare, heavy things a person
+ *                        does a few times at most ("download my data", PR 2c-1: 5 an hour).
  */
-function enforceReadRateLimit(string $scope, int $perMin, int $perDay = 0, string $keyOverride = ''): void
+function enforceReadRateLimit(string $scope, int $perMin, int $perDay = 0, string $keyOverride = '', int $perHour = 0): void
 {
     /* Nothing to enforce if no positive limit was given. */
-    if ($perMin <= 0 && $perDay <= 0) { return; }
+    if ($perMin <= 0 && $perDay <= 0 && $perHour <= 0) { return; }
 
     try {
         /* getDbMysqli() is the ONLY DB entry point (CLAUDE.md rule #5). If the
@@ -173,6 +175,9 @@ function enforceReadRateLimit(string $scope, int $perMin, int $perDay = 0, strin
         $windows = [];
         if ($perMin > 0) {
             $windows[] = ['minute', "DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%d %H:%i:00')", $perMin, 60];
+        }
+        if ($perHour > 0) {
+            $windows[] = ['hour', "DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%d %H:00:00')", $perHour, 3600];
         }
         if ($perDay > 0) {
             $windows[] = ['day', "DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%d 00:00:00')", $perDay, 86400];

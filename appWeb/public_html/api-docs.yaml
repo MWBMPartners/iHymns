@@ -20171,6 +20171,16 @@ paths:
         The erasure is also reachable by an administrator via
         `admin_user_delete`, through the same core, so the two funnels cannot
         diverge.
+
+        **The web Settings page uses this too (PR 2c-2).** Its "Delete my
+        account" panel sends the password (or an `email_code` from
+        `auth_email_login_request`) together with `confirm: "DELETE"` once the
+        person has typed the word, and explains each refusal by status: 400 no
+        proof given, 401 wrong proof, 403 not same-origin, 409 with reason
+        `account_writes_off_here` (saving is paused on this site) or without
+        a reason (last global administrator), 429 too many attempts, 503 the
+        erasure refused. Not behind the account sync switch; the "pause saving"
+        brake still applies (it is a change to saved data).
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -20228,6 +20238,93 @@ paths:
             hard row delete. Retrying identically will keep returning 503 until
             an administrator acts, so a client should surface "try again later"
             rather than looping.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=account_export:
+    post:
+      operationId: exportAccountData
+      tags: [Authentication]
+      summary: Download everything the site holds about the signed-in person (PR 2c-1)
+      description: |
+        Returns ONE JSON file (sent as an attachment, never cached) holding the signed-in person's own
+        account details and the rows of every table that links to them: favourites, set lists, custom tags,
+        settings and profile items, history, devices, notifications, organisation memberships and so on.
+        The account is always the current bearer or cookie session; there is no id parameter, so it can
+        never export somebody else's data.
+
+        What is NEVER in the file: password hashes, sign-in and reset codes, refresh tokens, push keys and
+        addresses, API key hashes, webhook secrets. A column whose name looks like a secret is withheld
+        even if nobody has reviewed it yet. Tables that are left out on purpose are listed in the file's
+        `notIncluded` array with a plain reason.
+
+        Limits, per table: at most 10,000 rows (fewer for the activity log, song revisions and the lyric
+        tables, whose rows are large) and 5 MiB of text; and 32 MiB in all for the file. A table that hit a
+        limit says `truncated: true`. The file is compact JSON written as it is read, so the server's memory
+        use stays small. Rows that only record you as the reviewer or approver of somebody else's work, the
+        network details of failed sign-in attempts, and API key last-used addresses are left out (the file
+        says why). Limited to 5 downloads an hour per person (429); a failed attempt still counts.
+
+        Not behind the account sync switch (it reads only the person's own data), and not affected by the
+        "pause saving" brake (it never changes anything). Requires the `X-Requested-With` header (rule
+        #29), which `apiFetch()` and the native apps already send. The success response is the file itself,
+        not the usual `{ok, ...}` envelope.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [account_export] }
+      responses:
+        "200":
+          description: The data file
+          headers:
+            Content-Disposition:
+              description: 'attachment; filename="ihymns-account-export-YYYYMMDD.json"'
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  format:        { type: string, example: ihymns-account-export }
+                  formatVersion: { type: integer, example: 1 }
+                  exportedAt:    { type: string, format: date-time }
+                  about:         { type: string }
+                  account:       { type: object, additionalProperties: true, description: "The account row without its password hash; Settings and PreferredLanguagesJson are real JSON." }
+                  tables:
+                    type: object
+                    description: 'Keyed "table.column". Each value has the rows, `truncated`, and the names of any columns left out.'
+                    additionalProperties:
+                      type: object
+                      properties:
+                        column:         { type: string }
+                        rows:           { type: array, items: { type: object, additionalProperties: true } }
+                        truncated:      { type: boolean }
+                        omittedColumns: { type: array, items: { type: string } }
+                  notIncluded:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        table:  { type: string }
+                        column: { type: string }
+                        reason: { type: string }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (same-origin gate)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST required
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: More than 5 downloads in an hour for this person
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: "The file could not be built (reason `account_export_unavailable`). Nothing was changed; try again later."
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   # ===========================================================================

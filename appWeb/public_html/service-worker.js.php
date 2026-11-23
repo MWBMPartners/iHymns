@@ -864,6 +864,7 @@ const PRECACHE_ASSETS = [
     '/js/modules/profile-sync-adapters.js',
     '/js/modules/profile-web-codec.js',
     '/js/modules/search-history-sync-row.js',
+    '/js/modules/sign-out-guard.js',
     '/js/modules/display.js',
     '/js/modules/audio.js',
     '/js/modules/sheet-music.js',

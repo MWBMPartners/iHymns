@@ -278,19 +278,28 @@ check('the visibilitychange handler does NOT disarm _syncReady',
 
 console.log('\nAssertion 7 — every caller absorbs, and shareSetlist no longer bypasses the gate:');
 
-const setlistSchedule = methodBody(setlistSrc, '_scheduleSync');
-const favSchedule     = methodBody(favoritesSrc, '_scheduleSync');
+/* PR 2c-3: the per-edit push body moved out of the timer into _pushNow(), so sign-out can send a waiting change at once
+   (flushNow()). The property is unchanged and still asserted here: the push that the timer (and flushNow) run must
+   AWAIT the sync and ABSORB its result. And the timer must really run it, or the checks below would be reading dead code. */
+const setlistSchedule = methodBody(setlistSrc, '_pushNow');
+const favSchedule     = methodBody(favoritesSrc, '_pushNow');
+const setlistTimer    = methodBody(setlistSrc, '_scheduleSync');
+const favTimer        = methodBody(favoritesSrc, '_scheduleSync');
 
-check('setlist.js _scheduleSync() absorbs its sync result',
+check('setlist.js _scheduleSync() runs the push (_pushNow) when its timer fires',
+    !!setlistTimer && /this\._pushNow\(/.test(stripComments(setlistTimer)));
+check('favorites.js _scheduleSync() runs the push (_pushNow) when its timer fires',
+    !!favTimer && /this\._pushNow\(/.test(stripComments(favTimer)));
+check('setlist.js the per-edit push (_pushNow) absorbs its sync result',
     !!setlistSchedule && /_absorbSetlistSync\(/.test(setlistSchedule));
-check('favorites.js _scheduleSync() absorbs its sync result',
+check('favorites.js the per-edit push (_pushNow) absorbs its sync result',
     !!favSchedule && /_absorbFavoritesSync\(/.test(favSchedule));
 
 /* Awaiting matters: absorbing a Promise object instead of a result is a
    silent no-op of exactly the kind rule #30 warns about. */
-check('setlist.js _scheduleSync() awaits the sync before absorbing',
+check('setlist.js the per-edit push (_pushNow) awaits the sync before absorbing',
     !!setlistSchedule && /await\s+this\.app\.userAuth\.syncSetlists\(/.test(setlistSchedule));
-check('favorites.js _scheduleSync() awaits the sync before absorbing',
+check('favorites.js the per-edit push (_pushNow) awaits the sync before absorbing',
     !!favSchedule && /await\s+this\.app\.userAuth\.syncFavorites\(/.test(favSchedule));
 
 const shareBody = methodBody(setlistSrc, 'shareSetlist');

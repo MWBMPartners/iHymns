@@ -17,10 +17,11 @@ import { userHasEntitlement } from './entitlements.js';
 import { offlineQueue } from './offline-queue.js';
 import {
     STORAGE_AUTH_TOKEN, STORAGE_AUTH_USER, EVT_AUTH_CHANGED,
-    STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT,
+    STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT, STORAGE_STASH_PREFIX,
 } from '../constants.js';
 import { performAppleSignIn } from './apple-signin.js';
-import { reconcileDataOwner, recordDataOwner, protectOnUnplannedSignOut } from './account-data-owner.js';
+import { reconcileDataOwner, recordDataOwner, protectOnUnplannedSignOut, clearPersonalDataAtSignOut, removeStash } from './account-data-owner.js';
+import { signOutGuardActive, confirmSignOut } from './sign-out-guard.js';
 import { apiFetch } from '../utils/api-client.js';
 /* #947/#340 — dormant CAPTCHA widget, wired into the four gated auth forms
    (registration / login / password_reset / email_login) below. No-op unless
@@ -412,8 +413,32 @@ export class UserAuth {
 
     /**
      * Log out (invalidate token on server and clear local credentials).
+     *
+     * PR 2c-3 (owner decision O2): where the new account sync is switched on, signing out also CLEARS this browser's copy
+     * of the person's personal data, but only after sending whatever is waiting and, if something still has not reached
+     * the account, asking first (see sign-out-guard.js). Where it is off, this is exactly what it always was.
+     *
+     * @returns {Promise<{signedOut: boolean}>} signedOut false = the person chose to stay signed in; nothing was changed
      */
     async logout() {
+        /* A second click while the first is still asking must not open a second question (or clear twice). */
+        if (this._signOutInProgress) return { signedOut: false };
+        this._signOutInProgress = true;
+        try {
+            return await this._logoutOnce();
+        } finally {
+            this._signOutInProgress = false;
+        }
+    }
+
+    async _logoutOnce() {
+        const guarded = signOutGuardActive(this.app);
+        /* Who is signing out, read BEFORE anything is sent: if the sign-in is refused while the changes are going out, the
+           person is signed out by that and getUser() is empty afterwards, but their data has been set aside under this id. */
+        const uid = this.getUser()?.id;
+        if (guarded && this.isLoggedIn()) {
+            if ((await confirmSignOut(this.app, { uid })) !== 'go') return { signedOut: false };
+        }
         try {
             await apiFetch(`${this.app.config.apiUrl}?action=auth_logout`, {
                 method: 'POST',
@@ -427,6 +452,11 @@ export class UserAuth {
             /* Non-critical — clear local creds regardless */
         }
 
+        /* Cleared BEFORE the sign-in is forgotten, so the pages that redraw on the sign-out announcement already see an empty browser. */
+        if (guarded) {
+            try { clearPersonalDataAtSignOut(localStorage); removeStash(localStorage, uid); }
+            catch (e) { console.warn('[user-auth] could not clear saved data at sign-out:', e); }
+        }
         this.clearCredentials({ planned: true });
 
         /* #1388 — ask the service worker to drop the per-user caches.
@@ -441,6 +471,23 @@ export class UserAuth {
         } catch {
             /* Non-critical — never let cache cleanup break sign-out. */
         }
+        return { signedOut: true };
+    }
+
+    /**
+     * The account has just been deleted on the server (PR 2c-2). Its tokens are gone, so there is nothing to ask the
+     * server and nothing to keep: clear this browser's copy of the person's saved data (no set-aside copy: there is no
+     * account left for it to come back to) and forget the sign-in. Unlike a sign-out there is no "unsent changes" question,
+     * because there is no account for them to reach.
+     */
+    afterAccountDeleted() {
+        const uid = this.getUser()?.id;
+        try {
+            clearPersonalDataAtSignOut(localStorage);   /* the same clearing as a sign-out, outbox and cursor included */
+            if (uid !== null && uid !== undefined) localStorage.removeItem(STORAGE_STASH_PREFIX + uid);   /* a copy set aside earlier for this account has nowhere to return to */
+        } catch (e) { console.warn('[user-auth] could not clear saved data after deleting the account:', e); }
+        this.clearCredentials({ planned: true });
+        try { navigator.serviceWorker?.controller?.postMessage({ type: 'CLEAR_USER_CACHES' }); } catch { /* best effort */ }
     }
 
     /**
@@ -749,6 +796,9 @@ export class UserAuth {
             : pruned;
         const final = this._unionSetlists(localSide, res.setlists);
         this.app.setList.saveAll(final, { sync: false });
+        /* The account took this request, so the edits it covered are no longer "unsent". NOT for a read-only
+           (paused-site) reply, which changed nothing there. */
+        if (res.readOnly !== true) this.app.setList.clearUnsent?.(res.unsentStamp);
         this._setSyncedAt(STORAGE_SETLISTS_SYNCED_AT, res.syncedAt);
         /* A7: the device's set lists now mirror the REQUESTER's account (not whoever is
            signed in now: the check above makes those the same person, and recording
@@ -807,7 +857,7 @@ export class UserAuth {
         fav.saveAll(this._mergeFavorites(localList, serverList), { sync: false });
         /* Forget the ids this request carried, and only those. NOT on a read-only (paused-site)
            reply: the server changed nothing, so the person's removals still have to be sent. */
-        if (!res.readOnly) fav.clearPendingSent?.(res.sent);
+        if (!res.readOnly) { fav.clearPendingSent?.(res.sent); fav.clearUnsent?.(res.unsentStamp); }
         this._setSyncedAt(STORAGE_FAVORITES_SYNCED_AT, res.syncedAt);
         /* A7: the device's favourites now mirror the REQUESTER's account. */
         recordDataOwner(localStorage, res.uid ?? this.getUser()?.id);
@@ -837,6 +887,10 @@ export class UserAuth {
         /* Who is asking: captured BEFORE the request, handed back on the result so the
            absorb step can tell if somebody else signed in while it was in flight. */
         const uid = this.getUser()?.id;
+        /* PR 2c review: which "unsent edits" mark this request covers. Read in the same synchronous run as the caller
+           read the lists (no await in between), so an edit made while the request is in the air changes the mark and
+           is NOT treated as sent (see unsent-edits.js). */
+        const unsentStamp = this.app.setList?.getUnsentStamp?.() ?? null;
 
         /* Offline → mark a pending sync in the queue. bindOfflineDrains()
            replays with the LATEST local state when connectivity returns,
@@ -934,7 +988,9 @@ export class UserAuth {
             /* #1661 — the server accepted these deletions (they are now
                permanent tombstones), so stop announcing them. Only the ids
                actually sent are cleared. */
-            if (deleted.length > 0) this.app.setList?.clearPendingDeletes?.(deleted);
+            /* NOT on a read-only (paused-site) reply: the server changed nothing, so the deletions still have to be sent
+               (PR 2c review; favourites already worked this way). */
+            if (deleted.length > 0 && data.readOnly !== true) this.app.setList?.clearPendingDeletes?.(deleted);
 
             /* Warn ONCE per session that the tail of the collection is
                device-only. Fired here rather than at each call site so every
@@ -956,6 +1012,7 @@ export class UserAuth {
                 conflicts: Array.isArray(data.conflicts) ? data.conflicts : [],
                 /* A paused site answered as a read-only pull (see _noteReadOnly). */
                 readOnly: this._noteReadOnly(data),
+                unsentStamp,
                 uid,
             };
         } catch (err) {
@@ -1001,6 +1058,7 @@ export class UserAuth {
         const sentAdded = this.app.favorites?.getPendingAdds?.() ?? [];
         const addedSet = new Set(sentAdded);
         const sentDeleted = (this.app.favorites?.getPendingDeletes?.() ?? []).filter((id) => !addedSet.has(id));
+        const unsentStamp = this.app.favorites?.getUnsentStamp?.() ?? null;   /* PR 2c review: see syncSetlists() */
 
         try {
             const res = await apiFetch(`${this.app.config.apiUrl}?action=favorites_sync`, {
@@ -1041,6 +1099,7 @@ export class UserAuth {
                    step clears exactly those ids). Absent from an older or switched-off server. */
                 tombstones: Array.isArray(data.tombstones) ? data.tombstones : [],
                 sent: { added: sentAdded, deleted: sentDeleted },
+                unsentStamp,
                 uid,
             };
         } catch (err) {
@@ -1061,7 +1120,20 @@ export class UserAuth {
      * @returns {Promise<string[]|null>} Merged tag list, or null on failure/queued.
      */
     async syncCustomTags(localTags, mode = 'replace') {
+        const r = await this.syncCustomTagsDetailed(localTags, mode);
+        return r ? r.tags : null;
+    }
+
+    /**
+     * The same request as syncCustomTags(), but the answer also says whether the site was paused (read-only) and which
+     * "unsent edits" mark the request covers, so the caller can tell "the account took it" from "nothing was changed".
+     *
+     * @returns {Promise<{tags: string[], readOnly: boolean, unsentStamp: ?string, uid: *}|null>}
+     */
+    async syncCustomTagsDetailed(localTags, mode = 'replace') {
         if (!this.isLoggedIn()) return null;
+        const uid = this.getUser()?.id;
+        const unsentStamp = this.app.favorites?.getTagsUnsentStamp?.() ?? null;   /* PR 2c review: see syncSetlists() */
 
         if (!navigator.onLine) {
             try { await offlineQueue.enqueue('custom-tags-sync', { ts: Date.now() }); } catch (_e) {}
@@ -1085,14 +1157,32 @@ export class UserAuth {
             }
 
             const data = await res.json();
-            this._noteReadOnly(data);
-            return Array.isArray(data.tags) ? data.tags : null;
+            const readOnly = this._noteReadOnly(data);
+            return Array.isArray(data.tags) ? { tags: data.tags, readOnly, unsentStamp, uid } : null;
         } catch (err) {
             if (err instanceof TypeError) {
                 try { await offlineQueue.enqueue('custom-tags-sync', { ts: Date.now() }); } catch (_e) {}
             }
             return null;
         }
+    }
+
+    /**
+     * Take in a custom-tag reply: the tags are only ever ADDED (there is no removal), so the local pool becomes the
+     * union of what the server says and what is here NOW (a tag typed while the request was in the air is not lost, and
+     * a paused site's stored list never overwrites a tag the account has not seen). The "unsent" mark comes down only
+     * for a reply that was not read-only.
+     *
+     * @param {?object} res from syncCustomTagsDetailed()
+     * @returns {boolean} true when the reply was taken in
+     */
+    _absorbCustomTagsSync(res) {
+        if (!res || !Array.isArray(res.tags) || !this.app.favorites) return false;
+        if (!this._replyIsStillForRequester(res.uid)) return false;
+        const fav = this.app.favorites;
+        fav.saveCustomTags([...new Set([...res.tags, ...fav.getCustomTags()])]);
+        if (res.readOnly !== true) fav.clearTagsUnsent?.(res.unsentStamp);
+        return true;
     }
 
     /**
@@ -1149,14 +1239,7 @@ export class UserAuth {
             /* MERGE, not replace: custom tags are add-only today (no removal
                UI), so union is correct and needs no _syncReady gate — it can
                never wipe another device's tags (review #4). */
-            const uid = this.getUser()?.id; /* who is asking; the reply is dropped if that changes */
-            const merged = await this.syncCustomTags(this.app.favorites.getCustomTags(), 'merge');
-            if (!this._replyIsStillForRequester(uid)) return false;
-            if (merged && Array.isArray(merged)) {
-                this.app.favorites.saveCustomTags(merged);
-                return true;
-            }
-            return false;
+            return this._absorbCustomTagsSync(await this.syncCustomTagsDetailed(this.app.favorites.getCustomTags(), 'merge'));
         });
 
         /* First sign-in of the session (email login, magic link, OR a
@@ -1549,7 +1632,8 @@ export class UserAuth {
 
         /* Sign Out button */
         document.getElementById('header-signout-btn')?.addEventListener('click', async () => {
-            await this.logout();
+            const r = await this.logout();
+            if (!r.signedOut) return;   /* PR 2c-3: the person chose to stay signed in */
             this._updateHeaderState();
             /* Re-render setlist sync bar if on that page */
             this.app.setList?.renderSyncBar();
@@ -2573,16 +2657,8 @@ export class UserAuth {
         if (!this.app.favorites?.getCustomTags) return false;
         this._reconcileDataOwner();
 
-        const uid = this.getUser()?.id; /* who is asking; the reply is dropped if that changes */
         const local = this.app.favorites.getCustomTags();
-        const merged = await this.syncCustomTags(local, 'merge');
-        if (!this._replyIsStillForRequester(uid)) return false;
-
-        if (merged && Array.isArray(merged)) {
-            this.app.favorites.saveCustomTags(merged);
-            return true;
-        }
-        return false;
+        return this._absorbCustomTagsSync(await this.syncCustomTagsDetailed(local, 'merge'));
     }
 
     /**
