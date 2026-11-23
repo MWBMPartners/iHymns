@@ -1323,36 +1323,64 @@ export class Settings {
             if (!choice) return; /* Dismissed */
             const mode = choice === 'option1' ? 'replace' : 'merge';
 
-            if (mode === 'replace') {
-                if (data.favorites) localStorage.setItem(STORAGE_FAVORITES, JSON.stringify(data.favorites));
-                if (data.setlists) localStorage.setItem(STORAGE_SETLISTS, JSON.stringify(data.setlists));
-                if (data.history) localStorage.setItem(STORAGE_HISTORY, JSON.stringify(data.history));
-            } else {
-                /* Merge: add non-duplicate entries */
-                if (data.favorites) {
-                    const existing = JSON.parse(localStorage.getItem(STORAGE_FAVORITES) || '[]');
-                    const existingIds = new Set(existing.map(f => f.id));
-                    const merged = [...existing, ...data.favorites.filter(f => !existingIds.has(f.id))];
-                    localStorage.setItem(STORAGE_FAVORITES, JSON.stringify(merged));
+            /* Favourites and set lists go through THEIR stores (account/profile rewrite PR 2a, step 2a-5),
+               never straight into storage. Writing localStorage directly skipped the account sync, so a
+               "Replace" import quietly left the removed items on the server and they came back on the
+               next sign-in. Through the stores: each item the import removes is queued as a deliberate
+               removal (matched by id, never by position), each new item as a deliberate add, and the
+               store's own saveAll() saves and schedules the sync. History has no account sync of this
+               kind and keeps the direct write. */
+            const readList = (key) => {
+                try { const v = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(v) ? v : []; }
+                catch { return []; }
+            };
+            const idOf = (x) => (x && typeof x.id === 'string' && x.id) ? x.id : null;
+            const favStore = this.app.favorites;
+            const listStore = this.app.setList;
+
+            if (Array.isArray(data.favorites)) {
+                const before = favStore ? favStore.getAll() : readList(STORAGE_FAVORITES);
+                const beforeIds = new Set(before.map(idOf).filter(Boolean));
+                let next;
+                if (mode === 'replace') {
+                    next = data.favorites;
+                    const keep = new Set(next.map(idOf).filter(Boolean));
+                    favStore?._recordDelete(before.map(idOf).filter((id) => id && !keep.has(id)));
+                } else {
+                    next = [...before, ...data.favorites.filter((f) => !beforeIds.has(idOf(f)))];
                 }
-                if (data.setlists) {
-                    const existing = JSON.parse(localStorage.getItem(STORAGE_SETLISTS) || '[]');
-                    const existingIds = new Set(existing.map(l => l.id));
-                    const merged = [...existing, ...data.setlists.filter(l => !existingIds.has(l.id))];
-                    localStorage.setItem(STORAGE_SETLISTS, JSON.stringify(merged));
+                favStore?._recordAdd(next.map(idOf).filter((id) => id && !beforeIds.has(id)));
+                if (favStore) favStore.saveAll(next);
+                else { localStorage.setItem(STORAGE_FAVORITES, JSON.stringify(next)); this.app.syncStorage(STORAGE_FAVORITES); }
+            }
+            if (Array.isArray(data.setlists)) {
+                const before = listStore ? listStore.getAll() : readList(STORAGE_SETLISTS);
+                const beforeIds = new Set(before.map(idOf).filter(Boolean));
+                let next;
+                if (mode === 'replace') {
+                    next = data.setlists;
+                    const keep = new Set(next.map(idOf).filter(Boolean));
+                    for (const id of before.map(idOf)) {
+                        if (id && !keep.has(id)) listStore?._queuePendingDelete(id);
+                    }
+                } else {
+                    next = [...before, ...data.setlists.filter((l) => !beforeIds.has(idOf(l)))];
                 }
-                if (data.history) {
+                if (listStore) listStore.saveAll(next);
+                else { localStorage.setItem(STORAGE_SETLISTS, JSON.stringify(next)); this.app.syncStorage(STORAGE_SETLISTS); }
+            }
+            if (data.history) {
+                if (mode === 'replace') {
+                    localStorage.setItem(STORAGE_HISTORY, JSON.stringify(data.history));
+                } else {
                     const existing = JSON.parse(localStorage.getItem(STORAGE_HISTORY) || '[]');
                     const existingIds = new Set(existing.map(h => h.id));
                     const merged = [...existing, ...data.history.filter(h => !existingIds.has(h.id))];
                     localStorage.setItem(STORAGE_HISTORY, JSON.stringify(merged.slice(0, 20)));
                 }
+                /* Sync imported history to the cross-domain bridge (#133) */
+                this.app.syncStorage(STORAGE_HISTORY);
             }
-
-            /* Sync imported data to cross-domain bridge (#133) */
-            this.app.syncStorage(STORAGE_FAVORITES);
-            this.app.syncStorage(STORAGE_SETLISTS);
-            this.app.syncStorage(STORAGE_HISTORY);
 
             this.app.showToast(`Data imported (${mode})`, 'success', 2000);
         } catch (error) {
