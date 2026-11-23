@@ -6,14 +6,24 @@ Written 2026-11-23 against `origin/alpha` 1.4.1, after PR 1 (#2182) was merged. 
 
 | Step | Commit | Status |
 |---|---|---|
-| 2a-1 the switch | PENDING_2A1 | done |
-| 2a-2 "B1 never assumed" guard | PENDING_2A2 | done |
-| 2a-3 delete markers for favourites and custom tags | PENDING_2A3 | done, needs Opus review |
-| 2a-4 the web sends what it added and deleted | PENDING_2A4 | done, needs Opus review |
-| 2a-5 import goes through the stores | PENDING_2A5 | done |
-| 2a-6 count real views once | PENDING_2A6 | done |
-| 2a-7 "your most viewed" | PENDING_2A7 | done |
-| 2a-8 push registrations tied to the sign-in | PENDING_2A8 | done |
+| 2a-1 the switch | c9316d73 | done |
+| 2a-2 "B1 never assumed" guard | e73187c4 | done |
+| 2a-3 delete markers for favourites and custom tags | 545ce356 | done, needs Opus review |
+| 2a-4 the web sends what it added and deleted | 27edb404 | done, needs Opus review |
+| 2a-5 import goes through the stores | 99f8f7fa | done |
+| 2a-6 count real views once | 9cff71f0 | done |
+| 2a-7 "your most viewed" | 688c3643 | done |
+| 2a-8 push registrations tied to the sign-in | c7d9bdc5 | done |
+
+Deviations from the plan (PR 2a):
+- 2a-2: the guard has its own small tokeniser instead of `tests/php/lib/php_source_units.php`, because it must check that the ready-check comes BEFORE the statement (the shared library gives per-function views only). The 2a-6 and 2a-8 guards use the shared library.
+- 2a-2: the "remove the check from `popular_songs`" proof was done on `includes/api_tokens.php` (the first place that uses a B1 column), and again for `tblSongHistory.Source` in 2a-6, because `popular_songs` only starts naming the new columns through a helper in 2a-6.
+- 2a-3: absence deletes sit before the plan/upsert (as the code already did), not after it; they cannot affect each other. An `added` id clears its marker only if it is also in the payload. The reply carries `protocol` (2 when `deleted`/`added` were honoured, else 1) and, on a site with the switch on, `tombstones`.
+- 2a-4: the web clears what it sent on any absorbed reply that is not a read-only (paused-site) one, including `protocol: 1` (switch off), so stale deletions never queue up and replay when the switch is later ticked.
+- 2a-5: the import also records the new items as deliberate adds (otherwise an imported favourite that has a delete marker would be held back).
+- 2a-6: `enforceReadRateLimit()` gained an optional key so the limit is per signed-in person; `song_view` and the backfill body carry an optional `platform` (the web sends `web`).
+- 2a-7: the default period is read from `tblUserProfileItems` (dormant until PR 2b writes it), so the orphan inventory needed one allowlist entry that 2b-2 must remove.
+- Docs: `api-docs.yaml` named the `song_view` field `songId`; the server reads `song_id`. Corrected.
 
 ## 0. What the code changed about the old plan
 
