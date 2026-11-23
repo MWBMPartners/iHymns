@@ -183,6 +183,9 @@ const PROFILE_SYNC_SEARCH_LIST = ['history', 'searches'];
 /** The opt-in option "keep my recent searches in my account" (section, key). Off, or never set, means no searches are kept. */
 const PROFILE_SYNC_SEARCH_OPTION = ['privacy', 'syncSearchHistory'];
 
+/** The bookkeeping row (section `_meta`) holding the highest version this person has EVER been given. It never goes down. */
+const PROFILE_SYNC_VERSION_COUNTER_KEY = 'versionCounter';
+
 /** The platform names a writer may declare (the registry's list); anything else is stored as nothing. */
 function profileSyncCleanPlatform(?string $platform): ?string
 {
@@ -359,6 +362,35 @@ function profileSyncMarks(int $n): string
     return implode(',', array_fill(0, max(1, $n), '?'));
 }
 
+if (!function_exists('profileSyncMaxVersion')) {
+    /**
+     * The highest version number this person has ever been given.
+     *
+     * ELI5: the number the next change must beat. It is the larger of the highest version on any stored row and a counter kept
+     * in a bookkeeping row that only ever goes up. The counter matters when rows are removed (the old delete markers of a
+     * per-song section are pruned): without it the highest row could vanish and its number be given out again, and a device
+     * that already saw the old number would never see the new change.
+     *
+     * One query, so it adds no extra round trip. The caller holds the person's lock when it is about to write.
+     */
+    function profileSyncMaxVersion(\mysqli $db, int $userId): int
+    {
+        if (!profileItemsReady($db)) { return 0; }
+        $meta = PROFILE_SYNC_META_SECTION;
+        $ctr  = PROFILE_SYNC_VERSION_COUNTER_KEY;
+        $stmt = $db->prepare(
+            'SELECT COALESCE(MAX(Version), 0),
+                    COALESCE(MAX(CASE WHEN Section = ? AND ItemKey = ? THEN CAST(ValueJson AS UNSIGNED) END), 0)
+               FROM tblUserProfileItems WHERE UserId = ?'
+        );
+        $stmt->bind_param('ssi', $meta, $ctr, $userId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        return max((int)($row[0] ?? 0), (int)($row[1] ?? 0));
+    }
+}
+
 if (!function_exists('profileSyncApplyLocked')) {
     /**
      * Store a batch of changes. The caller ALREADY holds the person's row lock inside an open transaction.
@@ -383,12 +415,8 @@ if (!function_exists('profileSyncApplyLocked')) {
         }
         $changes = array_values($changes);
 
-        /* Read 1: the highest version this person has. (The lock makes it safe to add one.) */
-        $stmt = $db->prepare('SELECT COALESCE(MAX(Version), 0) FROM tblUserProfileItems WHERE UserId = ?');
-        $stmt->bind_param('i', $userId);
-        $stmt->execute();
-        $maxVersion = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
-        $stmt->close();
+        /* Read 1: the highest version this person has ever been given. (The lock makes it safe to add one.) */
+        $maxVersion = profileSyncMaxVersion($db, $userId);
 
         /* Which (section, key) pairs and which map sections do the changes touch? Only well-formed strings can match a row. */
         $pairs = []; $mapSections = [];
@@ -461,6 +489,8 @@ if (!function_exists('profileSyncApplyLocked')) {
                 $up->execute();
             }
             $up->close();
+            /* Remember the highest version given, so it can never be given again even if rows are removed later. */
+            if ($plan['maxVersion'] > $maxVersion) { profileSyncMetaWrite($db, $userId, PROFILE_SYNC_VERSION_COUNTER_KEY, $plan['maxVersion']); }
 
             /* Keep the delete markers of each touched map section bounded: remove the OLDEST past the limit (the newest, just written, stay). */
             $markerSections = [];
@@ -558,11 +588,7 @@ if (!function_exists('profileSyncPull')) {
         $cursor = max(0, $cursor);
         $limit  = max(1, min(PROFILE_SYNC_PAGE_SIZE, $limit));
 
-        $stmt = $db->prepare('SELECT COALESCE(MAX(Version), 0) FROM tblUserProfileItems WHERE UserId = ?');
-        $stmt->bind_param('i', $userId);
-        $stmt->execute();
-        $max = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
-        $stmt->close();
+        $max = profileSyncMaxVersion($db, $userId);
         $reset = $cursor > $max;
         if ($reset) { $cursor = 0; }
 

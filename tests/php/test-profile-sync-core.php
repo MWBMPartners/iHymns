@@ -302,7 +302,7 @@ try {
 
     /* internal rows are never returned and consume no version */
     /* The save above already wrote its own bookkeeping row (the old-settings-box fingerprint, Version 0): it must not be returned either. */
-    chk('the save itself wrote a bookkeeping row with Version 0', (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 1 AND Section = '_meta' AND Version = 0")->fetch_row()[0] === 1);
+    chk('the save itself wrote its bookkeeping rows with Version 0 (the shelf fingerprint and the version counter)', (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 1 AND Section = '_meta' AND Version = 0 AND ItemKey IN ('webShelfHash', 'versionCounter')")->fetch_row()[0] === 2);
     $db->query("INSERT INTO tblUserProfileItems (UserId, Section, ItemKey, ValueJson, Version, UpdatedAt) VALUES (1, '_meta', 'sneaky', '\"x\"', 999, UTC_TIMESTAMP(3))");
     $all = profileSyncPull($db, 1, 0);
     chk('the _meta section is never returned, even when a row there has a high version', !in_array('_meta', array_column($all['changes'], 'section'), true));
@@ -340,6 +340,18 @@ try {
     profileSyncApply($db, 2, [$set('songPrefs', 'MP-3', ['capo' => 2])], 'web');
     $cr = $db->query("SELECT BINARY ItemKey, ValueJson, Version FROM tblUserProfileItems WHERE UserId = 2 AND Section = 'songPrefs'")->fetch_all(MYSQLI_NUM);
     chk('mp-3 and MP-3 on real rows are ONE row, its key stored in upper case, holding the later value', count($cr) === 1 && $cr[0][0] === 'MP-3' && json_decode((string)$cr[0][1], true) === ['capo' => 2]);
+    $db->query('DELETE FROM tblUserProfileItems WHERE UserId = 2');
+
+    /* a version number is never given out twice, even if rows are removed (a per-person counter that never goes down) */
+    $db->query('DELETE FROM tblUserProfileItems WHERE UserId = 2');
+    profileSyncApply($db, 2, [$set('songPrefs', 'MP-1', ['capo' => 1]), $set('songPrefs', 'MP-2', ['capo' => 1]), $set('songPrefs', 'MP-3', ['capo' => 1])], 'web');
+    $top = (int)$db->query("SELECT MAX(Version) FROM tblUserProfileItems WHERE UserId = 2 AND Section <> '_meta'")->fetch_row()[0];
+    $db->query("DELETE FROM tblUserProfileItems WHERE UserId = 2 AND Version = {$top}");           /* the newest row disappears (for example pruned) */
+    $r = profileSyncApply($db, 2, [$set('songPrefs', 'MP-4', ['capo' => 2])], 'web');
+    $newV = (int)$db->query("SELECT Version FROM tblUserProfileItems WHERE UserId = 2 AND ItemKey = 'MP-4'")->fetch_row()[0];
+    chk('after the newest row is removed the next change still gets a NEW number, not the removed row\'s', $newV === $top + 1 && $r['maxVersion'] === $top + 1, "top=$top new=$newV");
+    chk('...and a device that already saw the removed number is not told to start over (no reset)', profileSyncPull($db, 2, $top)['resetCursor'] === false);
+    chk('the counter is bookkeeping: a pull never returns it', !in_array('_meta', array_column(profileSyncPull($db, 2, 0)['changes'], 'section'), true));
     $db->query('DELETE FROM tblUserProfileItems WHERE UserId = 2');
 
     /* delete markers in a map section are bounded: set-then-delete over and over must not grow the table for ever */
