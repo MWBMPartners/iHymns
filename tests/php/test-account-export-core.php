@@ -203,6 +203,35 @@ PHPCHILD;
     @unlink($outFile);
     $db->query('DELETE FROM tblSongRevisions'); $db->query("DELETE FROM tblActivityLog WHERE Action = 'song.edit'");
 
+    /* ONE moment in time: a favourite another device adds in the MIDDLE of the export (here: on the very first write, which happens
+       after the export has started but before the favourites are read) must not appear in the file. */
+    $GLOBALS['snapDb'] = new mysqli($hh, $us, $pw, $name, $pt);
+    $GLOBALS['snapDb']->query('SET FOREIGN_KEY_CHECKS = 0');
+    $GLOBALS['snapFired'] = false;
+    $GLOBALS['snapText'] = '';
+    if (!class_exists('SnapHookStream')) {
+        class SnapHookStream {
+            public $context;
+            public function stream_open($p, $m, $o, &$op) { return true; }
+            public function stream_write($d) {
+                if (!$GLOBALS['snapFired']) { $GLOBALS['snapFired'] = true; $GLOBALS['snapDb']->query("INSERT INTO tblUserFavorites (UserId, SongId) VALUES (1, 'MP-ADDED-MID-EXPORT')"); }
+                $GLOBALS['snapText'] .= $d;
+                return strlen($d);
+            }
+            public function stream_eof() { return true; }
+            public function stream_close() {}
+            public function stream_flush() { return true; }
+        }
+        stream_wrapper_register('snaphook', 'SnapHookStream');
+    }
+    $hook = fopen('snaphook://out', 'wb');
+    accountExportStream($db, 1, $hook);
+    fclose($hook);
+    chk('a favourite added by another device in the middle of the export is NOT in the file (every table shows one moment)', $GLOBALS['snapFired'] === true && strpos($GLOBALS['snapText'], 'MP-ADDED-MID-EXPORT') === false && strpos($GLOBALS['snapText'], 'MP-1') !== false);
+    $afterSnap = accountExportText($db, 1);
+    chk('...and the next export, after it, does have it (so the test is not just missing the row)', strpos($afterSnap, 'MP-ADDED-MID-EXPORT') !== false);
+    $db->query("DELETE FROM tblUserFavorites WHERE SongId = 'MP-ADDED-MID-EXPORT'");
+
     /* A table that does not exist yet (an install that has not run a migration) is skipped, not an error. */
     $db->query('DROP TABLE tblBulkImportJobs');
     $after = accountExportBuild($db, 1);

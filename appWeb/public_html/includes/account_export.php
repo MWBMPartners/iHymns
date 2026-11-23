@@ -65,6 +65,8 @@ declare(strict_types=1);
  *    that ran out of memory, which PHP reports as a fatal error that no `catch` can catch. The
  *    file is compact JSON and has the same shape as before, except that inside a table the
  *    `rows` come before `truncated` (a table's cut-short mark is only known at its end).
+ *  - ONE MOMENT IN TIME. All the reads happen inside a read-only transaction with a consistent snapshot, so a table read last
+ *    shows the same moment as the one read first, even while the person's other devices keep syncing.
  *  - A failed attempt still counts towards the 5 downloads an hour. The count is taken before
  *    the file is built (that is what protects the database from a flood); it is not given back.
  *    A person who sees the "try again" message has the other four.
@@ -633,6 +635,28 @@ function accountExportStream(\mysqli $db, int $userId, $out): void
     if ($userId <= 0) {
         throw new \InvalidArgumentException('accountExportStream() needs a positive user id.');
     }
+    /* ONE consistent picture (PR 2c review): the tables are read one after another, possibly over several seconds, while the person's
+       other devices keep syncing. A read-only transaction with a consistent snapshot makes every table show the same moment, so the
+       file never holds, say, a favourite's removal in one table and not in another. If the snapshot cannot be taken the export still runs. */
+    $inSnapshot = false;
+    try {
+        $db->begin_transaction(MYSQLI_TRANS_START_READ_ONLY | MYSQLI_TRANS_START_WITH_CONSISTENT_SNAPSHOT);
+        $inSnapshot = true;
+    } catch (\Throwable $_e) {
+        error_log('[account_export] no consistent snapshot: ' . $_e->getMessage());
+    }
+    try {
+        accountExportStreamBody($db, $userId, $out);
+    } finally {
+        if ($inSnapshot) {
+            try { $db->rollback(); } catch (\Throwable $_e) { /* a read-only transaction holds nothing to undo */ }
+        }
+    }
+}
+
+/** The body of accountExportStream(), run inside its snapshot. @param resource $out */
+function accountExportStreamBody(\mysqli $db, int $userId, $out): void
+{
     $plan = accountExportPlan(array_map(
         static fn(array $fk): array => ['table' => $fk['table'], 'column' => $fk['column']],
         accountEraseFkGraph($db)
