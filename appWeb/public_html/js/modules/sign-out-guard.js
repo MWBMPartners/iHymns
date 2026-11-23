@@ -9,8 +9,8 @@
  * reached their account yet (no signal, a slow connection, a paused site), forgetting it would lose it for good.
  * So sign-out first tries to send everything that is waiting. If something is still left, it ASKS:
  * "N changes have not reached your account yet", with three ways out:
- *   - Try again (up to three times),
- *   - Sign out anyway (the waiting changes are lost from this browser), or
+ *   - Try again (up to three times; on the last question this button reads "Stay signed in" instead),
+ *   - Sign out anyway (the waiting changes are lost from this browser; ALWAYS the same button in the same place), or
  *   - close the box (stay signed in; nothing happens).
  * Only then does it clear the browser's copy.
  *
@@ -51,12 +51,14 @@ export function signOutGuardActive(app) {
     return app?.config?.profileSync?.enabled === true;
 }
 
-/** PURE: the sentence the dialog shows. */
-export function unsentMessage(total) {
+/** PURE: the sentence the dialog shows. On the last round there is no "try again" left to offer, so the sentence does not mention it. */
+export function unsentMessage(total, canRetry = true) {
     const n = Number(total) || 0;
     return (n === 1 ? '1 change has' : `${n} changes have`) + ' not reached your account yet. '
         + 'If you sign out now, ' + (n === 1 ? 'it' : 'they') + ' will be lost from this browser. '
-        + 'You can try sending ' + (n === 1 ? 'it' : 'them') + ' again, or sign out anyway.';
+        + (canRetry
+            ? 'You can try sending ' + (n === 1 ? 'it' : 'them') + ' again, or sign out anyway.'
+            : 'You can stay signed in, or sign out anyway.');
 }
 
 async function defaultDropMarkers(type) {
@@ -148,12 +150,19 @@ export async function confirmSignOut(app, deps = {}) {
     if (typeof app?.showChoice !== 'function') return 'stay';   /* cannot ask: do not lose anything */
     for (let tries = 0; ; tries++) {
         const lastChance = tries >= MAX_RETRIES;
-        const answer = await app.showChoice(unsentMessage(c.total), lastChance
-            ? { title: 'Not everything was sent', option1Text: 'Sign out anyway', option2Text: 'Stay signed in', option1Class: 'btn-danger', option2Class: 'btn-primary' }
-            : { title: 'Not everything was sent', option1Text: 'Try again', option2Text: 'Sign out anyway', option1Class: 'btn-primary', option2Class: 'btn-outline-danger' });
+        /* "Sign out anyway" is ALWAYS option2 (the same button, in the same place, with the same look) and the harmless choice is
+           always option1, the button beside it: "Try again" on the first rounds, "Stay signed in" on the last. Before the review the
+           last round swapped them, so the red button a finger had been tapping for "Try again" became "Sign out anyway". */
+        const answer = await app.showChoice(unsentMessage(c.total, !lastChance), {
+            title: 'Not everything was sent',
+            option1Text: lastChance ? 'Stay signed in' : 'Try again',
+            option2Text: 'Sign out anyway',
+            option1Class: 'btn-primary',
+            option2Class: 'btn-outline-danger',
+        });
         if (answer === null) return 'stay';                         /* the box was closed: stay signed in */
-        if (lastChance) return answer === 'option1' ? 'go' : 'stay';
         if (answer === 'option2') return 'go';                      /* sign out anyway */
+        if (lastChance) return 'stay';                              /* option1 on the last round: stay signed in */
         await flush();                                              /* option1: try again */
         c = await count();
         if (c.total === 0) return 'go';

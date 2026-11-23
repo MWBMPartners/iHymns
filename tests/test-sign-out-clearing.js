@@ -229,9 +229,28 @@ console.log('\n2b - the decision\n');
     check('"Try again" that sends everything goes without a second question', (await guard.confirmSignOut(t.app, t.deps)) === 'go' && t.dialogs.length === 1 && t.flushes() === 2);
     t = mk([3, 3, 3, 3], ['option1', 'option1', 'option1', 'option1']);
     const r4 = await guard.confirmSignOut(t.app, t.deps);
-    check('"Try again" is offered three times, then a last question that offers "Sign out anyway" and "Stay signed in"', t.dialogs.length === 4 && t.flushes() === 4 && t.dialogs[0].o.option1Text === 'Try again' && t.dialogs[3].o.option1Text === 'Sign out anyway' && t.dialogs[3].o.option2Text === 'Stay signed in' && r4 === 'go', JSON.stringify(t.dialogs.map((d) => d.o.option1Text)));
+    check('"Try again" is offered three times, then a last question that offers "Stay signed in" in its place; "Sign out anyway" never moves', t.dialogs.length === 4 && t.flushes() === 4 && t.dialogs[0].o.option1Text === 'Try again' && t.dialogs[3].o.option1Text === 'Stay signed in' && t.dialogs.every((d) => d.o.option2Text === 'Sign out anyway') && r4 === 'stay', JSON.stringify(t.dialogs.map((d) => [d.o.option1Text, d.o.option2Text])));
     t = mk([3, 3, 3, 3], ['option1', 'option1', 'option1', 'option2']);
-    check('...and "Stay signed in" on the last question stays', (await guard.confirmSignOut(t.app, t.deps)) === 'stay');
+    check('...and "Sign out anyway" on the last question signs out', (await guard.confirmSignOut(t.app, t.deps)) === 'go');
+    t = mk([3, 3, 3, 3], ['option1', 'option1', 'option1', null]);
+    check('...and closing the last question stays signed in', (await guard.confirmSignOut(t.app, t.deps)) === 'stay');
+    /* The button layout, round by round, derived from the real dialog markup in app.js (the visual order is the markup order). */
+    {
+        const appSrc = fs.readFileSync(path.join(JS, 'app.js'), 'utf8');
+        const choiceSrc = appSrc.slice(appSrc.indexOf('showChoice(message, opts = {})'));
+        const footer = choiceSrc.slice(choiceSrc.indexOf('<div class="modal-footer">'));
+        const order = [...footer.slice(0, footer.indexOf('</div>')).matchAll(/id="\$\{id\}-(opt[12])"/g)].map((m) => m[1]);   /* left to right */
+        check('the dialog markup has both option buttons, so the slots can be derived (' + order.join(' then ') + ')', order.length === 2 && order.includes('opt1') && order.includes('opt2'));
+        t = mk([3, 3, 3, 3], ['option1', 'option1', 'option1', 'option1']);
+        await guard.confirmSignOut(t.app, t.deps);
+        const labelsBySlot = t.dialogs.map((d) => order.map((o) => (o === 'opt1' ? d.o.option1Text : d.o.option2Text)));
+        const slotOfSignOut = labelsBySlot.map((row) => row.indexOf('Sign out anyway'));
+        check('every round puts "Sign out anyway" in the SAME place on the screen', slotOfSignOut.length === 4 && new Set(slotOfSignOut).size === 1 && slotOfSignOut[0] >= 0, JSON.stringify(labelsBySlot));
+        check('...with the same look every round (it is never the only red button that was a different colour a moment ago)', new Set(t.dialogs.map((d) => d.o.option2Class)).size === 1 && t.dialogs.every((d) => /danger/.test(d.o.option2Class)));
+        const slotOfSafe = labelsBySlot.map((row) => row.findIndex((l) => l === 'Try again' || l === 'Stay signed in'));
+        check('...and the harmless choice (Try again, then Stay signed in) is always in the other place', new Set(slotOfSafe).size === 1 && slotOfSafe[0] !== slotOfSignOut[0]);
+        check('the last question does not tell the person to "try again", which is no longer offered', !/again/.test(t.dialogs[3].m) && /again/.test(t.dialogs[0].m), t.dialogs[3].m);
+    }
     check('with no way to ask, it stays signed in rather than lose anything', (await guard.confirmSignOut({}, { flush: async () => {}, count: async () => ({ total: 1, parts: {} }) })) === 'stay');
     /* a hung store cannot trap the person */
     let cleared = false; const hung = { favorites: { flushNow: () => new Promise(() => {}) } };
