@@ -798,7 +798,12 @@ export class UserAuth {
                 .filter((id) => id && !waitingAdds.has(id))
         );
         const localList = dead.size ? fav.getAll().filter((f) => f && !dead.has(f.id)) : fav.getAll();
-        const serverList = dead.size ? res.favorites.filter((f) => f && !dead.has(f.id)) : res.favorites;
+        /* A removal still WAITING to be sent (made while this request was in flight, or after it) is
+           newer than anything this reply says: the server's copy of that favourite is stale, so it
+           must not come back. */
+        const waitingDeletes = new Set(fav.getPendingDeletes?.() ?? []);
+        let serverList = dead.size ? res.favorites.filter((f) => f && !dead.has(f.id)) : res.favorites;
+        if (waitingDeletes.size) serverList = serverList.filter((f) => f && !waitingDeletes.has(f.id));
         fav.saveAll(this._mergeFavorites(localList, serverList), { sync: false });
         /* Forget the ids this request carried, and only those. NOT on a read-only (paused-site)
            reply: the server changed nothing, so the person's removals still have to be sent. */

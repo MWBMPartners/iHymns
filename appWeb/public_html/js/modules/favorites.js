@@ -140,8 +140,10 @@ export class Favorites {
      * Drop the ids a sync has just had accepted, and ONLY those: a change made while the
      * request was in flight is still pending and must survive to the next one.
      *
-     * An id that was sent as "added" also leaves the removed list, so a stray id in both
-     * lists (a restored backup) can never delete a favourite that was just added.
+     * Each list is cleared only of what was sent in THAT list. An id sent as "added" that the
+     * person removed again while the request was on its way is now waiting in "removed" - it
+     * must stay there (an earlier version cleared it as a side effect of having sent it as
+     * "added", which lost the removal).
      *
      * @param {?{added?: string[], deleted?: string[]}} sent what the request carried
      */
@@ -150,9 +152,7 @@ export class Favorites {
         const sentAdded = new Set(sent.added || []);
         const sentDeleted = new Set(sent.deleted || []);
         if (sentAdded.size) this._writeIdList(STORAGE_FAVORITES_ADDED, this.getPendingAdds().filter(id => !sentAdded.has(id)));
-        if (sentAdded.size || sentDeleted.size) {
-            this._writeIdList(STORAGE_FAVORITES_DELETED, this.getPendingDeletes().filter(id => !sentDeleted.has(id) && !sentAdded.has(id)));
-        }
+        if (sentDeleted.size) this._writeIdList(STORAGE_FAVORITES_DELETED, this.getPendingDeletes().filter(id => !sentDeleted.has(id)));
     }
 
     /**

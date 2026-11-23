@@ -33,6 +33,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const JS = path.join(__dirname, '..', 'appWeb', 'public_html', 'js');
 const MODULES = path.join(JS, 'modules');
 const USER_AUTH = path.join(MODULES, 'user-auth.js');
+const FAVORITES = path.join(MODULES, 'favorites.js');
 
 let failures = 0;
 const check = (label, cond, detail = '') => {
@@ -77,7 +78,7 @@ function makeServer({ protocolOn = true } = {}) {
 }
 
 /* ---------- one browser (a jsdom window with the real classes) ---------- */
-async function device(server, userAuthPath = USER_AUTH) {
+async function device(server, userAuthPath = USER_AUTH, favoritesPath = FAVORITES) {
     const dom = new JSDOM('<!doctype html><html><body></body></html>', { runScripts: 'dangerously', url: 'https://example.test/' });
     const { window } = dom;
     const dev = { window, hold: null };
@@ -98,7 +99,7 @@ async function device(server, userAuthPath = USER_AUTH) {
     };
     dev.use();
     const { UserAuth } = await import(url(userAuthPath) + '?t=' + Date.now() + Math.random());
-    const { Favorites } = await import(url(path.join(MODULES, 'favorites.js')) + '?t=' + Date.now() + Math.random());
+    const { Favorites } = await import(url(favoritesPath) + '?t=' + Date.now() + Math.random());
     const app = { config: { apiUrl: '/api' }, syncStorage() {}, showToast() {}, showConfirm: async () => true };
     app.userAuth = new UserAuth(app);
     app.favorites = new Favorites(app);
@@ -171,6 +172,33 @@ console.log('\n2 - what a sync sends and clears\n');
     await d.push();
     check('a paused site\'s read-only reply clears nothing (the server changed nothing)', d.app.favorites.getPendingAdds().includes('CP-7'));
     server.readOnly = false;
+}
+
+console.log('\n2b - a removal made while a sync is in flight is not lost (review fix 2)\n');
+async function inFlightRemoval(userAuthPath, favoritesPath) {
+    const server = makeServer();
+    const d = await device(server, userAuthPath, favoritesPath);
+    d.signIn();
+    await d.reconcile();
+    d.add('CP-2');                                   /* favourite CP-2: pending "added" */
+    let release; d.hold = new Promise((r) => { release = r; });
+    const inFlight = d.push();                       /* sends added: ['CP-2'] */
+    await new Promise((r) => setTimeout(r, 20));
+    d.add('CP-2');                                   /* un-favourite it while the request is on its way */
+    release(); d.hold = null;
+    await inFlight;
+    const sentAdded = J(server.requests.at(-1).body.added);
+    const out = { sentAdded, ids: d.ids(), pendingDeletes: d.app.favorites.getPendingDeletes() };
+    await d.push();                                  /* the next sync tells the server */
+    out.serverHas = server.favs.get(1).has('CP-2');
+    return out;
+}
+{
+    const r = await inFlightRemoval(USER_AUTH, FAVORITES);
+    check('setup: the in-flight request really carried CP-2 as added', r.sentAdded === '["CP-2"]', r.sentAdded);
+    check('the favourite does not come back after the reply', !r.ids.includes('CP-2'), J(r.ids));
+    check('the removal is still waiting to be sent', J(r.pendingDeletes) === '["CP-2"]', J(r.pendingDeletes));
+    check('the next sync removes it on the server', r.serverHas === false);
 }
 
 console.log('\n3 - tombstones are dropped BEFORE merging, but never an id waiting in "added"\n');
@@ -268,6 +296,30 @@ async function withMutant(from, to, fn) {
         }
     );
     check('with the lists left out of the request, the "deleted" marker key is missing (the test can fail)', r === false);
+}
+
+{
+    /* the OLD clearing rule: an id sent as "added" also leaves the removed list */
+    let mutant = null;
+    try {
+        const src = fs.readFileSync(FAVORITES, 'utf8');
+        const from = "if (sentDeleted.size) this._writeIdList(STORAGE_FAVORITES_DELETED, this.getPendingDeletes().filter(id => !sentDeleted.has(id)));";
+        if (!src.includes(from)) throw new Error('mutation setup: line not found');
+        const to = "if (sentAdded.size || sentDeleted.size) this._writeIdList(STORAGE_FAVORITES_DELETED, this.getPendingDeletes().filter(id => !sentDeleted.has(id) && !sentAdded.has(id)));";
+        mutant = path.join(MODULES, `zz_ihymns_test_favorites_mutant_${Date.now()}.js`);
+        fs.writeFileSync(mutant, src.replace(from, to).replace("from '../constants.js'", "from '../constants.js'"));
+        const r = await inFlightRemoval(USER_AUTH, mutant);
+        check('with the OLD clearing rule the in-flight removal is lost (the test can fail)', r.pendingDeletes.length === 0);
+    } finally { if (mutant) fs.rmSync(mutant, { force: true }); }
+}
+{
+    /* the reply's stale copy is NOT filtered by the waiting removals */
+    const r = await withMutant(
+        "if (waitingDeletes.size) serverList = serverList.filter((f) => f && !waitingDeletes.has(f.id));",
+        '/* MUTATED: server copy not filtered */',
+        (mutant) => inFlightRemoval(mutant, FAVORITES)
+    );
+    check('without dropping the server\'s stale copy the favourite comes back (the test can fail)', r.ids.includes('CP-2'), J(r.ids));
 }
 
 console.log(failures === 0 ? '\nAll checks passed.' : `\n${failures} check(s) FAILED.`);
