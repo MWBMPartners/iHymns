@@ -33,6 +33,7 @@ require_once $web . '/includes/channel_switch.php';
 require_once $web . '/includes/account_write_gate.php';
 require_once $web . '/includes/cross_site_sync.php';
 require_once $web . '/includes/profile_sync_gate.php';
+require_once $web . '/includes/device_signin_gate.php';
 
 $fail = 0;
 function chk(string $label, bool $cond, string $detail = ''): void
@@ -209,5 +210,46 @@ chk('the card posts to the same action', str_contains($psConf, 'value="save_prof
 chk('the page tells the browser through profileSync.enabled, and only when the switch AND the table are ready',
     (bool)preg_match('/[\'"]profileSync[\'"]\s*=>\s*\[\s*[\'"]enabled[\'"]\s*=>\s*profileSyncActiveHere\(\)/', code((string)file_get_contents($web . '/index.php'))));
 chk('the API-coverage guard lists it as web-only', (bool)preg_match('/[\'"]save_profile_sync[\'"]\s*=>\s*[\'"]web_only:/', (string)file_get_contents($repo . '/tests/php/test-manage-action-api-coverage.php')));
+
+/* ---- the one-sign-in-per-device switch (PR 3 step H2) ---- */
+echo "device sign-in switch\n";
+chk('the key and default are the agreed ones: OFF unless an admin ticks a channel',
+    DEVICE_SIGNIN_SETTING_KEY === 'device_signin_channels' && DEVICE_SIGNIN_DEFAULT === 'none');
+chk('no row at all (the reader hands back the default) is OFF on every channel',
+    deviceSigninEnabledHere(static fn($k, $d) => $d, 'production') === false
+    && deviceSigninEnabledHere(static fn($k, $d) => $d, 'beta') === false
+    && deviceSigninEnabledHere(static fn($k, $d) => $d, 'alpha') === false);
+chk('ticking alpha turns it on for alpha only', deviceSigninEnabledHere($ok('alpha'), 'alpha') && !deviceSigninEnabledHere($ok('alpha'), 'beta') && !deviceSigninEnabledHere($ok('alpha'), 'production'));
+chk('all three ticked is on everywhere; "none" is off everywhere',
+    deviceSigninEnabledHere($ok('production,beta,alpha'), 'production') && !deviceSigninEnabledHere($ok('none'), 'production') && !deviceSigninEnabledHere($ok('none'), 'alpha'));
+chk('an unreadable switch is OFF, even on production (fails closed)', deviceSigninEnabledHere($boom, 'production') === false && deviceSigninEnabledHere($boom, 'alpha') === false);
+chk('it is independent of the account sync switch', deviceSigninEnabledHere($ok('none'), 'alpha') === false && profileSyncEnabledHere($ok('alpha'), 'alpha') === true);
+chk('the reason codes and bodies are the agreed ones', DEVICE_SIGNIN_DISABLED_REASON === 'device_signin_disabled' && DEVICE_SIGNIN_NOT_READY_REASON === 'device_signin_not_ready'
+    && deviceSigninDisabledBody()['reason'] === 'device_signin_disabled' && deviceSigninNotReadyBody()['reason'] === 'device_signin_not_ready');
+$dsHolders = [];
+$dsIt = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($repo . '/appWeb', FilesystemIterator::SKIP_DOTS));
+foreach ($dsIt as $f) {
+    $rel = substr($f->getPathname(), strlen($repo) + 1);
+    if (!$f->isFile() || !preg_match('/\.(php|js|html)$/', $rel) || str_contains($rel, 'private_html/lib/')) { continue; }
+    if (preg_match('/[\'"]device_signin_channels[\'"]/', (string)@file_get_contents($f->getPathname()))) { $dsHolders[] = $rel; }
+}
+chk('the quoted key appears in exactly one file under appWeb/ (' . implode(', ', $dsHolders) . ')', $dsHolders === ['appWeb/public_html/includes/device_signin_gate.php']);
+$dsGate = code((string)file_get_contents($web . '/includes/device_signin_gate.php'));
+chk('it reads through the shared switch with onError=false, never a copy of the channel parse',
+    (bool)preg_match('/channelSwitchEnabledHere\(\s*DEVICE_SIGNIN_SETTING_KEY\s*,\s*DEVICE_SIGNIN_DEFAULT\s*,\s*false\s*,/', $dsGate)
+    && !str_contains($dsGate, 'ihymns_parse_channels_csv('));
+$dsConf = code((string)file_get_contents($web . '/manage/configuration.php'));
+$dsAt = strpos($dsConf, "\$action === 'save_device_signin'");
+chk('configuration.php has a save_device_signin handler that saves through the constant', $dsAt !== false && str_contains(substr($dsConf, (int)$dsAt, 3500), 'DEVICE_SIGNIN_SETTING_KEY'));
+chk('the handler stores "none" for nothing ticked and only accepts the three real channels',
+    (bool)preg_match('/\$dsChansOut\s*===\s*\[\]\s*\?\s*[\'"]none[\'"]/', substr($dsConf, (int)$dsAt, 3500)) && str_contains(substr($dsConf, (int)$dsAt, 3500), 'in_array($c, $validDsChans, true)'));
+chk('the card posts to the same action', str_contains($dsConf, 'value="save_device_signin"'));
+chk('the page tells the browser through deviceSignin.enabled, only when the switch AND the database are ready',
+    (bool)preg_match('/[\'"]deviceSignin[\'"]\s*=>\s*\[\s*[\'"]enabled[\'"]\s*=>\s*deviceSigninActiveHere\(\)/', code((string)file_get_contents($web . '/index.php'))));
+chk('app_status tells native apps through plain deviceSignin and profileSync booleans',
+    (bool)preg_match('/[\'"]deviceSignin[\'"]\s*=>\s*deviceSigninActiveHere\(\$db\)/', code((string)file_get_contents($web . '/api.php')))
+    && (bool)preg_match('/[\'"]profileSync[\'"]\s*=>\s*\(static function/', code((string)file_get_contents($web . '/api.php'))));
+chk('the API-coverage guard lists it as web-only', (bool)preg_match('/[\'"]save_device_signin[\'"]\s*=>\s*[\'"]web_only:/', (string)file_get_contents($repo . '/tests/php/test-manage-action-api-coverage.php')));
+chk('without the database, the active check is false and asks nothing when the switch is off', deviceSigninActiveHere() === false);
 
 exit($fail === 0 ? 0 : 1);

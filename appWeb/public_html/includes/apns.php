@@ -127,6 +127,8 @@ declare(strict_types=1);
    standalone-loadable too. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'apple_siwa.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php'; /* songRelocateIsTransactionFatal() */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'profile_sync_gate.php';  /* apnsPerSessionHere() asks both switches */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'device_signin_gate.php';
 
 /** Closed vocabulary for `tblApnsTokens.ApnsEnv` — VARCHAR, app-validated,
  *  never an ENUM (rule #20); matches the shipped column COMMENT exactly. */
@@ -199,6 +201,24 @@ function apnsTokenHashReady(\mysqli $db): bool
         if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
         return false;
     }
+}
+
+/**
+ * Should push registrations be tied to, and removed with, ONE sign-in each, on this site?
+ * (PR 3 step H2, epic #2180). THE one answer: every place that asks goes through here.
+ *
+ * ELI5: with "one sign-in per device" switched on, a person's iPhone and iPad each have their own
+ * sign-in. Signing the iPhone out must then remove only the iPhone's notification registration. The
+ * same was already true when the new account sync is on. So the answer is yes when EITHER switch is
+ * on. If only the sync switch gated it, switching device sign-in on alone would let one Apple
+ * sign-out delete every Apple device's notifications (the older A6 rule).
+ *
+ * Detailed: both switches fail closed, so any trouble reading either means "no" and the previous
+ * rule applies. `$syncReader` and `$deviceReader` are test hooks (see channelSwitchEnabledHere()).
+ */
+function apnsPerSessionHere(?callable $syncReader = null, ?callable $deviceReader = null, ?string $channel = null): bool
+{
+    return profileSyncEnabledHere($syncReader, $channel) || deviceSigninEnabledHere($deviceReader, $channel);
 }
 
 /**

@@ -6125,6 +6125,25 @@ paths:
                       native app's bundle id (used as the SIWA client id)
                       is.
                     example: app.ihymns.web
+                  deviceSignin:
+                    type: boolean
+                    description: >-
+                      PR 3 step H2. True only when "a sign-in for each device" is switched on for THIS
+                      site (the per-channel setting on `manage/configuration.php`) AND the database
+                      objects it needs exist. False by default, when it cannot be read, and when the
+                      database is not ready. While false an app must keep using the sign-in it already
+                      has and must not call `auth_device_enrol`, `auth_enrol_key_create` or
+                      `auth_enrol_key_redeem` (they would answer 409 `device_signin_disabled`).
+                      An older client that does not know this key reads it as false.
+                    example: false
+                  profileSync:
+                    type: boolean
+                    description: >-
+                      PR 3 step H2. True only when the account's new small-item sync
+                      (`profile_sync`) is switched on for THIS site AND its table exists. Apps use it to
+                      decide whether signing out should first send, then clear, local personal data.
+                      False by default; an older client that does not know this key reads it as false.
+                    example: false
                   remoteFeatures:
                     type: object
                     description: >-

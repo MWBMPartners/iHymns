@@ -256,6 +256,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    call sites — never a per-handler copy of the decision. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_sync.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_sync_gate.php'; /* PR 2a: the per-site switch for the new account behaviour (off by default) */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_signin_gate.php'; /* PR 3 H2: the per-site switch for one sign-in per device (off by default) */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_history_provenance.php'; /* PR 2a: what a view is stamped with, and which views count */
 /* #1671 F5 — the ONE namespaced user-preference store. `user_settings` used to
    be a whole-blob replace, which cannot survive a second product sharing this
@@ -3928,7 +3929,7 @@ if ($action !== null) {
                             (int)$authedUser['Id'],
                             [$tokenHash],
                             apiTokenSessionOwnsApplePush($signedOutPlatform),
-                            profileSyncEnabledHere()
+                            apnsPerSessionHere()   /* H2: either switch (device sign-in OR the account sync) ties push to one sign-in */
                         );
                     } catch (\Throwable $e) {
                         error_log('[api/auth_logout] apns token cleanup failed: ' . $e->getMessage());
@@ -6265,7 +6266,8 @@ if ($action !== null) {
             $signedOutPlatform = apiTokenSessionPlatform($db, $userId, $deviceId, true);
             /* G4 (PR 2a): the FULL hashes for this prefix, read BEFORE the rows are deleted, so the
                push registrations tied to exactly these sign-ins can be removed afterwards. */
-            $signedOutHashes = profileSyncEnabledHere() ? apiTokenHashesForDevicePrefix($db, $userId, $deviceId) : [];
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';   /* apnsPerSessionHere() */
+            $signedOutHashes = apnsPerSessionHere() ? apiTokenHashesForDevicePrefix($db, $userId, $deviceId) : [];
             $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token LIKE CONCAT(?, "%")');
             $stmt->bind_param('is', $userId, $deviceId);
             $stmt->execute();
@@ -6290,7 +6292,7 @@ if ($action !== null) {
                     $userId,
                     $signedOutHashes,
                     apiTokenSessionOwnsApplePush($signedOutPlatform),
-                    profileSyncEnabledHere()
+                    apnsPerSessionHere()
                 );
             } catch (\Throwable $e) {
                 error_log('[api/device_signout] apns token cleanup failed: ' . $e->getMessage());
@@ -6517,7 +6519,7 @@ if ($action !== null) {
                    token, or the column not there yet: the previous statement. */
                 $apnsBearer = getAuthBearerToken();
                 $apnsSessionHash = ($apnsBearer !== null && $apnsBearer !== '') ? hash('sha256', $apnsBearer) : null;
-                if ($apnsSessionHash !== null && profileSyncEnabledHere() && apnsTokenHashReady($db)) {
+                if ($apnsSessionHash !== null && apnsPerSessionHere() && apnsTokenHashReady($db)) {
                     $ins = $db->prepare(
                         'INSERT INTO tblApnsTokens (Kind, UserId, SessionId, PushToken, ApnsEnv, ExpiresAt, ApiTokenHash)
                          VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -8524,6 +8526,16 @@ if ($action !== null) {
                 'appleSiwaServicesId' => $appleWebEnabledForStatus
                     ? (string)(getAppSetting('apple_siwa_services_id', '') ?? '')
                     : null,
+                /* PR 3 H2 — the two per-site switches a native app needs to know about, as plain
+                   booleans (false when off, when it cannot be read, or when the database is not
+                   ready). An app that does not know these keys reads them as false, so an older app
+                   is unaffected. `deviceSignin`: one sign-in per device (swap, automatic sign-in key);
+                   `profileSync`: the account's new small-item sync (and the sign-out clearing). */
+                'deviceSignin'        => deviceSigninActiveHere($db),
+                'profileSync'         => (static function () use ($db): bool {
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_sync.php';
+                    return profileSyncActiveHere($db);
+                })(),
             ] + $intAppsStatusPayload + $captchaStatusPayload);
 
             /* #1725/#1730 — the gateway refresh happens AFTER the response is
