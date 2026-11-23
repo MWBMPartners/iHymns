@@ -105,6 +105,10 @@ export const STORAGE_FAVORITES_SYNCED_AT = 'ihymns_favorites_synced_at';
 export const STORAGE_FAVORITES_ADDED   = 'ihymns_favorites_added';
 export const STORAGE_FAVORITES_DELETED = 'ihymns_favorites_deleted';
 
+/* The period picked on the home page's "Your most viewed" card (30d | 90d | 12m | all). A device
+   choice for now (PR 2a, 2a-7); the registry entry home.mostViewedPeriod will carry it to the account. */
+export const STORAGE_MOST_VIEWED_PERIOD = 'ihymns_most_viewed_period';
+
 /* Pending explicit set-list deletions (#1661) — the ids this device has
    deleted but not yet had acknowledged by a successful sync.
    PERSISTED, not in-memory, and that is the whole point: a deletion made

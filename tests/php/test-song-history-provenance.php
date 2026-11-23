@@ -78,6 +78,7 @@ $EXEMPT = [
     'api.php#case \'song_history_backfill\''               => 'WRITES uploaded rows (stamped as uploads here)',
     'api.php#case \'song_history\''                        => 'the person\'s own recently-viewed list, not a count',
     'api.php#case \'song_history_clear\''                  => 'removes the person\'s own rows',
+    'includes/my_most_viewed.php#myMostViewedRows'        => 'a person\'s OWN most-viewed list: one account everywhere, so it counts every source and site (owner decision 4)',
     'manage/index.php#(file scope)'                        => 'admin dashboard traffic number: counts everything (owner decision 11)',
     'manage/analytics.php#(file scope)'                    => 'admin analytics counts everything (owner decision 11)',
     'includes/analytics_ingest.php#analyticsTopSongs'      => 'admin analytics counts everything (owner decision 11)',

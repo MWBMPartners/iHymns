@@ -11002,6 +11002,58 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * "Your most viewed" (account/profile rewrite PR 2a, step 2a-7, #2175)
+         *
+         * GET ?action=my_most_viewed&period=30d|90d|12m|all
+         *
+         * The signed-in person's OWN most-opened songs over a period. Counts all of
+         * their views (one account, everywhere). With no `period` the person's saved
+         * choice (profile item home.mostViewedPeriod) is used, else 12 months.
+         * Replies: 200 {songs:[{songId,title,number,songbook,songbookName,language,views}],
+         * period}; 400 {reason:'invalid_period'}; 401; 405; 409 {reason:'profile_sync_disabled'}
+         * (the new account behaviour is not switched on for this site); 429. Logic lives in
+         * includes/my_most_viewed.php.
+         * ----------------------------------------------------------------- */
+        case 'my_most_viewed':
+            if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+                sendJson(['error' => 'GET method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            /* Dormant until an admin switches the new account behaviour on for this site. */
+            if (!profileSyncEnabledHere()) {
+                sendJson(profileSyncDisabledBody(), 409);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'my_most_viewed.php';
+            $mvUserId = (int)$authUser['Id'];
+            /* Per signed-in person; fails open (counting must never break a read). */
+            enforceReadRateLimit('my_most_viewed', MY_MOST_VIEWED_RATE_PER_MINUTE, 0, 'uid:' . $mvUserId);
+
+            $mvRaw = $_GET['period'] ?? null;
+            if ($mvRaw !== null && $mvRaw !== '' && !myMostViewedPeriodValid($mvRaw)) {
+                sendJson(['error' => 'Unknown period.', 'reason' => 'invalid_period'], 400);
+                break;
+            }
+            try {
+                $db = getDbMysqli();
+                $mvPeriod = ($mvRaw === null || $mvRaw === '') ? myMostViewedDefaultPeriod($db, $mvUserId) : (string)$mvRaw;
+                $mvSongs = myMostViewedRows($db, $mvUserId, $mvPeriod);
+                /* Language filter (#736): applied in memory after the LIMIT, like popular_songs. */
+                $_langPred = makeLanguageFilterPredicate(resolvePreferredLanguagesForRequest($authUser));
+                $mvSongs = array_slice(array_values(array_filter($mvSongs, $_langPred)), 0, MY_MOST_VIEWED_KEEP);
+                sendJson(['songs' => $mvSongs, 'period' => $mvPeriod]);
+            } catch (\Throwable $e) {
+                error_log('[api/my_most_viewed] ' . $e->getMessage());
+                sendJson(['songs' => [], 'period' => ($mvRaw !== null && $mvRaw !== '' ? (string)$mvRaw : MY_MOST_VIEWED_DEFAULT_PERIOD), 'fallback' => true]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
          * Batch existence check for a list of SongIds (#1329).
          * Public — only reveals whether already-public song ids still exist.
          * The client uses it to PRUNE songs that have been deleted from the

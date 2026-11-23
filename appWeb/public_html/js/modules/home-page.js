@@ -24,7 +24,7 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml } from '../utils/html.js';
-import { songbookLabel, STORAGE_HISTORY, STORAGE_AUTH_TOKEN } from '../constants.js';
+import { songbookLabel, STORAGE_HISTORY, STORAGE_AUTH_TOKEN, STORAGE_MOST_VIEWED_PERIOD } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
 
 /**
@@ -36,6 +36,7 @@ import { apiFetch } from '../utils/api-client.js';
 export function initHomePage() {
     loadPopularSongs();
     loadRecentlyViewed();
+    loadMyMostViewed();
     loadTags();
 
     /* #448 — hydrate the signed-in viewer's saved home layout (reorder +
@@ -234,6 +235,65 @@ async function loadRecentlyViewed() {
     } catch {
         /* Non-fatal — leave the section hidden. */
     }
+}
+
+/* ==================================================================
+ * YOUR MOST VIEWED (#2175, account/profile rewrite PR 2a step 2a-7)
+ *
+ * Signed-in people only, and only on a site where an admin has switched
+ * the new account behaviour on: the server answers 409 otherwise (and 401
+ * when the token is no longer good), and the section simply stays hidden.
+ * The home fragment is shared-cache, so it cannot know either fact; this
+ * module asks. The person picks a period (30d | 90d | 12m | all); the pick
+ * is remembered on this device. With no pick we send no period, and the
+ * server uses the person's saved choice, else 12 months.
+ * ================================================================== */
+const MY_MOST_VIEWED_PERIODS = ['30d', '90d', '12m', 'all'];
+
+function loadMyMostViewed() {
+    const token = localStorage.getItem(STORAGE_AUTH_TOKEN);
+    if (!token) return;
+
+    const section = document.getElementById('my-most-viewed-section');
+    const list    = document.getElementById('my-most-viewed-list');
+    const select  = document.getElementById('my-most-viewed-period');
+    const empty   = document.getElementById('my-most-viewed-empty');
+    if (!section || !list || !select) return;
+
+    let remembered = '';
+    try {
+        const v = localStorage.getItem(STORAGE_MOST_VIEWED_PERIOD) || '';
+        if (MY_MOST_VIEWED_PERIODS.includes(v)) remembered = v;
+    } catch { /* private mode: no remembered pick */ }
+
+    let latest = 0;   // a slower, older answer must never overwrite a newer one
+    const load = async (period, first) => {
+        const mine = ++latest;
+        try {
+            const url = '/api?action=my_most_viewed' + (period ? '&period=' + encodeURIComponent(period) : '');
+            const res = await apiFetch(url, { headers: { 'Authorization': 'Bearer ' + token } });
+            if (mine !== latest) return;
+            if (!res.ok) return;                 // 409 not switched on here, 401, 429, ...: stay as we are
+            const data = await res.json();
+            if (mine !== latest) return;
+            const songs = Array.isArray(data.songs) ? uniqueBySongId(data.songs) : [];
+            if (first && songs.length === 0) return;     // nothing yet: keep the card hidden
+            if (MY_MOST_VIEWED_PERIODS.includes(data.period)) select.value = data.period;
+            list.innerHTML = songs.map(s => renderPopularRow(s)).join('');
+            if (empty) empty.classList.toggle('d-none', songs.length > 0);
+            section.style.display = '';
+            window.iHymnsApp?.router?.fixBadgeContrast?.();
+        } catch {
+            /* Non-fatal: leave the section as it is. */
+        }
+    };
+
+    select.addEventListener('change', () => {
+        const picked = select.value;
+        try { localStorage.setItem(STORAGE_MOST_VIEWED_PERIOD, picked); } catch { /* quota / private mode */ }
+        load(picked, false);
+    });
+    load(remembered, true);
 }
 
 /* ==================================================================

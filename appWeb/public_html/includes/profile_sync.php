@@ -86,3 +86,38 @@ if (!function_exists('profileSyncActiveHere')) {
         }
     }
 }
+
+if (!function_exists('profileItemRead')) {
+    /**
+     * Read ONE stored profile item's value (or null when there is none).
+     *
+     * ELI5: look up a single small saved choice for a person, for example the period they
+     * picked for "Your most viewed". Returns null when the new table does not exist yet, when
+     * the person never saved that item, or when it was removed (a delete marker). The caller
+     * validates the value against the registry before trusting it.
+     *
+     * @param \mysqli $db     live connection
+     * @param int     $userId the person
+     * @param string  $section registry section, e.g. 'home'
+     * @param string  $itemKey registry key, e.g. 'mostViewedPeriod'
+     * @return mixed the decoded JSON value, or null
+     */
+    function profileItemRead(\mysqli $db, int $userId, string $section, string $itemKey): mixed
+    {
+        if (!profileItemsReady($db)) {
+            return null;
+        }
+        $stmt = $db->prepare(
+            'SELECT ValueJson FROM tblUserProfileItems
+              WHERE UserId = ? AND Section = ? AND ItemKey = ? AND DeletedAt IS NULL LIMIT 1'
+        );
+        $stmt->bind_param('iss', $userId, $section, $itemKey);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        if ($row === null || $row[0] === null) {
+            return null;
+        }
+        return json_decode((string)$row[0], true);
+    }
+}

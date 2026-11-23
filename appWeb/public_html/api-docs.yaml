@@ -7504,6 +7504,88 @@ paths:
                       Present and true ONLY when the database was unreachable —
                       `songs` is then an empty list rather than an error.
 
+  /api.php?action=my_most_viewed:
+    get:
+      operationId: myMostViewed
+      tags: [Discovery]
+      summary: The signed-in person's own most-viewed songs
+      description: |
+        "Your most viewed" (account/profile rewrite, PR 2a, #2175). The songs the
+        signed-in person has opened most often over a period, most viewed first,
+        at most 20. It counts ALL of the person's own views (every source, every
+        copy of the site): it is one account everywhere. It never counts anybody
+        else's views. Hidden songs and songs in a disabled songbook are left out,
+        and the person's language preference is applied after the limit, so the
+        list can be shorter than 20.
+
+        With no `period`, the person's saved choice (the `home.mostViewedPeriod`
+        profile item) is used, otherwise `12m`.
+
+        Only on a site where an admin has switched **New account behaviour** on;
+        anywhere else the answer is **409** `profile_sync_disabled`. Limited to
+        60 a minute per person (**429**).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [my_most_viewed] }
+        - name: period
+          in: query
+          required: false
+          description: >-
+            How far back to count: `30d` = 30 days, `90d` = 90 days, `12m` = 365
+            days, `all` = no limit. Anything else is a 400.
+          schema: { type: string, enum: [30d, 90d, 12m, all] }
+      responses:
+        "200":
+          description: The songs, most viewed first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songs:
+                    type: array
+                    maxItems: 20
+                    items:
+                      type: object
+                      properties:
+                        songId:       { type: string, example: CP-0202 }
+                        title:        { type: string, example: Amazing Grace }
+                        number:       { type: integer, example: 202 }
+                        songbook:     { type: string, example: CP }
+                        songbookName: { type: string, nullable: true, example: Christian Praise }
+                        language:     { type: string, nullable: true, example: en }
+                        views:        { type: integer, example: 12 }
+                  period:
+                    type: string
+                    enum: [30d, 90d, 12m, all]
+                    description: The period actually used.
+                  fallback:
+                    type: boolean
+                    description: Present and true ONLY when the database was unreachable (`songs` is then empty).
+        "400":
+          description: "Unknown `period` (reason: invalid_period)"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:  { type: string }
+                  reason: { type: string, enum: [invalid_period] }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          $ref: "#/components/responses/ProfileSyncDisabled"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
   /api.php?action=tags:
     get:
       operationId: listTags
@@ -25452,6 +25534,20 @@ components:
             properties:
               error:  { type: string }
               reason: { type: string, enum: [account_writes_off_here], example: account_writes_off_here }
+    ProfileSyncDisabled:
+      description: |
+        The new account behaviour is not switched on for this site (account/profile
+        rewrite, PR 2a). An admin switches it on per site (live, beta or dev). The
+        response is **409** with `reason: profile_sync_disabled`. NOTHING was
+        changed. A client should branch on the 409 status and the `reason` code
+        (never the sentence) and treat the feature as unavailable on this site.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:  { type: string }
+              reason: { type: string, enum: [profile_sync_disabled], example: profile_sync_disabled }
     RateLimited:
       description: |
         Too Many Requests — the per-window read rate limit was exceeded
