@@ -19,10 +19,15 @@ declare(strict_types=1);
  *     real accountExportPlan(). It must come out exported, or excluded WITH a non-empty plain reason.
  *     No exclusion may name a table that no longer links to users (a stale exclusion would hide a
  *     future export).
- *  2. NO LINK. Every integer column that holds a person's id (a name ending in UserId / OwnerId and
- *     so on) and has NO foreign key at all must be listed in accountExportNoLinkColumns(), and every
- *     entry there must be a real column. A column of the sign-in attempt log (a name as text) must
- *     be listed as excluded with its reason.
+ *  2. NO LINK. Every integer column that holds a person's id and has NO foreign key at all must be
+ *     listed in accountExportNoLinkColumns(), and every entry there must be a real column. Which columns
+ *     "hold a person's id" is LEARNED from schema.sql, not typed here (PR 2c review: the old typed name
+ *     pattern missed DismissedBy and AddedBy): the spellings of the columns that DO link to tblUsers
+ *     (a trailing By, UserId, OwnerId...) are collected, and an unlinked integer column spelled the same
+ *     way, or whose own comment names tblUsers, must be decided. A column of the sign-in attempt log (a
+ *     name as text) must be listed as excluded with its reason.
+ *  2b. NOBODY ELSE'S INFORMATION. Reviewer-role links, address/browser/country columns (see the header
+ *     of includes/account_export.php); each derived from schema.sql.
  *  3. SECRETS. Every column, in every table that is exported, whose name looks like a secret
  *     (the pattern the export itself uses) must be in the REVIEWED deny list. The run-time pattern
  *     would withhold it anyway; this check makes a person decide and write the reason down. Every
@@ -117,16 +122,44 @@ chk('a table that links to a person is never excluded just because its name look
 
 /* ---- 2. no link ---- */
 echo "2. columns that hold a person's id without a database link\n";
-$idName = '/(User|Owner|Actor|Creator|Editor|Author|Approver|Submitter|Requester|Collaborator)\w*Id$|^(CreatedBy|UpdatedBy|ApprovedBy|SubmittedBy|VerifiedBy|ReviewedBy|ResolvedBy|AssignedTo|TaggedBy|UploadedBy)$/';
+/* PR 2c review: this used to be a TYPED name pattern, which is how DismissedBy and AddedBy slipped past it. Now the vocabulary is
+   LEARNED from the schema: the names of the columns that DO link to tblUsers say how this schema spells "a person" (a trailing
+   `By`, `UserId`, `OwnerId`, `RequesterId` ...). An INT column with NO link that spells itself the same way, or whose own schema
+   comment points at tblUsers, is a person column without a link and must be decided. */
+$camelWords = static fn(string $n): array => preg_split('/(?<=[a-z0-9])(?=[A-Z])/', $n) ?: [$n];
+$suffixOf = static function (string $n) use ($camelWords): string {
+    $w = $camelWords($n);
+    $last = array_pop($w);
+    return ($last === 'Id' && $w !== []) ? array_pop($w) . 'Id' : $last;   /* CreatedBy -> By ; OwnerUserId -> UserId */
+};
+$learned = [];
+foreach ($links as $l) { $learned[$suffixOf($l['column'])] = true; }
+chk('the vocabulary learned from the real links includes the spellings that matter (By, UserId)', isset($learned['By']) && isset($learned['UserId']), implode(',', array_keys($learned)));
+/* The comment of each column, so a comment that names tblUsers counts as evidence too. */
+$commentPointsAtUsers = [];
+preg_match_all('/CREATE TABLE IF NOT EXISTS (tbl\w+) \((.*?)\n\) ENGINE/s', $schema, $ctm, PREG_SET_ORDER);
+foreach ($ctm as $cm) {
+    foreach (explode("\n", $cm[2]) as $line) {
+        if (preg_match('/^\s+(\w+)\s+(?:TINYINT|SMALLINT|MEDIUMINT|INT|BIGINT)\b.*COMMENT\s+\'[^\']*tblUsers/i', $line, $cc)) { $commentPointsAtUsers[strtolower($cm[1] . '.' . $cc[1])] = true; }
+    }
+}
 $unlinked = [];
 foreach ($tables as $name => $t) {
     foreach ($t['cols'] as $col => $type) {
         if (!in_array($type, ['INT', 'BIGINT', 'SMALLINT', 'MEDIUMINT'], true)) { continue; }
-        if (preg_match($idName, $col) !== 1) { continue; }
+        $key = strtolower($name . '.' . $col);
         if (isset($t['fkCols'][strtolower($col)])) { continue; }          /* a link to something (users or another table): handled by 1 or not a person */
         if (strcasecmp($name, 'tblUsers') === 0) { continue; }
-        $unlinked[] = strtolower($name . '.' . $col);
+        if ($col === 'Id') { continue; }                                  /* a table's own key */
+        if (!isset($learned[$suffixOf($col)]) && !isset($commentPointsAtUsers[$key])) { continue; }
+        $unlinked[] = $key;
     }
+}
+/* Spellings that match a learned suffix but are plainly not a person (checked by hand, each with the reason). */
+$notAPerson = [];
+$unlinked = array_values(array_diff($unlinked, array_keys($notAPerson)));
+foreach (['tblmusicianduplicatesdismissed.dismissedby', 'tblsonglinksuggestionsdismissed.dismissedby', 'tblcataloguesongs.addedby'] as $mustFind) {
+    chk("the derivation finds $mustFind (the review's three misses)", in_array($mustFind, $unlinked, true));
 }
 $handListed = array_keys(accountExportNoLinkColumns());
 $missing = array_values(array_diff($unlinked, $handListed));

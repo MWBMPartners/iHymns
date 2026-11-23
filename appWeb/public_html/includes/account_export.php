@@ -224,6 +224,18 @@ function accountExportNoLinkColumns(): array
             'table' => 'tblPrintTemplates', 'column' => 'CreatedBy', 'export' => false,
             'reason' => 'The print templates you own are exported through their owner column; this column only records who first created one.',
         ],
+        'tblmusicianduplicatesdismissed.dismissedby' => [
+            'table' => 'tblMusicianDuplicatesDismissed', 'column' => 'DismissedBy', 'export' => false,
+            'reason' => 'Work done by site curators on the musician catalogue (marking two entries as not the same person). It is attributed to an account number, not stored as personal information.',
+        ],
+        'tblsonglinksuggestionsdismissed.dismissedby' => [
+            'table' => 'tblSongLinkSuggestionsDismissed', 'column' => 'DismissedBy', 'export' => false,
+            'reason' => 'Work done by site curators on the song catalogue (setting aside a suggested link between songs). It is attributed to an account number, not stored as personal information.',
+        ],
+        'tblcataloguesongs.addedby' => [
+            'table' => 'tblCatalogueSongs', 'column' => 'AddedBy', 'export' => false,
+            'reason' => 'Work done by site curators on the song catalogue (adding a song to a collection). It is attributed to an account number, not stored as personal information.',
+        ],
         'tblloginattempts.username' => [
             'table' => 'tblLoginAttempts', 'column' => 'Username', 'export' => false,
             'reason' => 'The sign-in attempt log is kept by username text and can hold other people\'s addresses, so it is not included. It is removed when an account is erased.',
