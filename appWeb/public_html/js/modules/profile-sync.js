@@ -89,8 +89,8 @@ export class ProfileSync {
         this._off = false;
         this._pushTimer = null;
         this._retryTimer = null;
-        this._inFlight = false;
-        this._again = false;
+        /** The end of the line of requests: a read and a send never run at the same time (see _serial). */
+        this._queue = Promise.resolve();
         this._pullGate = createPullGate();
         this._schemaPromise = null;
         /** The last answer of isActive() that listeners were told about (see refreshActive()). */
@@ -327,18 +327,35 @@ export class ProfileSync {
         return batch;
     }
 
+    /**
+     * Run one request-making job at a time, in the order asked. A read and a send must never overlap: a read that was
+     * started BEFORE the person changed an item can finish AFTER that change has been sent and taken out of the outbox,
+     * and would then write the older account value over the newer one and move the cursor past the newer version, so
+     * nothing would ever correct it. In a line, the read finishes (skipping what is waiting in the outbox) before the
+     * send starts, and the next read starts after the send has finished.
+     *
+     * @template T
+     * @param {() => Promise<T>} job
+     * @returns {Promise<T>}
+     */
+    _serial(job) {
+        const run = this._queue.then(() => job());
+        this._queue = run.then(() => undefined, () => undefined);
+        return run;
+    }
+
     /** Send what is waiting, then read what changed elsewhere (the same reply carries both). Returns true when nothing is left to retry. */
-    async push() {
-        if (this._inFlight) { this._again = true; return false; }
+    push() { return this._serial(() => this._pushLocked()); }
+
+    async _pushLocked() {
         if (!this.isActive()) return false;
         if (!(await this.ensureSchema())) { this._scheduleRetry(ERROR_RETRY_MS); return false; }
         const uid = this._uid();
         const ob = this.getOutbox();
         const batch = this._nextBatch(ob);
         if (batch.length === 0) return true;
-        this._inFlight = true;
         let clean = true;
-        try {
+        {
             const rec = this._getCursorRecord();
             let res;
             try {
@@ -388,7 +405,7 @@ export class ProfileSync {
             this._saveOutbox(after);
             this._applyReply(j);
             this._saveCursorFrom(j);
-            if (j.more) await this.pull();
+            if (j.more) await this._pullLocked();
             const left = Object.keys(this.getOutbox().items).length;
             clean = left === 0;
             if (!clean) {
@@ -397,9 +414,6 @@ export class ProfileSync {
                 this.schedulePush(left < Object.keys(ob.items).length ? 0 : ERROR_RETRY_MS);
             }
             return clean;
-        } finally {
-            this._inFlight = false;
-            if (this._again) { this._again = false; this.schedulePush(); }
         }
     }
 
@@ -418,7 +432,9 @@ export class ProfileSync {
     }
 
     /** Read everything above the cursor, page by page. Returns false when it could not finish (try again later). */
-    async pull() {
+    pull() { return this._serial(() => this._pullLocked()); }
+
+    async _pullLocked() {
         if (!this.isActive()) return false;
         if (!(await this.ensureSchema())) return false;
         const uid = this._uid();
@@ -449,12 +465,14 @@ export class ProfileSync {
     }
 
     /** Pull, and push anything waiting. Used at sign-in and after a long absence. */
-    async syncNow() {
-        if (!this.isActive()) return false;
-        if (!(await this.ensureSchema())) return false;
-        const read = await this.pull();                             /* skips anything still waiting in the outbox */
-        if (this.pendingCount() > 0) return (await this.push()) && read;
-        return read;
+    syncNow() {
+        return this._serial(async () => {
+            if (!this.isActive()) return false;
+            if (!(await this.ensureSchema())) return false;
+            const read = await this._pullLocked();                  /* skips anything still waiting in the outbox */
+            if (this.pendingCount() > 0) return (await this._pushLocked()) && read;
+            return read;
+        });
     }
 
     _saveCursorFrom(j) {

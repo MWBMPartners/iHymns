@@ -107,7 +107,10 @@ async function device(server, { uid = 1, enabled = true, modulePath = path.join(
             if (action === 'profile_sync') {
                 if (dev.hold) await dev.hold;
                 const who = dev.who;
-                return make(await server.handle(who, method, u.searchParams, init.body ? JSON.parse(init.body) : null));
+                const reply = make(await server.handle(who, method, u.searchParams, init.body ? JSON.parse(init.body) : null));
+                /* a reply that was worked out by the server NOW but reaches the browser LATER (a slow network): a read can be stale on arrival */
+                if (dev.holdGetReply && method === 'GET') { const h = dev.holdGetReply; dev.holdGetReply = null; await h; }
+                return reply;
             }
             return make({ status: 200, body: {} });
         };
@@ -374,6 +377,31 @@ console.log('\n14 - switching settings sync back on never overwrites newer accou
     const fs = await import('node:fs');
     const settingsJs = fs.readFileSync(path.join(MODULES, 'settings.js'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
     check('settings.js uses the resume route, and nothing queues "everything this device holds" any more', /profileSync\.resumeAfterOptIn\(\)/.test(settingsJs) && !/queueAllLocal/.test(settingsJs) && !/queueAllLocal/.test(fs.readFileSync(path.join(MODULES, 'profile-sync.js'), 'utf8')));
+}
+
+console.log('\n15 - a late read never writes an older value over a change the person just made\n');
+{
+    const server = makeServer();
+    server.seed(1, 'appearance', 'fontSize', 20);
+    const d = await device(server);
+    await d.sync.ensureSchema();
+    d.use(); await d.sync.pull();
+    check('start: the device holds the account\'s 20', d.ls.getItem(C.STORAGE_FONT_SIZE) === '20');
+    server.seed(1, 'appearance', 'theme', 'dark');                   // something new, so the read has a reply to bring
+    server.seed(1, 'appearance', 'fontSize', 22);                    // the account's text size moved to 22 (read now, arrives late)
+    let release; d.holdGetReply = new Promise((r) => { release = r; });
+    d.use(); const reading = d.sync.pull();
+    await new Promise((r) => setTimeout(r, 5));
+    d.set(C.STORAGE_FONT_SIZE, '24');                                // the person chooses 24 while the read is on its way
+    const sending = d.sync.push();                                   // ... and it is sent
+    await new Promise((r) => setTimeout(r, 20));
+    release();
+    await Promise.all([reading, sending]);
+    d.use(); await d.sync.pull();
+    check('the device ends with the person\'s 24, not the late 22', d.ls.getItem(C.STORAGE_FONT_SIZE) === '24');
+    check('the account holds 24, and the device\'s cursor does not hide anything newer', server.user(1).rows.get('appearance.fontSize').value === 24 && d.sync._getCursorRecord().cursor === server.user(1).max);
+    check('the new theme from the same read was still applied', d.ls.getItem(C.STORAGE_THEME) === 'dark');
+    check('nothing is left waiting', d.sync.pendingCount() === 0);
 }
 
 console.log('\n13 - the refusal reasons: the browser and the server agree (rule #35)\n');
