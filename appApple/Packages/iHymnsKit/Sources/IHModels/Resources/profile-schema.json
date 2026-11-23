@@ -1,5 +1,5 @@
 {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "entries": [
         {
             "id": "appearance.theme",
@@ -429,7 +429,7 @@
             "claim": false,
             "clearAtSignOut": false,
             "cookie": false,
-            "legacyWebKey": null,
+            "legacyWebKey": "ihymns_most_viewed_period",
             "since": 1,
             "allowed": [
                 "30d",
@@ -437,6 +437,117 @@
                 "12m",
                 "all"
             ]
+        },
+        {
+            "id": "library.recentSongbooks",
+            "section": "library",
+            "key": "recentSongbooks",
+            "type": "list",
+            "default": null,
+            "scope": "account",
+            "platforms": [
+                "all"
+            ],
+            "sync": "profile_sync",
+            "cap": 20,
+            "claim": false,
+            "clearAtSignOut": true,
+            "cookie": false,
+            "legacyWebKey": "ihymns_recent_songbooks",
+            "since": 2,
+            "item": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9]{1,10}$",
+                "maxLength": 10
+            },
+            "maxItems": 20
+        },
+        {
+            "id": "songPrefs.*",
+            "section": "songPrefs",
+            "key": "*",
+            "type": "map",
+            "default": null,
+            "scope": "account",
+            "platforms": [
+                "all"
+            ],
+            "sync": "profile_sync",
+            "cap": 2000,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": null,
+            "since": 2,
+            "itemKeyPattern": "^[A-Za-z0-9]{1,10}-[0-9]{1,6}$",
+            "item": {
+                "type": "json",
+                "shape": {
+                    "transpose": {
+                        "type": "int",
+                        "min": -11,
+                        "max": 11,
+                        "step": 1,
+                        "from": -11
+                    },
+                    "capo": {
+                        "type": "int",
+                        "min": 0,
+                        "max": 11,
+                        "step": 1,
+                        "from": 0
+                    },
+                    "octave": {
+                        "type": "int",
+                        "min": -2,
+                        "max": 2,
+                        "step": 1,
+                        "from": -2
+                    }
+                }
+            },
+            "maxItems": 2000
+        },
+        {
+            "id": "privacy.syncSearchHistory",
+            "section": "privacy",
+            "key": "syncSearchHistory",
+            "type": "bool",
+            "default": false,
+            "scope": "account",
+            "platforms": [
+                "all"
+            ],
+            "sync": "profile_sync",
+            "cap": null,
+            "claim": false,
+            "clearAtSignOut": false,
+            "cookie": false,
+            "legacyWebKey": null,
+            "since": 2
+        },
+        {
+            "id": "history.searches",
+            "section": "history",
+            "key": "searches",
+            "type": "list",
+            "default": null,
+            "scope": "account",
+            "platforms": [
+                "all"
+            ],
+            "sync": "profile_sync",
+            "cap": 20,
+            "claim": false,
+            "clearAtSignOut": true,
+            "cookie": false,
+            "legacyWebKey": null,
+            "since": 2,
+            "item": {
+                "type": "string",
+                "maxLength": 100
+            },
+            "maxItems": 20
         },
         {
             "id": "content.favorites",

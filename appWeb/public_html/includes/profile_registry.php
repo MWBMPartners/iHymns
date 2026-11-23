@@ -29,10 +29,16 @@ declare(strict_types=1);
  *
  * Fields (every entry has all of them):
  *   id, section, key     identity. `id` is always `section.key`.
- *   type                 bool | int | float | enum | string | json | list
+ *   type                 bool | int | float | enum | string | json | list | map
  *   (constraints)        enum: allowed[]. int/float: min, max (int also step, from).
  *                        string: pattern (no delimiters, so any language can use it), maxLength. json: shape{key=>spec}.
  *                        list: item{spec}, maxItems.
+ *                        map (schema version 2): a whole SECTION of the same kind of item,
+ *                        one stored row per item (for example one row per song). Its key is
+ *                        always '*', and it carries itemKeyPattern (what an item's own key
+ *                        may look like), item{spec} (the value of one item) and maxItems.
+ *                        A section that has a '*' entry has NO other entries, so a lookup
+ *                        of `section.<anything>` can only mean "an item of the map".
  *   default              the value when nothing was chosen (must itself be valid)
  *   scope                device = never leaves the device;
  *                        account = follows the signed-in person;
@@ -69,10 +75,10 @@ declare(strict_types=1);
 
 /* ===== The vocabularies. The test checks every entry uses only these. ===== */
 
-/** Bump when an entry is ADDED (never for a change to an existing one). */
-const PROFILE_REGISTRY_SCHEMA_VERSION = 1;
+/** Bump when an entry is ADDED (never for a change to an existing one). Version 2 (PR 2b, #2177) added the `map` type and four entries. */
+const PROFILE_REGISTRY_SCHEMA_VERSION = 2;
 
-const PROFILE_TYPES     = ['bool', 'int', 'float', 'enum', 'string', 'json', 'list'];
+const PROFILE_TYPES     = ['bool', 'int', 'float', 'enum', 'string', 'json', 'list', 'map'];
 const PROFILE_SCOPES    = ['device', 'account', 'shared'];
 const PROFILE_PLATFORMS = ['web', 'apple', 'android', 'tv'];
 const PROFILE_STORAGES  = ['profile_items', 'table:tblUserFavorites', 'table:tblUserSetlists', 'table:tblUserCustomTags', 'table:tblSongHistory', 'none'];
@@ -221,6 +227,35 @@ function profileRegistry(): array
         /* ---- the person's choice of period for "Your most viewed" (#2175, decision O5) ---- */
         _profileAccount('home', 'mostViewedPeriod', 'enum', [
             'allowed' => ['30d', '90d', '12m', 'all'], 'default' => '12m',
+            'legacyWebKey' => 'ihymns_most_viewed_period',
+        ]),
+
+        /* ---- #2177 (PR 2b, schema version 2): small personal things that now follow the account ---- */
+        /* The songbooks a person opened lately (the web keeps 5; the cap leaves room for a bigger list on an app).
+           The whole list is one item: losing a single entry to a race is harmless (plan question 7.6). */
+        _profileAccount('library', 'recentSongbooks', 'list', [
+            'item' => ['type' => 'string', 'pattern' => '^[A-Za-z0-9]{1,10}$', 'maxLength' => 10], 'maxItems' => 20, 'cap' => 20,
+            'default' => null, 'legacyWebKey' => 'ihymns_recent_songbooks', 'clearAtSignOut' => true, 'since' => 2,
+        ]),
+        /* The key, capo and octave a person chose for each song. A MAP: one stored row per song, so two devices
+           changing two different songs never fight. All three at zero means "no choice": that is a delete, not a set. */
+        _profileAccount('songPrefs', '*', 'map', [
+            'itemKeyPattern' => '^[A-Za-z0-9]{1,10}-[0-9]{1,6}$',
+            'item' => ['type' => 'json', 'shape' => [
+                'transpose' => ['type' => 'int', 'min' => -11, 'max' => 11, 'step' => 1, 'from' => -11],
+                'capo'      => ['type' => 'int', 'min' => 0, 'max' => 11, 'step' => 1, 'from' => 0],
+                'octave'    => ['type' => 'int', 'min' => -2, 'max' => 2, 'step' => 1, 'from' => -2],
+            ]],
+            'maxItems' => 2000, 'cap' => 2000, 'default' => null, 'since' => 2,
+        ]),
+        /* Does the person want their recent searches kept in their account? Off unless they choose (decision for #2177). */
+        _profileAccount('privacy', 'syncSearchHistory', 'bool', [
+            'default' => false, 'since' => 2,
+        ]),
+        /* The recent searches themselves. Only ever sent while privacy.syncSearchHistory is on; cleared at sign-out. */
+        _profileAccount('history', 'searches', 'list', [
+            'item' => ['type' => 'string', 'maxLength' => 100], 'maxItems' => 20, 'cap' => 20,
+            'default' => null, 'clearAtSignOut' => true, 'since' => 2,
         ]),
 
         /* ---- content: favourites, set lists, custom tags and history keep their own tables and their
@@ -280,13 +315,35 @@ function profileRegistryAliases(): array
     return [];
 }
 
-/** One entry by section and key, or null when unknown (an old alias is followed). @return ?array<string,mixed> */
+/**
+ * One entry by section and key, or null when unknown (an old alias is followed).
+ *
+ * A section with a map entry (`section.*`) has no other entries, so when the exact id
+ * is not found the map entry for that section answers instead: "songPrefs" + "MP-1008"
+ * is the map entry itself, and the caller then checks the item key with
+ * profileRegistryMapItemKeyValid(). Exact ids always win, so asking for the key '*'
+ * returns the map entry too.
+ *
+ * @return ?array<string,mixed>
+ */
 function profileRegistryEntry(string $section, string $key): ?array
 {
     $id = $section . '.' . $key;
     $reg = profileRegistry();
     $id = profileRegistryAliases()[$id] ?? $id;
-    return $reg[$id] ?? null;
+    if (isset($reg[$id])) {
+        return $reg[$id];
+    }
+    $map = $reg[$section . '.*'] ?? null;
+    return ($map !== null && ($map['type'] ?? '') === 'map') ? $map : null;
+}
+
+/** Is `$itemKey` an acceptable item key for this map entry? (An item key is never '*' itself.) */
+function profileRegistryMapItemKeyValid(array $entry, string $itemKey): bool
+{
+    if (($entry['type'] ?? '') !== 'map' || $itemKey === '') { return false; }
+    /* `D` makes `$` the true end (no trailing newline), as in the string rule. */
+    return preg_match('/' . str_replace('/', '\/', (string)($entry['itemKeyPattern'] ?? '^$')) . '/D', $itemKey) === 1;
 }
 
 /**
@@ -329,6 +386,14 @@ function profileValidateSpec(array $spec, mixed $value): bool
                 if (!isset($shape[$k]) || !profileValidateSpec($shape[$k], $v)) { return false; }
             }
             return true;
+        case 'map':
+            /* A whole map in one value (used by an export or a snapshot, not by profile_sync, which writes one item at a time). */
+            if (!is_array($value) || ($value !== [] && array_is_list($value))) { return false; }
+            if (isset($spec['maxItems']) && count($value) > (int)$spec['maxItems']) { return false; }
+            foreach ($value as $k => $v) {
+                if (!profileRegistryMapItemKeyValid($spec, (string)$k) || !profileValidateSpec((array)$spec['item'], $v)) { return false; }
+            }
+            return true;
         case 'list':
             if (!is_array($value) || !array_is_list($value)) { return false; }
             if (isset($spec['maxItems']) && $spec['maxItems'] !== null && count($value) > (int)$spec['maxItems']) { return false; }
@@ -344,7 +409,12 @@ function profileValidateSpec(array $spec, mixed $value): bool
 function profileRegistryValidate(string $section, string $key, mixed $value): bool
 {
     $e = profileRegistryEntry($section, $key);
-    return $e !== null && profileValidateSpec($e, $value);
+    if ($e === null) { return false; }
+    /* An item of a map: the key must look right AND the value must be a valid ONE item. */
+    if (($e['type'] ?? '') === 'map' && $key !== '*') {
+        return profileRegistryMapItemKeyValid($e, $key) && profileValidateSpec((array)$e['item'], $value);
+    }
+    return profileValidateSpec($e, $value);
 }
 
 /**

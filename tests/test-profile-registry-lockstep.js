@@ -154,6 +154,19 @@ rows.forEach((r, i) => {
 check('the web and the server give the same verdict on every sample (' + rows.length + ' samples)', disagreements.length === 0, disagreements.join(' | '));
 check('the samples include both accepted and refused values (the check is not vacuous)', verdictsPhp.includes(1) && verdictsPhp.includes(0) && rows.length > 60);
 
+console.log('\n2b - sign-out clearing and the shelf kept per person');
+/* Every entry the registry says is cleared at sign-out, and that has a web storage key, must be one of the
+   keys the device sets aside when a different person signs in (PERSONAL_DATA_KEYS): otherwise the next person
+   on a shared browser would see it. Entries with no web key (search history) are handled by their adapter. */
+const ownerMod = await import(path.join(PUB, 'js', 'modules', 'account-data-owner.js'));
+const clearedWeb = dump.entries.filter((e) => e.clearAtSignOut === true && e.legacyWebKey);
+check('some entries are cleared at sign-out and have a web key (the check is not vacuous): ' + clearedWeb.map((e) => e.id).join(', '), clearedWeb.length >= 5);
+const notStashed = clearedWeb.filter((e) => !ownerMod.PERSONAL_DATA_KEYS.includes(e.legacyWebKey));
+check('every web key cleared at sign-out is in PERSONAL_DATA_KEYS', notStashed.length === 0, notStashed.map((e) => e.id + ' -> ' + e.legacyWebKey).join(', '));
+const mapOnly = dump.entries.filter((e) => e.type === 'map');
+check('every map entry is keyed "*" and has an item rule, a key pattern and a cap (a native client decodes the same fields)',
+    mapOnly.length >= 1 && mapOnly.every((e) => e.key === '*' && e.item && typeof e.itemKeyPattern === 'string' && Number.isInteger(e.maxItems)));
+
 console.log('\n3 - the Apple snapshot');
 check('the snapshot file exists', fs.existsSync(SNAPSHOT));
 const snap = fs.existsSync(SNAPSHOT) ? fs.readFileSync(SNAPSHOT, 'utf8') : '';

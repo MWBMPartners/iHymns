@@ -42,7 +42,7 @@
 import {
     STORAGE_FAVORITES, STORAGE_SETLISTS, STORAGE_CUSTOM_TAGS, STORAGE_HISTORY,
     STORAGE_SETLISTS_DELETED, STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT,
-    STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED,
+    STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED, STORAGE_RECENT_SONGBOOKS,
     STORAGE_DATA_OWNER_UID, STORAGE_STASH_PREFIX,
 } from '../constants.js';
 
@@ -51,6 +51,9 @@ export const PERSONAL_DATA_KEYS = Object.freeze([
     STORAGE_FAVORITES, STORAGE_SETLISTS, STORAGE_CUSTOM_TAGS, STORAGE_HISTORY, STORAGE_SETLISTS_DELETED,
     /* PR 2a (2a-4): what this person added / removed on purpose and has not yet told the server. */
     STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED,
+    /* PR 2b (2b-1): the songbooks this person opened lately. A personal list the account now keeps (#2177),
+       so on a shared device it belongs to one person and is stashed with the rest. */
+    STORAGE_RECENT_SONGBOOKS,
 ]);
 
 /** Cleared along with the data, never restored (see the file header). */

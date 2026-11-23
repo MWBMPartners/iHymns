@@ -7963,7 +7963,7 @@ paths:
                         id:        { type: string, example: appearance.theme, description: "Always `section.key`." }
                         section:   { type: string, example: appearance }
                         key:       { type: string, example: theme }
-                        type:      { type: string, enum: [bool, int, float, enum, string, json, list] }
+                        type:      { type: string, enum: [bool, int, float, enum, string, json, list, map] }
                         default:   { description: The value when nothing was chosen. Null means none. }
                         scope:     { type: string, enum: [device, account, shared], description: "`device` never leaves the device; `account` follows the signed-in person; `shared` is visible to others (for example through shares)." }
                         platforms: { type: array, items: { type: string }, description: "Any of `web`, `apple`, `android`, `tv`, or just `all`." }
@@ -7982,8 +7982,9 @@ paths:
                         pattern:   { type: string, description: "For `string`: a regular expression written without delimiters, matched against the whole value." }
                         maxLength: { type: integer }
                         shape:     { type: object, description: "For `json`: allowed keys, each with its own spec. An empty shape means any object." }
-                        item:      { type: object, description: "For `list`: the spec each item must meet." }
-                        maxItems:  { type: integer, nullable: true }
+                        item:      { type: object, description: "For `list`: the spec each item must meet. For `map` (schema version 2): the spec of ONE item's value." }
+                        maxItems:  { type: integer, nullable: true, description: "For `list` and `map`: the largest number of items." }
+                        itemKeyPattern: { type: string, description: "For `map` (schema version 2): what one item's own key may look like, a regular expression written without delimiters and matched against the whole key. A map entry's own `key` is always `*`, and a section that has one has no other entries." }
         "304":
           description: The client's copy (`If-None-Match`) is current. No body.
         "405":
