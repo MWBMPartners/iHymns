@@ -75,6 +75,8 @@ chk('device_signout reads the full hashes for its prefix BEFORE it deletes the s
 $ar = $api["case 'apns_register'"]['code'] ?? '';
 chk('apns_register stores the session hash only with the switch on, a session token and the column there', (bool)preg_match('/\$apnsSessionHash\s*!==\s*null\s*&&\s*profileSyncEnabledHere\(\)\s*&&\s*apnsTokenHashReady\(\$db\)/', $ar));
 chk('...and updates it when an existing registration is re-registered', str_contains(implode(' ', $api["case 'apns_register'"]['strings'] ?? []), 'ApiTokenHash = VALUES(ApiTokenHash)'));
+chk('...and the older statement forgets a previous tie (ApiTokenHash = NULL) whenever the column exists, so a re-registration cannot stay tied to another session',
+    (bool)preg_match('/\$forgetTie\s*=\s*apnsTokenHashReady\(\$db\)\s*\?/', $ar) && str_contains(implode(' ', $api["case 'apns_register'"]['strings'] ?? []), ', ApiTokenHash = NULL'));
 chk('...and still has the old statement for everything else', str_contains(implode(' ', $api["case 'apns_register'"]['strings'] ?? []), 'INSERT INTO tblApnsTokens (Kind, UserId, SessionId, PushToken, ApnsEnv, ExpiresAt)'));
 chk('the hash is of the session token, the same value the sign-in table stores', (bool)preg_match("/\\\$apnsSessionHash\s*=\s*\(.*?\)\s*\?\s*hash\(\s*'sha256'\s*,\s*\\\$apnsBearer\s*\)/", $ar));
 
@@ -107,7 +109,7 @@ if ($db === null) {
     try {
         $db->query('CREATE TABLE tblUsers (Id INT UNSIGNED NOT NULL PRIMARY KEY) ENGINE=InnoDB');
         $db->query('INSERT INTO tblUsers (Id) VALUES (1), (2)');
-        $db->query('CREATE TABLE tblApiTokens (Token VARCHAR(64) NOT NULL PRIMARY KEY, UserId INT UNSIGNED NOT NULL) ENGINE=InnoDB');
+        $db->query('CREATE TABLE tblApiTokens (Token VARCHAR(64) NOT NULL PRIMARY KEY, UserId INT UNSIGNED NOT NULL, ExpiresAt DATETIME NOT NULL) ENGINE=InnoDB');
         $mk = function (bool $withHash) use ($db): void {
             $db->query('DROP TABLE IF EXISTS tblApnsTokens');
             $db->query('CREATE TABLE tblApnsTokens (Id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, Kind VARCHAR(20) NOT NULL DEFAULT \'device\', UserId INT UNSIGNED NULL, SessionId INT UNSIGNED NULL, PushToken VARBINARY(255) NOT NULL, ApnsEnv VARCHAR(20) NOT NULL DEFAULT \'production\', ExpiresAt DATETIME NULL'
@@ -133,9 +135,21 @@ if ($db === null) {
         $run(true, "echo apnsDeleteForSessions(\$d, 1, ['$h1'], false, true);");
         chk('per session, a non-Apple session: only its own registration goes (the iPad, the old one and other people stay)', $left($db) === 'tok-ipad,tok-old,tok-other,tok-other-old', $left($db));
 
+        /* The iPad's sign-in is still live; the person's other sign-ins and an expired one are set up for the orphan checks below. */
+        $db->query("INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES ('$h2', 1, '2099-01-01 00:00:00'), ('$h3', 1, '2001-01-01 00:00:00')");
         $mk(true); $seed();
         $run(true, "echo apnsDeleteForSessions(\$d, 1, ['$h1'], true, true);");
-        chk('per session, an Apple session: its own registration and the old untied ones go; the iPad and other people stay', $left($db) === 'tok-ipad,tok-other,tok-other-old', $left($db));
+        chk('per session, an Apple session: its own registration and the old untied ones go; the iPad (a live sign-in) and other people stay', $left($db) === 'tok-ipad,tok-other,tok-other-old', $left($db));
+
+        /* Review fix 4: a registration whose sign-in is gone (password change, expiry sweep) is cleared by the next Apple sign-out. */
+        $mk(true); $seed();
+        $db->query("INSERT INTO tblApnsTokens (UserId, PushToken, ApiTokenHash) VALUES (1, 'tok-gone', '" . str_repeat('d', 64) . "'), (1, 'tok-expired', '$h3')");
+        $run(true, "echo apnsDeleteForSessions(\$d, 1, ['$h1'], true, true);");
+        chk('an Apple sign-out also clears registrations whose sign-in no longer exists or has expired; a live one and other people stay', $left($db) === 'tok-ipad,tok-other,tok-other-old', $left($db));
+        $mk(true); $seed();
+        $db->query("INSERT INTO tblApnsTokens (UserId, PushToken, ApiTokenHash) VALUES (1, 'tok-gone', '" . str_repeat('d', 64) . "')");
+        $run(true, "echo apnsDeleteForSessions(\$d, 1, ['$h1'], false, true);");
+        chk('a NON-Apple sign-out does not sweep orphans (only Apple ones do, as in A6)', str_contains($left($db), 'tok-gone'), $left($db));
 
         $mk(true); $seed();
         $n = $run(true, "echo apnsDeleteForSessions(\$d, 1, ['$h1', '$h2'], false, true);");
@@ -163,7 +177,7 @@ if ($db === null) {
         chk('switch on but the column is not there yet: the previous rule applies and nothing throws', $left($db) === 'b1' && trim((string)$out) === '2', $left($db) . ' / ' . var_export($out, true));
 
         /* the full-hash helper */
-        $db->query("INSERT INTO tblApiTokens (Token, UserId) VALUES ('$h1', 1), ('$h2', 1), ('" . str_repeat('a', 63) . "d', 2)");
+        $db->query("INSERT IGNORE INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES ('$h1', 1, '2099-01-01 00:00:00'), ('$h2', 1, '2099-01-01 00:00:00'), ('" . str_repeat('a', 63) . "d', 2, '2099-01-01 00:00:00')");
         $hs = apiTokenHashesForDevicePrefix($db, 1, substr($h1, 0, 16));
         chk('the full hash for a device prefix is read, for that person only', $hs === [$h1], json_encode($hs));
         chk('another person\'s sign-in with the same prefix is never returned', apiTokenHashesForDevicePrefix($db, 2, substr($h1, 0, 16)) === [str_repeat('a', 63) . 'd']);

@@ -254,9 +254,18 @@ function apnsDeleteForSessions(\mysqli $db, int $userId, array $sessionHashes, b
         $del->close();
     }
     if ($sessionOwnsApplePush) {
-        /* Registrations made before they were tied to a sign-in keep the A6 rule. */
-        $del = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ? AND ApiTokenHash IS NULL');
-        $del->bind_param('i', $userId);
+        /* Registrations made before they were tied to a sign-in keep the A6 rule. So do
+           registrations whose sign-in has since disappeared (removed by a password change or
+           swept as expired): nothing can sign them out any more, so an Apple sign-out is the
+           chance to clear them. A registration tied to one of the person's LIVE sign-ins stays. */
+        $now = gmdate('Y-m-d H:i:s');
+        $del = $db->prepare(
+            'DELETE FROM tblApnsTokens
+              WHERE UserId = ?
+                AND (ApiTokenHash IS NULL
+                     OR ApiTokenHash NOT IN (SELECT Token FROM tblApiTokens WHERE UserId = ? AND ExpiresAt > ?))'
+        );
+        $del->bind_param('iis', $userId, $userId, $now);
         $del->execute();
         $removed += $del->affected_rows;
         $del->close();

@@ -6527,11 +6527,16 @@ if ($action !== null) {
                     );
                     $ins->bind_param('siissss', $kind, $userId, $sessionId, $binToken, $apnsEnv, $sessionExpiresAt, $apnsSessionHash);
                 } else {
+                    /* The previous statement, with ONE addition once the column exists: a registration
+                       that is re-made without a sign-in to tie it to (the switch is off, or there is no
+                       session token) forgets any older tie. Otherwise it would stay tied to the
+                       PREVIOUS owner's session and could survive that person signing out. */
+                    $forgetTie = apnsTokenHashReady($db) ? ', ApiTokenHash = NULL' : '';
                     $ins = $db->prepare(
                         'INSERT INTO tblApnsTokens (Kind, UserId, SessionId, PushToken, ApnsEnv, ExpiresAt)
                          VALUES (?, ?, ?, ?, ?, ?)
                          ON DUPLICATE KEY UPDATE Kind = VALUES(Kind), UserId = VALUES(UserId),
-                             SessionId = VALUES(SessionId), ApnsEnv = VALUES(ApnsEnv), ExpiresAt = VALUES(ExpiresAt)'
+                             SessionId = VALUES(SessionId), ApnsEnv = VALUES(ApnsEnv), ExpiresAt = VALUES(ExpiresAt)' . $forgetTie
                     );
                     $ins->bind_param('siisss', $kind, $userId, $sessionId, $binToken, $apnsEnv, $sessionExpiresAt);
                 }
