@@ -498,7 +498,10 @@ function accountErase(\mysqli $db, int $userId): array
     }
 
     /* --- 2. The username, captured before step 6 destroys it. ------------- */
-    $stmt = $db->prepare('SELECT Username FROM tblUsers WHERE Id = ? LIMIT 1');
+    /* FOR UPDATE: take the person's row lock FIRST, the same lock (and the same order: the
+       user row, then their data) the favourites / custom-tag sync takes. An erase then waits for
+       a sync in progress instead of racing it (and a sync waits for the erase). */
+    $stmt = $db->prepare('SELECT Username FROM tblUsers WHERE Id = ? LIMIT 1 FOR UPDATE');
     bindParamSafe('accountErase.username', $stmt, 'i', $userId);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_row();

@@ -6943,11 +6943,13 @@ if ($action !== null) {
                a row and its delete marker can never exist together and two requests for one person
                cannot interleave. Order inside it (plan 2a-3): explicit deletes, explicit adds,
                read the markers, the old reads/absence deletes, upsert. */
+            try {
+            /* Inside the try, so a lock-wait timeout on the person's row can never leave a
+               transaction open: the catch below rolls back whatever was started. */
             if ($markersReady) {
                 $db->begin_transaction();
                 userSyncLockPerson($db, $userId);
             }
-            try {
 
             /* Explicit deletes (protocol 2). The marker is written EVEN WHEN NO ROW EXISTS (the delete
                may be racing another device's add), then the row is removed. Before the B1 table
@@ -7383,11 +7385,13 @@ if ($action !== null) {
             /* PR 2a: with the marker table ready, everything from here to the commit is ONE
                transaction under the person's row lock (explicit deletes, explicit adds, read the
                markers, absence deletes, insert). */
+            try {
+            /* Inside the try, so a lock-wait timeout on the person's row can never leave a
+               transaction open: the catch below rolls back whatever was started. */
             if ($markersReady) {
                 $db->begin_transaction();
                 userSyncLockPerson($db, $userId);
             }
-            try {
 
             $deleted = 0;
             if ($deletedTags !== []) {

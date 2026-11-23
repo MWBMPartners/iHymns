@@ -1157,6 +1157,16 @@ $rv = userSyncItemTombstonesRevivedByRows(['CP-0001' => '2026-11-20 10:00:00', '
 ]);
 _usgAssert($rv === ['CP-0001'], 'only a row strictly newer than its marker revives it (same second or older: the removal stands, letter case ignored)');
 _usgAssert(userSyncItemTombstonesWithoutLive([['id' => 'CP-0001', 'deletedAt' => 'x', 'reason' => 'user'], ['id' => 'CP-0009', 'deletedAt' => 'x', 'reason' => 'user']], ['cp-0001']) === [['id' => 'CP-0009', 'deletedAt' => 'x', 'reason' => 'user']], 'a marker for an item that is being returned is dropped from the list');
+/* Review fix 7: nothing that can wait on the person's row lock runs outside the try that rolls back, and an erase takes the same lock first. */
+foreach (['favorites_sync' => $favCode, 'custom_tags_sync' => $tagCodeR] as $caseL => $codeL) {
+    $tryAt = strpos($codeL, 'try {'); $beginAt = strpos($codeL, '$db->begin_transaction()'); $lockAt = strpos($codeL, 'userSyncLockPerson(');
+    _usgAssert($tryAt !== false && $beginAt !== false && $lockAt !== false && $tryAt < $beginAt && $beginAt < $lockAt, "{$caseL}: the transaction and the person lock start INSIDE the try (a lock timeout cannot leave a transaction open)");
+}
+$lifeSrc = _usgStripComments((string)file_get_contents(dirname($apiFile) . '/includes/account_lifecycle.php'));
+$eraseFn = substr($lifeSrc, (int)strpos($lifeSrc, 'function accountErase('));
+$firstUserRead = strpos($eraseFn, 'FROM tblUsers WHERE Id = ? LIMIT 1 FOR UPDATE');
+$firstWrite = min(array_filter([strpos($eraseFn, 'UPDATE tblSongRequests'), strpos($eraseFn, 'DELETE FROM'), strpos($eraseFn, 'accountEraseRefreezeShares(')], static fn($x) => $x !== false) ?: [PHP_INT_MAX]);
+_usgAssert($firstUserRead !== false && $firstUserRead < $firstWrite, 'accountErase: takes the person row lock (SELECT ... FOR UPDATE on tblUsers) before it changes anything, the same order as the syncs');
 $rmCode = _usgStripComments((string)_usgCaseBody($apiSrc, 'favorites_remove'));
 $rmOrder = ['begin_transaction()', 'userSyncLockPerson(', 'DELETE FROM tblUserFavorites', "userSyncItemTombstoneWrite(\$db, \$authUserId, 'favorite'", '->commit()'];
 $last = -1; $ok = true;
