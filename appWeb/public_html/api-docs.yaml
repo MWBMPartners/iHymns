@@ -7685,6 +7685,14 @@ paths:
         **Paused site:** where saving to accounts is paused the POST is refused (**409**
         `account_writes_off_here`); keep the changes on the device and try again later.
         The GET still reads.
+
+        **The old settings box.** Until the live site runs this code, older web pages and
+        apps keep the display settings (theme, text size and so on) in the `ihymns.web`
+        shelf of `user_settings`. The server keeps the two in step: before it applies a
+        request (and before a read, when saving is allowed) it copies any value older code
+        changed on that shelf into the profile (a key missing from the shelf never deletes
+        anything), and each accepted display-setting change is copied back onto the shelf.
+        A client of this endpoint does nothing special for this.
       security:
         - bearerAuth: []
       parameters:

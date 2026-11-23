@@ -11202,6 +11202,12 @@ if ($action !== null) {
                 $psApply = null;
                 if ($psMethod === 'POST') {
                     $psApply = profileSyncApply($db, $psUserId, $psReq['changes'], $psReq['platform']);
+                } elseif (accountWritesAllowedHere()) {
+                    /* A read still shows a change an older app made to the old settings box (2b-4). It only takes
+                       the person's lock when the box has changed, and only where saving is allowed (it copies). */
+                    profileSyncBridgeStep($db, $psUserId, static function () use ($db, $psUserId): void {
+                        profileSyncReconcileIfChanged($db, $psUserId);
+                    });
                 }
                 $psPull = profileSyncPull($db, $psUserId, (int)$psReq['cursor']);
                 sendJson(profileSyncReply($psPull, $psApply));

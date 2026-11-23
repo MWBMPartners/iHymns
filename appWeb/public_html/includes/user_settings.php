@@ -308,12 +308,75 @@ function userSettingsApplyMutation(array $current, callable $fn): array
 }
 
 /**
- * Change one person's settings box under a row lock. THE only writer.
+ * Read one person's settings box (a plain read, no lock). `[]` when the box is empty or unreadable.
+ *
+ * ELI5: look at what is in the box without changing it. A caller that must act on what it sees takes
+ * the person's row lock first (see userSettingsMutateLocked()); this is for a quick look.
+ *
+ * @return array<string,mixed>
+ */
+function userSettingsReadBox(\mysqli $db, int $uid): array
+{
+    $sel = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ?');
+    $sel->bind_param('i', $uid);
+    $sel->execute();
+    $row = $sel->get_result()->fetch_row();
+    $sel->close();
+    $raw = (string)($row[0] ?? '');
+    $current = $raw !== '' ? json_decode($raw, true) : [];
+    return is_array($current) ? $current : [];
+}
+
+/**
+ * Change one person's settings box when the CALLER ALREADY owns the transaction and the row lock.
+ *
+ * ELI5: the same "read the box, let the caller change it, write it back" step as userSettingsMutate(),
+ * for a caller that is already in the middle of its own all-or-nothing save and has already locked this
+ * person's row (for example the profile sync, which must change the profile and this box together).
+ * It does NOT begin, commit or roll back anything: that stays the caller's job, and a refusal leaves the
+ * decision to roll back to the caller too. It still asks for the lock (`FOR UPDATE`), which is free when
+ * the same transaction already holds it, so a caller that forgot to lock is still safe.
+ *
+ * Returns `['ok'=>true,'settings'=>...]` after the row was updated (not yet committed), or
+ * `['ok'=>false,'reason'=>...]` when the callback refused (nothing written). Database errors throw.
+ *
+ * @param callable(array<string,mixed>): (array<string,mixed>|string) $fn
+ * @return array{ok:bool, settings:array<string,mixed>, reason:?string}
+ * @throws \Throwable
+ */
+function userSettingsMutateLocked(\mysqli $db, int $uid, callable $fn): array
+{
+    /* Lock FIRST, read second: the lock is what makes the read trustworthy. */
+    $sel = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ? FOR UPDATE');
+    $sel->bind_param('i', $uid);
+    $sel->execute();
+    $row = $sel->get_result()->fetch_row();
+    $sel->close();
+    $raw = (string)($row[0] ?? '');
+    $current = $raw !== '' ? json_decode($raw, true) : [];
+    if (!is_array($current)) { $current = []; }
+
+    $outcome = userSettingsApplyMutation($current, $fn);
+    if (!$outcome['ok']) {
+        return $outcome;
+    }
+
+    $json = userSettingsEncode($outcome['settings']);
+    $upd = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
+    $upd->bind_param('si', $json, $uid);
+    $upd->execute();
+    $upd->close();
+    return $outcome;
+}
+
+/**
+ * Change one person's settings box under a row lock. THE only writer that owns its own transaction.
  *
  * Returns `['ok'=>true,'settings'=>…]` after a successful commit, or
  * `['ok'=>false,'reason'=>…]` when the callback refused (nothing stored).
  * Any database error rolls the transaction back and is re-thrown, so a failed
- * save is never reported as a success.
+ * save is never reported as a success. The read-change-write itself is
+ * userSettingsMutateLocked(), shared with callers that run inside their own transaction.
  *
  * @param callable(array<string,mixed>): (array<string,mixed>|string) $fn
  * @return array{ok:bool, settings:array<string,mixed>, reason:?string}
@@ -323,27 +386,11 @@ function userSettingsMutate(\mysqli $db, int $uid, callable $fn): array
 {
     $db->begin_transaction();
     try {
-        /* Lock FIRST, read second: the lock is what makes the read trustworthy. */
-        $sel = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ? FOR UPDATE');
-        $sel->bind_param('i', $uid);
-        $sel->execute();
-        $row = $sel->get_result()->fetch_row();
-        $sel->close();
-        $raw = (string)($row[0] ?? '');
-        $current = $raw !== '' ? json_decode($raw, true) : [];
-        if (!is_array($current)) { $current = []; }
-
-        $outcome = userSettingsApplyMutation($current, $fn);
+        $outcome = userSettingsMutateLocked($db, $uid, $fn);
         if (!$outcome['ok']) {
             $db->rollback();
             return $outcome;
         }
-
-        $json = userSettingsEncode($outcome['settings']);
-        $upd = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
-        $upd->bind_param('si', $json, $uid);
-        $upd->execute();
-        $upd->close();
         $db->commit();
         return $outcome;
     } catch (\Throwable $e) {

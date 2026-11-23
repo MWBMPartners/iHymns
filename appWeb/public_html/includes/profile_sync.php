@@ -54,6 +54,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'profile_sync_gate.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'profile_registry.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'user_sync.php'; /* userSyncLockPerson(): the per-person row lock (A1) */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'user_settings.php'; /* userSettingsMutateLocked(): the ONE writer of the old settings box (A1) */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php'; /* songRelocateIsTransactionFatal(): errors that end a transaction must be passed up */
 
 if (!function_exists('profileItemsReady')) {
@@ -413,11 +414,13 @@ if (!function_exists('profileSyncApplyLocked')) {
 
 if (!function_exists('profileSyncApply')) {
     /**
-     * Store a batch of changes for one person: begin, lock the person's row, apply, commit.
+     * Store a batch of changes for one person: begin, lock the person's row, bring in what old code wrote
+     * to the old settings box, apply, copy the accepted display settings back into that box, commit.
      *
      * ELI5: the one door for saving small personal items. Anyone else changing this person's
      * data at the same moment waits their turn, so no two writers ever pick the same version number.
      * Any database error rolls everything back and is re-thrown, so a failed save is never reported as saved.
+     * The old-settings-box steps (2b-4) are best effort: a trouble there is logged and never blocks the save.
      *
      * @param list<mixed> $changes at most PROFILE_SYNC_MAX_CHANGES entries
      * @return array{ready:bool,applied:int,unchanged:int,rejected:list<array{section:string,key:string,reason:string}>,maxVersion:int,writes:list<array<string,mixed>>}
@@ -431,7 +434,19 @@ if (!function_exists('profileSyncApply')) {
         $db->begin_transaction();
         try {
             userSyncLockPerson($db, $userId);
+            /* First bring in anything old code wrote to the old box since last time, so a change made by
+               an old app is not lost and the new changes below are the later arrivals (they win). */
+            profileSyncBridgeStep($db, $userId, static function () use ($db, $userId, $channel): void {
+                profileSyncReconcileWebShelf($db, $userId, $channel);
+            });
             $result = profileSyncApplyLocked($db, $userId, $changes, $platform, $channel);
+            /* Then copy the accepted display settings into the old box, so old apps (and the live site, which
+               still runs the older code) see them. */
+            if ($result['writes'] !== []) {
+                profileSyncBridgeStep($db, $userId, static function () use ($db, $userId, $result): void {
+                    profileSyncMirrorToWebShelf($db, $userId, $result['writes']);
+                });
+            }
             $db->commit();
             return $result;
         } catch (\Throwable $e) {
@@ -593,4 +608,349 @@ function profileSyncNotReadyBody(): array
         'error'  => 'This is not ready on this site yet.',
         'reason' => PROFILE_SYNC_NOT_READY_REASON,
     ];
+}
+
+/* ======================================================================
+ * KEEPING THE OLD SETTINGS BOX AND THE PROFILE IN STEP (PR 2b, step 2b-4)
+ * ======================================================================
+ *
+ * ELI5
+ * ----
+ * Until now the web kept its display settings (theme, text size, reading style...) in a shelf of the
+ * account's settings box, `ihymns.web`. The live site keeps running that older code until this work is
+ * promoted, and the Apple apps and iLyricsDB read that box too. So for a while BOTH places must tell the
+ * same story. Two small rules keep them in step without either one ever deleting the other's data:
+ *
+ *   1. Old shelf -> profile ("lazy"). Whenever a profile_sync call is made, the server first looks at the
+ *      shelf. If it has changed since the server last looked (it keeps a fingerprint), every value on it that
+ *      differs from the profile is copied into the profile. A key that is MISSING from the shelf is never
+ *      treated as "deleted": old apps only ever send the keys they have.
+ *   2. Profile -> old shelf ("eager"). Each accepted display-setting write is copied onto the shelf at once,
+ *      through the one locked writer of that box, and the fingerprint is refreshed, so the copy is not mistaken
+ *      for a change by old code on the next look and bounced back.
+ *
+ * Detailed
+ * --------
+ *  - Only registry entries with `cookie: true` and a `legacyWebKey` travel through the shelf (the same fourteen
+ *    the old settings page synced). The shelf holds TEXT; the registry holds real JSON types, so profileWebDecode()
+ *    and profileWebEncode() convert. js/modules/profile-web-codec.js is the JavaScript twin; a test makes
+ *    both give the same answer on the same samples (rule #35).
+ *  - The fingerprint lives in `_meta/webShelfHash` (Version 0, so a pull never returns it).
+ *  - Both steps run under the person's row lock (the same one the settings writer takes), inside the profile
+ *    sync's own transaction. The box is changed ONLY through userSettingsMutateLocked() (the single-writer rule, A1).
+ *  - A stale old app that pushes its whole shelf can still overwrite a newer value, exactly as it can today,
+ *    until the new code is on every site. That is the documented cost of keeping old apps working.
+ *  - Every step is best effort: a problem is logged and the save carries on (an error that ends the transaction
+ *    is passed up, never swallowed).
+ */
+
+/** The shelf of the settings box the web has always used. The same text as USER_SETTINGS_NAMESPACE in js/modules/settings.js (a test keeps them equal). */
+const PROFILE_SYNC_WEB_NAMESPACE = 'ihymns.web';
+
+/** The bookkeeping row holding the fingerprint of the shelf as last seen. */
+const PROFILE_SYNC_WEB_HASH_KEY = 'webShelfHash';
+
+/**
+ * The registry entries that travel through the old shelf, keyed by their old web storage key.
+ *
+ * @return array<string,array<string,mixed>>
+ */
+function profileWebEntries(): array
+{
+    $out = [];
+    foreach (profileRegistry() as $e) {
+        if (($e['cookie'] ?? false) === true && is_string($e['legacyWebKey'] ?? null) && ($e['sync'] ?? '') === 'profile_sync') {
+            $out[$e['legacyWebKey']] = $e;
+        }
+    }
+    return $out;
+}
+
+/**
+ * PURE: turn the TEXT the old shelf holds into the registry's real value, or null when it is not a valid value.
+ *
+ * ELI5: the shelf stores everything as words ("true", "18", "{...}"). The profile stores real booleans, numbers
+ * and objects. A true/false value is read from "true" or "1" (and false from "false" or "0"). Anything that does
+ * not fit the registry's rules comes back null and is skipped, never stored.
+ *
+ * @param array<string,mixed> $entry a registry entry
+ * @return mixed the value, or null (never a valid value)
+ */
+function profileWebDecode(array $entry, string $text): mixed
+{
+    $v = null;
+    switch ($entry['type'] ?? '') {
+        case 'bool':
+            $v = ($text === 'true' || $text === '1') ? true : (($text === 'false' || $text === '0') ? false : null);
+            break;
+        case 'int':
+            $v = preg_match('/^-?[0-9]{1,9}$/D', $text) === 1 ? (int)$text : null;
+            break;
+        case 'float':
+            $v = preg_match('/^-?[0-9]{1,9}(\.[0-9]{1,9})?$/D', $text) === 1 ? (float)$text : null;
+            break;
+        case 'enum':
+        case 'string':
+            $v = $text !== '' ? $text : null;
+            break;
+        case 'json':
+        case 'list':
+            /* Decode once as plain objects, to tell `{}` (an object) from `[]` (a list): as arrays they are the
+               same empty array, and an object entry must not accept a list nor the other way round. */
+            $raw = json_decode($text);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                $wantObject = ($entry['type'] ?? '') === 'json';
+                if (($wantObject && $raw instanceof \stdClass) || (!$wantObject && is_array($raw))) {
+                    $v = json_decode($text, true);
+                }
+            }
+            break;
+    }
+    return ($v !== null && profileValidateSpec($entry, $v)) ? $v : null;
+}
+
+/**
+ * PURE: turn a registry value into the TEXT the old shelf holds. The reverse of profileWebDecode().
+ * A true/false value is written as "true" or "false"; a whole number as digits (2.0 as "2"); an object as
+ * compact JSON (an empty one as "{}").
+ *
+ * @param array<string,mixed> $entry a registry entry
+ */
+function profileWebEncode(array $entry, mixed $value): string
+{
+    switch ($entry['type'] ?? '') {
+        case 'bool':
+            return $value === true ? 'true' : 'false';
+        case 'int':
+            return (string)(int)$value;
+        case 'float':
+            $s = (string)json_encode((float)$value);
+            return str_ends_with($s, '.0') ? substr($s, 0, -2) : $s;
+        case 'json':
+        case 'list':
+            return profileSyncEncodeValue($entry, $value);
+        default:
+            return (string)$value;
+    }
+}
+
+/** The text of one shelf value, or null when it is not a plain value (an array, null...). Old apps only ever store text. */
+function profileWebShelfText(mixed $v): ?string
+{
+    if (is_string($v)) { return $v; }
+    if (is_bool($v)) { return $v ? 'true' : 'false'; }
+    if (is_int($v) || is_float($v)) { return (string)$v; }
+    return null;
+}
+
+/**
+ * PURE: a fingerprint of the part of the shelf this bridge cares about (only the registry's own keys, in a fixed order).
+ *
+ * @param array<string,mixed> $shelf the `ihymns.web` subtree
+ */
+function profileWebShelfHash(array $shelf): string
+{
+    $keys = array_keys(profileWebEntries());
+    sort($keys, SORT_STRING);
+    $o = [];
+    foreach ($keys as $k) {
+        if (array_key_exists($k, $shelf) && ($t = profileWebShelfText($shelf[$k])) !== null) { $o[$k] = $t; }
+    }
+    return hash('sha256', (string)json_encode($o, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+}
+
+/** PURE: the `ihymns.web` shelf out of a whole settings box (`[]` when absent or not an object). @param array<string,mixed> $box @return array<string,mixed> */
+function profileWebShelfOf(array $box): array
+{
+    $shelf = $box[PROFILE_SYNC_WEB_NAMESPACE] ?? [];
+    return is_array($shelf) ? $shelf : [];
+}
+
+/**
+ * PURE: which profile changes does a shelf stand for? One `set` per shelf value that is valid for its entry.
+ * A key that is missing, empty or invalid yields NOTHING: this never produces a delete.
+ *
+ * @param array<string,mixed> $shelf
+ * @return list<array{section:string,key:string,op:string,value:mixed}>
+ */
+function profileWebShelfToChanges(array $shelf): array
+{
+    $changes = [];
+    foreach (profileWebEntries() as $legacy => $entry) {
+        if (!array_key_exists($legacy, $shelf)) { continue; }
+        $text = profileWebShelfText($shelf[$legacy]);
+        if ($text === null) { continue; }
+        $v = profileWebDecode($entry, $text);
+        if ($v === null) { continue; }
+        $changes[] = ['section' => $entry['section'], 'key' => $entry['key'], 'op' => 'set', 'value' => $v];
+    }
+    return $changes;
+}
+
+/**
+ * PURE: the shelf after the accepted writes are copied onto it, and whether anything changed. A set becomes the value's
+ * text; a delete becomes the empty text (an old app reads that as "reset to the default"). Only bridge entries are touched.
+ *
+ * @param array<string,mixed> $shelf
+ * @param list<array<string,mixed>> $writes accepted writes from profileSyncPlan() (section, key, json, deleted)
+ * @return array{shelf:array<string,mixed>,changed:bool}
+ */
+function profileWebShelfWithWrites(array $shelf, array $writes): array
+{
+    $byId = [];
+    foreach (profileWebEntries() as $legacy => $entry) { $byId[$entry['id']] = [$legacy, $entry]; }
+    $changed = false;
+    foreach ($writes as $w) {
+        $hit = $byId[($w['section'] ?? '') . '.' . ($w['key'] ?? '')] ?? null;
+        if ($hit === null) { continue; }
+        [$legacy, $entry] = $hit;
+        $text = '';
+        if (!($w['deleted'] ?? false) && is_string($w['json'] ?? null)) {
+            $v = json_decode($w['json'], true);
+            $text = profileWebEncode($entry, $v);
+        }
+        if (!array_key_exists($legacy, $shelf) || $shelf[$legacy] !== $text) {
+            $shelf[$legacy] = $text;
+            $changed = true;
+        }
+    }
+    return ['shelf' => $shelf, 'changed' => $changed];
+}
+
+if (!function_exists('profileSyncBridgeStep')) {
+    /**
+     * Run one best-effort old-box step. A problem is logged and the caller carries on; an error that has ended the
+     * caller's transaction is passed up (never swallowed), because carrying on after one would report a save that no
+     * longer exists.
+     */
+    function profileSyncBridgeStep(\mysqli $db, int $userId, callable $step): void
+    {
+        try {
+            $step();
+        } catch (\Throwable $e) {
+            if (songRelocateIsTransactionFatal($e)) { throw $e; }
+            error_log('[profile_sync] the old settings box step failed for user ' . $userId . ': ' . $e->getMessage());
+        }
+    }
+}
+
+if (!function_exists('profileSyncMetaRead')) {
+    /** Read one bookkeeping value (section `_meta`), or null. @return mixed */
+    function profileSyncMetaRead(\mysqli $db, int $userId, string $key): mixed
+    {
+        if (!profileItemsReady($db)) { return null; }
+        $meta = PROFILE_SYNC_META_SECTION;
+        $stmt = $db->prepare('SELECT ValueJson FROM tblUserProfileItems WHERE UserId = ? AND Section = ? AND ItemKey = ? LIMIT 1');
+        $stmt->bind_param('iss', $userId, $meta, $key);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        return ($row === null || $row[0] === null) ? null : json_decode((string)$row[0], true);
+    }
+}
+
+if (!function_exists('profileSyncMetaWrite')) {
+    /**
+     * Write one bookkeeping value (section `_meta`, Version 0, so a pull never returns it).
+     * The caller holds the person's row lock.
+     */
+    function profileSyncMetaWrite(\mysqli $db, int $userId, string $key, mixed $value): void
+    {
+        if (!profileItemsReady($db)) { return; }
+        $meta = PROFILE_SYNC_META_SECTION;
+        $json = (string)json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $stmt = $db->prepare(
+            'INSERT INTO tblUserProfileItems (UserId, Section, ItemKey, ValueJson, Version, UpdatedAt)
+             VALUES (?, ?, ?, ?, 0, UTC_TIMESTAMP(3))
+             ON DUPLICATE KEY UPDATE ValueJson = VALUES(ValueJson), UpdatedAt = VALUES(UpdatedAt), DeletedAt = NULL'
+        );
+        $stmt->bind_param('isss', $userId, $meta, $key, $json);
+        $stmt->execute();
+        $stmt->close();
+    }
+}
+
+if (!function_exists('profileSyncReconcileWebShelf')) {
+    /**
+     * Old shelf -> profile. The caller holds the person's row lock inside an open transaction.
+     *
+     * ELI5: if old code has written the old shelf since we last looked, copy each value that differs into the
+     * profile. Never deletes. The first look at a person's shelf is the one-time import of what they had.
+     *
+     * @return array{ready:bool,looked:bool,imported:int}
+     */
+    function profileSyncReconcileWebShelf(\mysqli $db, int $userId, ?string $channel = null): array
+    {
+        if (!profileItemsReady($db)) { return ['ready' => false, 'looked' => false, 'imported' => 0]; }
+        $shelf = profileWebShelfOf(userSettingsReadBox($db, $userId));
+        $hash  = profileWebShelfHash($shelf);
+        if (profileSyncMetaRead($db, $userId, PROFILE_SYNC_WEB_HASH_KEY) === $hash) {
+            return ['ready' => true, 'looked' => false, 'imported' => 0];
+        }
+        $changes = profileWebShelfToChanges($shelf);
+        $applied = 0;
+        if ($changes !== []) {
+            /* From the old web app: recorded as written by the web. Equal values are skipped by the plan. */
+            $applied = profileSyncApplyLocked($db, $userId, $changes, 'web', $channel)['applied'];
+        }
+        profileSyncMetaWrite($db, $userId, PROFILE_SYNC_WEB_HASH_KEY, $hash);
+        return ['ready' => true, 'looked' => true, 'imported' => $applied];
+    }
+}
+
+if (!function_exists('profileSyncMirrorToWebShelf')) {
+    /**
+     * Profile -> old shelf. The caller holds the person's row lock inside an open transaction.
+     *
+     * ELI5: copy each accepted display-setting write onto the old shelf, then record the shelf's new fingerprint
+     * so the next look does not mistake our own copy for a change by old code.
+     *
+     * @param list<array<string,mixed>> $writes accepted writes (as returned by profileSyncApplyLocked())
+     * @return bool true when the box was changed
+     */
+    function profileSyncMirrorToWebShelf(\mysqli $db, int $userId, array $writes): bool
+    {
+        if (!profileItemsReady($db)) { return false; }
+        $box   = userSettingsReadBox($db, $userId);
+        $after = profileWebShelfWithWrites(profileWebShelfOf($box), $writes);
+        if (!$after['changed']) { return false; }
+        $ns = PROFILE_SYNC_WEB_NAMESPACE;
+        $outcome = userSettingsMutateLocked($db, $userId, static function (array $current) use ($after, $ns) {
+            $reason = userSettingsRejectReason($current, $ns, $after['shelf']);
+            return $reason !== null ? $reason : userSettingsMergeNamespace($current, $ns, $after['shelf']);
+        });
+        if (!$outcome['ok']) {
+            return false;   /* refused (too big): the box is unchanged, so the fingerprint stays as it was */
+        }
+        profileSyncMetaWrite($db, $userId, PROFILE_SYNC_WEB_HASH_KEY, profileWebShelfHash($after['shelf']));
+        return true;
+    }
+}
+
+if (!function_exists('profileSyncReconcileIfChanged')) {
+    /**
+     * For a read: bring in what old code wrote to the old shelf, taking the lock only when there is something new.
+     *
+     * ELI5: a device that only READS still needs to see a change an old app made. A quick look (no lock) compares
+     * the shelf's fingerprint with the stored one; only when they differ does it lock the person and copy.
+     *
+     * @return bool true when the shelf was looked at under the lock
+     * @throws \Throwable
+     */
+    function profileSyncReconcileIfChanged(\mysqli $db, int $userId, ?string $channel = null): bool
+    {
+        if (!profileItemsReady($db)) { return false; }
+        $hash = profileWebShelfHash(profileWebShelfOf(userSettingsReadBox($db, $userId)));
+        if (profileSyncMetaRead($db, $userId, PROFILE_SYNC_WEB_HASH_KEY) === $hash) { return false; }
+        $db->begin_transaction();
+        try {
+            userSyncLockPerson($db, $userId);
+            $r = profileSyncReconcileWebShelf($db, $userId, $channel);   /* looks again under the lock */
+            $db->commit();
+            return $r['looked'];
+        } catch (\Throwable $e) {
+            try { $db->rollback(); } catch (\Throwable $_r) { /* already gone */ }
+            throw $e;
+        }
+    }
 }

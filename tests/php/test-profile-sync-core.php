@@ -195,7 +195,7 @@ $finish = function (array $h): string {
     return trim($out);
 };
 try {
-    $db->query('CREATE TABLE tblUsers (Id INT UNSIGNED NOT NULL PRIMARY KEY, Settings JSON NULL) ENGINE=InnoDB');
+    $db->query('CREATE TABLE tblUsers (Id INT UNSIGNED NOT NULL PRIMARY KEY, Settings JSON NULL, UpdatedAt DATETIME NULL) ENGINE=InnoDB');
     $db->query('INSERT INTO tblUsers (Id) VALUES (1), (2)');
 
     /* before the table exists: nothing throws, nothing is stored */
@@ -210,7 +210,7 @@ try {
     chk('with the table there, the ready-check says yes', profileItemsReady($db) === true);
     $r = profileSyncApply($db, 1, [$set('appearance', 'theme', 'dark'), $set('songPrefs', 'MP-1', ['transpose' => 2, 'capo' => 1, 'octave' => 0]), $set('nope', 'x', 1), $set('appearance', 'reduceMotion', true)], 'web', 'alpha');
     chk('apply stores the good changes and reports the refused one', $r['applied'] === 3 && count($r['rejected']) === 1 && $r['rejected'][0]['reason'] === 'unknown_key' && $r['maxVersion'] === 3);
-    $rows = $db->query('SELECT Section, ItemKey, ValueJson, Version, DeletedAt, WriterChannel, WriterPlatform FROM tblUserProfileItems WHERE UserId = 1 ORDER BY Version')->fetch_all(MYSQLI_ASSOC);
+    $rows = $db->query('SELECT Section, ItemKey, ValueJson, Version, DeletedAt, WriterChannel, WriterPlatform FROM tblUserProfileItems WHERE UserId = 1 AND Section <> \'_meta\' ORDER BY Version')->fetch_all(MYSQLI_ASSOC);
     chk('three rows with versions 1, 2, 3 in arrival order, the writer recorded', array_column($rows, 'Version') === ['1', '2', '3'] && $rows[0]['WriterChannel'] === 'alpha' && $rows[0]['WriterPlatform'] === 'web' && $rows[1]['ItemKey'] === 'MP-1');
 
     $r2 = profileSyncApply($db, 1, [$set('appearance', 'theme', 'dark')], 'web');
@@ -246,7 +246,8 @@ try {
     chk('a cursor that is too high is reset: the whole list comes back and resetCursor is true', $hi['resetCursor'] === true && count($hi['changes']) === 3 && $hi['cursor'] === 5);
 
     /* internal rows are never returned and consume no version */
-    $db->query("INSERT INTO tblUserProfileItems (UserId, Section, ItemKey, ValueJson, Version, UpdatedAt) VALUES (1, '_meta', 'webShelfHash', '\"abc\"', 0, UTC_TIMESTAMP(3))");
+    /* The save above already wrote its own bookkeeping row (the old-settings-box fingerprint, Version 0): it must not be returned either. */
+    chk('the save itself wrote a bookkeeping row with Version 0', (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 1 AND Section = '_meta' AND Version = 0")->fetch_row()[0] === 1);
     $db->query("INSERT INTO tblUserProfileItems (UserId, Section, ItemKey, ValueJson, Version, UpdatedAt) VALUES (1, '_meta', 'sneaky', '\"x\"', 999, UTC_TIMESTAMP(3))");
     $all = profileSyncPull($db, 1, 0);
     chk('the _meta section is never returned, even when a row there has a high version', !in_array('_meta', array_column($all['changes'], 'section'), true));

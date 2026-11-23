@@ -116,7 +116,7 @@ if ($db === null) {
     $db->set_charset('utf8mb4');
     $schema = (string)file_get_contents($repo . '/appWeb/.sql/schema.sql');
     try {
-        $db->query('CREATE TABLE tblUsers (Id INT UNSIGNED NOT NULL PRIMARY KEY, Settings JSON NULL) ENGINE=InnoDB');
+        $db->query('CREATE TABLE tblUsers (Id INT UNSIGNED NOT NULL PRIMARY KEY, Settings JSON NULL, UpdatedAt DATETIME NULL) ENGINE=InnoDB');
         $db->query('INSERT INTO tblUsers (Id) VALUES (1), (2)');
         chk('tblAppSettings is found in schema.sql', (bool)preg_match('/CREATE TABLE IF NOT EXISTS tblAppSettings \(.*?\) ENGINE=InnoDB[^;]*;/s', $schema, $ma));
         $db->query($ma[0]);
@@ -211,7 +211,7 @@ PHP;
         $r = $call(['method' => 'POST', 'user' => 1, 'body' => str_repeat('x', PROFILE_SYNC_MAX_BODY_BYTES + 100)]);
         chk('a body over 64 KiB is 413 body_too_large', $status($r) === 413 && $reason($r) === 'body_too_large');
         $r = $post(['changes' => array_fill(0, PROFILE_SYNC_MAX_CHANGES + 1, $change('appearance', 'theme', 'dark'))]);
-        chk('201 changes is 413 too_many_changes, and none of them was stored', $status($r) === 413 && $reason($r) === 'too_many_changes' && (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 1")->fetch_row()[0] === 2);
+        chk('201 changes is 413 too_many_changes, and none of them was stored', $status($r) === 413 && $reason($r) === 'too_many_changes' && (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 1 AND Section <> '_meta'")->fetch_row()[0] === 2);
 
         /* a paused site: reads work, saving is refused */
         $setSwitch('account_writes_channels', 'none');
