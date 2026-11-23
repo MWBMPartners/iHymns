@@ -208,6 +208,32 @@ export function clearPersonalDataAtSignOut(storage) {
     remove(storage, STORAGE_DATA_OWNER_UID);
 }
 
+/**
+ * Does this person's set-aside copy hold changes that never reached their account? (PR 2c review.) A sign-in that ends in the
+ * middle of a sign-out (the token is refused while the changes are being sent) moves the person's data into the set-aside
+ * copy before the sign-out question is asked, so the question must look in there too, or those changes would be thrown away
+ * without a word. True when the copy carries an "unsent" mark or a still-waiting addition or removal.
+ */
+export function stashHoldsUnsent(storage, uid) {
+    const id = norm(uid);
+    if (id === null) return false;
+    const raw = get(storage, STORAGE_STASH_PREFIX + id);
+    if (raw === null) return false;
+    let data;
+    try { data = JSON.parse(raw); } catch (_e) { return false; }
+    if (!data || typeof data !== 'object') return false;
+    return [STORAGE_SETLISTS_UNSENT, STORAGE_FAVORITES_UNSENT, STORAGE_CUSTOM_TAGS_UNSENT,
+        STORAGE_SETLISTS_DELETED, STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED]
+        .some((k) => typeof data[k] === 'string' && !isEmptyValue(data[k]));
+}
+
+/** Delete this person's set-aside copy, if any. Used when they sign out on purpose: nothing of theirs may stay on the browser. */
+export function removeStash(storage, uid) {
+    const id = norm(uid);
+    if (id === null) return;
+    remove(storage, STORAGE_STASH_PREFIX + id);
+}
+
 /** Put a person's stash (if any) back into the live keys, then delete it. */
 function restoreStash(storage, uid) {
     const key = STORAGE_STASH_PREFIX + uid;

@@ -38,6 +38,7 @@
  */
 
 import { offlineQueue } from './offline-queue.js';
+import { stashHoldsUnsent } from './account-data-owner.js';
 
 /** The offline-queue types that mean "a sync of this kind is wanted". Must equal the types user-auth.js drains (the test derives them). */
 export const UNSENT_QUEUE_TYPES = Object.freeze(['setlists-sync', 'favorites-sync', 'custom-tags-sync']);
@@ -98,12 +99,12 @@ export async function flushEverything(app, deps = {}) {
  * How many changes have not reached the account?
  *
  * @param {object} app
- * @param {{queueCount?: Function}} [deps] test hook
+ * @param {{queueCount?: Function, uid?: *, storage?: Storage}} [deps] test hooks; `uid` is who is signing out (read BEFORE anything was sent)
  * @returns {Promise<{total: number, parts: object}>}
  */
 export async function countUnsentChanges(app, deps = {}) {
     const queueCount = deps.queueCount || ((t) => offlineQueue.count(t));
-    const parts = { profile: 0, favourites: 0, setlistDeletes: 0, settings: 0, queued: 0, edits: 0 };
+    const parts = { profile: 0, favourites: 0, setlistDeletes: 0, settings: 0, queued: 0, edits: 0, setAside: 0 };
     const safely = (fn) => { try { return fn(); } catch (_e) { return 0; } };
     parts.profile = safely(() => (app?.profileSync?.isActive?.() ? app.profileSync.pendingCount() : 0)) || 0;
     parts.favourites = safely(() => (app?.favorites?.getPendingAdds?.().length || 0) + (app?.favorites?.getPendingDeletes?.().length || 0)) || 0;
@@ -120,6 +121,9 @@ export async function countUnsentChanges(app, deps = {}) {
     if (parts.setlistDeletes === 0) parts.edits += setlistMark;
     if (parts.favourites === 0) parts.edits += favouriteMark;
     parts.edits += tagMark;
+    /* PR 2c review: a sign-in that ended while the changes were being sent has already moved the person's data into the set-aside
+       copy (so the lists above read empty). What is still unsent inside that copy counts too, once. */
+    parts.setAside = safely(() => (stashHoldsUnsent(deps.storage || localStorage, deps.uid) ? 1 : 0)) || 0;
     for (const type of UNSENT_QUEUE_TYPES) {
         let rows = 0;
         try { rows = Number(await queueCount(type)) || 0; } catch (_e) { rows = 0; }
@@ -131,19 +135,19 @@ export async function countUnsentChanges(app, deps = {}) {
         if (type === 'custom-tags-sync' && tagMark > 0) continue;
         parts.queued += 1;
     }
-    return { total: parts.profile + parts.favourites + parts.setlistDeletes + parts.settings + parts.queued + parts.edits, parts };
+    return { total: parts.profile + parts.favourites + parts.setlistDeletes + parts.settings + parts.queued + parts.edits + parts.setAside, parts };
 }
 
 /**
  * Decide whether to go ahead with the sign-out. Sends what is waiting, counts what is left, and asks if needed.
  *
  * @param {object} app needs showChoice() when something is left unsent
- * @param {{flush?: Function, count?: Function}} [deps] test hooks
+ * @param {{flush?: Function, count?: Function, uid?: *}} [deps] test hooks; `uid` = who is signing out, read before the flush
  * @returns {Promise<'go'|'stay'>}
  */
 export async function confirmSignOut(app, deps = {}) {
     const flush = deps.flush || (() => flushEverything(app));
-    const count = deps.count || (() => countUnsentChanges(app));
+    const count = deps.count || (() => countUnsentChanges(app, { uid: deps.uid }));
     await flush();
     let c = await count();
     if (c.total === 0) return 'go';

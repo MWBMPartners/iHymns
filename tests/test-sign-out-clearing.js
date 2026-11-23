@@ -300,6 +300,7 @@ async function world({ enabled = true, favs = 'ok', profile = 'ok', sl = 'ok', t
         if (action === 'user_setlists_sync') {
             if (w.mode.sl === 'down') throw new TypeError('network down');
             if (w.mode.sl === '500') return json(500, { error: 'boom' });
+            if (w.mode.sl === '401') return json(401, { error: 'expired' });
             if (w.mode.sl === 'readonly') return json(200, { setlists: [], tombstones: [], readOnly: true, syncedAt: '2026-02-02 00:00:00' });
             if (typeof w.mode.sl === 'function') await w.mode.sl(body);
             w.serverLists = (body.setlists || []).map((l) => l.name);
@@ -522,6 +523,25 @@ async function lostEditScenarios(userAuthPath) {
     w.app.showChoice = async (message, opts) => { w.dialogs.push({ message, opts }); w.mode.sl = 'ok'; return 'option1'; };
     out.t = await w.app.userAuth.logout();
     out.tState = { dialogs: w.dialogs.length, serverLists: [...w.serverLists], left: left(w) };
+    /* v. the sign-in is refused (expired) while the changes are being sent: the person's data has already been set aside
+          under their id before the question is asked, so the question must look inside the set-aside copy */
+    const stashKeys = () => { const k = []; for (let i = 0; i < localStorage.length; i++) { const n = localStorage.key(i); if (n.startsWith(C.STORAGE_STASH_PREFIX)) k.push(n); } return k; };
+    w = await world({ userAuthPath, sl: '401', answers: [null] });
+    w.app.setList.create('Typed just before it expired');
+    clearTimeout(w.app.setList._syncTimer); w.app.setList._syncTimerPending = false;
+    out.v = await w.app.userAuth.logout();
+    out.vState = { dialogs: w.dialogs.length, msg: w.dialogs[0]?.message, stash: stashKeys(), stashText: localStorage.getItem(C.STORAGE_STASH_PREFIX + '1') };
+    /* w. ...and "Sign out anyway" then leaves NO set-aside copy on the browser */
+    w = await world({ userAuthPath, sl: '401', answers: ['option2'] });
+    w.app.setList.create('Typed just before it expired');
+    clearTimeout(w.app.setList._syncTimer); w.app.setList._syncTimerPending = false;
+    out.w = await w.app.userAuth.logout();
+    out.wState = { dialogs: w.dialogs.length, stash: stashKeys(), left: left(w) };
+    /* x. a set-aside copy with nothing unsent in it (made earlier in the same sign-out): signing out removes it, with no question */
+    w = await world({ userAuthPath });
+    localStorage.setItem(C.STORAGE_STASH_PREFIX + '1', JSON.stringify({ [C.STORAGE_FAVORITES]: '[{"id":"MP-1","tags":[]}]' }));
+    out.x = await w.app.userAuth.logout();
+    out.xState = { dialogs: w.dialogs.length, stash: stashKeys() };
     /* u. only a "sync wanted" marker is left (no mark, nothing else), and the server is down: the marker must survive the failed attempt */
     w = await world({ userAuthPath, sl: '500', answers: [null] });
     w.markers['setlists-sync'] = 1;
@@ -542,6 +562,9 @@ check('a custom tag whose push failed is asked about and kept', lost.q.signedOut
 check("a custom tag on a paused site is asked about, and the paused site's empty list does not wipe it", lost.q2.signedOut === false && lost.q2State.dialogs === 1 && lost.q2State.tags.includes('Evening'), JSON.stringify(lost.q2State));
 check('a custom tag with a healthy server is sent on sign-out, then cleared with no question', lost.q3.signedOut === true && lost.q3State.dialogs === 0 && lost.q3State.serverTags.includes('Evening') && lost.q3State.left === 0, JSON.stringify(lost.q3State));
 check('an edit made while a push was in the air keeps its "unsent" mark (nothing is marked sent that was not)', lost.rState.mark === true, JSON.stringify(lost.rState));
+check('a sign-in refused DURING sign-out sets the data aside first: the question still counts what is unsent in the set-aside copy, and nothing is thrown away until answered', lost.v.signedOut === false && lost.vState.dialogs === 1 && /^1 change has/.test(lost.vState.msg || '') && lost.vState.stash.length === 1 && (lost.vState.stashText || '').includes('Typed just before it expired'), JSON.stringify(lost.vState));
+check('"Sign out anyway" then leaves NO set-aside copy of that person on the browser (the privacy page says so)', lost.w.signedOut === true && lost.wState.stash.length === 0 && lost.wState.left === 0, JSON.stringify(lost.wState));
+check('a set-aside copy holding nothing unsent is removed by the sign-out too, with no question', lost.x.signedOut === true && lost.xState.dialogs === 0 && lost.xState.stash.length === 0, JSON.stringify(lost.xState));
 check('a lone offline "sync wanted" marker is not forgotten when its push fails: the person is asked and the marker is still there', lost.u.signedOut === false && lost.uState.dialogs === 1 && lost.uState.marker === 1, JSON.stringify(lost.uState));
 check('"Sign out anyway" after a failed push signs out and clears', lost.s.signedOut === true && lost.sState.dialogs === 1 && lost.sState.left === 0, JSON.stringify(lost.sState));
 check('"Try again" once the server is back sends the edit, and the person is not asked again', lost.t.signedOut === true && lost.tState.dialogs === 1 && lost.tState.serverLists.includes('Retry me') && lost.tState.left === 0, JSON.stringify(lost.tState));
@@ -570,7 +593,7 @@ async function mutate(label, edit) {
 }
 {
     const m = await mutate('clearing skipped', (g, u) => {
-        const from = 'try { clearPersonalDataAtSignOut(localStorage); }';
+        const from = 'try { clearPersonalDataAtSignOut(localStorage); removeStash(localStorage, uid); }';
         if (!u.includes(from)) throw new Error('mutation setup: clearing line not found; update this test');
         return { guardText: g, uaText: u.replace(from, 'try { /* MUTATED: not cleared */ }') };
     });
@@ -625,5 +648,13 @@ const replaceOnce = (text, from, to, what) => { if (!text.includes(from)) throw 
     check('MUTATION (flushNow only knows the timer and deletions, as before): the other tab\'s edit is no longer sent at sign-out (the healthy-server row goes red)', !(m.o2.signedOut === true && m.o2State.dialogs === 0 && m.o2State.serverLists.includes('Made in the other tab')));
 }
 
+{
+    const m = await mutateStores('stash left behind', (src) => ({ ua: replaceOnce(src.ua, 'clearPersonalDataAtSignOut(localStorage); removeStash(localStorage, uid);', 'clearPersonalDataAtSignOut(localStorage);', 'the stash removal') }));
+    check('MUTATION (the set-aside copy is not removed at sign-out): a copy of the person stays on the browser', m.wState.stash.length === 1 && m.xState.stash.length === 1);
+}
+{
+    const m = await mutateStores('stash not counted', (src) => ({ guard: replaceOnce(src.guard, 'parts.setAside = safely(() => (stashHoldsUnsent(deps.storage || localStorage, deps.uid) ? 1 : 0)) || 0;', 'parts.setAside = 0; /* MUTATED */', 'the set-aside count') }));
+    check('MUTATION (the set-aside copy is not counted): the unsent change inside it is thrown away without a question', m.vState.dialogs === 0);
+}
 if (failures) { console.log(`\n${failures} failure(s)`); process.exit(1); }
 console.log('\nall passed');

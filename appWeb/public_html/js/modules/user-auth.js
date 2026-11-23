@@ -20,7 +20,7 @@ import {
     STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT, STORAGE_STASH_PREFIX,
 } from '../constants.js';
 import { performAppleSignIn } from './apple-signin.js';
-import { reconcileDataOwner, recordDataOwner, protectOnUnplannedSignOut, clearPersonalDataAtSignOut } from './account-data-owner.js';
+import { reconcileDataOwner, recordDataOwner, protectOnUnplannedSignOut, clearPersonalDataAtSignOut, removeStash } from './account-data-owner.js';
 import { signOutGuardActive, confirmSignOut } from './sign-out-guard.js';
 import { apiFetch } from '../utils/api-client.js';
 /* #947/#340 — dormant CAPTCHA widget, wired into the four gated auth forms
@@ -433,8 +433,11 @@ export class UserAuth {
 
     async _logoutOnce() {
         const guarded = signOutGuardActive(this.app);
+        /* Who is signing out, read BEFORE anything is sent: if the sign-in is refused while the changes are going out, the
+           person is signed out by that and getUser() is empty afterwards, but their data has been set aside under this id. */
+        const uid = this.getUser()?.id;
         if (guarded && this.isLoggedIn()) {
-            if ((await confirmSignOut(this.app)) !== 'go') return { signedOut: false };
+            if ((await confirmSignOut(this.app, { uid })) !== 'go') return { signedOut: false };
         }
         try {
             await apiFetch(`${this.app.config.apiUrl}?action=auth_logout`, {
@@ -451,7 +454,7 @@ export class UserAuth {
 
         /* Cleared BEFORE the sign-in is forgotten, so the pages that redraw on the sign-out announcement already see an empty browser. */
         if (guarded) {
-            try { clearPersonalDataAtSignOut(localStorage); }
+            try { clearPersonalDataAtSignOut(localStorage); removeStash(localStorage, uid); }
             catch (e) { console.warn('[user-auth] could not clear saved data at sign-out:', e); }
         }
         this.clearCredentials({ planned: true });
