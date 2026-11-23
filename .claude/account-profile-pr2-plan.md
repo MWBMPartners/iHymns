@@ -94,6 +94,15 @@ Follow-ups recorded from this work (NOT done):
 | 2c-3 review: a second click while the question is open | 9198944e | done |
 | 2c-4 the privacy page | ae06c0c4 | done |
 | 2c-5 docs (rule #54, wiki, `.OpenAI/`, `CHANGELOG.md`; no `WHATS-NEW.md` bullets) | the commit that adds this table | done |
+| Opus review 1 (HIGH): sign-out lost set-list, favourite and tag changes whose push had failed (per-store "unsent" mark, real `flushNow()`, paused site is not "sent") | f76cebd1 | done |
+| Opus review 2 (HIGH): export built in small steady memory (unbuffered rows, limits while reading, streamed compact JSON, lower caps for large-text tables) | cbd4c9cf | done |
+| Opus review 3: export no longer carries other people's data (failed-login network details, reviewer-role links, `LastUsedIp`, `TempPath`, duplicate rows) | ac1a69c4 | done |
+| Opus review 4: "Sign out anyway" keeps its place on every round | f4835552 | done |
+| Opus review 5: expired sign-in during sign-out no longer leaves the set-aside copy | 2ed657fa | done |
+| Opus review 6: privacy page, settings comment and API notes made true everywhere | e04b6e6b | done |
+| Opus review 7: guard finds unlinked person columns from the schema | 8fa5d3d6 | done |
+| Opus review 8: delete panel (unknown result, Apple-only, robot check) | da8481e8 | done |
+| Opus review 8 (optional): export reads one consistent snapshot | c3441779 | done |
 
 Deviations from the plan (PR 2c):
 - Owner decision (2026-11-23): export and web deletion are NOT behind `profile_sync_channels` (the plan's default question 7.1 said yes). So `account_export` has no 409 `profile_sync_disabled`, and the web delete panel always shows. Both still need sign-in, a same-origin request and a rate limit; delete still needs the re-authentication and the typed word, and still obeys the "pause saving" brake (409 `account_writes_off_here`, explained in plain words).
@@ -108,10 +117,12 @@ Deviations from the plan (PR 2c):
 - 2c-4: privacy copy is written for the state after production is ticked; it cannot word itself per site.
 
 Follow-ups recorded from this work (NOT done):
-- The export reads each table separately, not inside one consistent snapshot, so a sync running at that moment can be half in the file. Acceptable for a person's own download; a `START TRANSACTION READ ONLY, CONSISTENT SNAPSHOT` would fix it.
+- (Done in the Opus review fixes: the export now reads inside one read-only consistent snapshot.)
 - A signed-in person whose profile sync is switched off by their own settings opt-out (`ihymns_sync_app_settings` false) is not counted for the profile outbox (the outbox is only counted while the sync is active).
 - A second tab left signed in is not told when another tab signs out (as before).
-- The web has no Apple re-authentication for deleting an Apple-only account without an email.
+- The web has no Apple re-authentication for deleting an Apple-only account without an email (the panel now says to use the app).
+- Deviation from the review (fix 5): the question also counts unsent changes inside the set-aside copy, and a lone "Try again" cannot help when the sign-in has already ended mid-flush; it is still offered (harmless, three rounds at most).
+- Deviation from the review (fix 3): reviewer-role links are left out of the file (with a reason) rather than reduced to ids.
 
 ## 0. What the code changed about the old plan
 
