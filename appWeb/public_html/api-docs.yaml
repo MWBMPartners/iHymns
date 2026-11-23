@@ -3873,9 +3873,14 @@ paths:
 
         The reply then also carries `tombstones` (removals made on other
         devices, dated at or after `since`, for the client to drop locally) and
-        `protocol` (`2` when `deleted`/`added` were honoured, otherwise `1`: a
-        client clears the ids it sent only on `2`). The read-only reply on a
-        paused site carries `tombstones` too.
+        `protocol` (`2` when `deleted`/`added` were honoured, otherwise `1`). The
+        web client forgets the ids it sent on ANY reply that is not the read-only
+        (paused-site) one, protocol `1` included, so stale removals never queue
+        up and replay when the switch is later ticked; a client that wants to
+        keep them until protocol `2` is free to. The read-only reply on a paused
+        site carries `tombstones` too. `tombstones` never lists an item that the
+        same reply returns in `favorites`, and holds at most the newest 5,000
+        markers.
       security:
         - bearerAuth: []
       parameters:
