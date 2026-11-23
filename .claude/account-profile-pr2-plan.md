@@ -32,6 +32,35 @@ Deviations from the plan (PR 2a):
   - Tag markers have no "exists" check (no registry to check against); only the 5,000 cap applies.
 - Docs: `api-docs.yaml` named the `song_view` field `songId`; the server reads `song_id`. Corrected.
 
+## Progress (PR 2b, branch `claude/account-pr2b`)
+
+| Step | Commit | Status |
+|---|---|---|
+| 2b-1 registry version 2 (`map` kind, four new entries) | 63aab863 | done |
+| 2b-2 the sync core | 46863e33 | done, needs Opus review |
+| 2b-3 the `profile_sync` endpoint | 52332a6f | done |
+| 2b-4 keep the old settings box and the profile in step | 162a3f80 | done, needs Opus review |
+| 2b-5 the browser's half | 1b0755cd | done, needs Opus review |
+| 2b-6 chords | 34e93cd7 | done |
+| 2b-6 recent songbooks | df7e839f | done |
+| 2b-6 per-song key, capo, octave | 39ad03a4 | done |
+| 2b-6 search history | 14d22bb2 | done |
+| gating guard: the core opens with its check and has one door | 60be7a76 | done |
+
+Deviations from the plan (PR 2b):
+- 2b-1: `library.recentSongbooks` joined `PERSONAL_DATA_KEYS` here, not in 2b-6, because the new lockstep check ("every web key cleared at sign-out is in `PERSONAL_DATA_KEYS`") needs it. The check "every web profile_sync entry has a web key or a hand-written provider" landed with the last provider (search history, 2b-6), because it cannot be true before.
+- 2b-2: an item key is compared ignoring letter case (`MP-1` and `mp-1` are one row, as the table treats them). `profileSyncApply()` was split into `profileSyncApplyLocked()` (caller holds the lock) and a wrapper, so 2b-4 could run its steps inside the same transaction.
+- 2b-3: rate limit is 120 a minute per signed-in person (`enforceReadRateLimit`), for both methods. A server error is `503 {reason:'profile_sync_unavailable'}`.
+- 2b-4: `userSettingsMutate()` was split into `userSettingsMutateLocked()` plus a wrapper (behaviour unchanged); `test-user-settings-mutate.php` was updated to check the split. The JavaScript twin of the converters is its own pure module `js/modules/profile-web-codec.js` (so the lockstep test is built in 2b-4, not 2b-5). Writing that test found a real fault (a list `[]` accepted for an object setting, and the reverse), now fixed.
+- 2b-5: the writes to chord style, recent songbooks and the "most viewed" period call `syncStorage` in this commit (planned for 2b-6), because the widened guard in `test-settings-sync-cookie.js` now covers them. That guard now follows names and properties, not only literal keys (it found the chord-style write the old pattern could not see).
+- 2b-6 search history: the "Keep my recent searches in my account" row is hidden until the page can say the new sync is active (the settings page is a shared cached page, so it cannot decide per site).
+
+Follow-ups recorded from this work (NOT done):
+- The profile outbox and cursor are not yet cleared at sign-out (that is 2c-3). The outbox can hold recent searches if the person switched that option on.
+- `history.searches` is only ever sent while the option is on, but the SERVER does not check that option; a different client could send searches regardless.
+- Old production code with a stale settings box can still overwrite a newer value until the new code is promoted (as the plan said).
+- The bridge copies a delete as the empty text on the old shelf; an old app reads that as "reset to default".
+
 ## 0. What the code changed about the old plan
 
 1. **G3 is already done.** `accountErase()` already blanks the person's audit rows, so G3 is dropped.
