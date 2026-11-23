@@ -351,6 +351,39 @@ declare(strict_types=1);
     </div>
 
     <!-- ============================================================
+         YOUR DATA (PR 2c, epic #2180)
+
+         ELI5: a button that downloads one file with everything the site
+         keeps about you. (A delete-my-account button joins it in the next
+         step.)
+
+         Empty of script on purpose (rule #30): behaviour is wired by
+         js/modules/account-data.js, imported from router.js's
+         afterPageLoad(), which finds this card by [data-account-data-card].
+         Hidden until signed in (the module reveals it). Not behind the
+         account sync switch: the file only holds the signed-in person's
+         own data.
+         ============================================================ -->
+    <div class="card card-settings mb-3 d-none" id="settings-account-data-card" data-account-data-card>
+        <div class="card-body">
+            <h2 class="h6 mb-3">
+                <i class="fa-solid fa-file-arrow-down me-2" aria-hidden="true"></i>
+                Your data
+            </h2>
+            <p class="text-muted small">
+                Download one file that holds everything we keep about your
+                account: your details, favourites, set lists, settings and
+                history. Passwords, sign-in codes and keys are never in it.
+            </p>
+            <div id="account-data-msg" class="alert d-none py-2 small"></div>
+            <button type="button" class="btn btn-outline-primary btn-sm" id="account-export-btn">
+                <i class="fa-solid fa-download me-1" aria-hidden="true"></i>
+                Download everything we hold about you
+            </button>
+        </div>
+    </div>
+
+    <!-- ============================================================
          PUSH NOTIFICATIONS (#311 server / #1671 F6 UI)
 
          ELI5: turn on notifications for this device, and choose which

@@ -1243,6 +1243,11 @@ export class Router {
             import('./devices.js')
                 .then(m => m.bootDevicesCard())
                 .catch(reportInitFailure('devices'));
+
+            /* "Your data" card (PR 2c, #2180): download everything we hold. Same rule-#30 wiring and DOM-first hook. */
+            import('./account-data.js')
+                .then(m => m.bootAccountDataCard())
+                .catch(reportInitFailure('account-data'));
         }
 
         /* Device-code pairing "Link a device" page (#1407). */

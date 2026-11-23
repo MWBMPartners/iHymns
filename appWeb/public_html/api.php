@@ -11222,6 +11222,58 @@ if ($action !== null) {
         }
 
         /* -----------------------------------------------------------------
+         * account_export - "download everything we hold about you" (PR 2c-1, epic #2180)
+         *
+         * POST ?action=account_export  ->  a JSON file (attachment) holding the signed-in
+         * person's own account details and every table that links to them.
+         * Not behind the account-sync switch (owner decision): it only reads the person's
+         * own data. Replies:
+         *   200 the file (Content-Disposition: attachment)
+         *   401 not signed in; 403 not a same-origin request; 405 not a POST
+         *   429 more than 5 in an hour; 503 {reason:'account_export_unavailable'} when the database cannot be read
+         * Reads never change anything, so the "pause saving" brake does not apply.
+         * All logic is in includes/account_export.php (rules #22, #48).
+         * ----------------------------------------------------------------- */
+        case 'account_export': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'account_export.php';
+            /* A POST made with a cookie must be same-origin (rule #29); a Bearer one must still carry X-Requested-With. */
+            if (!validateCsrfRequest(null)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $aeUserId = (int)$authUser['Id'];
+            /* Per signed-in person, 5 an hour; fails open (counting must never break a download). */
+            enforceReadRateLimit('account_export', 0, 0, 'uid:' . $aeUserId, ACCOUNT_EXPORT_RATE_PER_HOUR);
+            try {
+                $aeDb   = getDbMysqli();
+                $aeText = accountExportEncode(accountExportBuild($aeDb, $aeUserId));
+            } catch (\Throwable $e) {
+                error_log('[api/account_export] ' . $e->getMessage());
+                sendJson(['error' => 'Could not build your data file right now, please try again.', 'reason' => 'account_export_unavailable'], 503);
+                break;
+            }
+            logActivity('account.export', 'user', (string)$aeUserId, ['bytes' => strlen($aeText)], 'success');
+            if (!headers_sent()) {
+                header('Content-Type: application/json; charset=UTF-8');
+                header('Content-Disposition: attachment; filename="ihymns-account-export-' . gmdate('Ymd') . '.json"');
+                header('Cache-Control: no-store');
+                header('X-Content-Type-Options: nosniff');
+            }
+            echo $aeText;
+            break;
+        }
+
+        /* -----------------------------------------------------------------
          * Batch existence check for a list of SongIds (#1329).
          * Public — only reveals whether already-public song ids still exist.
          * The client uses it to PRUNE songs that have been deleted from the
