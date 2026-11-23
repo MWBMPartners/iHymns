@@ -2,6 +2,19 @@
 
 Written 2026-11-23 against `origin/alpha` 1.4.1, after PR 1 (#2182) was merged. This is a plan only. "Old plan" means `.claude/account-profile-rewrite-plan.md`.
 
+## Progress (PR 2a, branch `claude/account-pr2a`)
+
+| Step | Commit | Status |
+|---|---|---|
+| 2a-1 the switch | PENDING_2A1 | done |
+| 2a-2 "B1 never assumed" guard | PENDING_2A2 | done |
+| 2a-3 delete markers for favourites and custom tags | PENDING_2A3 | done, needs Opus review |
+| 2a-4 the web sends what it added and deleted | | not started, needs Opus review |
+| 2a-5 import goes through the stores | | not started |
+| 2a-6 count real views once | | not started |
+| 2a-7 "your most viewed" | | not started |
+| 2a-8 push registrations tied to the sign-in | | not started |
+
 ## 0. What the code changed about the old plan
 
 1. **G3 is already done.** `accountErase()` already blanks the person's audit rows, so G3 is dropped.

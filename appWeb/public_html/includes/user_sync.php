@@ -1209,3 +1209,305 @@ if (!function_exists('userSyncExpireSetlists')) {
         return $expired;
     }
 }
+
+/* ===========================================================================
+ * DELETE MARKERS FOR FAVOURITES AND CUSTOM TAGS (account/profile rewrite PR 2a, step 2a-3)
+ * ===========================================================================
+ *
+ * ELI5
+ * ----
+ * When someone removes a favourite on their phone, the website on their laptop
+ * may still hold it, and the next time the laptop syncs it would put the
+ * favourite back. A delete marker is a note on the server saying "the person
+ * removed this on purpose, at this time". While the note exists, a stale device
+ * cannot bring the item back. Adding the item again (on purpose) tears the note up.
+ * Set lists already work like this (tblUserSetlistTombstones, above); this is the
+ * same idea for favourites and custom tags, in the shared table
+ * `tblUserSyncTombstones` (one row per person, kind and item).
+ *
+ * The rules are written down ONCE here (rule #22/#35): the handlers in api.php only
+ * call these functions. Everything below is dormant until BOTH the per-site switch
+ * (includes/profile_sync_gate.php) is ticked AND the B1 migration has created the
+ * table; each function that touches the table checks userSyncItemTombstonesReady()
+ * first, and the guard tests/php/test-account-foundation-gating.php enforces it.
+ */
+
+if (!function_exists('userSyncItemTombstoneKinds')) {
+    /**
+     * The kinds of item that can carry a delete marker. VARCHAR in the table, app-validated
+     * here (rule #20): adding a kind is one entry here and no schema change.
+     *
+     * @return string[]
+     */
+    function userSyncItemTombstoneKinds(): array
+    {
+        return ['favorite', 'custom_tag'];
+    }
+}
+
+if (!function_exists('userSyncLockPerson')) {
+    /**
+     * Take the per-person row lock (the SAME lock the settings writer takes, A1).
+     *
+     * ELI5: make everyone else who is changing THIS person's data wait their turn, so
+     * two requests cannot both decide "nothing here" and then both write. Must be
+     * called inside a transaction; the lock is let go at commit or rollback.
+     *
+     * @param \mysqli $db     live connection with a transaction already open
+     * @param int     $userId the person
+     */
+    function userSyncLockPerson(\mysqli $db, int $userId): void
+    {
+        $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Id = ? FOR UPDATE');
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $stmt->get_result()->fetch_row();
+        $stmt->close();
+    }
+}
+
+if (!function_exists('userSyncItemTombstoneWrite')) {
+    /**
+     * Write a delete marker for each id, EVEN WHEN NO ROW EXISTED.
+     *
+     * ELI5: write down "the person removed these on purpose, at this time".
+     *
+     * Written even when no row exists, because the delete may be racing another
+     * device's add of the same item, and the marker is what makes the outcome the
+     * same whichever request the database sees first. A second delete of an item that
+     * already has a marker moves the time FORWARD (GREATEST), never back, so a marker
+     * can only get newer; the first reason is kept.
+     *
+     * @param \mysqli  $db        live connection
+     * @param int      $userId    the person
+     * @param string   $kind      one of userSyncItemTombstoneKinds()
+     * @param string[] $ids       the removed item ids (already cleaned by the caller)
+     * @param string   $deletedAt database clock time (userSyncNow()); comparable with `since`
+     * @param string   $reason    one of userSyncTombstoneReasons(); coerced if not
+     * @return int how many ids were processed (0 when the table is not there yet)
+     */
+    function userSyncItemTombstoneWrite(\mysqli $db, int $userId, string $kind, array $ids, string $deletedAt, string $reason = 'user'): int
+    {
+        if ($ids === [] || !in_array($kind, userSyncItemTombstoneKinds(), true) || !userSyncItemTombstonesReady($db)) {
+            return 0;
+        }
+        $reason = userSyncTombstoneReason($reason);
+        $stmt = $db->prepare(
+            'INSERT INTO tblUserSyncTombstones (UserId, Kind, ItemId, DeletedAt, Reason)
+             VALUES (?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE DeletedAt = GREATEST(DeletedAt, VALUES(DeletedAt))'
+        );
+        $itemId = '';
+        $stmt->bind_param('issss', $userId, $kind, $itemId, $deletedAt, $reason);
+        $n = 0;
+        foreach ($ids as $itemId) {
+            $stmt->execute();
+            $n++;
+        }
+        $stmt->close();
+        return $n;
+    }
+}
+
+if (!function_exists('userSyncItemTombstoneMap')) {
+    /**
+     * The person's delete markers of one kind, as id => time removed.
+     *
+     * @return array<string,string> item id => DeletedAt (empty when the table is not there yet)
+     */
+    function userSyncItemTombstoneMap(\mysqli $db, int $userId, string $kind): array
+    {
+        if (!in_array($kind, userSyncItemTombstoneKinds(), true) || !userSyncItemTombstonesReady($db)) {
+            return [];
+        }
+        $stmt = $db->prepare('SELECT ItemId, DeletedAt FROM tblUserSyncTombstones WHERE UserId = ? AND Kind = ?');
+        $stmt->bind_param('is', $userId, $kind);
+        $stmt->execute();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+        $map = [];
+        foreach ($rows as $r) {
+            $map[(string)$r['ItemId']] = (string)$r['DeletedAt'];
+        }
+        return $map;
+    }
+}
+
+if (!function_exists('userSyncItemTombstoneClear')) {
+    /**
+     * Tear up the delete markers for items the person has added back on purpose.
+     *
+     * @param string[] $ids
+     * @return int rows removed
+     */
+    function userSyncItemTombstoneClear(\mysqli $db, int $userId, string $kind, array $ids): int
+    {
+        if ($ids === [] || !in_array($kind, userSyncItemTombstoneKinds(), true) || !userSyncItemTombstonesReady($db)) {
+            return 0;
+        }
+        $stmt = $db->prepare('DELETE FROM tblUserSyncTombstones WHERE UserId = ? AND Kind = ? AND ItemId = ?');
+        $itemId = '';
+        $stmt->bind_param('iss', $userId, $kind, $itemId);
+        $removed = 0;
+        foreach ($ids as $itemId) {
+            $stmt->execute();
+            $removed += $stmt->affected_rows;
+        }
+        $stmt->close();
+        return $removed;
+    }
+}
+
+if (!function_exists('userSyncItemTombstoneList')) {
+    /**
+     * The markers to hand back to the device so it can drop its own copies.
+     *
+     * FILTERED WITH `>=`, NOT `>`, for the reason given on userSyncTombstoneList():
+     * re-sending a marker the device already applied costs nothing, but missing one
+     * strands a removed item on that device for ever.
+     *
+     * @param ?string $since the device's watermark, or null for all of them
+     * @return array<int,array{id:string,deletedAt:string,reason:string}>
+     */
+    function userSyncItemTombstoneList(\mysqli $db, int $userId, string $kind, ?string $since): array
+    {
+        if (!in_array($kind, userSyncItemTombstoneKinds(), true) || !userSyncItemTombstonesReady($db)) {
+            return [];
+        }
+        if ($since !== null) {
+            $stmt = $db->prepare(
+                'SELECT ItemId, DeletedAt, Reason FROM tblUserSyncTombstones
+                  WHERE UserId = ? AND Kind = ? AND DeletedAt >= ? ORDER BY DeletedAt ASC'
+            );
+            $stmt->bind_param('iss', $userId, $kind, $since);
+        } else {
+            $stmt = $db->prepare(
+                'SELECT ItemId, DeletedAt, Reason FROM tblUserSyncTombstones
+                  WHERE UserId = ? AND Kind = ? ORDER BY DeletedAt ASC'
+            );
+            $stmt->bind_param('is', $userId, $kind);
+        }
+        $stmt->execute();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+        return array_map(static fn(array $r): array => [
+            'id'        => (string)$r['ItemId'],
+            'deletedAt' => (string)$r['DeletedAt'],
+            'reason'    => (string)$r['Reason'],
+        ], $rows);
+    }
+}
+
+if (!function_exists('userSyncItemUpsertPlan')) {
+    /**
+     * PURE: of the items a device sent, which may be saved, which are held back by a
+     * delete marker, and which markers should be torn up?
+     *
+     * ELI5: for every item the device sent, look for a "removed on purpose" note.
+     * No note: save it. A note: only let it through if the person has clearly added
+     * it back; otherwise it is a stale copy and stays removed.
+     *
+     * For an item that has a marker:
+     *
+     *   | Request                              | Result                                          |
+     *   |--------------------------------------|-------------------------------------------------|
+     *   | the item is in `$addedIds`           | saved, marker cleared (a deliberate add)        |
+     *   | protocol 2 (the device sent `deleted`) | held back                                     |
+     *   | old style, with `since`              | held back if the marker is dated AT OR AFTER `since`; |
+     *   |                                      | otherwise saved + marker cleared (the device had already seen the removal and still sends it, so it was added again) |
+     *   | old style, no `since`                | saved, marker cleared (old Apple builds add a favourite this way; otherwise a person could never re-favourite a song) |
+     *
+     * `>=` on the `since` comparison is deliberate: a marker written in the SAME
+     * second as the device's watermark is ambiguous, and keeping the item removed is
+     * the safe mistake (a deliberate add after that second is simply sent again).
+     *
+     * @param string[]             $payloadIds ids the device sent, in order
+     * @param string[]             $addedIds   ids the device says it added on purpose (protocol 2)
+     * @param array<string,string> $tombMap    id => DeletedAt (database clock), from userSyncItemTombstoneMap()
+     * @param ?string              $since      the device's watermark ('Y-m-d H:i:s') or null
+     * @param bool                 $protocol2  true when the request carried a `deleted` key
+     * @return array{upsert:string[],skipped:string[],clear:string[]}
+     */
+    function userSyncItemUpsertPlan(array $payloadIds, array $addedIds, array $tombMap, ?string $since, bool $protocol2): array
+    {
+        /* The database compares these ids without regard to letter case (the tables use a
+           _ci collation), so the lookups here do too. The ids handed back are the
+           caller's own spelling. */
+        $fold = static fn(string $x): string => mb_strtolower($x, 'UTF-8');
+        $added = [];
+        foreach ($addedIds as $a) {
+            $added[$fold((string)$a)] = true;
+        }
+        $tombs = [];
+        foreach ($tombMap as $k => $v) {
+            $tombs[$fold((string)$k)] = (string)$v;
+        }
+        $plan = ['upsert' => [], 'skipped' => [], 'clear' => []];
+        foreach ($payloadIds as $id) {
+            $id = (string)$id;
+            $f  = $fold($id);
+            if (!isset($tombs[$f])) {
+                $plan['upsert'][] = $id;
+                continue;
+            }
+            if (isset($added[$f])) {
+                $plan['upsert'][] = $id;
+                $plan['clear'][]  = $id;
+                continue;
+            }
+            if ($protocol2) {
+                $plan['skipped'][] = $id;
+                continue;
+            }
+            if ($since !== null) {
+                if (substr($tombs[$f], 0, 19) >= $since) {
+                    $plan['skipped'][] = $id;
+                } else {
+                    $plan['upsert'][] = $id;
+                    $plan['clear'][]  = $id;
+                }
+                continue;
+            }
+            $plan['upsert'][] = $id;
+            $plan['clear'][]  = $id;
+        }
+        return $plan;
+    }
+}
+
+if (!function_exists('userSyncCleanSongIdList')) {
+    /**
+     * PURE: clean a list of song ids a device sent (`deleted` or `added`).
+     *
+     * Keeps only strings shaped like a SongId (letters, a dash, digits), de-duplicates,
+     * and stops at `$cap`. `$resolve` (optional) turns a public id into a SongId first.
+     *
+     * @param mixed         $raw     the decoded JSON value
+     * @param ?callable     $resolve function (string): string, or null
+     * @return string[]
+     */
+    function userSyncCleanSongIdList($raw, ?callable $resolve = null, int $cap = 500): array
+    {
+        if (!is_array($raw)) {
+            return [];
+        }
+        $out = [];
+        foreach ($raw as $candidate) {
+            if (!is_string($candidate)) {
+                continue;
+            }
+            $sid = trim($candidate);
+            if ($resolve !== null) {
+                $sid = (string)$resolve($sid);
+            }
+            if (!preg_match('/^[A-Za-z]+-\d+$/', $sid) || strlen($sid) > 20) {
+                continue;
+            }
+            $out[$sid] = true;
+            if (count($out) >= $cap) {
+                break;
+            }
+        }
+        return array_keys($out);
+    }
+}

@@ -3848,6 +3848,34 @@ paths:
         The payload accepts BOTH the legacy bare-id array and the tagged
         `{id, tags}` object form. A bare id leaves any existing server tags
         intact; a `{id, tags}` entry sets them. Maximum 500 favorites.
+
+        ### Removed favourites stay removed (account/profile rewrite, PR 2a)
+        Only on a site where an admin has switched **New account behaviour** on
+        (and only once the foundation migration has been run). Anywhere else the
+        request and reply are exactly as above, with no extra reply fields.
+
+        Send `deleted` (possibly `[]`) to say "these are the favourites the
+        person removed on purpose" and, optionally, `added` ("these are the
+        ones the person added on purpose"). The presence of the `deleted` key
+        is the protocol marker ("protocol 2"):
+          * ids in `deleted` are removed and a **delete marker** is written for
+            each (even when no row existed);
+          * a favourite that has a marker is NOT saved again, even when sent in
+            `favorites`, unless it is also in `added`;
+          * favourites merely absent from `favorites` are left alone;
+          * saving a favourite on purpose (in `added`) tears up its marker.
+
+        A request without `deleted` (the Apple apps today) keeps the old
+        rules, plus: a favourite with a marker is held back when `since` is
+        given and the marker is dated at or after `since`; with no `since`, it
+        is treated as a deliberate add and saved (so an iPhone can favourite a
+        song again).
+
+        The reply then also carries `tombstones` (removals made on other
+        devices, dated at or after `since`, for the client to drop locally) and
+        `protocol` (`2` when `deleted`/`added` were honoured, otherwise `1`: a
+        client clears the ids it sent only on `2`). The read-only reply on a
+        paused site carries `tombstones` too.
       security:
         - bearerAuth: []
       parameters:
@@ -3883,6 +3911,23 @@ paths:
                         pattern: "^[A-Za-z]+-\\d+$"
                       - $ref: "#/components/schemas/FavoriteEntry"
                   example: [{ "id": "CP-0202", "tags": ["Easter"] }, "MP-0042"]
+                since:
+                  type: string
+                  description: >
+                    The `syncedAt` the previous reply gave (`YYYY-MM-DD HH:MM:SS`).
+                    Guards `replace` deletions and delete markers (see above).
+                deleted:
+                  type: array
+                  maxItems: 500
+                  description: >
+                    Favourites the person removed on purpose (protocol 2). The key
+                    being present, even as `[]`, is what switches the rules.
+                  items: { type: string, pattern: "^[A-Za-z]+-\\d+$" }
+                added:
+                  type: array
+                  maxItems: 500
+                  description: Favourites the person added on purpose (clears their delete markers).
+                  items: { type: string, pattern: "^[A-Za-z]+-\\d+$" }
       responses:
         "409":
           $ref: "#/components/responses/AccountWritesOff"
@@ -3897,6 +3942,20 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/FavoriteEntry"
+                  syncedAt:
+                    type: string
+                    nullable: true
+                  truncated: { type: boolean }
+                  cap: { type: integer }
+                  readOnly: { type: boolean }
+                  tombstones:
+                    type: array
+                    description: Only on a site with the new account behaviour switched on.
+                    items: { $ref: "#/components/schemas/ItemTombstone" }
+                  protocol:
+                    type: integer
+                    enum: [1, 2]
+                    description: Only on a site with the new account behaviour switched on. `2` = `deleted`/`added` were honoured.
         "400":
           description: Invalid request body
           content:
@@ -3915,7 +3974,14 @@ paths:
       operationId: removeFavorite
       tags: [Favorites]
       summary: Remove a favorite
-      description: Remove a single song from the authenticated user's favorites.
+      description: |
+        Remove a single song from the authenticated user's favorites.
+
+        On a site where an admin has switched **New account behaviour** on (and
+        once the foundation migration has been run) the removal also writes a
+        **delete marker**, under the person's row lock, so a device holding an
+        older copy cannot bring the favourite back through `favorites_sync`.
+        The reply is unchanged.
       security:
         - bearerAuth: []
       parameters:
@@ -4018,6 +4084,12 @@ paths:
         Reconcile the local custom-tag pool with the server (WS-G #1019).
         `mode=replace` (default for edits) deletes tags absent from the
         payload; `mode=merge` (first-login backfill) only adds. Max 200 tags.
+
+        ### Removed tags stay removed (account/profile rewrite, PR 2a)
+        Same rules as `favorites_sync`, for the `custom_tag` kind: on a site with
+        **New account behaviour** switched on, `deleted` / `added` lists, delete
+        markers, and `tombstones` + `protocol` in the reply. Anywhere else the
+        request and reply are exactly as above. (No client sends these for tags yet.)
       security:
         - bearerAuth: []
       parameters:
@@ -4044,6 +4116,19 @@ paths:
                   maxItems: 200
                   items: { type: string, maxLength: 50 }
                   example: ["Easter", "Quiet Time"]
+                since:
+                  type: string
+                  description: The `syncedAt` the previous reply gave (`YYYY-MM-DD HH:MM:SS`).
+                deleted:
+                  type: array
+                  maxItems: 200
+                  description: Tags the person removed on purpose (protocol 2). The key being present, even as `[]`, switches the rules.
+                  items: { type: string, maxLength: 50 }
+                added:
+                  type: array
+                  maxItems: 200
+                  description: Tags the person added on purpose (clears their delete markers).
+                  items: { type: string, maxLength: 50 }
       responses:
         "409":
           $ref: "#/components/responses/AccountWritesOff"
@@ -4057,6 +4142,19 @@ paths:
                   tags:
                     type: array
                     items: { type: string }
+                  syncedAt:
+                    type: string
+                    nullable: true
+                  truncated: { type: boolean }
+                  cap: { type: integer }
+                  readOnly: { type: boolean }
+                  tombstones:
+                    type: array
+                    description: Only on a site with the new account behaviour switched on.
+                    items: { $ref: "#/components/schemas/ItemTombstone" }
+                  protocol:
+                    type: integer
+                    enum: [1, 2]
         "400":
           description: Invalid request body
           content:
@@ -26442,6 +26540,24 @@ components:
             type: string
             maxLength: 50
           example: ["Easter", "Communion"]
+
+    ItemTombstone:
+      type: object
+      description: >
+        A delete marker: something the person removed on purpose on some device
+        (account/profile rewrite, PR 2a). The client drops its own copy.
+      required: [id, deletedAt, reason]
+      properties:
+        id:
+          type: string
+          description: The removed item (a SongId for a favourite, the tag text for a custom tag)
+          example: CP-0202
+        deletedAt:
+          type: string
+          description: Database-clock time of the removal (`YYYY-MM-DD HH:MM:SS`)
+        reason:
+          type: string
+          enum: [user, expired, admin]
 
     # -------------------------------------------------------------------------
     # Song markup models (#1266 Phase 1 — dormant, no client caller yet)

@@ -1072,5 +1072,199 @@ _usgAssert(
     'the whole conflict branch is gated on $since !== null (a native, no watermark, skips it entirely)'
 );
 
+/* ====================================================================== *
+ * PR 2a step 2a-3 - delete markers for favourites and custom tags
+ * (account/profile rewrite, epic #2180)
+ * ====================================================================== */
+
+echo "\n-- 2a-3: the plan for which sent items may be saved (PURE) --\n";
+
+$T = ['CP-0001' => '2026-11-20 10:00:00'];   /* a marker: CP-0001 was removed at 10:00:00 */
+$planOf = static fn(array $payload, array $added, array $tomb, ?string $since, bool $p2): array
+    => userSyncItemUpsertPlan($payload, $added, $tomb, $since, $p2);
+
+$r = $planOf(['CP-0002', 'CP-0003'], [], [], null, true);
+_usgAssert($r['upsert'] === ['CP-0002', 'CP-0003'] && $r['skipped'] === [] && $r['clear'] === [], 'no markers: every sent item is saved, in order');
+$r = $planOf(['CP-0001', 'CP-0002'], [], $T, null, true);
+_usgAssert($r['upsert'] === ['CP-0002'] && $r['skipped'] === ['CP-0001'] && $r['clear'] === [], 'protocol 2: a marked item is held back');
+$r = $planOf(['CP-0001'], ['CP-0001'], $T, null, true);
+_usgAssert($r['upsert'] === ['CP-0001'] && $r['clear'] === ['CP-0001'] && $r['skipped'] === [], 'protocol 2: a marked item in `added` is saved and its marker cleared');
+$r = $planOf(['CP-0001'], [], $T, '2026-11-20 09:59:59', false);
+_usgAssert($r['skipped'] === ['CP-0001'] && $r['upsert'] === [], 'old style, since BEFORE the marker: held back (the device has not seen the removal)');
+$r = $planOf(['CP-0001'], [], $T, '2026-11-20 10:00:00', false);
+_usgAssert($r['skipped'] === ['CP-0001'], 'old style, since EQUAL to the marker: held back (the boundary is >=, the safe side)');
+$r = $planOf(['CP-0001'], [], $T, '2026-11-20 10:00:01', false);
+_usgAssert($r['upsert'] === ['CP-0001'] && $r['clear'] === ['CP-0001'], 'old style, since AFTER the marker: the device saw the removal and still sends it, so it was added again: saved, marker cleared');
+$r = $planOf(['CP-0001'], [], $T, null, false);
+_usgAssert($r['upsert'] === ['CP-0001'] && $r['clear'] === ['CP-0001'], 'old style, no since (an old Apple build): a deliberate add, saved, marker cleared');
+$r = $planOf(['cp-0001'], [], $T, null, true);
+_usgAssert($r['skipped'] === ['cp-0001'], 'a marker matches whatever the letter case (the database compares without case)');
+$r = $planOf(['CP-0001'], ['cp-0001'], $T, null, true);
+_usgAssert($r['upsert'] === ['CP-0001'] && $r['clear'] === ['CP-0001'], '...and so does `added`');
+$r = $planOf([], ['CP-0001'], $T, null, true);
+_usgAssert($r['upsert'] === [] && $r['clear'] === [], 'an `added` id that was not sent changes nothing');
+
+echo "\n-- 2a-3: two devices (PURE walk-through) --\n";
+/* Device A removes CP-0001 at 10:00:00 (marker). Device B last synced at 09:00:00 and still holds it. */
+$tomb = ['CP-0001' => '2026-11-20 10:00:00'];
+$bOld = userSyncItemUpsertPlan(['CP-0001', 'CP-0005'], [], $tomb, '2026-11-20 09:00:00', false);
+_usgAssert(!in_array('CP-0001', $bOld['upsert'], true) && in_array('CP-0005', $bOld['upsert'], true),
+    'device A removes, device B sends an older merge: the song stays removed, B\'s other song is saved');
+$bNew = userSyncItemUpsertPlan(['CP-0001'], [], $tomb, '2026-11-20 09:00:00', true);
+_usgAssert($bNew['upsert'] === [], 'the same with the new protocol');
+
+echo "\n-- 2a-3: cleaning a list of song ids --\n";
+_usgAssert(userSyncCleanSongIdList(['CP-0001', ' MP-2 ', 'bad id', 'CP-0001', 5, null, '../x']) === ['CP-0001', 'MP-2'], 'keeps song-id-shaped strings, trims, de-duplicates, drops the rest');
+_usgAssert(userSyncCleanSongIdList('nope') === [] && userSyncCleanSongIdList(null) === [], 'a non-list is an empty list');
+_usgAssert(count(userSyncCleanSongIdList(array_map(fn($i) => 'CP-' . $i, range(1, 800)))) === 500, 'stops at the cap');
+_usgAssert(userSyncCleanSongIdList(['x1-9'], static fn($s) => 'CP-9') === ['CP-9'], 'a resolver can turn a public id into a song id first');
+_usgAssert(userSyncItemTombstoneKinds() === ['favorite', 'custom_tag'], 'the kinds are exactly favourite and custom tag');
+
+echo "\n-- 2a-3: how the three handlers use it (comment-stripped source) --\n";
+foreach (['favorites_sync' => 'favorite', 'custom_tags_sync' => 'custom_tag'] as $case => $kind) {
+    $code = _usgStripComments((string)_usgCaseBody($apiSrc, $case));
+    $pos = static fn(string $needle): int|false => strpos($code, $needle);
+    _usgAssert(str_contains($code, 'profileSyncEnabledHere()'), "{$case}: the new rules sit behind the per-site switch");
+    _usgAssert((bool)preg_match('/\$markersReady\s*=\s*\$psOn\s*&&\s*userSyncItemTombstonesReady\(\$db\)/', $code), "{$case}: markers need the switch AND the table");
+    _usgAssert((bool)preg_match('/\$protocol2\s*=\s*\$psOn\s*&&\s*userSyncExplicitProtocol\(\$body\)/', $code), "{$case}: protocol 2 needs the switch AND a `deleted` key");
+    $order = ['begin_transaction()', 'userSyncLockPerson(', "userSyncItemTombstoneWrite(\$db, \$userId, '{$kind}'", "userSyncItemTombstoneClear(\$db, \$userId, '{$kind}'", "userSyncItemTombstoneMap(\$db, \$userId, '{$kind}')", 'userSyncItemUpsertPlan(', '->commit()'];
+    $last = -1; $inOrder = true; $missing = [];
+    foreach ($order as $needle) {
+        $at = $pos($needle);
+        if ($at === false) { $inOrder = false; $missing[] = $needle; continue; }
+        if ($at < $last) { $inOrder = false; $missing[] = 'out of order: ' . $needle; }
+        $last = $at;
+    }
+    _usgAssert($inOrder, "{$case}: begin, lock, delete markers, clear markers, read markers, plan, commit - in that order" . ($missing ? ' (' . implode('; ', $missing) . ')' : ''));
+    _usgAssert(str_contains($code, 'rollback()'), "{$case}: a failure rolls the transaction back");
+    _usgAssert((bool)preg_match("/\['tombstones'\]\s*=/", $code) && (bool)preg_match("/\['protocol'\]\s*=/", $code), "{$case}: the reply carries tombstones and protocol");
+    _usgAssert(substr_count($code, "userSyncItemTombstoneList(\$db, \$userId, '{$kind}'") >= 2, "{$case}: the read-only reply on a paused site returns the markers too");
+    _usgAssert((bool)preg_match('/userSyncDeletableIds\([\s\S]{0,400}?\$protocol2,/', $code), "{$case}: a protocol-2 request retires absence deletes");
+    $clearVar = $case === 'favorites_sync' ? "\$plan['clear']" : "\$tagPlan['clear']";
+    _usgAssert(str_contains($code, $clearVar) && (bool)preg_match("/userSyncItemTombstoneClear\(\\\$db, \\\$userId, '{$kind}', " . preg_quote($clearVar, '/') . "\)/", $code), "{$case}: a deliberate add clears its marker");
+}
+$favCode = _usgStripComments((string)_usgCaseBody($apiSrc, 'favorites_sync'));
+_usgAssert((bool)preg_match('/songRelocateIsTransactionFatal\(\$_e\)/', $favCode), 'favorites_sync: an error that ends the transaction is passed up, not skipped as an "orphan song"');
+_usgAssert(str_contains($favCode, 'foreach ($plan[\'upsert\'] as $sid)'), 'favorites_sync: only the plan\'s ids are saved');
+$rmCode = _usgStripComments((string)_usgCaseBody($apiSrc, 'favorites_remove'));
+$rmOrder = ['begin_transaction()', 'userSyncLockPerson(', 'DELETE FROM tblUserFavorites', "userSyncItemTombstoneWrite(\$db, \$authUserId, 'favorite'", '->commit()'];
+$last = -1; $ok = true;
+foreach ($rmOrder as $needle) { $at = strpos($rmCode, $needle); if ($at === false || $at < $last) { $ok = false; } else { $last = $at; } }
+_usgAssert($ok, 'favorites_remove: lock, delete the row, write the marker, commit - in that order');
+_usgAssert((bool)preg_match('/\$markersReady\s*=\s*profileSyncEnabledHere\(\)\s*&&\s*userSyncItemTombstonesReady\(\$db\)/', $rmCode), 'favorites_remove: the marker needs the switch AND the table');
+_usgAssert(str_contains($rmCode, 'else {') && substr_count($rmCode, 'DELETE FROM tblUserFavorites') === 2, 'favorites_remove: with the switch off the plain delete runs exactly as before');
+
+/* ----- the database half: runs only with a database (IHYMNS_TEST_DSN); never a silent pass ----- */
+echo "\n-- 2a-3: real database, two connections --\n";
+$dsn = getenv('IHYMNS_TEST_DSN') ?: '';
+$h = '127.0.0.1'; $pt = 3306; $us = 'root'; $pw = '';
+foreach (explode(';', $dsn) as $kv) {
+    [$k, $v] = array_pad(explode('=', $kv, 2), 2, '');
+    if ($k === 'host') { $h = $v; } if ($k === 'port') { $pt = (int)$v; } if ($k === 'user') { $us = $v; } if ($k === 'pass') { $pw = $v; }
+}
+$dbA = null;
+if ($dsn !== '') {
+    try {
+        mysqli_report(MYSQLI_REPORT_OFF);
+        $dbA = @new mysqli($h, $us, $pw, '', $pt);
+        if ($dbA->connect_errno) { $dbA = null; }
+    } catch (\Throwable $_e) { $dbA = null; }
+}
+if ($dbA === null) {
+    echo "SKIP: no database - the two-connection checks did NOT run. Set IHYMNS_TEST_DSN; this is a gap, not a pass.\n";
+} else {
+    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+    $dbName = 'ihymns_t2a3_markers';
+    $dbA->query("DROP DATABASE IF EXISTS `{$dbName}`");
+    $dbA->query("CREATE DATABASE `{$dbName}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+    $dbA->select_db($dbName);
+    try {
+        $dbA->query('CREATE TABLE tblUsers (Id INT UNSIGNED NOT NULL PRIMARY KEY) ENGINE=InnoDB');
+        $dbA->query('INSERT INTO tblUsers (Id) VALUES (1), (2)');
+        $dbA->query('CREATE TABLE tblUserFavorites (UserId INT UNSIGNED NOT NULL, SongId VARCHAR(20) NOT NULL, Tags JSON NULL, CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (UserId, SongId)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci');
+
+        /* Before the marker table exists: every marker call is a quiet no-op (a fresh process, so the answer is not remembered from earlier). */
+        $notReady = shell_exec(escapeshellarg(PHP_BINARY) . ' -r ' . escapeshellarg(
+            'require ' . var_export(dirname(__DIR__, 2) . '/appWeb/public_html/includes/user_sync.php', true) . ';'
+            . 'mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);'
+            . '$d = new mysqli(' . var_export($h, true) . ',' . var_export($us, true) . ',' . var_export($pw, true) . ',' . var_export($dbName, true) . ',' . (int)$pt . ');'
+            . 'echo json_encode([userSyncItemTombstonesReady($d), userSyncItemTombstoneWrite($d, 1, "favorite", ["CP-1"], "2026-11-20 10:00:00"), userSyncItemTombstoneMap($d, 1, "favorite"), userSyncItemTombstoneClear($d, 1, "favorite", ["CP-1"]), userSyncItemTombstoneList($d, 1, "favorite", null)]);'
+        ));
+        _usgAssert($notReady === '[false,0,[],0,[]]', 'before the B1 table exists every marker call quietly does nothing (no exception): ' . var_export($notReady, true));
+
+        /* The real table, copied out of schema.sql (so the test cannot drift from the schema). */
+        $schema = (string)file_get_contents(dirname(__DIR__, 2) . '/appWeb/.sql/schema.sql');
+        _usgAssert((bool)preg_match('/CREATE TABLE IF NOT EXISTS tblUserSyncTombstones \(.*?\) ENGINE=InnoDB[^;]*;/s', $schema, $mm), 'the marker table is found in schema.sql');
+        $dbA->query($mm[0]);
+        $dbB = new mysqli($h, $us, $pw, $dbName, $pt);
+        $dbB->set_charset('utf8mb4');
+        $dbA->set_charset('utf8mb4');
+
+        _usgAssert(userSyncItemTombstonesReady($dbA) === true, 'with the table there, the ready-check says yes');
+        _usgAssert(userSyncItemTombstoneWrite($dbA, 1, 'favorite', ['CP-0001'], '2026-11-20 10:00:00', 'user') === 1, 'a marker is written (even though no favourite row exists)');
+        userSyncItemTombstoneWrite($dbA, 1, 'favorite', ['CP-0001'], '2026-11-20 09:00:00', 'admin');
+        _usgAssert(userSyncItemTombstoneMap($dbA, 1, 'favorite') === ['CP-0001' => '2026-11-20 10:00:00'], 'a second, older delete never moves the marker back');
+        userSyncItemTombstoneWrite($dbA, 1, 'favorite', ['CP-0001'], '2026-11-20 11:00:00', 'user');
+        _usgAssert(userSyncItemTombstoneMap($dbA, 1, 'favorite') === ['CP-0001' => '2026-11-20 11:00:00'], 'a later delete moves it forward');
+        $reasonRow = $dbA->query("SELECT Reason FROM tblUserSyncTombstones WHERE UserId = 1")->fetch_row()[0];
+        _usgAssert($reasonRow === 'user', 'the first reason is kept');
+        _usgAssert(userSyncItemTombstoneMap($dbA, 1, 'custom_tag') === [] && userSyncItemTombstoneMap($dbA, 2, 'favorite') === [], 'markers are per kind and per person');
+        _usgAssert(userSyncItemTombstoneWrite($dbA, 1, 'bogus', ['x'], '2026-11-20 11:00:00') === 0, 'an unknown kind is refused');
+
+        $ids = array_column(userSyncItemTombstoneList($dbA, 1, 'favorite', '2026-11-20 11:00:00'), 'id');
+        _usgAssert($ids === ['CP-0001'], 'the list includes a marker dated EXACTLY at the watermark (>=)');
+        $ids = array_column(userSyncItemTombstoneList($dbA, 1, 'favorite', '2026-11-20 11:00:01'), 'id');
+        _usgAssert($ids === [], '...and not one dated before it');
+        _usgAssert(count(userSyncItemTombstoneList($dbA, 1, 'favorite', null)) === 1, 'no watermark lists them all');
+        _usgAssert(userSyncItemTombstoneClear($dbA, 1, 'favorite', ['cp-0001']) === 1, 'clearing matches whatever the letter case');
+        _usgAssert(userSyncItemTombstoneMap($dbA, 1, 'favorite') === [], 'and the marker is gone');
+
+        /* Device A removes CP-0001, device B (older view) merges: the song stays removed. */
+        $dbA->query("INSERT INTO tblUserFavorites (UserId, SongId) VALUES (1, 'CP-0001'), (1, 'CP-0005')");
+        $dbA->begin_transaction();
+        userSyncLockPerson($dbA, 1);
+        $dbA->query("DELETE FROM tblUserFavorites WHERE UserId = 1 AND SongId = 'CP-0001'");
+        userSyncItemTombstoneWrite($dbA, 1, 'favorite', ['CP-0001'], '2026-11-20 12:00:00');
+        $dbA->commit();
+        $dbB->begin_transaction();
+        userSyncLockPerson($dbB, 1);
+        $plan = userSyncItemUpsertPlan(['CP-0001', 'CP-0005'], [], userSyncItemTombstoneMap($dbB, 1, 'favorite'), '2026-11-20 11:00:00', false);
+        _usgAssert($plan['upsert'] === ['CP-0005'] && $plan['skipped'] === ['CP-0001'], 'device B, working from the real markers, is told to skip the removed song');
+        $dbB->commit();
+        $rowAndMarker = (int)$dbA->query("SELECT COUNT(*) FROM tblUserFavorites f JOIN tblUserSyncTombstones t ON t.UserId = f.UserId AND t.ItemId = f.SongId AND t.Kind = 'favorite'")->fetch_row()[0];
+        _usgAssert($rowAndMarker === 0, 'a row and its marker never exist together after the removal');
+
+        /* The lock really excludes: B waits for A. */
+        $dbB->query('SET SESSION innodb_lock_wait_timeout = 1');
+        $dbA->begin_transaction();
+        userSyncLockPerson($dbA, 1);
+        $dbB->begin_transaction();
+        $blocked = false;
+        try { userSyncLockPerson($dbB, 1); } catch (\mysqli_sql_exception $_e) { $blocked = in_array($_e->getCode(), [1205, 1213], true); }
+        _usgAssert($blocked, 'while one request holds the person\'s row lock, a second request for the same person has to wait (and times out here instead of racing)');
+        try { $dbB->rollback(); } catch (\Throwable $_e) {}
+        $other = true;
+        $dbB->begin_transaction();
+        try { userSyncLockPerson($dbB, 2); } catch (\Throwable $_e) { $other = false; }
+        _usgAssert($other, 'a request for a DIFFERENT person is not held up');
+        $dbB->rollback();
+        $dbA->commit();
+        $dbB->begin_transaction();
+        $freed = true;
+        try { userSyncLockPerson($dbB, 1); } catch (\Throwable $_e) { $freed = false; }
+        _usgAssert($freed, 'once the first request commits, the lock is free');
+        $dbB->commit();
+
+        /* A deliberate add tears up the marker, so row and marker are exclusive the other way too. */
+        userSyncItemTombstoneWrite($dbA, 1, 'custom_tag', ['Easter'], '2026-11-20 12:00:00');
+        $p = userSyncItemUpsertPlan(['easter'], ['Easter'], userSyncItemTombstoneMap($dbA, 1, 'custom_tag'), null, true);
+        userSyncItemTombstoneClear($dbA, 1, 'custom_tag', $p['clear']);
+        _usgAssert($p['upsert'] === ['easter'] && userSyncItemTombstoneMap($dbA, 1, 'custom_tag') === [], 'a custom tag added back on purpose is saved and its marker torn up (letter case ignored)');
+    } finally {
+        mysqli_report(MYSQLI_REPORT_OFF);
+        $dbA->query("DROP DATABASE IF EXISTS `{$dbName}`");
+    }
+}
+
 echo "\n$passed passed, $failures failed.\n";
 exit($failures > 0 ? 1 : 0);

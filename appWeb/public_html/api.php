@@ -255,6 +255,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    over-cap user silently lost the tail of their collection. One helper, three
    call sites — never a per-handler copy of the decision. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_sync.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_sync_gate.php'; /* PR 2a: the per-site switch for the new account behaviour (off by default) */
 /* #1671 F5 — the ONE namespaced user-preference store. `user_settings` used to
    be a whole-blob replace, which cannot survive a second product sharing this
    database: whichever client saved last wiped the other's keys. The pure merge
@@ -6822,6 +6823,22 @@ if ($action !== null) {
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
+            /* PR 2a (epic #2180): the NEW rules - delete markers, `deleted` / `added` lists - apply
+               only when this site's switch is ticked (includes/profile_sync_gate.php). Off (the
+               default) means this handler behaves exactly as it did before. The markers also need
+               the B1 table: checked here, remembered for the request, and every marker call below
+               re-checks it. */
+            $psOn         = profileSyncEnabledHere();
+            $markersReady = $psOn && userSyncItemTombstonesReady($db);
+            /* A request that carries a `deleted` key (even `[]`) is "protocol 2": it names what the
+               person removed, so absence no longer means "deleted". */
+            $protocol2 = $psOn && userSyncExplicitProtocol($body);
+            $resolveSid = static function (string $s) use ($db): string {
+                return songPublicId_looksLikePublicId($s) ? (string)songPublicId_resolveToSongId($db, $s) : $s;
+            };
+            $deletedIds = $protocol2 ? userSyncCleanSongIdList($body['deleted'] ?? null, $resolveSid) : [];
+            $addedIds   = $protocol2 ? userSyncCleanSongIdList($body['added'] ?? null, $resolveSid) : [];
+
             /* READ-ONLY merge on a paused site: return the stored favourites and change
                NOTHING (no inserts, no deletes, no `syncedAt`, so the device does not
                arm its deleting syncs). */
@@ -6833,7 +6850,7 @@ if ($action !== null) {
                 $stmt->execute();
                 $roRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
                 $stmt->close();
-                sendJson([
+                $roReply = [
                     'favorites' => array_map(static function ($row) {
                         $t = $row['Tags'] !== null ? json_decode($row['Tags'], true) : [];
                         return ['id' => $row['SongId'], 'tags' => is_array($t) ? array_values($t) : []];
@@ -6842,7 +6859,13 @@ if ($action !== null) {
                     'truncated' => false,
                     'cap'       => 500,
                     'readOnly'  => true,
-                ]);
+                ];
+                if ($psOn) {
+                    /* A paused site still tells a device what was removed elsewhere (read only). */
+                    $roReply['tombstones'] = userSyncItemTombstoneList($db, $userId, 'favorite', $since);
+                    $roReply['protocol']   = 1;
+                }
+                sendJson($roReply);
                 break;
             }
 
@@ -6886,6 +6909,42 @@ if ($action !== null) {
                 $localFavs[$sid] = $tags;
             }
 
+            /* PR 2a: with the markers table ready, everything from here to the commit is ONE
+               transaction under the person's row lock (the same lock the settings writer takes), so
+               a row and its delete marker can never exist together and two requests for one person
+               cannot interleave. Order inside it (plan 2a-3): explicit deletes, explicit adds,
+               read the markers, the old reads/absence deletes, upsert. */
+            if ($markersReady) {
+                $db->begin_transaction();
+                userSyncLockPerson($db, $userId);
+            }
+            try {
+
+            /* Explicit deletes (protocol 2). The marker is written EVEN WHEN NO ROW EXISTS (the delete
+               may be racing another device's add), then the row is removed. Before the B1 table
+               exists no marker is written but the row is still removed. */
+            $deleted = 0;
+            if ($deletedIds !== []) {
+                if ($markersReady) {
+                    userSyncItemTombstoneWrite($db, $userId, 'favorite', $deletedIds, userSyncNow($db), 'user');
+                }
+                $del = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
+                $delId = '';
+                $del->bind_param('is', $userId, $delId);
+                foreach ($deletedIds as $delId) {
+                    $del->execute();
+                    $deleted += $del->affected_rows;
+                }
+                $del->close();
+            }
+            /* Explicit adds: the person added these on purpose, so tear up their markers. Only ids that
+               are also in the payload (so a marker is never cleared without the row being saved). */
+            if ($markersReady && $addedIds !== []) {
+                userSyncItemTombstoneClear($db, $userId, 'favorite', array_values(array_intersect($addedIds, array_keys($localFavs))));
+            }
+            /* Read the markers AFTER the two steps above, so they already reflect them. */
+            $tombMap = $markersReady ? userSyncItemTombstoneMap($db, $userId, 'favorite') : [];
+
             /* Existing server favourites — id + tags (for the replace diff and
                the MERGE-mode tag union below). CreatedAt joins the SELECT for
                #1649's watermark guard: tblUserFavorites has no UpdatedAt, so
@@ -6920,10 +6979,9 @@ if ($action !== null) {
                 $syncMode,
                 $truncated,
                 $since,
-                false,
+                $protocol2, /* a protocol-2 request names its deletions, so absence deletes nothing */
                 userSyncAbsenceDeleteRequiresSince() /* A8 */
             );
-            $deleted = 0;
             if (count($deletableIds) > 0) {
                 $del = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
                 $delId = '';
@@ -6933,6 +6991,17 @@ if ($action !== null) {
                     $deleted += $del->affected_rows;
                 }
                 $del->close();
+                /* An absence delete is a deletion too: leave a marker so a stale device cannot bring it back. */
+                if ($markersReady) {
+                    userSyncItemTombstoneWrite($db, $userId, 'favorite', $deletableIds, userSyncNow($db), 'user');
+                }
+            }
+
+            /* Which sent favourites may be saved? Those with no delete marker, plus deliberate adds
+               (see userSyncItemUpsertPlan()). With no markers the plan simply saves every one. */
+            $plan = userSyncItemUpsertPlan(array_map('strval', array_keys($localFavs)), $addedIds, $tombMap, $since, $protocol2);
+            if ($markersReady && $plan['clear'] !== []) {
+                userSyncItemTombstoneClear($db, $userId, 'favorite', $plan['clear']);
             }
 
             /* Upsert each payload favourite. Tags are only overwritten when
@@ -6948,7 +7017,8 @@ if ($action !== null) {
             $tagsBound = null;
             $upsert->bind_param('iss', $userId, $songIdBound, $tagsBound);
             $newlyAdded = 0;
-            foreach ($localFavs as $sid => $tags) {
+            foreach ($plan['upsert'] as $sid) {
+                $tags = $localFavs[$sid];
                 $songIdBound = $sid;
                 if ($syncMode === 'merge') {
                     /* MERGE = first-login reconcile: UNION the incoming tags
@@ -6977,6 +7047,9 @@ if ($action !== null) {
                     $upsert->execute();
                     if ($upsert->affected_rows === 1) $newlyAdded++; /* 1=insert, 2=update, 0=no change */
                 } catch (\Throwable $_e) {
+                    /* An error that ENDS the transaction must go up, never be skipped (PR 2a: this
+                       loop can now run inside one). */
+                    if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
                     /* Orphan song id / transient error — skip, keep the batch. */
                 }
             }
@@ -7001,6 +7074,20 @@ if ($action !== null) {
                 return ['id' => $row['SongId'], 'tags' => is_array($t) ? array_values($t) : []];
             }, $finalRows);
 
+            /* The markers to hand back (so the device drops what was removed elsewhere), read inside
+               the same transaction. */
+            $replyTombstones = $markersReady ? userSyncItemTombstoneList($db, $userId, 'favorite', $since) : [];
+
+            if ($markersReady) {
+                $db->commit();
+            }
+            } catch (\Throwable $_syncErr) {
+                if ($markersReady) {
+                    try { $db->rollback(); } catch (\Throwable $_r) { /* already gone */ }
+                }
+                throw $_syncErr;
+            }
+
             /* Audit (#535) — one row per sync, since the sync is the
                meaningful user action. `truncated` added by #1649: an over-cap
                sync is the single most useful thing to see in the log when a
@@ -7015,13 +7102,20 @@ if ($action !== null) {
                 ]);
             }
 
-            sendJson([
+            $favReply = [
                 'favorites' => $finalFavs,
                 /* #1649 — client stores this and returns it as `since`. */
                 'syncedAt'  => $syncedAt,
                 'truncated' => $truncated,
                 'cap'       => 500,
-            ]);
+            ];
+            if ($psOn) {
+                /* PR 2a: `protocol` is 2 when this request's `deleted` / `added` lists were honoured
+                   (a client clears the ids it sent only then); `tombstones` are removals made elsewhere. */
+                $favReply['tombstones'] = $replyTombstones;
+                $favReply['protocol']   = $protocol2 ? 2 : 1;
+            }
+            sendJson($favReply);
             break;
 
         /* -----------------------------------------------------------------
@@ -7064,12 +7158,34 @@ if ($action !== null) {
             }
 
             $db = getDbMysqli();
-            $stmt = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
             $authUserId = (int)$authUser['Id'];
-            $stmt->bind_param('is', $authUserId, $removeSongId);
-            $stmt->execute();
-            $affected = $stmt->affected_rows;
-            $stmt->close();
+            /* PR 2a (epic #2180): when this site's switch is ticked AND the B1 marker table exists, a
+               removal is also written down as a delete marker, under the person's row lock, so a
+               device with an older copy cannot bring the favourite back. Otherwise exactly as before. */
+            $markersReady = profileSyncEnabledHere() && userSyncItemTombstonesReady($db);
+            if ($markersReady) {
+                $db->begin_transaction();
+                try {
+                    userSyncLockPerson($db, $authUserId);
+                    $stmt = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
+                    $stmt->bind_param('is', $authUserId, $removeSongId);
+                    $stmt->execute();
+                    $affected = $stmt->affected_rows;
+                    $stmt->close();
+                    /* Written even when no row existed (the removal may be racing another device's add). */
+                    userSyncItemTombstoneWrite($db, $authUserId, 'favorite', [$removeSongId], userSyncNow($db), 'user');
+                    $db->commit();
+                } catch (\Throwable $_rmErr) {
+                    try { $db->rollback(); } catch (\Throwable $_r) { /* already gone */ }
+                    throw $_rmErr;
+                }
+            } else {
+                $stmt = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
+                $stmt->bind_param('is', $authUserId, $removeSongId);
+                $stmt->execute();
+                $affected = $stmt->affected_rows;
+                $stmt->close();
+            }
             if ($affected > 0) {
                 logActivity('favorites.remove', 'song', $removeSongId, [], 'success', $authUserId);
             }
@@ -7156,6 +7272,26 @@ if ($action !== null) {
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
+            /* PR 2a (epic #2180): the same delete-marker rules as favorites_sync, for custom tags
+               (server side only; the web has no tag-removal screen yet). Applies only when this
+               site's switch is ticked; off means exactly the previous behaviour. */
+            $psOn         = profileSyncEnabledHere();
+            $markersReady = $psOn && userSyncItemTombstonesReady($db);
+            $protocol2    = $psOn && userSyncExplicitProtocol($body);
+            $cleanTagList = static function ($raw): array {
+                $out = [];
+                if (!is_array($raw)) { return []; }
+                foreach ($raw as $t) {
+                    if (!is_string($t)) { continue; }
+                    $t = mb_substr(trim($t), 0, 50);
+                    if ($t !== '') { $out[$t] = true; }
+                    if (count($out) >= 200) { break; }
+                }
+                return array_keys($out);
+            };
+            $deletedTags = $protocol2 ? $cleanTagList($body['deleted'] ?? null) : [];
+            $addedTags   = $protocol2 ? $cleanTagList($body['added'] ?? null) : [];
+
             /* READ-ONLY merge on a paused site: return the stored tags and change
                NOTHING (no inserts, no `syncedAt`). */
             if ($readOnly) {
@@ -7164,13 +7300,18 @@ if ($action !== null) {
                 $stmt->execute();
                 $roTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
                 $stmt->close();
-                sendJson([
+                $roTagReply = [
                     'tags'      => $roTags,
                     'syncedAt'  => null,
                     'truncated' => false,
                     'cap'       => 200,
                     'readOnly'  => true,
-                ]);
+                ];
+                if ($psOn) {
+                    $roTagReply['tombstones'] = userSyncItemTombstoneList($db, $userId, 'custom_tag', $since);
+                    $roTagReply['protocol']   = 1;
+                }
+                sendJson($roTagReply);
                 break;
             }
 
@@ -7190,12 +7331,39 @@ if ($action !== null) {
             $localTags = $capped['items'];
             $truncated = $capped['truncated'];
 
+            /* PR 2a: with the marker table ready, everything from here to the commit is ONE
+               transaction under the person's row lock (explicit deletes, explicit adds, read the
+               markers, absence deletes, insert). */
+            if ($markersReady) {
+                $db->begin_transaction();
+                userSyncLockPerson($db, $userId);
+            }
+            try {
+
+            $deleted = 0;
+            if ($deletedTags !== []) {
+                if ($markersReady) {
+                    userSyncItemTombstoneWrite($db, $userId, 'custom_tag', $deletedTags, userSyncNow($db), 'user');
+                }
+                $del = $db->prepare('DELETE FROM tblUserCustomTags WHERE UserId = ? AND Tag = ?');
+                $delTag = '';
+                $del->bind_param('is', $userId, $delTag);
+                foreach ($deletedTags as $delTag) {
+                    $del->execute();
+                    $deleted += $del->affected_rows;
+                }
+                $del->close();
+            }
+            if ($markersReady && $addedTags !== []) {
+                userSyncItemTombstoneClear($db, $userId, 'custom_tag', array_values(array_intersect($addedTags, $localTags)));
+            }
+            $tagTombMap = $markersReady ? userSyncItemTombstoneMap($db, $userId, 'custom_tag') : [];
+
             /* Replace: delete tags the client no longer has — subject to the
                shared #1649 guards (a truncated payload deletes nothing; a tag
                created after the client's `since` watermark is another device's
                and is kept). The SELECT stays inside the replace branch so merge
                mode still costs no extra query. */
-            $deleted = 0;
             if ($syncMode === 'replace') {
                 /* CreatedAt joins the SELECT for the watermark guard — it is
                    the only age signal tblUserCustomTags carries, and the DB
@@ -7216,7 +7384,7 @@ if ($action !== null) {
                     $syncMode,
                     $truncated,
                     $since,
-                    false,
+                    $protocol2, /* a protocol-2 request names its deletions, so absence deletes nothing */
                     userSyncAbsenceDeleteRequiresSince() /* A8 */
                 );
                 if (count($deletableTags) > 0) {
@@ -7228,14 +7396,24 @@ if ($action !== null) {
                         $deleted += $del->affected_rows;
                     }
                     $del->close();
+                    /* An absence delete is a deletion too: leave a marker. */
+                    if ($markersReady) {
+                        userSyncItemTombstoneWrite($db, $userId, 'custom_tag', $deletableTags, userSyncNow($db), 'user');
+                    }
                 }
+            }
+
+            /* Which sent tags may be saved? Those with no marker, plus deliberate adds. */
+            $tagPlan = userSyncItemUpsertPlan($localTags, $addedTags, $tagTombMap, $since, $protocol2);
+            if ($markersReady && $tagPlan['clear'] !== []) {
+                userSyncItemTombstoneClear($db, $userId, 'custom_tag', $tagPlan['clear']);
             }
 
             /* Insert any new tags (ignore duplicates). */
             $insert = $db->prepare('INSERT IGNORE INTO tblUserCustomTags (UserId, Tag) VALUES (?, ?)');
             $tagBound = '';
             $insert->bind_param('is', $userId, $tagBound);
-            foreach ($localTags as $t) {
+            foreach ($tagPlan['upsert'] as $t) {
                 $tagBound = $t;
                 $insert->execute();
             }
@@ -7251,6 +7429,18 @@ if ($action !== null) {
             $finalTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
             $stmt->close();
 
+            $replyTagTombstones = $markersReady ? userSyncItemTombstoneList($db, $userId, 'custom_tag', $since) : [];
+
+            if ($markersReady) {
+                $db->commit();
+            }
+            } catch (\Throwable $_tagSyncErr) {
+                if ($markersReady) {
+                    try { $db->rollback(); } catch (\Throwable $_r) { /* already gone */ }
+                }
+                throw $_tagSyncErr;
+            }
+
             /* Audit (#1649) — this handler had no logging at all, unlike
                favorites.sync. A deleting or truncated tag sync is precisely
                what a curator needs to see when a user reports lost tags. */
@@ -7263,13 +7453,18 @@ if ($action !== null) {
                 ]);
             }
 
-            sendJson([
+            $tagReply = [
                 'tags'      => $finalTags,
                 /* #1649 — client stores this and returns it as `since`. */
                 'syncedAt'  => $syncedAt,
                 'truncated' => $truncated,
                 'cap'       => 200,
-            ]);
+            ];
+            if ($psOn) {
+                $tagReply['tombstones'] = $replyTagTombstones;
+                $tagReply['protocol']   = $protocol2 ? 2 : 1;
+            }
+            sendJson($tagReply);
             break;
 
         /* =================================================================
