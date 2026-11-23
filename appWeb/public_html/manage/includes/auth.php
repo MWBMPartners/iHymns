@@ -1134,11 +1134,10 @@ function resetPassword(string $token, string $newPassword): bool
     $stmt->execute();
     $stmt->close();
 
-    /* Invalidate all API tokens for this user (force re-login) */
-    $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
-    $stmt->bind_param('i', $resetUserId);
-    $stmt->execute();
-    $stmt->close();
+    /* Invalidate all API tokens for this user (force re-login). PR 3 H4: through the ONE door, which
+       also cancels their automatic sign-in keys and Apple push registrations. */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
+    apiTokenRevokeAllForUser($db, $resetUserId, null, 'password_reset');
 
     /* Audit (#535). Note PasswordHash itself never goes into Details
        per the privacy contract in project-rules.md §10. */
@@ -1426,11 +1425,9 @@ function changeUserPassword(int $userId, string $newPassword): bool
     $stmt->execute();
     $stmt->close();
 
-    /* Invalidate all API tokens (force re-login) */
-    $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
-    $stmt->bind_param('i', $userId);
-    $stmt->execute();
-    $stmt->close();
+    /* Invalidate all API tokens (force re-login). PR 3 H4: the ONE door (also cancels automatic sign-in keys + push). */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
+    apiTokenRevokeAllForUser($db, $userId, null, 'password_change_admin');
 
     /* Session-fixation defence (#531) — if the password change applies
        to the current /manage/ session, rotate the PHP session ID
@@ -1656,10 +1653,9 @@ function setUserActive(int $userId, bool $isActive): bool
 
     /* If deactivating, invalidate all their tokens */
     if (!$isActive) {
-        $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
-        $stmt->bind_param('i', $userId);
-        $stmt->execute();
-        $stmt->close();
+        /* PR 3 H4: the ONE door (also cancels automatic sign-in keys + push). */
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
+        apiTokenRevokeAllForUser($db, $userId, null, 'deactivated');
 
         /* #1698 — end any Live Follow session this user is HOSTING. The auth
            lock already stops them broadcasting further, but a session left

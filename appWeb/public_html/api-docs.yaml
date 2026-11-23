@@ -5154,7 +5154,12 @@ paths:
       description: |
         Change the authenticated user's password. Requires the current password
         for verification. All other active tokens are invalidated after a
-        successful change (the current token remains valid).
+        successful change (the current token remains valid). From PR 3 the same
+        change also cancels every automatic sign-in key the person holds and
+        removes the Apple push registrations tied to the other sign-ins, so
+        no other device can sign itself back in. (A password reset, an admin
+        password change and switching an account off do the same, ending every
+        sign-in.)
       security:
         - bearerAuth: []
       parameters:

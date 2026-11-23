@@ -77,7 +77,14 @@ foreach ($it as $f) {
         }
     }
 }
-chk('the only whole-person Apple push delete is inside apnsDeleteForSessions()', array_keys($sites) === ['includes/apns.php#apnsDeleteForSessions'], implode('; ', array_keys($sites)));
+/* PR 3 H4: the ONE "end everything" door (apiTokenRevokeAllForUser) also removes all of a person's Apple push rows, but
+   only when it ends EVERY sign-in (nothing kept): that is not an A6 single-session sign-out, so it is the one named
+   exception, and it must sit behind `if ($keep === ...)` (kept sign-in => no whole-person delete). */
+$doorKey = 'includes/api_tokens.php#apiTokenRevokeAllForUser';
+$doorCode = $sites[$doorKey] ?? '';
+unset($sites[$doorKey]);
+chk('the end-everything door deletes all of a person\'s push rows only when no sign-in is kept', $doorCode !== '' && (bool)preg_match('/if \(\$keep === [^)]*\) \{ \$pd = \$db->prepare\(\'@STR@\' @SQL:DELETE:tblApnsTokens@ \);/', $doorCode));
+chk('the only OTHER whole-person Apple push delete is inside apnsDeleteForSessions()', array_keys($sites) === ['includes/apns.php#apnsDeleteForSessions'], implode('; ', array_keys($sites)));
 foreach ($sites as $where => $code) {
     chk("$where: that delete is the first thing inside `if (!\$perSession || !apnsTokenHashReady)` AND sits behind `if (\$sessionOwnsApplePush)`",
         (bool)preg_match('/if \(!\$perSession \|\| !apnsTokenHashReady\(\$db\)\) \{ if \(\$sessionOwnsApplePush\) \{ \$del = \$db->prepare\(\'@STR@\' @SQL:DELETE:tblApnsTokens@ \);/', $code));

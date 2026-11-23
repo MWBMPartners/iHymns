@@ -8866,10 +8866,10 @@ if ($action !== null) {
             /* Invalidate all OTHER tokens (keep the current one) */
             $currentToken = getAuthBearerToken();
             $currentTokenHash = hash('sha256', $currentToken);
-            $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token != ?');
-            $stmt->bind_param('is', $authUserId, $currentTokenHash);
-            $stmt->execute();
-            $stmt->close();
+            /* PR 3 H4: the ONE door. It keeps this sign-in, but ALWAYS cancels the automatic sign-in keys
+               (a key left alive would sign the other devices straight back in) and removes the push
+               registrations tied to the other sign-ins. */
+            apiTokenRevokeAllForUser($db, $authUserId, $currentTokenHash, 'password_change');
 
             sendJson(['ok' => true, 'message' => 'Password changed successfully.']);
             break;

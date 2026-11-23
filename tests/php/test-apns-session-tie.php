@@ -56,7 +56,9 @@ foreach ($it as $f) {
         }
     }
 }
-chk('exactly one delete-everything-for-a-person statement exists, and it is the legacy rule inside apnsDeleteForSessions()', $blanket === ['includes/apns.php#apnsDeleteForSessions'], implode('; ', $blanket));
+sort($blanket);
+chk('exactly two delete-everything-for-a-person statements exist: the legacy rule inside apnsDeleteForSessions() and the sign-out-everywhere door apiTokenRevokeAllForUser() (PR 3 H4, which ends every sign-in at once)',
+    $blanket === ['includes/api_tokens.php#apiTokenRevokeAllForUser', 'includes/apns.php#apnsDeleteForSessions'], implode('; ', $blanket));
 
 echo "the callers\n";
 $api = phpSourceUnits((string)file_get_contents($web . '/api.php'));
