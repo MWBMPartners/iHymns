@@ -93,6 +93,16 @@ chk('accepted writes land on the shelf as text; a non-bridge entry is never copi
 $w2 = profileWebShelfWithWrites(['ihymns_theme' => 'dark'], [['section' => 'appearance', 'key' => 'theme', 'json' => '"dark"', 'deleted' => false]]);
 chk('writing what is already there changes nothing', $w2['changed'] === false);
 
+$skipShelf = ['ihymns_theme' => 'dark', 'ihymns_fontSize' => '20'];
+chk('a shelf value still exactly as it was when a copy onto it was refused is stale and stands for nothing; a different value or another key still does',
+    array_column(profileWebShelfToChanges($skipShelf, ['ihymns_theme' => 'dark']), 'key') === ['fontSize']
+    && array_column(profileWebShelfToChanges(['ihymns_theme' => 'light', 'ihymns_fontSize' => '20'], ['ihymns_theme' => 'dark']), 'key') === ['theme', 'fontSize']
+    && array_column(profileWebShelfToChanges($skipShelf, ['ihymns_theme' => null]), 'key') === ['theme', 'fontSize']);
+chk('the stale list keeps an entry only while the shelf still holds that exact text',
+    profileWebShelfSkipPrune(['ihymns_theme' => 'dark'], ['ihymns_theme' => 'dark', 'ihymns_fontSize' => '20']) === ['ihymns_theme' => 'dark']
+    && profileWebShelfSkipPrune(['ihymns_theme' => 'light'], ['ihymns_theme' => 'dark']) === [] && profileWebShelfSkipPrune([], ['ihymns_theme' => null]) === ['ihymns_theme' => null]);
+chk('the copy reports which old keys it changed', profileWebShelfWithWrites(['ihymns_theme' => 'light'], [['section' => 'appearance', 'key' => 'theme', 'json' => '"dark"', 'deleted' => false], ['section' => 'appearance', 'key' => 'fontSize', 'json' => '22', 'deleted' => false]])['keys'] === ['ihymns_theme', 'ihymns_fontSize']);
+
 /* ---------------------------------------------------------------------------------------------- */
 echo "a real database\n";
 $dsn = getenv('IHYMNS_TEST_DSN') ?: '';
@@ -118,7 +128,7 @@ $db->set_charset('utf8mb4');
 $schema = (string)file_get_contents($repo . '/appWeb/.sql/schema.sql');
 try {
     $db->query('CREATE TABLE tblUsers (Id INT UNSIGNED NOT NULL PRIMARY KEY, Settings JSON NULL, UpdatedAt DATETIME NULL) ENGINE=InnoDB');
-    $db->query('INSERT INTO tblUsers (Id) VALUES (1), (2)');
+    $db->query('INSERT INTO tblUsers (Id) VALUES (1), (2), (3)');
     preg_match('/CREATE TABLE IF NOT EXISTS tblUserProfileItems \(.*?\) ENGINE=InnoDB[^;]*;/s', $schema, $mt);
     $db->query($mt[0]);
 
@@ -202,6 +212,29 @@ try {
     $before2 = $shelf(2);
     $r3 = profileSyncApply($db, 2, [['section' => 'appearance', 'key' => 'theme', 'op' => 'set', 'value' => 'dark']], 'web');
     chk('a shelf that would go over its size limit is left exactly as it was (the profile still saves)', $r3['applied'] >= 1 && $shelf(2) === $before2 && !isset($shelf(2)['ihymns_theme']));
+
+    /* a refused copy must not let the stale shelf value come back over the newer profile value (2b review fix 10) */
+    $fill = function (array $base): array {            /* pad the shelf to exactly the limit: the biggest padding the box accepts */
+        for ($len = USER_SETTINGS_NS_MAX_BYTES; $len > 0; $len--) {
+            $try = $base + ['pad' => str_repeat('x', $len)];
+            if (userSettingsRejectReason([], PROFILE_SYNC_WEB_NAMESPACE, $try) === null) { return $try; }
+        }
+        return $base;
+    };
+    $full = $fill(['ihymns_theme' => 'dark', 'ihymns_fontSize' => '20']);
+    $db->query("UPDATE tblUsers SET Settings = '" . $db->real_escape_string(json_encode(['ihymns.web' => $full])) . "' WHERE Id = 3");
+    profileSyncApply($db, 3, [], 'web');               /* the first look: brings the shelf's theme dark and size 20 in */
+    $r4 = profileSyncApply($db, 3, [['section' => 'appearance', 'key' => 'theme', 'op' => 'set', 'value' => 'high-contrast']], 'web');
+    chk('with the box full, the new theme is saved in the profile but not copied to the shelf', $r4['applied'] === 1 && $items(3)['appearance.theme']['v'] === 'high-contrast' && $shelf(3)['ihymns_theme'] === 'dark');
+    chk('...and the refused copy is noted: the shelf\'s stale theme text is recorded', (profileSyncMetaRead($db, 3, PROFILE_SYNC_WEB_SKIP_KEY)['ihymns_theme'] ?? null) === 'dark');
+    $v3 = $maxVersion(3);
+    $oldCodeWrites(3, ['ihymns_fontSize' => '22'] + $full);   /* an old app changes ANOTHER key (and sends its whole shelf, with the stale theme) */
+    profileSyncReconcileIfChanged($db, 3);
+    $i3 = $items(3);
+    chk('the stale theme on the shelf does NOT come back over the newer profile theme, while the other change IS brought in', $i3['appearance.theme']['v'] === 'high-contrast' && $i3['appearance.fontSize']['v'] === 22, json_encode($i3));
+    $oldCodeWrites(3, ['ihymns_theme' => 'light', 'ihymns_fontSize' => '22'] + $full);   /* now old code really chooses a theme */
+    profileSyncReconcileIfChanged($db, 3);
+    chk('but when old code writes a DIFFERENT theme, that is the person\'s choice and is brought in; the note is dropped', $items(3)['appearance.theme']['v'] === 'light' && (profileSyncMetaRead($db, 3, PROFILE_SYNC_WEB_SKIP_KEY) ?? []) === []);
 
     /* the writer rule: no direct write to the box in the bridge */
     $src = (string)file_get_contents($web . '/includes/profile_sync.php');

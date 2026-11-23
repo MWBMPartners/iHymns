@@ -728,6 +728,15 @@ const PROFILE_SYNC_WEB_NAMESPACE = 'ihymns.web';
 const PROFILE_SYNC_WEB_HASH_KEY = 'webShelfHash';
 
 /**
+ * The bookkeeping row listing shelf values that are KNOWN TO BE STALE: {old web key => the text the shelf held when the copy of a newer
+ * profile value onto it was refused (the box was too big)}. The shelf still holds the older text, and without this note the next time old
+ * code changed ANY shelf key the whole shelf would be read back and that stale text would overwrite the newer profile value.
+ * An entry is ignored while the shelf still holds exactly that text, and dropped as soon as old code writes something different there
+ * (that is a real choice by the person) or a later copy succeeds.
+ */
+const PROFILE_SYNC_WEB_SKIP_KEY = 'webShelfSkip';
+
+/**
  * The registry entries that travel through the old shelf, keyed by their old web storage key.
  *
  * @return array<string,array<string,mixed>>
@@ -846,17 +855,20 @@ function profileWebShelfOf(array $box): array
 /**
  * PURE: which profile changes does a shelf stand for? One `set` per shelf value that is valid for its entry.
  * A key that is missing, empty or invalid yields NOTHING: this never produces a delete.
+ * A value still exactly as it was when a copy onto the shelf was refused ($skip, see PROFILE_SYNC_WEB_SKIP_KEY) is stale and yields nothing.
  *
- * @param array<string,mixed> $shelf
+ * @param array<string,mixed>       $shelf
+ * @param array<string,?string>     $skip  old web key => the stale text recorded when a copy was refused
  * @return list<array{section:string,key:string,op:string,value:mixed}>
  */
-function profileWebShelfToChanges(array $shelf): array
+function profileWebShelfToChanges(array $shelf, array $skip = []): array
 {
     $changes = [];
     foreach (profileWebEntries() as $legacy => $entry) {
         if (!array_key_exists($legacy, $shelf)) { continue; }
         $text = profileWebShelfText($shelf[$legacy]);
         if ($text === null) { continue; }
+        if (array_key_exists($legacy, $skip) && $skip[$legacy] === $text) { continue; }   /* the stale value: not the person's choice */
         $v = profileWebDecode($entry, $text);
         if ($v === null) { continue; }
         $changes[] = ['section' => $entry['section'], 'key' => $entry['key'], 'op' => 'set', 'value' => $v];
@@ -865,18 +877,36 @@ function profileWebShelfToChanges(array $shelf): array
 }
 
 /**
+ * PURE: the skip list after a look at the shelf: an entry stays only while the shelf still holds exactly the stale text it recorded.
+ *
+ * @param array<string,mixed>   $shelf
+ * @param array<string,?string> $skip
+ * @return array<string,?string>
+ */
+function profileWebShelfSkipPrune(array $shelf, array $skip): array
+{
+    $keep = [];
+    foreach ($skip as $legacy => $stale) {
+        $now = array_key_exists($legacy, $shelf) ? profileWebShelfText($shelf[$legacy]) : null;
+        if ($now === $stale) { $keep[$legacy] = $stale; }
+    }
+    return $keep;
+}
+
+/**
  * PURE: the shelf after the accepted writes are copied onto it, and whether anything changed. A set becomes the value's
  * text; a delete becomes the empty text (an old app reads that as "reset to the default"). Only bridge entries are touched.
  *
  * @param array<string,mixed> $shelf
  * @param list<array<string,mixed>> $writes accepted writes from profileSyncPlan() (section, key, json, deleted)
- * @return array{shelf:array<string,mixed>,changed:bool}
+ * @return array{shelf:array<string,mixed>,changed:bool,keys:list<string>} `keys` = the old web keys whose text changed (the ones a refused copy leaves stale)
  */
 function profileWebShelfWithWrites(array $shelf, array $writes): array
 {
     $byId = [];
     foreach (profileWebEntries() as $legacy => $entry) { $byId[$entry['id']] = [$legacy, $entry]; }
     $changed = false;
+    $keys = [];
     foreach ($writes as $w) {
         $hit = $byId[($w['section'] ?? '') . '.' . ($w['key'] ?? '')] ?? null;
         if ($hit === null) { continue; }
@@ -889,9 +919,10 @@ function profileWebShelfWithWrites(array $shelf, array $writes): array
         if (!array_key_exists($legacy, $shelf) || $shelf[$legacy] !== $text) {
             $shelf[$legacy] = $text;
             $changed = true;
+            $keys[$legacy] = $legacy;
         }
     }
-    return ['shelf' => $shelf, 'changed' => $changed];
+    return ['shelf' => $shelf, 'changed' => $changed, 'keys' => array_values($keys)];
 }
 
 if (!function_exists('profileSyncBridgeStep')) {
@@ -947,6 +978,19 @@ if (!function_exists('profileSyncMetaWrite')) {
     }
 }
 
+if (!function_exists('profileSyncWebSkipRead')) {
+    /** The stale-text list (see PROFILE_SYNC_WEB_SKIP_KEY) as a clean map; anything that is not text or null is ignored. @return array<string,?string> */
+    function profileSyncWebSkipRead(\mysqli $db, int $userId): array
+    {
+        $raw = profileSyncMetaRead($db, $userId, PROFILE_SYNC_WEB_SKIP_KEY);
+        $out = [];
+        foreach ((is_array($raw) ? $raw : []) as $k => $v) {
+            if (is_string($k) && (is_string($v) || $v === null)) { $out[$k] = $v; }
+        }
+        return $out;
+    }
+}
+
 if (!function_exists('profileSyncReconcileWebShelf')) {
     /**
      * Old shelf -> profile. The caller holds the person's row lock inside an open transaction.
@@ -964,11 +1008,17 @@ if (!function_exists('profileSyncReconcileWebShelf')) {
         if (profileSyncMetaRead($db, $userId, PROFILE_SYNC_WEB_HASH_KEY) === $hash) {
             return ['ready' => true, 'looked' => false, 'imported' => 0];
         }
-        $changes = profileWebShelfToChanges($shelf);
+        $skip = profileSyncWebSkipRead($db, $userId);
+        $changes = profileWebShelfToChanges($shelf, $skip);
         $applied = 0;
         if ($changes !== []) {
             /* From the old web app: recorded as written by the web. Equal values are skipped by the plan. */
             $applied = profileSyncApplyLocked($db, $userId, $changes, 'web', $channel)['applied'];
+        }
+        if ($skip !== []) {
+            /* An entry whose shelf text old code has since changed was a real choice (imported above) and is no longer stale. */
+            $kept = profileWebShelfSkipPrune($shelf, $skip);
+            if ($kept !== $skip) { profileSyncMetaWrite($db, $userId, PROFILE_SYNC_WEB_SKIP_KEY, $kept); }
         }
         profileSyncMetaWrite($db, $userId, PROFILE_SYNC_WEB_HASH_KEY, $hash);
         return ['ready' => true, 'looked' => true, 'imported' => $applied];
@@ -996,8 +1046,21 @@ if (!function_exists('profileSyncMirrorToWebShelf')) {
             $reason = userSettingsRejectReason($current, $ns, $after['shelf']);
             return $reason !== null ? $reason : userSettingsMergeNamespace($current, $ns, $after['shelf']);
         });
+        $skip = profileSyncWebSkipRead($db, $userId);
         if (!$outcome['ok']) {
-            return false;   /* refused (too big): the box is unchanged, so the fingerprint stays as it was */
+            /* Refused (too big): the box is unchanged, so the fingerprint stays as it was. But the shelf now holds OLDER text than the
+               profile for these keys; note exactly what, so a later look at the shelf never reads it back over the newer profile value. */
+            $shelfNow = profileWebShelfOf($box);
+            foreach ($after['keys'] as $legacy) {
+                $skip[$legacy] = array_key_exists($legacy, $shelfNow) ? profileWebShelfText($shelfNow[$legacy]) : null;
+            }
+            profileSyncMetaWrite($db, $userId, PROFILE_SYNC_WEB_SKIP_KEY, $skip);
+            return false;
+        }
+        if ($skip !== []) {
+            /* The copy worked, so these keys now match the profile and are no longer stale. */
+            $left = array_diff_key($skip, array_flip($after['keys']));
+            if ($left !== $skip) { profileSyncMetaWrite($db, $userId, PROFILE_SYNC_WEB_SKIP_KEY, $left); }
         }
         profileSyncMetaWrite($db, $userId, PROFILE_SYNC_WEB_HASH_KEY, profileWebShelfHash($after['shelf']));
         return true;
