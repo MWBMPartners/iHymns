@@ -48,7 +48,7 @@ import {
     STORAGE_OCTAVE_PREFIX,
     STORAGE_CHORD_NOTATION,
 } from '../constants.js';
-import { chordToNashville, chordToSolfege } from '../utils/chord-notation.js';
+import { chordToNashville, chordToSolfege, chordColumnsStoredOn } from '../utils/chord-notation.js';
 
 /* ============================================================================
  * MODULE-LEVEL PURE HELPERS (#1271)
@@ -438,7 +438,7 @@ export class Transpose {
            `$songHasChords` gate the button itself renders under (song.php),
            so this is a no-op on a chordless song without needing its own
            `hasChords` check here. */
-        if (localStorage.getItem(STORAGE_CHORD_COLUMNS) === '1') {
+        if (chordColumnsStoredOn(localStorage.getItem(STORAGE_CHORD_COLUMNS))) {   /* '1' (saved here) or 'true' (arrived from the account) */
             songPage.classList.add('chord-columns');
             const columnsBtn = document.getElementById('btn-chord-columns');
             if (columnsBtn) {
