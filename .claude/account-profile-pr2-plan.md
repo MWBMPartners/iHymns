@@ -84,6 +84,35 @@ Follow-ups recorded from this work (NOT done):
 - Old production code with a stale settings box can still overwrite a newer value until the new code is promoted (as the plan said).
 - The bridge copies a delete as the empty text on the old shelf; an old app reads that as "reset to default".
 
+## Progress (PR 2c, branch `claude/account-pr2c`)
+
+| Step | Commit | Status |
+|---|---|---|
+| 2c-1 download my data (`account_export`) | 25697a9b | done, needs Opus review |
+| 2c-2 delete my account on the web | 917f7ecb | done |
+| 2c-3 sign-out clears this browser, asking first | eaed2546 | done, needs Opus review |
+| 2c-3 review: a second click while the question is open | 9198944e | done |
+| 2c-4 the privacy page | ae06c0c4 | done |
+| 2c-5 docs (rule #54, wiki, `.OpenAI/`, `CHANGELOG.md`; no `WHATS-NEW.md` bullets) | the commit that adds this table | done |
+
+Deviations from the plan (PR 2c):
+- Owner decision (2026-11-23): export and web deletion are NOT behind `profile_sync_channels` (the plan's default question 7.1 said yes). So `account_export` has no 409 `profile_sync_disabled`, and the web delete panel always shows. Both still need sign-in, a same-origin request and a rate limit; delete still needs the re-authentication and the typed word, and still obeys the "pause saving" brake (409 `account_writes_off_here`, explained in plain words).
+- 2c-1: `tblActivityLog.UserId` HAS a database link (SET NULL), so it is exported through the normal path; the hand-listed no-link list (`accountExportNoLinkColumns()`) holds the columns the schema really has without one: `tblBulkImportJobs.UserId` (exported), and, left out with a stated reason, `tblWebhookEvents.ActorUserId`, `tblLoginAttempts.Username`, and the curator attribution columns `tblSongLinks.CreatedBy`, `tblSongRedirects.CreatedBy`, `tblSongMedia.UploadedBy`, `tblVocalPartSuggestions.ReviewedBy`, `tblIaImportCandidates.ReviewedBy`, `tblPrintTemplates.CreatedBy`. The erasure leaves those pointing at the blank tombstone, exactly like its other "keep" columns (they identify nobody).
+- 2c-1: the rate limit is 5 an hour, so `enforceReadRateLimit()` gained an optional fifth argument (`$perHour`) and an `hour` window (the column is `VARCHAR(10)`, no migration).
+- 2c-1: the guard derives links from `schema.sql` including the multi-line `ALTER TABLE ... ADD CONSTRAINT` (the one for `tblSongs.DeletedBy`); `tblSongs` itself is excluded (only the curator who removed a song is recorded on it). The guard's first draft missed that ALTER and was fixed (rule #34).
+- 2c-1: a table with only denied/omitted columns and no rows is left out of the file; a table is listed only if it holds something for the person (or was cut short).
+- 2c-2: the delete panel is an inline panel, not a pop-up (easier by keyboard). Passwordless accounts use the existing emailed code (`auth_email_login_request`); an Apple-only account with no email has to use the app (the web has no Apple re-authentication).
+- 2c-3: only runs where `config.profileSync.enabled` is true (the plan's "Switch off"). `logout()` now returns `{signedOut}`. The favourites and set-list timers were split so the timer and `flushNow()` run the same `_pushNow()`; `test-user-sync-client.js` rows that read `_scheduleSync()` now read `_pushNow()` (property unchanged) plus a row that the timer runs it.
+- 2c-3: the unsent count adds an offline-queue "a sync is wanted" marker once per kind and only when no list already names the change; a successful flush removes that store's markers.
+- 2c-3: deleting the account uses the same clearing (plus the set-aside copy for that account).
+- 2c-4: privacy copy is written for the state after production is ticked; it cannot word itself per site.
+
+Follow-ups recorded from this work (NOT done):
+- The export reads each table separately, not inside one consistent snapshot, so a sync running at that moment can be half in the file. Acceptable for a person's own download; a `START TRANSACTION READ ONLY, CONSISTENT SNAPSHOT` would fix it.
+- A signed-in person whose profile sync is switched off by their own settings opt-out (`ihymns_sync_app_settings` false) is not counted for the profile outbox (the outbox is only counted while the sync is active).
+- A second tab left signed in is not told when another tab signs out (as before).
+- The web has no Apple re-authentication for deleting an Apple-only account without an email.
+
 ## 0. What the code changed about the old plan
 
 1. **G3 is already done.** `accountErase()` already blanks the person's audit rows, so G3 is dropped.
