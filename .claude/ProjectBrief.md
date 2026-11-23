@@ -1,5 +1,17 @@
 # 📋 iHymns — Project Brief
 
+## 📌 Current state — 2026-11-23 (newest; older sections below are history)
+
+- **Version 1.4.1** on `alpha` (patch release minted by #2194). No open pull requests.
+- **Account rewrite part 2a merged** (#2197, epic #2180): removed favourites stay removed (server delete
+  markers), real-view popularity counts with rate limits, "Your most viewed" card, push tied to each
+  sign-in. All dormant behind the "New account behaviour" card (`profile_sync_channels`, default none).
+  Next: PR 2b (one `profile_sync` method, settings-box sync, new synced settings), PR 2c (download my
+  data, delete account, sign-out clearing, privacy page), then PR 3. Plan: `.claude/account-profile-pr2-plan.md`.
+- Monthly HA integrity audit paused (#2190); Dependabot bumps #2191-#2193 combined as #2195.
+- #1082 timed lyrics export: own small PHP formatter later, not an outside library.
+- Full queue and owner to-do list: `.claude/sessions/2026-11-23-HANDOFF.md`.
+
 ## 📌 Current state — 2026-11-18 (newest; older sections below are history)
 
 - **Version 1.4.0** on `alpha`; the version commit works again (GitHub App token, #2172). No open pull requests.
