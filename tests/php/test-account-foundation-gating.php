@@ -270,54 +270,93 @@ chk('a string that is not SQL is not flagged', findUngated($fixNotSql, $objects)
  * includes/profile_sync.php whose body names tblUserProfileItems must OPEN with `if (!profileItemsReady($db))` (so the check
  * is the first thing that happens, and its failure returns). The finder is shown to catch a function that checks too late. */
 echo "the profile sync core opens with its check\n";
+require_once __DIR__ . '/lib/php_source_units.php';
+/**
+ * Every function (a closure too) whose CODE or string text names `$needle`, with its code view.
+ * Built on the shared token-based library, so a brace, the word "function" or the needle inside a comment or a message
+ * never moves a function boundary or counts as a use: only real code and real SQL text do.
+ *
+ * @return array<string,string> function name => code view (`{ ... }`, comments removed, strings collapsed)
+ */
 function functionsNaming(string $src, string $needle): array
 {
     $out = [];
-    if (!preg_match_all('/function\s+(\w+)\s*\(/', $src, $fm, PREG_OFFSET_CAPTURE)) { return $out; }
-    foreach ($fm[1] as $i => $mm) {
-        $brace = strpos($src, '{', $fm[0][$i][1]);
-        if ($brace === false) { continue; }
-        $d = 0; $n = strlen($src);
-        for ($k = $brace; $k < $n; $k++) {
-            if ($src[$k] === '{') { $d++; } elseif ($src[$k] === '}') { $d--; if ($d === 0) { break; } }
-        }
-        $body = substr($src, $brace + 1, $k - $brace - 1);
-        if (strpos($body, $needle) !== false) { $out[$mm[0]] = $body; }
+    foreach (phpSourceUnits($src) as $name => $u) {
+        if ($name === '(file scope)') { continue; }
+        /* SQL text is in `strings` (the code view keeps only a marker); the needle may be in either. A message or an array
+           subscript in `strings` could also contain it, which only makes the finder stricter, never blind. */
+        if (strpos($u['code'], $needle) !== false || strpos(implode("\n", $u['strings']), $needle) !== false) { $out[$name] = $u['code']; }
     }
     return $out;
 }
-function opensWithReadyCheck(string $body): bool
+function opensWithReadyCheck(string $codeView): bool
 {
-    return (bool)preg_match('/^\s*if\s*\(\s*!\s*profileItemsReady\(\s*\$db\s*\)\s*\)/', $body);
+    return (bool)preg_match('/^\{\s*if\s*\(\s*!\s*profileItemsReady\(\s*\$db\s*\)\s*\)/', $codeView);
+}
+/**
+ * The functions of the core file that reach the table, DIRECTLY OR THROUGH ANOTHER FUNCTION OF THE SAME FILE. Derived from the
+ * file (nothing here lists a name): start from every function that names the table, then add every function that calls one already
+ * in the set, until nothing changes. `profileItem*` (the readiness check and the single-item reader) are the file's two public
+ * helpers: they open with their own check and are meant to be called from elsewhere, so they are not part of the door.
+ *
+ * @return list<string>
+ */
+function coreDoorFunctions(string $src): array
+{
+    $units = phpSourceUnits($src);
+    $set = [];
+    foreach (functionsNaming($src, 'tblUserProfileItems') as $n => $_c) {
+        if (!str_starts_with($n, 'profileItem') && !str_starts_with($n, '{closure')) { $set[$n] = true; }
+    }
+    do {
+        $grew = false;
+        foreach ($units as $n => $u) {
+            if ($n === '(file scope)' || str_starts_with($n, '{closure') || str_starts_with($n, 'profileItem') || isset($set[$n])) { continue; }
+            if ($set !== [] && preg_match('/\b(?:' . implode('|', array_map('preg_quote', array_keys($set))) . ')\s*\(/', $u['code'])) { $set[$n] = true; $grew = true; }
+        }
+    } while ($grew);
+    return array_keys($set);
 }
 $fixLate  = '<?php function a(\mysqli $db) { $x = 1; if (!profileItemsReady($db)) { return; } $db->query("SELECT 1 FROM tblUserProfileItems"); }';
 $fixFirst = '<?php function a(\mysqli $db) { if (!profileItemsReady($db)) { return; } $db->query("SELECT 1 FROM tblUserProfileItems"); }';
-$fixNone  = '<?php function a(\mysqli $db) { $db->query("SELECT 1 FROM tblUserProfileItems"); }';
+$fixNone  = '<?php function a(\mysqli $db) { $x = 1; $db->query("SELECT 1 FROM tblUserProfileItems"); }';
+/* the shapes the old text scanner got wrong: a brace, the word "function" and the needle inside strings and comments */
+$fixBrace = '<?php function a(\mysqli $db) { if (!profileItemsReady($db)) { return; } $s = "{ not a block"; /* function b() { */ $db->query("SELECT 1 FROM tblUserProfileItems"); } function c(\mysqli $db) { if (!profileItemsReady($db)) { return; } $db->query("SELECT 1 FROM tblUserProfileItems"); }';
+$fixProse = '<?php function d() { return "this message mentions tblUserProfileItems"; } /* function e() { tblUserProfileItems } */ function f() { return 2; }';
+$bareOf = fn(string $s) => array_keys(array_filter(functionsNaming($s, 'tblUserProfileItems'), fn($b) => !opensWithReadyCheck($b)));
 chk('the stricter finder: a check that comes late is caught, one that opens the function is not, no check is caught',
-    count(array_filter(functionsNaming($fixLate, 'tblUserProfileItems'), fn($b) => !opensWithReadyCheck($b))) === 1
-    && count(array_filter(functionsNaming($fixFirst, 'tblUserProfileItems'), fn($b) => !opensWithReadyCheck($b))) === 0
-    && count(array_filter(functionsNaming($fixNone, 'tblUserProfileItems'), fn($b) => !opensWithReadyCheck($b))) === 1);
-$coreSrc = stripComments((string)file_get_contents($web . '/includes/profile_sync.php'));
-$naming = functionsNaming($coreSrc, 'tblUserProfileItems');
+    $bareOf($fixLate) === ['a'] && $bareOf($fixFirst) === [] && $bareOf($fixNone) === ['a']);
+chk('...and an unbalanced brace in a string, or "function" and the table name inside a comment, never move a boundary or make a function look gated',
+    $bareOf($fixBrace) === [] && array_keys(functionsNaming($fixBrace, 'tblUserProfileItems')) === ['a', 'c'] && array_keys(functionsNaming($fixProse, 'tblUserProfileItems')) === ['d']);
+$coreFile = file_get_contents($web . '/includes/profile_sync.php');
+$naming = functionsNaming((string)$coreFile, 'tblUserProfileItems');
 unset($naming['profileItemsReady']);   /* the ready-check itself asks INFORMATION_SCHEMA */
 $late = array_keys(array_filter($naming, fn($b) => !opensWithReadyCheck($b)));
 chk('every function in profile_sync.php that names the table opens with its ready-check (' . count($naming) . ' functions: ' . implode(', ', array_keys($naming)) . ')', count($naming) >= 5 && $late === [], implode(', ', $late));
 
-/* The core is reachable only from the endpoint, which checks the switch first (a second caller would skip the switch). */
+/* The core is reachable only from the endpoint, which checks the switch first (a second caller would skip the switch). The
+   names of "the core" come from the core file itself (coreDoorFunctions), never from a list typed here. */
+$door = coreDoorFunctions((string)$coreFile);
+chk('the door is found from the file (' . count($door) . ' functions: ' . implode(', ', $door) . ')', count($door) >= 8 && in_array('profileSyncApply', $door, true) && in_array('profileSyncPull', $door, true) && in_array('profileSyncReconcileIfChanged', $door, true) && !in_array('profileItemsReady', $door, true) && !in_array('profileSyncPlan', $door, true));
+$fixDoor = '<?php function lowLevel(\mysqli $db) { if (!profileItemsReady($db)) { return; } $db->query("SELECT 1 FROM tblUserProfileItems"); } function wrapper(\mysqli $db) { lowLevel($db); } function pure() { return 1; } function profileItemRead() { $db->query("SELECT 1 FROM tblUserProfileItems"); }';
+chk('the door finder follows calls through other functions, and leaves out pure helpers and the public readers', coreDoorFunctions($fixDoor) === ['lowLevel', 'wrapper']);
+$doorRe = '/\b(?:' . implode('|', array_map('preg_quote', $door)) . ')\s*\(/';
 $callers = [];
-foreach ($allCode as $pf => $src) {
+foreach ($phpFiles as $pf) {
     if (substr($pf, -strlen('/includes/profile_sync.php')) === '/includes/profile_sync.php') { continue; }
-    if (preg_match('/\b(profileSyncApply|profileSyncApplyLocked|profileSyncPull|profileSyncReconcileIfChanged|profileSyncReconcileWebShelf|profileSyncMirrorToWebShelf)\s*\(/', $src)) { $callers[] = substr($pf, strlen($repo) + 1); }
+    foreach (phpSourceUnits((string)file_get_contents($pf)) as $u) {
+        if (preg_match($doorRe, $u['code'])) { $callers[] = substr($pf, strlen($repo) + 1); break; }
+    }
 }
 chk('only api.php calls the profile sync core from outside its own file (' . implode(', ', $callers) . ')', $callers === ['appWeb/public_html/api.php']);
 $apiSrc = $allCode[$web . '/api.php'] ?? '';
 $a = strpos($apiSrc, "case 'profile_sync'");
 $b = strpos($apiSrc, "case 'songs_exist'", (int)$a);
 $caseText = ($a !== false && $b !== false) ? substr($apiSrc, $a, $b - $a) : '';
-preg_match_all('/\b(?:profileSyncApply|profileSyncPull|profileSyncReconcileIfChanged)\s*\(/', $apiSrc, $allCalls, PREG_OFFSET_CAPTURE);
+preg_match_all($doorRe, $apiSrc, $allCalls, PREG_OFFSET_CAPTURE);
 $outside = array_filter($allCalls[0], fn($c) => $a === false || $c[1] < $a || $c[1] > $b);
 chk('every such call in api.php sits inside case \'profile_sync\', which asks profileSyncEnabledHere() before the first of them',
-    $caseText !== '' && $outside === [] && strpos($caseText, 'profileSyncEnabledHere()') !== false && strpos($caseText, 'profileSyncEnabledHere()') < strpos($caseText, 'profileSyncApply('));
+    $caseText !== '' && $allCalls[0] !== [] && $outside === [] && strpos($caseText, 'profileSyncEnabledHere()') !== false && strpos($caseText, 'profileSyncEnabledHere()') < $allCalls[0][0][1] - $a);
 
 /* ---------------------------------------------------------------------------------------------
  * 4. The real tree. */
