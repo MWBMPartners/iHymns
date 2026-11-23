@@ -12,26 +12,6 @@ with none of the behind-the-scenes technical detail.
 
 ## 1.4.0 — 28 September 2026
 
-- **Removed favourites stay removed** — If you take a song out of your
-  favourites on one device, it no longer comes back when you open iHymns on
-  another device that hasn't caught up yet.
-
-- **Your most viewed songs** — When you are signed in, the home page can show
-  the songs you open most often. Choose the last 30 days, the last 90 days, the
-  last 12 months, or all time.
-
-- **A fairer "most popular" list** — Popular songs now count real visits to
-  songs, so old history you upload from a device, and visits from test copies
-  of the site, no longer push songs up the list.
-
-- **Sign out on one device, keep notifications on the others** — Signing out
-  of iHymns on one phone or tablet now only turns off notifications on that
-  device, not on your other devices.
-
-- **Importing a backup is now remembered** — When you choose "Replace
-  existing" while importing a backup, the favourites and set lists it replaces
-  are now removed from your account too, so they don't come back later.
-
 - **Shared computers keep your songs private** — If someone else signs in on
   the same computer after you, your saved songs, set lists and history are no
   longer mixed into their account. They are put safely aside and come back if
