@@ -310,6 +310,22 @@ try {
     chk('...and a pull tells every device the list is deleted', in_array(true, array_map(fn($c) => $c['section'] === 'history' && $c['deleted'] === true, profileSyncPull($db, 2, 0)['changes']), true));
     $db->query('DELETE FROM tblUserProfileItems WHERE UserId = 2');
 
+    /* delete markers in a map section are bounded: set-then-delete over and over must not grow the table for ever */
+    $db->query('DELETE FROM tblUserProfileItems WHERE UserId = 2');
+    $mk = [];
+    for ($i = 1; $i <= PROFILE_SYNC_MAX_MARKERS_PER_SECTION; $i++) { $mk[] = "(2, 'songPrefs', 'MP-{$i}', NULL, {$i}, UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))"; }
+    $db->query('INSERT INTO tblUserProfileItems (UserId, Section, ItemKey, ValueJson, Version, UpdatedAt, DeletedAt) VALUES ' . implode(',', $mk));
+    $r = profileSyncApply($db, 2, [$set('songPrefs', 'MP-9001', ['capo' => 1]), $del('songPrefs', 'MP-9001'), $set('songPrefs', 'MP-9002', ['capo' => 1]), $del('songPrefs', 'MP-9002')], 'web');
+    $mrows = (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 2 AND Section = 'songPrefs' AND DeletedAt IS NOT NULL")->fetch_row()[0];
+    $oldest = (int)$db->query("SELECT MIN(Version) FROM tblUserProfileItems WHERE UserId = 2 AND Section = 'songPrefs'")->fetch_row()[0];
+    $newest = $db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 2 AND ItemKey IN ('MP-9001','MP-9002') AND DeletedAt IS NOT NULL")->fetch_row()[0];
+    chk('at the limit, two new markers push out exactly the two OLDEST (the count stays at the limit, the newest are kept)', $mrows === PROFILE_SYNC_MAX_MARKERS_PER_SECTION && $oldest === 3 && (int)$newest === 2 && $r['applied'] === 4, "rows=$mrows oldest=$oldest newest=$newest");
+    $live = profileSyncApply($db, 2, [$set('songPrefs', 'MP-9500', ['capo' => 2])], 'web');
+    chk('live items are never pruned and a set adds no marker (the limit is for markers only)', (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 2 AND Section = 'songPrefs' AND DeletedAt IS NULL")->fetch_row()[0] === 1 && (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 2 AND Section = 'songPrefs' AND DeletedAt IS NOT NULL")->fetch_row()[0] === PROFILE_SYNC_MAX_MARKERS_PER_SECTION);
+    $r = profileSyncApply($db, 1, [$set('songPrefs', 'MP-1', ['capo' => 1]), $del('songPrefs', 'MP-1')], 'web');
+    chk('another person\'s markers are not touched by someone else\'s pruning', (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 2 AND Section = 'songPrefs' AND DeletedAt IS NOT NULL")->fetch_row()[0] === PROFILE_SYNC_MAX_MARKERS_PER_SECTION);
+    $db->query('DELETE FROM tblUserProfileItems WHERE UserId = 2');
+
     /* too many changes in one batch is a programming error the endpoint prevents */
     $threw = false;
     try { profileSyncApply($db, 1, array_fill(0, PROFILE_SYNC_MAX_CHANGES + 1, $set('appearance', 'theme', 'dark')), 'web'); } catch (\InvalidArgumentException $_e) { $threw = true; }

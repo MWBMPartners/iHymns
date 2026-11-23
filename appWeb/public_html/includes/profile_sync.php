@@ -159,6 +159,15 @@ const PROFILE_SYNC_MAX_VALUE_BYTES = 4096;
 /** The most changes one request may carry. The endpoint answers 413 above this; the core refuses to run above it. */
 const PROFILE_SYNC_MAX_CHANGES = 200;
 
+/**
+ * The most delete markers kept per person for ONE map section (a section with a row per item, like the key and capo per song).
+ * A marker is what tells another device "this item was removed"; without a bound, set-then-delete over and over would grow the
+ * table for ever. Past the bound the OLDEST markers are removed when a newer one is written. A device that has been away so long
+ * it never saw a pruned removal keeps that one item until it is changed again (the per-person counter never goes back, so no
+ * version number is reused). Sections with fixed keys cannot grow, so only map sections need this.
+ */
+const PROFILE_SYNC_MAX_MARKERS_PER_SECTION = 5000;
+
 /** How many changes one read returns. A reply with more waiting says `more: true`. */
 const PROFILE_SYNC_PAGE_SIZE = 500;
 
@@ -444,6 +453,28 @@ if (!function_exists('profileSyncApplyLocked')) {
                 $up->execute();
             }
             $up->close();
+
+            /* Keep the delete markers of each touched map section bounded: remove the OLDEST past the limit (the newest, just written, stay). */
+            $markerSections = [];
+            foreach ($plan['writes'] as $w) {
+                if (!$w['deleted']) { continue; }
+                $e = profileRegistryEntry($w['section'], $w['key']);
+                if ($e !== null && ($e['type'] ?? '') === 'map') { $markerSections[$w['section']] = true; }
+            }
+            foreach (array_keys($markerSections) as $sec) {
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = ? AND Section = ? AND DeletedAt IS NOT NULL');
+                $stmt->bind_param('is', $userId, $sec);
+                $stmt->execute();
+                $markers = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+                $stmt->close();
+                $extra = $markers - PROFILE_SYNC_MAX_MARKERS_PER_SECTION;
+                if ($extra > 0) {
+                    $stmt = $db->prepare('DELETE FROM tblUserProfileItems WHERE UserId = ? AND Section = ? AND DeletedAt IS NOT NULL ORDER BY Version ASC LIMIT ?');
+                    $stmt->bind_param('isi', $userId, $sec, $extra);
+                    $stmt->execute();
+                    $stmt->close();
+                }
+            }
         }
         return ['ready' => true, 'applied' => $plan['applied'], 'unchanged' => $plan['unchanged'], 'rejected' => $plan['rejected'],
                 'maxVersion' => $plan['maxVersion'], 'writes' => $plan['writes']];
