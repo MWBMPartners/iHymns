@@ -309,6 +309,25 @@ export class Settings {
         this._syncPushTimer = setTimeout(() => this._pushSyncedSettings(), 1500);
     }
 
+    /**
+     * Is an upload of the older whole-box settings sync still waiting? (PR 2c-3: sign-out asks before dropping it.)
+     * False while the per-item profile sync is doing this job instead (that one reports its own outbox).
+     */
+    hasUnsentChanges() {
+        return this._syncPushPending === true && this._isSyncEnabled();
+    }
+
+    /**
+     * Send a waiting settings upload now. Used by sign-out (PR 2c-3).
+     *
+     * @returns {Promise<boolean>} true when nothing is left unsent
+     */
+    async flushNow() {
+        if (!this.hasUnsentChanges()) return true;
+        clearTimeout(this._syncPushTimer);
+        return this._pushSyncedSettings();
+    }
+
     async _pushSyncedSettings() {
         if (!this._isSyncEnabled()) return false;
         /* The waiting upload is being sent now (A2). It stays "waiting" again
@@ -2050,7 +2069,8 @@ export class Settings {
 
         /* Sign Out button */
         document.getElementById('btn-auth-logout')?.addEventListener('click', async () => {
-            await auth.logout();
+            const r = await auth.logout();
+            if (!r.signedOut) return;   /* PR 2c-3: the person chose to stay signed in */
             this.app.showToast('Signed out', 'info', 2000);
             /* Refresh account section display */
             this._initAccountSection();

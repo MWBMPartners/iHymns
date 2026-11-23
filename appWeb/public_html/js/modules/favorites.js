@@ -217,17 +217,61 @@ export class Favorites {
            unions any edits made meanwhile and then flushes this. */
         if (!this._syncReady) return;
         clearTimeout(this._syncTimer);
-        this._syncTimer = setTimeout(async () => {
-            const all = this.getAll();
-            if (this._loadError) return; /* corrupt cache — never replace (review #2) */
-            const favs = all.map(f => ({ id: f.id, tags: f.tags || [] }));
-            /* #1649 — absorb rather than discard: the server may have kept
-               favourites this push didn't mention (another device's newer
-               additions, or the tail beyond the cap). The absorb helper merges
-               them back and advances the sync watermark. */
-            const res = await this.app.userAuth.syncFavorites(favs, 'replace');
-            this.app.userAuth._absorbFavoritesSync(res);
+        /* PR 2c-3: remember that a push is waiting for its timer, so sign-out can send it first (flushNow). */
+        this._syncTimerPending = true;
+        this._syncTimer = setTimeout(() => {
+            this._syncTimerPending = false;
+            this._pushNow().catch(() => { /* retried by the offline queue; flushNow() reports it */ });
         }, 1500);
+    }
+
+    /**
+     * Send the current favourites to the server now (the body of the debounced push).
+     *
+     * @returns {Promise<boolean>} true when the server's reply was absorbed (nothing is left to send)
+     */
+    async _pushNow() {
+        const all = this.getAll();
+        if (this._loadError) return false; /* corrupt cache — never replace (review #2) */
+        const favs = all.map(f => ({ id: f.id, tags: f.tags || [] }));
+        /* #1649 — absorb rather than discard: the server may have kept
+           favourites this push didn't mention (another device's newer
+           additions, or the tail beyond the cap). The absorb helper merges
+           them back and advances the sync watermark. */
+        const res = await this.app.userAuth.syncFavorites(favs, 'replace');
+        return this.app.userAuth._absorbFavoritesSync(res) === true;
+    }
+
+    /**
+     * Send anything still waiting for its 1.5 second timer (and the tag pool's), without waiting, and say whether
+     * everything has reached the account. Used by sign-out (PR 2c-3) so a change made a moment ago is not lost.
+     * A paused site answers a read only, so removals still waiting are NOT reported as sent.
+     *
+     * @returns {Promise<boolean>} true when nothing is left unsent
+     */
+    async flushNow() {
+        if (!this.app?.userAuth?.isLoggedIn?.()) return true;
+        const waiting = () => this.getPendingAdds().length + this.getPendingDeletes().length;
+        const tagWaiting = !!this._tagSyncTimerPending;
+        const pushWaiting = !!this._syncTimerPending || waiting() > 0;
+        if (!pushWaiting && !tagWaiting) return true;
+        let ok = true;
+        if (pushWaiting) {
+            clearTimeout(this._syncTimer);
+            this._syncTimerPending = false;
+            /* Until the first reconcile has run a replace is not safe (review #1): nothing can be sent yet. */
+            if (!this._syncReady) return false;
+            try { ok = (await this._pushNow()) && waiting() === 0; } catch { ok = false; }
+        }
+        if (tagWaiting) {
+            clearTimeout(this._tagSyncTimer);
+            this._tagSyncTimerPending = false;
+            try {
+                const merged = await this.app.userAuth.syncCustomTags(this.getCustomTags(), 'merge');
+                if (!Array.isArray(merged)) ok = false;
+            } catch { ok = false; }
+        }
+        return ok;
     }
 
     /* =====================================================================
@@ -339,7 +383,9 @@ export class Favorites {
     _scheduleTagSync() {
         if (!this.app?.userAuth?.isLoggedIn?.()) return;
         clearTimeout(this._tagSyncTimer);
+        this._tagSyncTimerPending = true;   /* PR 2c-3: so sign-out can send it first (flushNow) */
         this._tagSyncTimer = setTimeout(() => {
+            this._tagSyncTimerPending = false;
             this.app.userAuth.syncCustomTags(this.getCustomTags(), 'merge');
         }, 1500);
     }

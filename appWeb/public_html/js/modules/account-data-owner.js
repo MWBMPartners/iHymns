@@ -44,6 +44,7 @@ import {
     STORAGE_SETLISTS_DELETED, STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT,
     STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED, STORAGE_RECENT_SONGBOOKS,
     STORAGE_DATA_OWNER_UID, STORAGE_STASH_PREFIX, STORAGE_SEARCH_HISTORY, STORAGE_SYNC_SEARCH_HISTORY,
+    STORAGE_PROFILE_OUTBOX, STORAGE_PROFILE_CURSOR,
 } from '../constants.js';
 
 /** The personal-content keys that belong to ONE person. Stashed, cleared, restored. */
@@ -182,6 +183,26 @@ export function stashAndClear(storage, ownerUid) {
     clearLive(storage);
     remove(storage, STORAGE_DATA_OWNER_UID);
     return { stashed, cleared: true };
+}
+
+/**
+ * A person SIGNS OUT on purpose (PR 2c-3, owner decision O2): clear this browser's copy of their personal data.
+ * No set-aside copy is made: the account holds it, and a copy left behind is exactly what the next person on a
+ * shared computer must not find. (The question "has everything reached your account?" is asked BEFORE this, by
+ * sign-out-guard.js.)
+ *
+ * Removes: every personal key (favourites, set lists, custom tags, history, recent songbooks, the pending removals
+ * and additions, the search-history choice and, only when that choice was on, the list itself), both sync
+ * bookmarks, the profile sync's outbox and cursor, and the record of whose data this is. Display settings (theme,
+ * text size, language filter, per-song keys) are NOT personal data and stay.
+ *
+ * Idempotent, never throws (blocked storage must not stop a sign-out).
+ */
+export function clearPersonalDataAtSignOut(storage) {
+    clearLive(storage);
+    remove(storage, STORAGE_PROFILE_OUTBOX);
+    remove(storage, STORAGE_PROFILE_CURSOR);
+    remove(storage, STORAGE_DATA_OWNER_UID);
 }
 
 /** Put a person's stash (if any) back into the live keys, then delete it. */

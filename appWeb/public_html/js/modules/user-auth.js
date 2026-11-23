@@ -17,10 +17,11 @@ import { userHasEntitlement } from './entitlements.js';
 import { offlineQueue } from './offline-queue.js';
 import {
     STORAGE_AUTH_TOKEN, STORAGE_AUTH_USER, EVT_AUTH_CHANGED,
-    STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT,
+    STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT, STORAGE_STASH_PREFIX,
 } from '../constants.js';
 import { performAppleSignIn } from './apple-signin.js';
-import { reconcileDataOwner, recordDataOwner, protectOnUnplannedSignOut, stashAndClear } from './account-data-owner.js';
+import { reconcileDataOwner, recordDataOwner, protectOnUnplannedSignOut, clearPersonalDataAtSignOut } from './account-data-owner.js';
+import { signOutGuardActive, confirmSignOut } from './sign-out-guard.js';
 import { apiFetch } from '../utils/api-client.js';
 /* #947/#340 — dormant CAPTCHA widget, wired into the four gated auth forms
    (registration / login / password_reset / email_login) below. No-op unless
@@ -412,8 +413,18 @@ export class UserAuth {
 
     /**
      * Log out (invalidate token on server and clear local credentials).
+     *
+     * PR 2c-3 (owner decision O2): where the new account sync is switched on, signing out also CLEARS this browser's copy
+     * of the person's personal data, but only after sending whatever is waiting and, if something still has not reached
+     * the account, asking first (see sign-out-guard.js). Where it is off, this is exactly what it always was.
+     *
+     * @returns {Promise<{signedOut: boolean}>} signedOut false = the person chose to stay signed in; nothing was changed
      */
     async logout() {
+        const guarded = signOutGuardActive(this.app);
+        if (guarded && this.isLoggedIn()) {
+            if ((await confirmSignOut(this.app)) !== 'go') return { signedOut: false };
+        }
         try {
             await apiFetch(`${this.app.config.apiUrl}?action=auth_logout`, {
                 method: 'POST',
@@ -427,6 +438,11 @@ export class UserAuth {
             /* Non-critical — clear local creds regardless */
         }
 
+        /* Cleared BEFORE the sign-in is forgotten, so the pages that redraw on the sign-out announcement already see an empty browser. */
+        if (guarded) {
+            try { clearPersonalDataAtSignOut(localStorage); }
+            catch (e) { console.warn('[user-auth] could not clear saved data at sign-out:', e); }
+        }
         this.clearCredentials({ planned: true });
 
         /* #1388 — ask the service worker to drop the per-user caches.
@@ -441,6 +457,7 @@ export class UserAuth {
         } catch {
             /* Non-critical — never let cache cleanup break sign-out. */
         }
+        return { signedOut: true };
     }
 
     /**
@@ -450,8 +467,11 @@ export class UserAuth {
      * because there is no account for them to reach.
      */
     afterAccountDeleted() {
-        try { stashAndClear(localStorage, null); }
-        catch (e) { console.warn('[user-auth] could not clear saved data after deleting the account:', e); }
+        const uid = this.getUser()?.id;
+        try {
+            clearPersonalDataAtSignOut(localStorage);   /* the same clearing as a sign-out, outbox and cursor included */
+            if (uid !== null && uid !== undefined) localStorage.removeItem(STORAGE_STASH_PREFIX + uid);   /* a copy set aside earlier for this account has nowhere to return to */
+        } catch (e) { console.warn('[user-auth] could not clear saved data after deleting the account:', e); }
         this.clearCredentials({ planned: true });
         try { navigator.serviceWorker?.controller?.postMessage({ type: 'CLEAR_USER_CACHES' }); } catch { /* best effort */ }
     }
@@ -1562,7 +1582,8 @@ export class UserAuth {
 
         /* Sign Out button */
         document.getElementById('header-signout-btn')?.addEventListener('click', async () => {
-            await this.logout();
+            const r = await this.logout();
+            if (!r.signedOut) return;   /* PR 2c-3: the person chose to stay signed in */
             this._updateHeaderState();
             /* Re-render setlist sync bar if on that page */
             this.app.setList?.renderSyncBar();

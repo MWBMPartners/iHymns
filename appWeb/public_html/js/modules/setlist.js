@@ -652,18 +652,46 @@ export class SetList {
            any edits made meanwhile and then flushes this. */
         if (!this._syncReady) return;
         clearTimeout(this._syncTimer);
-        this._syncTimer = setTimeout(async () => {
-            const all = this.getAll();
-            if (this._loadError) return; /* corrupt cache — never replace (review #2) */
-            /* #1649 — absorb the response instead of discarding it. The server
-               may have kept rows this push didn't mention (another device's
-               newer additions, or the whole tail if we exceeded the cap), and
-               the absorb helper both merges them back in and advances the sync
-               watermark. Dropping the result on the floor left the local cache
-               permanently behind the server. */
-            const res = await this.app.userAuth.syncSetlists(all, 'replace');
-            this.app.userAuth._absorbSetlistSync(res);
+        /* PR 2c-3: remember that a push is waiting for its timer, so sign-out can send it first (flushNow). */
+        this._syncTimerPending = true;
+        this._syncTimer = setTimeout(() => {
+            this._syncTimerPending = false;
+            this._pushNow().catch(() => { /* retried by the offline queue; flushNow() reports it */ });
         }, 1500);
+    }
+
+    /**
+     * Send the current set lists to the server now (the body of the debounced push).
+     *
+     * @returns {Promise<boolean>} true when the server's reply was absorbed
+     */
+    async _pushNow() {
+        const all = this.getAll();
+        if (this._loadError) return false; /* corrupt cache — never replace (review #2) */
+        /* #1649 — absorb the response instead of discarding it. The server
+           may have kept rows this push didn't mention (another device's
+           newer additions, or the whole tail if we exceeded the cap), and
+           the absorb helper both merges them back in and advances the sync
+           watermark. Dropping the result on the floor left the local cache
+           permanently behind the server. */
+        const res = await this.app.userAuth.syncSetlists(all, 'replace');
+        return this.app.userAuth._absorbSetlistSync(res) === true;
+    }
+
+    /**
+     * Send anything still waiting for its 1.5 second timer, without waiting, and say whether everything has reached
+     * the account. Used by sign-out (PR 2c-3). Deletions still waiting count as unsent (a paused site answers a read only).
+     *
+     * @returns {Promise<boolean>} true when nothing is left unsent
+     */
+    async flushNow() {
+        if (!this.app?.userAuth?.isLoggedIn?.()) return true;
+        const waiting = () => this.getPendingDeletes().length;
+        if (!this._syncTimerPending && waiting() === 0) return true;
+        clearTimeout(this._syncTimer);
+        this._syncTimerPending = false;
+        if (!this._syncReady) return false;   /* not safe to replace before the first reconcile (review #1) */
+        try { return (await this._pushNow()) && waiting() === 0; } catch { return false; }
     }
 
     /**
