@@ -202,6 +202,69 @@ function apnsTokenHashReady(\mysqli $db): bool
 }
 
 /**
+ * Remove the push registrations that belong to a sign-out. THE only place that deletes
+ * push registrations by person (account/profile rewrite PR 2a, step 2a-8, G4).
+ *
+ * ELI5: when a phone signs out, its notifications should stop, and ONLY its own. A
+ * registration now remembers which sign-in it was made under (`ApiTokenHash`), so
+ * signing that one session out removes that registration and leaves the person's other
+ * devices alone. Registrations made before this (no remembered sign-in) keep the older
+ * rule from A6: they go only when the session being signed out is an Apple one.
+ *
+ * Two modes:
+ *  - `$perSession` true (the new account behaviour is on AND the column exists): delete
+ *    the rows tied to the given sessions, plus, when `$sessionOwnsApplePush`, the rows
+ *    tied to no session at all.
+ *  - otherwise (the previous behaviour, unchanged): when `$sessionOwnsApplePush`, delete
+ *    every one of the person's registrations; when not, delete nothing.
+ *
+ * Every value is bound; the `IN (...)` list is built from placeholders only.
+ *
+ * @param \mysqli  $db                   live connection
+ * @param int      $userId               the person (every delete is filtered by it)
+ * @param string[] $sessionHashes        full sha256 hashes of the sign-ins being ended
+ * @param bool     $sessionOwnsApplePush apiTokenSessionOwnsApplePush() for the ended session (A6)
+ * @param bool     $perSession           use the per-session rule (see above)
+ * @return int rows removed
+ */
+function apnsDeleteForSessions(\mysqli $db, int $userId, array $sessionHashes, bool $sessionOwnsApplePush, bool $perSession): int
+{
+    if (!apnsTokensTableExists($db)) {
+        return 0;
+    }
+    $removed = 0;
+    if (!$perSession || !apnsTokenHashReady($db)) {
+        /* The previous behaviour (A6): an Apple session removes the person's registrations; any other does not. */
+        if ($sessionOwnsApplePush) {
+            $del = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
+            $del->bind_param('i', $userId);
+            $del->execute();
+            $removed += $del->affected_rows;
+            $del->close();
+        }
+        return $removed;
+    }
+    $hashes = array_values(array_unique(array_filter($sessionHashes, static fn($h) => is_string($h) && preg_match('/^[a-f0-9]{64}$/', $h) === 1)));
+    if ($hashes !== []) {
+        $marks = implode(',', array_fill(0, count($hashes), '?'));
+        $del = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ? AND ApiTokenHash IN (' . $marks . ')');
+        $del->bind_param('i' . str_repeat('s', count($hashes)), $userId, ...$hashes);
+        $del->execute();
+        $removed += $del->affected_rows;
+        $del->close();
+    }
+    if ($sessionOwnsApplePush) {
+        /* Registrations made before they were tied to a sign-in keep the A6 rule. */
+        $del = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ? AND ApiTokenHash IS NULL');
+        $del->bind_param('i', $userId);
+        $del->execute();
+        $removed += $del->affected_rows;
+        $del->close();
+    }
+    return $removed;
+}
+
+/**
  * Resolve the APNs Auth Key `.p8` PEM contents — DB setting first (the
  * real, web-provisionable-today path, mirrors SIWA), an optional
  * filesystem file second. See the file header's "`.p8` CUSTODY" section for

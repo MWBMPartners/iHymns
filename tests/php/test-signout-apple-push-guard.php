@@ -23,7 +23,8 @@ declare(strict_types=1);
  * such sites is not hard-coded either: we only require that the scan sees
  * `auth_logout` and `device_signout`, the two this step fixes.
  *
- * Step G4 later replaces this rule with per-session registrations.
+ * Step G4 (2a-8) moved the delete into apnsDeleteForSessions(), where this rule is the
+ * previous-behaviour branch; per-session registrations are in test-apns-session-tie.php.
  *
  *   php tests/php/test-signout-apple-push-guard.php
  */
@@ -54,32 +55,37 @@ $_fbApp = apiTokenWebDeviceFallback(null, null, 'iHymns/1.0 CFNetwork/1494 Darwi
 chk('the Apple app (non-browser UA, no platform) stays NULL', $_fbApp['platform'] === null);
 chk('so its sign-out removes its own push rows', apiTokenSessionOwnsApplePush($_fbApp['platform']) === true);
 
-/* ---- every whole-person delete sits behind it ---- */
-$src = (string)file_get_contents(dirname(__DIR__, 2) . '/appWeb/public_html/api.php');
-/* Keep only code strings and the surrounding code, but drop comments so a comment mentioning the call cannot satisfy the check. */
-$code = '';
-foreach (token_get_all($src) as $tok) {
-    if (is_array($tok)) {
-        if (in_array($tok[0], [T_COMMENT, T_DOC_COMMENT], true)) { $code .= str_repeat("\n", substr_count($tok[1], "\n")); continue; }
-        $code .= $tok[1];
-    } else {
-        $code .= $tok;
+/* ---- every whole-person delete sits behind it ----
+   Step 2a-8 (G4) moved the delete into ONE helper, apnsDeleteForSessions(), whose previous-behaviour branch is
+   the A6 rule. So the derived list is now: every `DELETE FROM tblApnsTokens WHERE UserId = ?` anywhere under
+   public_html must be inside that helper and behind `if ($sessionOwnsApplePush)`; and each sign-out case must
+   hand the helper the answer of apiTokenSessionOwnsApplePush(). (Per-session registrations are checked by
+   tests/php/test-apns-session-tie.php.) */
+require_once dirname(__DIR__, 2) . '/tests/php/lib/php_source_units.php';
+$web = dirname(__DIR__, 2) . '/appWeb/public_html';
+$sites = [];
+$it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($web, FilesystemIterator::SKIP_DOTS));
+foreach ($it as $f) {
+    if (!$f->isFile() || substr($f->getFilename(), -4) !== '.php') { continue; }
+    $fsrc = (string)file_get_contents($f->getPathname());
+    if (stripos($fsrc, 'tblApnsTokens') === false) { continue; }
+    foreach (phpSourceUnits($fsrc) as $unit => $u) {
+        foreach ($u['strings'] as $q) {
+            if (preg_match('/DELETE\s+FROM\s+tblApnsTokens\s+WHERE\s+UserId\s*=\s*\?\s*$/i', trim($q))) {
+                $sites[substr($f->getPathname(), strlen($web) + 1) . '#' . $unit] = $u['code'];
+            }
+        }
     }
 }
-$found = [];
-$off = 0;
-while (preg_match('/DELETE\s+FROM\s+tblApnsTokens\s+WHERE\s+UserId\s*=\s*\?[\'"]/', $code, $m, PREG_OFFSET_CAPTURE, $off)) {
-    $pos = $m[0][1];
-    $off = $pos + 10;
-    $caseAt = strrpos(substr($code, 0, $pos), "case '");
-    $caseName = $caseAt === false ? '?' : (preg_match("/case '([^']+)'/", substr($code, $caseAt, 80), $cm) ? $cm[1] : '?');
-    $between = $caseAt === false ? '' : substr($code, $caseAt, $pos - $caseAt);
-    $found[$caseName] = (bool)preg_match('/if\s*\([^)]*apiTokenSessionOwnsApplePush\(/', $between);
+chk('the only whole-person Apple push delete is inside apnsDeleteForSessions()', array_keys($sites) === ['includes/apns.php#apnsDeleteForSessions'], implode('; ', array_keys($sites)));
+foreach ($sites as $where => $code) {
+    chk("$where: that delete is the first thing inside `if (!\$perSession || !apnsTokenHashReady)` AND sits behind `if (\$sessionOwnsApplePush)`",
+        (bool)preg_match('/if \(!\$perSession \|\| !apnsTokenHashReady\(\$db\)\) \{ if \(\$sessionOwnsApplePush\) \{ \$del = \$db->prepare\(\'@STR@\' @SQL:DELETE:tblApnsTokens@ \);/', $code));
 }
-chk('the scan sees the auth_logout delete', array_key_exists('auth_logout', $found));
-chk('the scan sees the device_signout delete', array_key_exists('device_signout', $found));
-foreach ($found as $case => $guarded) {
-    chk("case '$case': the Apple push delete sits behind apiTokenSessionOwnsApplePush()", $guarded);
+$apiUnits = phpSourceUnits((string)file_get_contents($web . '/api.php'));
+foreach (['auth_logout', 'device_signout'] as $case) {
+    $c = $apiUnits["case '$case'"]['code'] ?? '';
+    chk("case '$case': the helper is handed apiTokenSessionOwnsApplePush()", (bool)preg_match('/apnsDeleteForSessions\([^;]*apiTokenSessionOwnsApplePush\(/', $c));
 }
 
 exit($fail === 0 ? 0 : 1);

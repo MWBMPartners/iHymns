@@ -291,6 +291,29 @@ function apiTokenSessionPlatform(\mysqli $db, int $userId, string $tokenHashOrPr
 }
 
 /**
+ * The full stored hashes of a person's sign-ins whose hash starts with a device id.
+ *
+ * ELI5: the devices list shows a short code for each sign-in (the first letters of its
+ * stored hash). To sign one out cleanly, other things tied to that sign-in (its push
+ * registration) need the FULL hash, and it must be read BEFORE the sign-in row is deleted.
+ * Own-only: the person's id is in the WHERE. The prefix is checked to be lowercase hex.
+ *
+ * @return string[] full 64-character hashes (normally one)
+ */
+function apiTokenHashesForDevicePrefix(\mysqli $db, int $userId, string $devicePrefix): array
+{
+    if (!preg_match('/^[a-f0-9]{8,64}$/', $devicePrefix)) {
+        return [];
+    }
+    $st = $db->prepare('SELECT Token FROM tblApiTokens WHERE UserId = ? AND Token LIKE CONCAT(?, "%") LIMIT 10');
+    $st->bind_param('is', $userId, $devicePrefix);
+    $st->execute();
+    $rows = $st->get_result()->fetch_all(MYSQLI_NUM);
+    $st->close();
+    return array_values(array_filter(array_map(static fn($r) => (string)$r[0], $rows), static fn($h) => preg_match('/^[a-f0-9]{64}$/', $h) === 1));
+}
+
+/**
  * Clean an OPTIONAL client-declared device-metadata triple from a decoded
  * sign-in request body. Every field is genuinely optional — an existing
  * native client that never sends them (every caller today) must sign in

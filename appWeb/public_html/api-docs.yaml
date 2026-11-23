@@ -4916,6 +4916,14 @@ paths:
         tokens, but only when this session declared `platform: apple` (account/
         profile rewrite A6); signing out a browser leaves the person's iPhone
         notification registrations alone.
+
+        **New account behaviour (PR 2a, G4).** On a site where an admin has
+        switched it on (and once the foundation migration has been run), each
+        push registration remembers the sign-in it was made under, so signing out
+        removes ONLY the registrations tied to THIS session (plus, for an Apple
+        session, older registrations tied to no session). Other devices of the
+        same person keep their notifications. Anywhere else the A6 rule above
+        applies unchanged. The reply is the same either way.
       security:
         - bearerAuth: []
       parameters:
@@ -5826,6 +5834,13 @@ paths:
         (or any session of another or unknown platform) leaves the person's
         iPhone notification registrations alone. The same rule applies to
         `auth_logout`.
+
+        **New account behaviour (PR 2a, G4).** On a site where an admin has
+        switched it on (and once the foundation migration has been run), only the
+        push registrations tied to the sign-in(s) being removed are cleared, plus,
+        for an Apple session, older registrations tied to no session. The full
+        hash of each removed sign-in is read before its row is deleted. Anywhere
+        else the A6 rule above applies unchanged.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -9022,6 +9037,15 @@ paths:
         could otherwise register a token against any active session by
         guessing its numeric id. Ordinary `kind: device` tokens are not
         session-scoped and skip this check entirely.
+
+        **New account behaviour (PR 2a, G4).** On a site where an admin has
+        switched it on (and once the foundation migration has been run), the
+        registration also remembers which sign-in it was made under (a hash of the
+        session token, never the token), including when an existing registration
+        is re-registered. Signing that session out (`auth_logout` /
+        `device_signout`) then removes only its own registration. A request with
+        no session token, or anywhere the behaviour is off, registers exactly as
+        before. The reply is unchanged.
       security:
         - bearerAuth: []
         - cookieAuth: []

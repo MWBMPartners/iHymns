@@ -3917,16 +3917,19 @@ if ($action !== null) {
                    iPhone notification registrations (it used to delete every
                    Apple device's row). Step G4 later ties each registration to
                    its own session. */
-                if ($authedUser && apiTokenSessionOwnsApplePush($signedOutPlatform)) {
+                /* G4 (PR 2a): with the new account behaviour on, each registration is tied to
+                   the sign-in it was made under, so ONLY this session's registrations go (plus,
+                   for an Apple session, the older ones tied to no session). Off: exactly A6. */
+                if ($authedUser) {
                     try {
                         require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
-                        if (apnsTokensTableExists($db)) {
-                            $apnsUserId = (int)$authedUser['Id'];
-                            $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
-                            $delApns->bind_param('i', $apnsUserId);
-                            $delApns->execute();
-                            $delApns->close();
-                        }
+                        apnsDeleteForSessions(
+                            $db,
+                            (int)$authedUser['Id'],
+                            [$tokenHash],
+                            apiTokenSessionOwnsApplePush($signedOutPlatform),
+                            profileSyncEnabledHere()
+                        );
                     } catch (\Throwable $e) {
                         error_log('[api/auth_logout] apns token cleanup failed: ' . $e->getMessage());
                     }
@@ -6260,6 +6263,9 @@ if ($action !== null) {
                BEFORE its row is deleted, so a stale browser can be removed from
                the device list without stopping the iPhone's notifications. */
             $signedOutPlatform = apiTokenSessionPlatform($db, $userId, $deviceId, true);
+            /* G4 (PR 2a): the FULL hashes for this prefix, read BEFORE the rows are deleted, so the
+               push registrations tied to exactly these sign-ins can be removed afterwards. */
+            $signedOutHashes = profileSyncEnabledHere() ? apiTokenHashesForDevicePrefix($db, $userId, $deviceId) : [];
             $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token LIKE CONCAT(?, "%")');
             $stmt->bind_param('is', $userId, $deviceId);
             $stmt->execute();
@@ -6277,18 +6283,17 @@ if ($action !== null) {
                sign-out/410") — same cleanup as auth_logout above, wrapped
                defensively so a signed-out device never sees a 500 because
                of this best-effort cleanup. */
-            if (apiTokenSessionOwnsApplePush($signedOutPlatform)) {
-                try {
-                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
-                    if (apnsTokensTableExists($db)) {
-                        $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
-                        $delApns->bind_param('i', $userId);
-                        $delApns->execute();
-                        $delApns->close();
-                    }
-                } catch (\Throwable $e) {
-                    error_log('[api/device_signout] apns token cleanup failed: ' . $e->getMessage());
-                }
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+                apnsDeleteForSessions(
+                    $db,
+                    $userId,
+                    $signedOutHashes,
+                    apiTokenSessionOwnsApplePush($signedOutPlatform),
+                    profileSyncEnabledHere()
+                );
+            } catch (\Throwable $e) {
+                error_log('[api/device_signout] apns token cleanup failed: ' . $e->getMessage());
             }
 
             sendJson(['ok' => true]);
@@ -6505,13 +6510,31 @@ if ($action !== null) {
             }
 
             try {
-                $ins = $db->prepare(
-                    'INSERT INTO tblApnsTokens (Kind, UserId, SessionId, PushToken, ApnsEnv, ExpiresAt)
-                     VALUES (?, ?, ?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE Kind = VALUES(Kind), UserId = VALUES(UserId),
-                         SessionId = VALUES(SessionId), ApnsEnv = VALUES(ApnsEnv), ExpiresAt = VALUES(ExpiresAt)'
-                );
-                $ins->bind_param('siisss', $kind, $userId, $sessionId, $binToken, $apnsEnv, $sessionExpiresAt);
+                /* G4 (PR 2a): with the new account behaviour on, remember which sign-in this
+                   registration was made under (the hash of the session token, the same value the
+                   sign-in table stores), including when an existing registration is updated, so
+                   signing THAT session out removes only its own registration. Off, no session
+                   token, or the column not there yet: the previous statement. */
+                $apnsBearer = getAuthBearerToken();
+                $apnsSessionHash = ($apnsBearer !== null && $apnsBearer !== '') ? hash('sha256', $apnsBearer) : null;
+                if ($apnsSessionHash !== null && profileSyncEnabledHere() && apnsTokenHashReady($db)) {
+                    $ins = $db->prepare(
+                        'INSERT INTO tblApnsTokens (Kind, UserId, SessionId, PushToken, ApnsEnv, ExpiresAt, ApiTokenHash)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE Kind = VALUES(Kind), UserId = VALUES(UserId),
+                             SessionId = VALUES(SessionId), ApnsEnv = VALUES(ApnsEnv), ExpiresAt = VALUES(ExpiresAt),
+                             ApiTokenHash = VALUES(ApiTokenHash)'
+                    );
+                    $ins->bind_param('siissss', $kind, $userId, $sessionId, $binToken, $apnsEnv, $sessionExpiresAt, $apnsSessionHash);
+                } else {
+                    $ins = $db->prepare(
+                        'INSERT INTO tblApnsTokens (Kind, UserId, SessionId, PushToken, ApnsEnv, ExpiresAt)
+                         VALUES (?, ?, ?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE Kind = VALUES(Kind), UserId = VALUES(UserId),
+                             SessionId = VALUES(SessionId), ApnsEnv = VALUES(ApnsEnv), ExpiresAt = VALUES(ExpiresAt)'
+                    );
+                    $ins->bind_param('siisss', $kind, $userId, $sessionId, $binToken, $apnsEnv, $sessionExpiresAt);
+                }
                 $ins->execute();
                 $ins->close();
             } catch (\Throwable $e) {
