@@ -67,7 +67,7 @@ const MAX_OUTBOX_ITEMS = 2500;
 /** The most pages one read will follow. */
 const MAX_PAGES = 40;
 /** Reasons for which a refused change will never be accepted, so it must not stay in the outbox for ever. */
-const PERMANENT_REJECTIONS = ['unknown_key', 'device_only', 'not_profile_item', 'invalid_value', 'invalid_item_key', 'value_too_large', 'cap_reached'];
+export const PERMANENT_REJECTIONS = ['unknown_key', 'device_only', 'not_profile_item', 'invalid_value', 'invalid_item_key', 'value_too_large', 'cap_reached', 'not_opted_in'];
 /** The setting that lets a person opt out of syncing their settings (the same one settings.js has always used). */
 const SYNC_TOGGLE_KEY = 'ihymns_sync_app_settings';
 

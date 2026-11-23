@@ -132,6 +132,36 @@ chk('the cap is counted as items are added in one request (the third is refused)
 $p = profileSyncPlan([$P('songPrefs', 'MP-1') => $marker], [$set('songPrefs', 'MP-1', ['capo' => 1])], 0, null, ['songPrefs' => 2000]);
 chk('bringing a deleted item back counts as a new live item (the cap applies)', $p['writes'] === [] && ($p['rejected'][0]['reason'] ?? '') === 'cap_reached');
 
+/* the recent-searches privacy rule (the server enforces it, whatever a client sends) */
+$OPT = $P('privacy', 'syncSearchHistory'); $LST = $P('history', 'searches');
+$p = profileSyncPlan([], [$set('history', 'searches', ['grace'])], 0, null, []);
+$note($p);
+chk('not_opted_in: a list of searches is refused when the option was never set', $p['writes'] === [] && ($p['rejected'][0]['reason'] ?? '') === 'not_opted_in');
+$p = profileSyncPlan([$OPT => $live(false)], [$set('history', 'searches', ['grace'])], 0, null, []);
+chk('...and when the option is stored as false', $p['writes'] === [] && ($p['rejected'][0]['reason'] ?? '') === 'not_opted_in');
+$p = profileSyncPlan([$OPT => $marker], [$set('history', 'searches', ['grace'])], 0, null, []);
+chk('...and when the option was deleted', $p['writes'] === [] && ($p['rejected'][0]['reason'] ?? '') === 'not_opted_in');
+$p = profileSyncPlan([$OPT => $live(true)], [$set('history', 'searches', ['grace'])], 0, null, []);
+chk('a list is accepted while the option is live and true', count($p['writes']) === 1 && $p['rejected'] === []);
+$p = profileSyncPlan([], [$set('privacy', 'syncSearchHistory', true), $set('history', 'searches', ['grace'])], 0, null, []);
+chk('the option switched on EARLIER IN THE SAME BATCH lets the list through', count($p['writes']) === 2 && $p['rejected'] === []);
+$p = profileSyncPlan([], [$set('history', 'searches', ['grace']), $set('privacy', 'syncSearchHistory', true)], 0, null, []);
+chk('...but in the wrong order (list first) the list is refused: the order of arrival decides', count($p['writes']) === 1 && ($p['rejected'][0]['reason'] ?? '') === 'not_opted_in');
+$p = profileSyncPlan([$OPT => $live(true), $LST => $live(['grace'])], [$set('privacy', 'syncSearchHistory', false)], 4, null, []);
+chk('turning the option OFF deletes the stored list in the same batch (a marker, version after the option)',
+    count($p['writes']) === 2 && $p['writes'][1]['section'] === 'history' && $p['writes'][1]['deleted'] === true && $p['writes'][1]['json'] === null && $p['writes'][1]['version'] === 6 && $p['maxVersion'] === 6);
+$p = profileSyncPlan([$OPT => $live(true), $LST => $live(['grace'])], [$del('privacy', 'syncSearchHistory')], 4, null, []);
+chk('deleting the option deletes the stored list too', count($p['writes']) === 2 && $p['writes'][1]['deleted'] === true && $p['writes'][1]['key'] === 'searches');
+$p = profileSyncPlan([$OPT => $live(true), $LST => $live(['grace'])], [$set('privacy', 'syncSearchHistory', true)], 4, null, []);
+chk('setting the option to true again leaves the list alone', $p['writes'] === [] && $p['unchanged'] === 1);
+$p = profileSyncPlan([$OPT => $live(true)], [$set('history', 'searches', ['grace']), $set('privacy', 'syncSearchHistory', false)], 0, null, []);
+chk('list then option off in one batch ends with the list deleted (one write for the list: the marker)',
+    count(array_filter($p['writes'], fn($w) => $w['key'] === 'searches' && $w['deleted'] === true)) === 1 && count(array_filter($p['writes'], fn($w) => $w['key'] === 'searches' && $w['deleted'] === false)) === 0);
+$p = profileSyncPlan([$LST => $live(['grace'])], [$set('privacy', 'syncSearchHistory', false)], 0, null, []);
+chk('even a list left over from before this rule goes when the option is next stored as off', count(array_filter($p['writes'], fn($w) => $w['key'] === 'searches' && $w['deleted'] === true)) === 1);
+$p = profileSyncPlan([], [$del('history', 'searches')], 0, null, []);
+chk('removing a list is always allowed (it is never a leak)', $p['rejected'] === [] && $p['unchanged'] === 1);
+
 /* versions in arrival order */
 $p = profileSyncPlan([], [$set('appearance', 'theme', 'dark'), $set('songPrefs', 'MP-1', ['capo' => 1]), $set('appearance', 'reduceMotion', true), $set('appearance', 'theme', 'bad')], 40, null, []);
 chk('versions rise by one per accepted change, in the order the changes arrived; a refused change uses none',
@@ -266,6 +296,18 @@ try {
     $n = (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 2 AND Section = 'songPrefs' AND DeletedAt IS NULL")->fetch_row()[0];
     chk('with 2000 real rows, a new item is refused (cap_reached), an existing one still changes, and nothing was evicted',
         $n === 2000 && ($r['rejected'][0]['reason'] ?? '') === 'cap_reached' && $r['applied'] === 1 && (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE ItemKey = 'MP-9999'")->fetch_row()[0] === 0);
+    $db->query('DELETE FROM tblUserProfileItems WHERE UserId = 2');
+
+    /* the recent-searches privacy rule on real rows: A opts out, B (which has not heard yet) pushes searches */
+    profileSyncApply($db, 2, [$set('privacy', 'syncSearchHistory', true), $set('history', 'searches', ['amazing grace'])], 'web');
+    chk('with the option on, the list is stored', (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 2 AND Section = 'history' AND DeletedAt IS NULL")->fetch_row()[0] === 1);
+    profileSyncApply($db, 2, [$set('privacy', 'syncSearchHistory', false)], 'web');   /* device A opts out */
+    chk('device A opting out removes the list (a marker with no value) in the same save', (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 2 AND Section = 'history' AND DeletedAt IS NOT NULL AND ValueJson IS NULL")->fetch_row()[0] === 1);
+    $r = profileSyncApply($db, 2, [$set('history', 'searches', ['how great thou art'])], 'apple');   /* device B has not heard */
+    $held = (int)$db->query("SELECT COUNT(*) FROM tblUserProfileItems WHERE UserId = 2 AND Section = 'history' AND DeletedAt IS NULL")->fetch_row()[0];
+    $text = (string)$db->query("SELECT COALESCE(GROUP_CONCAT(ValueJson), '') FROM tblUserProfileItems WHERE UserId = 2")->fetch_row()[0];
+    chk('device B pushing searches is refused (not_opted_in) and the account holds none of its words', ($r['rejected'][0]['reason'] ?? '') === 'not_opted_in' && $held === 0 && !str_contains($text, 'thou art'));
+    chk('...and a pull tells every device the list is deleted', in_array(true, array_map(fn($c) => $c['section'] === 'history' && $c['deleted'] === true, profileSyncPull($db, 2, 0)['changes']), true));
     $db->query('DELETE FROM tblUserProfileItems WHERE UserId = 2');
 
     /* too many changes in one batch is a programming error the endpoint prevents */

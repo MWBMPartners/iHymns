@@ -351,5 +351,15 @@ console.log('\n12 - app.js hands the options through\n');
     check('settings.js stands its older whole-box sync down while the profile sync is active', /profileSync\?\.isActive\?\.\(\)\) return false/.test(settingsJs));
 }
 
+console.log('\n13 - the refusal reasons: the browser and the server agree (rule #35)\n');
+{
+    const { PERMANENT_REJECTIONS } = await import(url(path.join(MODULES, 'profile-sync.js')) + '?t=' + Math.random());
+    const serverReasons = JSON.parse(execFileSync('php', ['-r', '$_SERVER["SCRIPT_FILENAME"]="t"; require ' + J(path.join(REPO, 'appWeb', 'public_html', 'includes', 'profile_sync.php')) + '; echo json_encode(PROFILE_SYNC_REJECT_REASONS);'], { encoding: 'utf8' }));
+    /* Every reason the server can give for a single change is a refusal that will never be accepted as sent, so the browser must drop it
+       from its outbox. A reason on one list and not the other would either retry a doomed change for ever or drop a retryable one. */
+    check('every reason the server can give is in the browser\'s "never retry" list, and the browser lists none the server does not give',
+        J([...serverReasons].sort()) === J([...PERMANENT_REJECTIONS].sort()), J(serverReasons) + ' vs ' + J(PERMANENT_REJECTIONS));
+}
+
 console.log(failures === 0 ? '\nAll profile-sync checks pass.' : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

@@ -166,7 +166,13 @@ const PROFILE_SYNC_PAGE_SIZE = 500;
 const PROFILE_SYNC_META_SECTION = '_meta';
 
 /** The reasons a single change can be refused. Defined once; a client branches on these, never on a sentence (rule #35). */
-const PROFILE_SYNC_REJECT_REASONS = ['unknown_key', 'device_only', 'not_profile_item', 'invalid_value', 'invalid_item_key', 'value_too_large', 'cap_reached'];
+const PROFILE_SYNC_REJECT_REASONS = ['unknown_key', 'device_only', 'not_profile_item', 'invalid_value', 'invalid_item_key', 'value_too_large', 'cap_reached', 'not_opted_in'];
+
+/** The recent-searches list (section, key). It may be stored ONLY while the person's opt-in option (below) is live and true (privacy, fix 1 of the 2b review). */
+const PROFILE_SYNC_SEARCH_LIST = ['history', 'searches'];
+
+/** The opt-in option "keep my recent searches in my account" (section, key). Off, or never set, means no searches are kept. */
+const PROFILE_SYNC_SEARCH_OPTION = ['privacy', 'syncSearchHistory'];
 
 /** The platform names a writer may declare (the registry's list); anything else is stored as nothing. */
 function profileSyncCleanPlatform(?string $platform): ?string
@@ -251,6 +257,12 @@ function profileSyncPlan(array $rows, array $changes, int $maxVersion, ?string $
     $applied  = 0;
     $unchanged = 0;
     $version  = $maxVersion;
+    /* The recent-searches privacy rule (the server enforces it, whatever a client sends):
+       the list is accepted only while the opt-in option is live and true, counting the changes earlier in THIS batch;
+       and when the option ends the batch off (deleted, or set false) the list is deleted in the same batch. */
+    $listPair   = profileSyncPairKey(PROFILE_SYNC_SEARCH_LIST[0], PROFILE_SYNC_SEARCH_LIST[1]);
+    $optionPair = profileSyncPairKey(PROFILE_SYNC_SEARCH_OPTION[0], PROFILE_SYNC_SEARCH_OPTION[1]);
+    $optionTouched = false;
 
     foreach ($changes as $c) {
         $section = is_array($c) && is_string($c['section'] ?? null) ? $c['section'] : '';
@@ -280,6 +292,11 @@ function profileSyncPlan(array $rows, array $changes, int $maxVersion, ?string $
             $json = profileSyncEncodeValue($entry, $value);
             if (strlen($json) > PROFILE_SYNC_MAX_VALUE_BYTES) { $reject('value_too_large'); continue; }
             if (!profileRegistryValidate($section, $key, $value)) { $reject('invalid_value'); continue; }
+            if ($pair === $listPair) {
+                $opt = $state[$optionPair] ?? null;
+                if ($opt === null || $opt['deleted'] || $opt['value'] !== true) { $reject('not_opted_in'); continue; }
+            }
+            if ($pair === $optionPair) { $optionTouched = true; }
             if ($isLive && profileSyncSameValue($now['value'], $value)) { $unchanged++; continue; }   /* nothing changed: no write, no new version */
             if ($isMap && !$isLive) {
                 /* A NEW item in a map section: refuse when the section is full. Nothing is ever evicted. */
@@ -294,12 +311,27 @@ function profileSyncPlan(array $rows, array $changes, int $maxVersion, ?string $
         }
 
         /* delete */
+        if ($pair === $optionPair) { $optionTouched = true; }
         if (!$isLive) { $unchanged++; continue; }             /* nothing there, or already a marker: nothing to do */
         if ($isMap) { $counts[$section] = max(0, ($counts[$section] ?? 0) - 1); }
         $version++;
         $state[$pair] = ['deleted' => true, 'value' => null];
         $writes[$pair] = ['section' => $section, 'key' => $key, 'json' => null, 'deleted' => true, 'version' => $version, 'platform' => $platform];
         $applied++;
+    }
+
+    /* The option ended this batch off: the account must hold no searches. The stored row becomes a delete marker
+       (its value is cleared by the write), so every other device learns the list is gone. */
+    if ($optionTouched) {
+        $opt  = $state[$optionPair] ?? null;
+        $list = $state[$listPair] ?? null;
+        $on   = $opt !== null && !$opt['deleted'] && $opt['value'] === true;
+        if (!$on && $list !== null && !$list['deleted']) {
+            $version++;
+            $state[$listPair] = ['deleted' => true, 'value' => null];
+            $writes[$listPair] = ['section' => PROFILE_SYNC_SEARCH_LIST[0], 'key' => PROFILE_SYNC_SEARCH_LIST[1], 'json' => null, 'deleted' => true, 'version' => $version, 'platform' => $platform];
+            $applied++;
+        }
     }
     return ['writes' => array_values($writes), 'rejected' => $rejected, 'applied' => $applied, 'unchanged' => $unchanged, 'maxVersion' => $version];
 }
@@ -346,6 +378,12 @@ if (!function_exists('profileSyncApplyLocked')) {
         foreach ($changes as $c) {
             if (!is_array($c) || !is_string($c['section'] ?? null) || !is_string($c['key'] ?? null)) { continue; }
             $pairs[profileSyncPairKey($c['section'], $c['key'])] = [$c['section'], $c['key']];
+            if (profileSyncPairKey($c['section'], $c['key']) === profileSyncPairKey(PROFILE_SYNC_SEARCH_LIST[0], PROFILE_SYNC_SEARCH_LIST[1])
+                || profileSyncPairKey($c['section'], $c['key']) === profileSyncPairKey(PROFILE_SYNC_SEARCH_OPTION[0], PROFILE_SYNC_SEARCH_OPTION[1])) {
+                /* The searches rule needs BOTH rows, whichever of the two this change names. */
+                $pairs[profileSyncPairKey(PROFILE_SYNC_SEARCH_LIST[0], PROFILE_SYNC_SEARCH_LIST[1])] = PROFILE_SYNC_SEARCH_LIST;
+                $pairs[profileSyncPairKey(PROFILE_SYNC_SEARCH_OPTION[0], PROFILE_SYNC_SEARCH_OPTION[1])] = PROFILE_SYNC_SEARCH_OPTION;
+            }
             $e = profileRegistryEntry($c['section'], $c['key']);
             if ($e !== null && ($e['type'] ?? '') === 'map') { $mapSections[$c['section']] = true; }
         }

@@ -7675,7 +7675,10 @@ paths:
         `not_profile_item` (favourites, set lists and the like have their own sync),
         `invalid_value`, `invalid_item_key`, `value_too_large` (over 4 KiB), `cap_reached`
         (a map section such as the key and capo per song is full; nothing is thrown away to
-        make room). Sending a value that is already stored changes nothing and takes no
+        make room), `not_opted_in` (the recent-searches list `history.searches` is only
+        kept while `privacy.syncSearchHistory` is on in the account; the server checks, whatever
+        the client believes. Turning that option off, or deleting it, also removes the account's
+        list in the same request). Sending a value that is already stored changes nothing and takes no
         version. The reply `applied` counts the changes that were stored.
 
         A request may carry up to 200 changes and 64 KiB. Limited to 120 a minute per
@@ -25756,7 +25759,7 @@ components:
                   properties:
                     section: { type: string }
                     key:     { type: string }
-                    reason:  { type: string, enum: [unknown_key, device_only, not_profile_item, invalid_value, invalid_item_key, value_too_large, cap_reached] }
+                    reason:  { type: string, enum: [unknown_key, device_only, not_profile_item, invalid_value, invalid_item_key, value_too_large, cap_reached, not_opted_in] }
               applied: { type: integer, description: How many of the sent changes were stored (0 for a GET). }
     ProfileSyncBadRequest:
       description: The request is malformed (reason `invalid_request`)
