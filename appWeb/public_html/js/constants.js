@@ -312,6 +312,10 @@ export const EVT_XSITE_SETTINGS_APPLIED = 'ihymns:xsite-settings-applied';
 /* The profile sync (js/modules/profile-sync.js) wrote values it received from the person's account into
    local storage. detail.keys = the storage keys it changed. Settings listens and re-applies what is visual. */
 export const EVT_PROFILE_APPLIED = 'ihymns:profile-applied';
+/* The profile sync switched between "doing the work" and "not doing it" (signed in or out, the person's own settings-sync
+   switch, or the site answering that it is off or not ready). detail.active = the new answer. Dispatcher: ProfileSync.refreshActive().
+   Listener: search-history-sync-row.js, so the "Keep my recent searches" row appears and disappears at once. */
+export const EVT_PROFILE_ACTIVE_CHANGED = 'ihymns:profile-active-changed';
 
 /* ── Songbook Name Lookup ─────────────────────────────────────────────── */
 

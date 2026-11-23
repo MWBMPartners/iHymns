@@ -29,9 +29,9 @@ import {
     EVT_OFFLINE_SETTINGS_CHANGED,
     EVT_XSITE_SETTINGS_APPLIED,
     EVT_PROFILE_APPLIED,
-    STORAGE_SYNC_SEARCH_HISTORY,
 } from '../constants.js';
 import { escapeHtml } from '../utils/html.js';
+import { bindSearchHistorySyncRow } from './search-history-sync-row.js';
 import { CROSS_SITE_KEYS } from './settings-sync-registry.js';
 /* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
    on every same-origin request, replacing the old global fetch monkey-patch. */
@@ -2070,22 +2070,14 @@ export class Settings {
                 } else {
                     localStorage.setItem(SYNC_TOGGLE_KEY, 'false');
                 }
+                /* The new sync steps aside while this person's own switch is off: tell anything that depends on it (the searches row). */
+                this.app.profileSync?.refreshActive?.();
             });
         }
 
         /* "Keep my recent searches in my account" (#2177). Off unless switched on; the row only appears where the new
            account sync is active for this site. The switch itself is a setting that follows the account. */
-        const searchSyncToggle = document.getElementById('setting-sync-search-history');
-        const searchSyncWrap = document.getElementById('setting-sync-search-history-wrap');
-        if (searchSyncToggle && searchSyncWrap) {
-            /* Refreshed every time (the account section is redrawn on sign-in and sign-out); the listener is bound once. */
-            searchSyncWrap.classList.toggle('d-none', !this.app.profileSync?.isActive?.());
-            searchSyncToggle.checked = localStorage.getItem(STORAGE_SYNC_SEARCH_HISTORY) === 'true';
-            if (!searchSyncToggle.dataset.bound) {
-                searchSyncToggle.dataset.bound = '1';
-                searchSyncToggle.addEventListener('change', () => { this.app.profileSync?.setSearchHistorySync?.(searchSyncToggle.checked); });
-            }
-        }
+        bindSearchHistorySyncRow(document, this.app, localStorage);
 
         /* Profile save — update display name + email */
         const profileForm = document.getElementById('profile-form');

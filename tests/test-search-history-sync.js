@@ -182,5 +182,54 @@ console.log('\n7 - a shared browser: one person\'s switch and searches never rea
     check('with the option off, the older device-only list is not touched by a change of person (as before)', localStorage.getItem(C.STORAGE_SEARCH_HISTORY) === J(['just on this device']));
 }
 
+console.log('\n8 - the switch only changes this device when the account can be told, and the row follows whether the sync is working\n');
+{
+    localStorage.clear();
+    const row = await import(url(path.join(JS, 'modules', 'search-history-sync-row.js')));
+    document.body.innerHTML = '<div id="setting-sync-search-history-wrap" class="d-none"><input type="checkbox" id="setting-sync-search-history"></div>';
+    const toggle = document.getElementById('setting-sync-search-history');
+    const wrap = document.getElementById('setting-sync-search-history-wrap');
+    let signedIn = true; const toasts = [];
+    const app3 = { config: { apiUrl: '/api', profileSync: { enabled: true } }, userAuth: { isLoggedIn: () => signedIn, getUser: () => ({ id: 9 }) }, syncStorage(k, o) { s3.recordLocalChange(k, o || {}); }, showToast: (m) => toasts.push(m) };
+    let s3 = new ProfileSync(app3, { storage: window.localStorage, setTimer: () => 1, clearTimer: () => {} });
+    app3.profileSync = s3;
+    s3.init();
+    row.bindSearchHistorySyncRow(document, app3, localStorage);
+    const changed = () => new Promise((r) => setTimeout(r, 20));
+
+    check('the row is shown while the sync is working', !wrap.classList.contains('d-none'));
+    signedIn = false; s3.refreshActive(); await changed();
+    check('...and hides as soon as the sync stops being active (here: signed out), without the page being redrawn', wrap.classList.contains('d-none'));
+    signedIn = true; s3.refreshActive(); await changed();
+    check('...and comes back when it is active again', !wrap.classList.contains('d-none'));
+    localStorage.setItem('ihymns_sync_app_settings', 'false'); s3.refreshActive(); await changed();
+    check('...and hides when the person switches their own settings sync off', wrap.classList.contains('d-none'));
+    localStorage.removeItem('ihymns_sync_app_settings'); s3.refreshActive(); await changed();
+
+    /* the change cannot be queued: the sync is not active */
+    signedIn = false;
+    const direct = await s3.setSearchHistorySync(true);
+    check('with the sync not active, switching the option on changes NOTHING on this device and says so', direct === false && localStorage.getItem(C.STORAGE_SYNC_SEARCH_HISTORY) === null && s3.pendingCount() === 0);
+    signedIn = true;
+    /* the schema cannot be loaded (offline and nothing saved) */
+    localStorage.removeItem(C.STORAGE_PROFILE_SCHEMA);   /* nothing saved from earlier */
+    const offline = new ProfileSync(app3, { storage: window.localStorage, setTimer: () => 1, clearTimer: () => {} });
+    const savedFetch = globalThis.fetch; globalThis.fetch = async () => { throw new Error('offline'); };
+    const r2 = await offline.setSearchHistorySync(true);
+    globalThis.fetch = savedFetch;
+    check('with the list of settings not loadable, the option is not changed either', r2 === false && localStorage.getItem(C.STORAGE_SYNC_SEARCH_HISTORY) === null);
+
+    /* through the real row: the box is put back and the person told */
+    app3.profileSync = offline; globalThis.fetch = async () => { throw new Error('offline'); };
+    toggle.checked = true; toggle.dispatchEvent(new window.Event('change')); await changed();
+    globalThis.fetch = savedFetch;
+    check('flipping the box when nothing can be queued puts the box back and tells the person', toggle.checked === false && localStorage.getItem(C.STORAGE_SYNC_SEARCH_HISTORY) === null && toasts.length === 1);
+
+    /* and when it can be queued it works and stays */
+    app3.profileSync = s3; await s3.ensureSchema();
+    toggle.checked = true; toggle.dispatchEvent(new window.Event('change')); await changed();
+    check('when it can be queued the change is made, queued, and the box stays on', toggle.checked === true && localStorage.getItem(C.STORAGE_SYNC_SEARCH_HISTORY) === 'true' && s3.getOutbox().items['privacy.syncSearchHistory']?.value === true);
+}
+
 console.log(failures === 0 ? '\nAll search-history checks pass.' : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

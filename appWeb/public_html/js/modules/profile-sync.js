@@ -45,7 +45,7 @@
 
 import {
     STORAGE_PROFILE_OUTBOX, STORAGE_PROFILE_CURSOR, STORAGE_PROFILE_SCHEMA,
-    EVT_AUTH_CHANGED, EVT_PROFILE_APPLIED, ACCOUNT_WRITES_OFF_REASON,
+    EVT_AUTH_CHANGED, EVT_PROFILE_APPLIED, EVT_PROFILE_ACTIVE_CHANGED, ACCOUNT_WRITES_OFF_REASON,
     STORAGE_SEARCH_HISTORY, STORAGE_SYNC_SEARCH_HISTORY,
 } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
@@ -93,6 +93,8 @@ export class ProfileSync {
         this._again = false;
         this._pullGate = createPullGate();
         this._schemaPromise = null;
+        /** The last answer of isActive() that listeners were told about (see refreshActive()). */
+        this._lastActive = null;
         /** The most changes per request right now: halved when the server says a request was too big, so it can never get stuck. */
         this._batchLimit = MAX_CHANGES_PER_REQUEST;
     }
@@ -102,6 +104,22 @@ export class ProfileSync {
     /** Is the new sync doing the work right now? settings.js stops its older whole-box sync while this is true. */
     isActive() {
         return !this._off && !!this.app.config?.profileSync?.enabled && this._signedIn() && this._optedIn();
+    }
+
+    /**
+     * Tell the page when isActive() has changed, so anything that shows only while the sync is working (the Settings row
+     * "Keep my recent searches in my account") appears or disappears at once, not only the next time the page is drawn.
+     * Call it after anything that can change the answer. Fires only on a real change.
+     *
+     * @returns {boolean} the current answer
+     */
+    refreshActive() {
+        const now = this.isActive();
+        if (this._lastActive !== now) {
+            this._lastActive = now;
+            try { document.dispatchEvent(new CustomEvent(EVT_PROFILE_ACTIVE_CHANGED, { detail: { active: now } })); } catch (_e) { /* no DOM */ }
+        }
+        return now;
     }
 
     _uid() {
@@ -121,12 +139,15 @@ export class ProfileSync {
             if (!loggedIn) {
                 this._pullGate.reset();
                 this._cancelTimers();
+                this.refreshActive();
                 return;
             }
+            this.refreshActive();
             const uid = e?.detail?.user?.id ?? this._uid();
             if (this._off || !this._optedIn() || !this._pullGate.begin(uid)) return;
             this.syncNow().then((ok) => { if (!ok) this._pullGate.fail(); }).catch(() => this._pullGate.fail());
         });
+        this.refreshActive();
         /* Already signed in when the page loaded (the router's first announcement came before this existed). */
         if (this._signedIn() && this._optedIn() && this._pullGate.begin(this._uid())) {
             this.syncNow().then((ok) => { if (!ok) this._pullGate.fail(); }).catch(() => this._pullGate.fail());
@@ -251,11 +272,13 @@ export class ProfileSync {
      * @param {boolean} on
      */
     async setSearchHistorySync(on) {
+        /* Nothing is changed on this device unless the change can also be queued for the account: a switch that only
+           moved locally would leave the account (and so every other device) believing something else. */
+        if (!this.isActive() || !(await this.ensureSchema()) || !this.isActive()) return false;
         try {
             if (on) this.storage.setItem(STORAGE_SYNC_SEARCH_HISTORY, 'true');
             else this.storage.removeItem(STORAGE_SYNC_SEARCH_HISTORY);
         } catch (_e) { return false; }
-        if (!this.isActive() || !(await this.ensureSchema())) return false;
         this.recordLocalChange(STORAGE_SYNC_SEARCH_HISTORY);           /* the option itself: set true, or delete */
         if (on) this.recordLocalChange(STORAGE_SEARCH_HISTORY);        /* now the list reads as a value, so it is sent */
         else this._enqueue('history', 'searches', 'delete');           /* off: the account's copy goes */
@@ -380,6 +403,7 @@ export class ProfileSync {
         if (reason === ACCOUNT_WRITES_OFF_REASON) { this._scheduleRetry(PAUSED_RETRY_MS); return; }   /* the outbox stays; try again in a while */
         /* profile_sync_disabled / profile_sync_not_ready: this site does not use it (yet), so the older sync carries on. */
         this._off = true;
+        this.refreshActive();
     }
 
     _scheduleRetry(ms) {
