@@ -35,6 +35,19 @@ declare(strict_types=1);
  *    (`accountExportDenyPattern()`) that catches a secret column nobody has reviewed
  *    yet, so a future `ThingToken` column is withheld until somebody decides otherwise.
  *    The guard checks the reviewed list covers every secret-looking column that exists.
+ *  - NOBODY ELSE'S INFORMATION (PR 2c review). Three things used to leak other people's data into a person's file, and
+ *    each now has its own mechanism (all guarded by tests/php/test-account-export-coverage.php, rule #35):
+ *      1. "Reviewer" links. A column such as `ReviewedBy`, `ApprovedBy` or `VerifiedBy` points at the person who CHECKED
+ *         somebody else's work, so reading the table by that column hands over the other person's rows. Such a link is
+ *         left out and the file says why. It is found by a name pattern (`accountExportReviewerColumnPattern()`) PLUS an
+ *         explicit reviewed list (`accountExportReviewerColumns()`); the guard derives the real columns from schema.sql
+ *         and fails if one is in neither.
+ *      2. Network details of somebody else. A failed sign-in to your account is logged against your account but carries
+ *         the ATTACKER's address, browser and country. On the activity log those columns are blanked for every row that
+ *         was not a success (`accountExportColumnMasks()`), and `tblApiKeys.LastUsedIp` is left out
+ *         (`accountExportOmitColumns()`), as is the server's temporary file path on a bulk import job.
+ *      3. The same row twice. A table with two columns that can both be you (the creator and the owner of a shared set
+ *         list) is read once: a later column skips rows an earlier column of the same table already gave.
  *  - NAMES COME FROM THE CATALOGUE. Table and column names are read from
  *    INFORMATION_SCHEMA and must match `^[A-Za-z0-9_]+$` before being put in SQL inside
  *    backticks (rule #5 clause (b)); the person's id is always a bound parameter. The
@@ -244,6 +257,100 @@ function accountExportBulkyTables(): array
 }
 
 /**
+ * The name pattern (no delimiters, case-insensitive, matched against the WHOLE column name) of a column that points at
+ * the person who reviewed, approved, verified or resolved SOMEBODY ELSE'S work.
+ */
+function accountExportReviewerColumnPattern(): string
+{
+    return '(reviewed|approved|verified|resolved)by|assignedto|(reviewer|approver|verifier)(id)?';
+}
+
+/**
+ * The reviewer-role links reviewed by hand (lower-case 'table.column' => the role in plain words). The pattern above
+ * catches the names; this list is the reviewed record AND covers a role whose column name the pattern would miss. The
+ * guard checks that every link the live schema has that matches the pattern is listed here.
+ *
+ * @return array<string,string>
+ */
+function accountExportReviewerColumns(): array
+{
+    return [
+        'tblapikeyrequests.reviewedby'         => 'the administrator who decided an API key request',
+        'tblsongrevisions.reviewedby'          => 'the curator who reviewed somebody else\'s song change',
+        'tbllyrics.approvedby'                 => 'the curator who approved somebody else\'s lyrics',
+        'tbllyriclinetranslations.approvedby'  => 'the curator who approved somebody else\'s translation',
+        'tbllyriclineannotations.approvedby'   => 'the curator who approved somebody else\'s annotation',
+        'tbllyriclineannotations.verifiedby'   => 'the curator who verified somebody else\'s annotation',
+        'tbllyricsreviewqueue.reviewedby'      => 'the curator who reviewed somebody else\'s lyrics',
+        'tbllyricsreviewqueue.assignedto'      => 'the curator a lyrics review was handed to',
+        'tbllyricsconflicts.resolvedby'        => 'the curator who settled a lyrics clash',
+        'tblsongidentitymap.verifiedby'        => 'the curator who verified a song match',
+        'tblsongqualityfindings.assignedto'    => 'the curator a catalogue problem was handed to',
+        'tblsongqualityfindings.resolvedby'    => 'the curator who resolved a catalogue problem',
+        'tblvocalpartsuggestions.reviewedby'   => 'the curator who reviewed somebody else\'s suggestion',
+        'tbliaimportcandidates.reviewedby'     => 'the curator who reviewed an import candidate',
+    ];
+}
+
+/** PURE: is this (table, column) a reviewer-role link (by the pattern or the reviewed list)? */
+function accountExportIsReviewerColumn(string $table, string $column): bool
+{
+    return isset(accountExportReviewerColumns()[strtolower($table) . '.' . strtolower($column)])
+        || preg_match('/^(' . accountExportReviewerColumnPattern() . ')$/i', $column) === 1;
+}
+
+/** The plain reason shown in the file for a reviewer-role link that is left out. */
+const ACCOUNT_EXPORT_REVIEWER_REASON = 'You are recorded here only as the person who reviewed, approved or checked somebody else\'s work, so these rows are that other person\'s information, not yours. (Rows you made yourself are listed under their own column.)';
+
+/**
+ * Columns left out of ONE table (lower-case table => lower-case column => reason). These are not secrets (the deny list
+ * covers those) but they are other people's details or the server's own.
+ *
+ * @return array<string,array<string,string>>
+ */
+function accountExportOmitColumns(): array
+{
+    return [
+        'tblapikeys'       => ['lastusedip' => 'the address the key was last used from: it can be somebody else\'s'],
+        'tblbulkimportjobs' => ['temppath'   => 'a file path on the server'],
+    ];
+}
+
+/**
+ * Network-detail columns (an address, a browser, a country) that are exported AS THEY ARE because they describe the
+ * person's own request (lower-case 'table.column' => why). Every other such column of an exported table must be masked
+ * or omitted above: the guard derives the columns from schema.sql and fails on one that is in none of the three places.
+ *
+ * @return array<string,string>
+ */
+function accountExportOwnNetworkColumns(): array
+{
+    return [
+        'tblsongrequests.ipaddress' => 'the address the person themselves sent a song request from',
+    ];
+}
+
+/**
+ * Columns whose value is BLANKED (shown as null) on the rows where a stated condition does not hold. The condition is a
+ * constant of this file (rule #5 clause (a)). Lower-case table => column (as in the schema) => the condition under which
+ * the real value is kept. The activity log keeps the network details only for a success: a failed sign-in is logged against
+ * the account it was aimed at, with the attacker's address, browser and country.
+ *
+ * @return array<string,array<string,string>>
+ */
+function accountExportColumnMasks(): array
+{
+    $keepOnSuccess = "`Result` = 'success'";
+    return [
+        'tblactivitylog' => [
+            'IpAddress' => $keepOnSuccess, 'IpProxyChain' => $keepOnSuccess, 'ProxyVpnIndicator' => $keepOnSuccess,
+            'ProxyVpnDetail' => $keepOnSuccess, 'UserAgent' => $keepOnSuccess, 'Country' => $keepOnSuccess,
+            'Referrer' => $keepOnSuccess,
+        ],
+    ];
+}
+
+/**
  * Lower row limits for tables whose rows are large text (a song revision holds a whole song, an audit row holds
  * a details document). The general limit stays ACCOUNT_EXPORT_MAX_ROWS. Lower-case keys.
  *
@@ -290,6 +397,9 @@ function accountExportPlan(array $links): array
         if (isset($seen[$key])) { continue; }
         $seen[$key] = true;
         $reason = $excludedTables[strtolower($l['table'])] ?? null;
+        if ($reason === null && accountExportIsReviewerColumn($l['table'], $l['column'])) {
+            $reason = ACCOUNT_EXPORT_REVIEWER_REASON;
+        }
         if ($reason !== null) {
             $excluded[] = ['table' => $l['table'], 'column' => $l['column'], 'reason' => $reason];
         } else {
@@ -381,9 +491,10 @@ function accountExportWrite($out, string $text): void
  * @param resource $out        the stream the text goes to
  * @param string   $prefix     text written just before the table's key (the comma between tables)
  * @param int      $budgetBytes how many more bytes the whole file may take
+ * @param list<string> $earlierColumns columns of THIS table that already gave their rows (a row that matches one is skipped, so it is listed once)
  * @return array{written:bool,bytes:int}|null null when the table or column does not exist on this install (not migrated yet)
  */
-function accountExportStreamTable(\mysqli $db, $out, string $prefix, string $table, string $column, int $userId, int $budgetBytes): ?array
+function accountExportStreamTable(\mysqli $db, $out, string $prefix, string $table, string $column, int $userId, int $budgetBytes, array $earlierColumns = []): ?array
 {
     if (!accountExportNameSafe($table) || !accountExportNameSafe($column)) {
         throw new \RuntimeException('Refusing to export a table or column with an unsafe name.');
@@ -395,13 +506,20 @@ function accountExportStreamTable(\mysqli $db, $out, string $prefix, string $tab
 
     $select  = [];
     $omitted = [];
+    $omitHere = accountExportOmitColumns()[strtolower($table)] ?? [];
+    $masks    = accountExportColumnMasks()[strtolower($table)] ?? [];
     foreach ($cols as $c) {
         if (!accountExportNameSafe($c['name'])) { $omitted[] = $c['name']; continue; }
-        if (!accountExportColumnAllowed($c['name']) || in_array($c['type'], accountExportBinaryTypes(), true)) {
+        if (!accountExportColumnAllowed($c['name']) || in_array($c['type'], accountExportBinaryTypes(), true) || isset($omitHere[strtolower($c['name'])])) {
             $omitted[] = $c['name'];
             continue;
         }
-        $select[] = '`' . $c['name'] . '`';
+        if (isset($masks[$c['name']])) {
+            /* The condition is a constant of this file; the column name is a checked catalogue name. */
+            $select[] = 'IF(' . $masks[$c['name']] . ', `' . $c['name'] . '`, NULL) AS `' . $c['name'] . '`';
+        } else {
+            $select[] = '`' . $c['name'] . '`';
+        }
     }
     $key    = json_encode($table . '.' . $column, ACCOUNT_EXPORT_JSON_FLAGS);
     $header = $prefix . $key . ':{"column":' . json_encode($column, ACCOUNT_EXPORT_JSON_FLAGS)
@@ -416,12 +534,18 @@ function accountExportStreamTable(\mysqli $db, $out, string $prefix, string $tab
     $filter = accountExportRowFilters()[strtolower($table)] ?? '';
     $cap    = accountExportRowCap($table);
     /* Identifiers are catalogue names checked above; the person's id is bound; $filter is a constant of this file. */
+    $skip = [];
+    foreach ($earlierColumns as $ec) {
+        if (accountExportNameSafe($ec) && strcasecmp($ec, $column) !== 0) { $skip[] = $ec; }
+    }
     $sql = 'SELECT ' . implode(', ', $select) . ' FROM `' . $table . '` WHERE `' . $column . '` = ?'
+         . implode('', array_map(static fn(string $ec): string => ' AND (`' . $ec . '` IS NULL OR `' . $ec . '` <> ?)', $skip))
          . ($filter !== '' ? ' AND ' . $filter : '')
          . ($order !== [] ? ' ORDER BY ' . implode(', ', $order) : '')
          . ' LIMIT ' . ($cap + 1);
     $stmt = $db->prepare($sql);
-    $stmt->bind_param('i', $userId);
+    $ids  = array_fill(0, 1 + count($skip), $userId);
+    $stmt->bind_param(str_repeat('i', count($ids)), ...$ids);
     $stmt->execute();
     /* UNBUFFERED: bind_result() + fetch() hand over one row at a time. (get_result() would load every row into
        memory before the first limit check, which is how the first version ran a small host out of memory.) */
@@ -513,6 +637,7 @@ function accountExportStream(\mysqli $db, int $userId, $out): void
 
     $spent  = 0;
     $prefix = '';
+    $done   = [];   /* table (lower case) => the columns already read, so a row that matches two of them is written once */
     foreach ($plan['export'] as $p) {
         $left = ACCOUNT_EXPORT_MAX_TOTAL_BYTES - $spent;
         if ($left <= 0) {
@@ -522,8 +647,9 @@ function accountExportStream(\mysqli $db, int $userId, $out): void
             $prefix = ',';
             continue;
         }
-        $t = accountExportStreamTable($db, $out, $prefix, $p['table'], $p['column'], $userId, $left);
+        $t = accountExportStreamTable($db, $out, $prefix, $p['table'], $p['column'], $userId, $left, $done[strtolower($p['table'])] ?? []);
         if ($t === null) { continue; }   /* not on this install yet */
+        $done[strtolower($p['table'])][] = $p['column'];
         $spent += $t['bytes'];
         if ($t['written']) { $prefix = ','; }
     }

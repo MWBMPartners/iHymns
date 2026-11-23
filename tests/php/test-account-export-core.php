@@ -98,6 +98,15 @@ try {
     $db->query("INSERT INTO tblActivityLog (UserId, Action) VALUES (1, 'auth.login'), (2, 'auth.login')");
     $db->query("INSERT INTO tblBulkImportJobs (UserId, Filename, TempPath, SizeBytes) VALUES (1, 'a.zip', '/tmp/x', 5), (2, 'b.zip', '/tmp/y', 6)");
     $db->query("INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES ('203.0.113.9', 'ann', 0)");
+    /* PR 2c review: other people's information that used to ride along. */
+    $db->query("INSERT INTO tblActivityLog (UserId, Action, Result, IpAddress, IpProxyChain, UserAgent, Country) VALUES
+        (1, 'auth.login', 'failure', '198.51.100.77', '10.9.9.9', 'ATTACKER-BROWSER', 'RU'),
+        (1, 'song.edit', 'success', '203.0.113.5', NULL, 'ANN-OWN-BROWSER', 'GB')");
+    $db->query("INSERT INTO tblApiKeys (Label, KeyHash, LastUsedIp, CreatedBy) VALUES ('Ann key', 'KEYHASH-SECRET-1', '192.0.2.99', 1)");
+    $db->query("INSERT INTO tblApiKeyRequests (RequesterId, Label, ReviewedBy, ReviewNote) VALUES (2, 'BOBS-KEY-REQUEST', 1, 'Ann approved Bob'), (1, 'ANNS-KEY-REQUEST', NULL, '')");
+    $db->query("INSERT INTO tblSongRevisions (SongId, UserId, Action, NewData, ReviewedBy) VALUES ('MP-7', 2, 'edit', '{\"t\":\"BOBS-REVISION-TEXT\"}', 1), ('MP-8', 1, 'edit', '{\"t\":\"ANNS-REVISION-TEXT\"}', 1)");
+    $db->query("INSERT INTO tblSharedSetlists (ShareId, Data, CreatedBy, OwnerUserId) VALUES ('shareAAAA', '{\"name\":\"Mine\"}', 1, 1), ('shareBBBB', '{\"name\":\"BobsList\"}', 2, 2)");
+    $db->query("INSERT INTO tblSetlistCollaborators (SetlistOwnerId, SetlistId, CollaboratorId) VALUES (1, 'sl-a', 1), (1, 'sl-b', 2), (2, 'sl-c', 1)");
 
     $text = accountExportText($db, 1);
     $out  = json_decode($text, true);
@@ -113,7 +122,7 @@ try {
     $items = array_map(fn($r) => $r['Section'] . '.' . $r['ItemKey'], $out['tables']['tblUserProfileItems.UserId']['rows'] ?? []);
     chk('their profile items are there, the internal bookkeeping rows are not, and nobody else\'s are', $items === ['appearance.theme'], json_encode($items));
     chk('a table with no link on its own (the bulk import jobs) is read by its person-id column', array_column($out['tables']['tblBulkImportJobs.UserId']['rows'] ?? [], 'Filename') === ['a.zip']);
-    chk('the audit log shows only their own rows', count($out['tables']['tblActivityLog.UserId']['rows'] ?? []) === 1);
+    chk('the audit log shows only their own rows (Ann has three; Bob\'s one is not there)', count($out['tables']['tblActivityLog.UserId']['rows'] ?? []) === 3);
     chk('their devices are listed (a token row with the secret column left out)', ($out['tables']['tblApiTokens.UserId']['rows'][0]['DeviceName'] ?? null) === 'Ann phone' && !array_key_exists('Token', $out['tables']['tblApiTokens.UserId']['rows'][0]));
     chk('the push registration is listed with none of its keys or address', isset($out['tables']['tblPushSubscriptions.UserId']) && array_diff(['Endpoint', 'P256dhKey', 'AuthKey'], $out['tables']['tblPushSubscriptions.UserId']['omittedColumns']) === []);
     chk('the linked sign-in keeps its provider and subject but not its refresh token', ($out['tables']['tblUserAuthProviders.UserId']['rows'][0]['Subject'] ?? null) === 'apple-subject-ann' && !array_key_exists('RefreshToken', $out['tables']['tblUserAuthProviders.UserId']['rows'][0]));
@@ -126,6 +135,26 @@ try {
     foreach (['MP-BOBS-ONLY', 'BobTag', 'BOB-LIGHT', 'bob@example.test', 'HASH-OF-BOB-SECRET', 'TOKEN-SECRET-BOB', 'b.zip'] as $other) {
         chk("the other person's value $other appears nowhere in the file", !$has($other));
     }
+    /* PR 2c review: nothing about anybody else. */
+    $log = $out['tables']['tblActivityLog.UserId']['rows'] ?? [];
+    $failed = array_values(array_filter($log, fn($r) => ($r['Action'] ?? '') === 'auth.login' && ($r['Result'] ?? '') === 'failure'));
+    $ok     = array_values(array_filter($log, fn($r) => ($r['Action'] ?? '') === 'song.edit'));
+    chk('the failed sign-in row is listed, but its address, proxy chain, browser and country (the attacker\'s) are blanked',
+        count($failed) === 1 && $failed[0]['IpAddress'] === null && $failed[0]['IpProxyChain'] === null && $failed[0]['UserAgent'] === null && $failed[0]['Country'] === null);
+    chk('...while a successful action keeps its own address, browser and country', count($ok) === 1 && $ok[0]['IpAddress'] === '203.0.113.5' && $ok[0]['UserAgent'] === 'ANN-OWN-BROWSER' && $ok[0]['Country'] === 'GB');
+    chk('the attacker\'s address and browser appear nowhere in the file', !$has('198.51.100.77') && !$has('ATTACKER-BROWSER') && !$has('10.9.9.9'));
+    chk('an API key is listed without the address it was last used from', ($out['tables']['tblApiKeys.CreatedBy']['rows'][0]['Label'] ?? null) === 'Ann key' && !$has('192.0.2.99') && in_array('LastUsedIp', $out['tables']['tblApiKeys.CreatedBy']['omittedColumns'] ?? [], true));
+    chk('a bulk import job is listed without the server\'s temporary file path', in_array('TempPath', $out['tables']['tblBulkImportJobs.UserId']['omittedColumns'] ?? [], true) && !isset($out['tables']['tblBulkImportJobs.UserId']['rows'][0]['TempPath']));
+    chk('a request Bob made that Ann approved is NOT in Ann\'s file (she is only its reviewer), but her own request is', !$has('BOBS-KEY-REQUEST') && !$has('Ann approved Bob') && $has('ANNS-KEY-REQUEST'));
+    chk('a song change Bob made that Ann reviewed is NOT in Ann\'s file, but her own change is', !$has('BOBS-REVISION-TEXT') && $has('ANNS-REVISION-TEXT'));
+    chk('the file says the reviewer links were left out, with a reason', count(array_filter($out['notIncluded'], fn($e) => $e['table'] === 'tblSongRevisions' && $e['column'] === 'ReviewedBy' && $e['reason'] !== '')) === 1
+        && count(array_filter($out['notIncluded'], fn($e) => $e['table'] === 'tblApiKeyRequests' && $e['column'] === 'ReviewedBy')) === 1);
+    $shared = array_column($out['tables']['tblSharedSetlists.CreatedBy']['rows'] ?? [], 'ShareId');
+    $sharedOwner = array_column($out['tables']['tblSharedSetlists.OwnerUserId']['rows'] ?? [], 'ShareId');
+    chk('a shared set list that is both created by and owned by the person appears ONCE, and Bob\'s never', count($shared) + count($sharedOwner) === 1 && !$has('shareBBBB') && !$has('BobsList'), json_encode([$shared, $sharedOwner]));
+    $collab = array_merge(array_column($out['tables']['tblSetlistCollaborators.CollaboratorId']['rows'] ?? [], 'SetlistId'), array_column($out['tables']['tblSetlistCollaborators.SetlistOwnerId']['rows'] ?? [], 'SetlistId'));
+    sort($collab);
+    chk('a collaboration row that names the person twice (owner and collaborator) is listed once; each other row once', $collab === ['sl-a', 'sl-b', 'sl-c'], json_encode($collab));
     chk('the file is valid JSON that reads back', json_decode($text, true) !== null && json_last_error() === JSON_ERROR_NONE);
     chk('an empty table is not listed (the file stays readable)', !isset($out['tables']['tblUserSetlists.UserId']) && !isset($out['tables']['tblSongHistory.UserId']));
 

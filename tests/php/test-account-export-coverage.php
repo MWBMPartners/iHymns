@@ -144,6 +144,48 @@ foreach (accountExportNoLinkColumns() as $key => $n) {
 chk('every hand-listed no-link column is a real column and every exclusion has a reason', $phantom === [], implode(', ', $phantom));
 chk('the sign-in attempt log (a name as text) is excluded, not exported', isset(accountExportNoLinkColumns()['tblloginattempts.username']) && accountExportNoLinkColumns()['tblloginattempts.username']['export'] === false);
 
+/* ---- 2b. other people's information (PR 2c review) ---- */
+echo "2b. nothing about anybody else rides along\n";
+/* Broader than the file's own pattern on purpose: a column the pattern misses must still be noticed here. */
+$roleLike = '/review|approv|verif|resolv|assign/i';
+$missedRole = [];
+foreach ($links as $l) {
+    if (preg_match($roleLike, $l['column']) !== 1) { continue; }
+    $k = strtolower($l['table'] . '.' . $l['column']);
+    $tableExcluded = isset(accountExportExcludedTables()[strtolower($l['table'])]);
+    if (in_array($k, $exportedKeys, true) || (!$tableExcluded && !isset(accountExportReviewerColumns()[$k]))) { $missedRole[] = $k; }
+}
+chk('every reviewer-role link in schema.sql (' . count(array_filter($links, fn($l) => preg_match($roleLike, $l['column']) === 1)) . ' found) is left out of the export and is in the reviewed list or sits in an excluded table', $missedRole === [], implode(', ', $missedRole));
+$badRole = [];
+foreach (accountExportReviewerColumns() as $k => $why) {
+    [$tn, $cn] = explode('.', $k);
+    $real = false;
+    foreach ($tables as $name => $t) { if (strcasecmp($name, $tn) === 0) { foreach (array_keys($t['cols']) as $c) { if (strcasecmp($c, $cn) === 0) { $real = true; } } } }
+    if (!$real) { $badRole[] = $k . ' (no such column)'; }
+    if (in_array($k, $exportedKeys, true)) { $badRole[] = $k . ' (listed as reviewer-role but exported)'; }
+    if (trim($why) === '') { $badRole[] = $k . ' (no role in plain words)'; }
+}
+chk('every entry of the reviewed reviewer-role list is a real column, is not exported, and says what the role is', $badRole === [], implode(', ', $badRole));
+chk('the reviewer-role pattern catches the names the live schema uses', accountExportIsReviewerColumn('tblX', 'ReviewedBy') && accountExportIsReviewerColumn('tblX', 'ApprovedBy') && accountExportIsReviewerColumn('tblX', 'VerifiedBy') && !accountExportIsReviewerColumn('tblX', 'SubmittedBy') && !accountExportIsReviewerColumn('tblX', 'UserId'));
+$netLike = '/(^|[a-z])Ip$|^Ip[A-Z]|IpAddress|UserAgent|^Country$/';
+$unplaced = [];
+foreach (array_unique(array_map(fn($p) => $p['table'], $plan['export'])) as $tn) {
+    foreach (array_keys($tables[$tn]['cols'] ?? []) as $col) {
+        if (preg_match($netLike, $col) !== 1) { continue; }
+        $k = strtolower($tn . '.' . $col);
+        $ok = isset(accountExportColumnMasks()[strtolower($tn)][$col]) || isset(accountExportOmitColumns()[strtolower($tn)][strtolower($col)]) || isset(accountExportOwnNetworkColumns()[$k]);
+        if (!$ok) { $unplaced[] = $k; }
+    }
+}
+chk('every address / browser / country column of an exported table is masked, omitted, or reviewed as the person\'s own', $unplaced === [], implode(', ', $unplaced));
+$allColsByTable = [];
+foreach ($tables as $name => $t) { foreach (array_keys($t['cols']) as $c) { $allColsByTable[strtolower($name)][strtolower($c)] = true; } }
+$stale = [];
+foreach (accountExportOmitColumns() as $tl => $cs) { foreach (array_keys($cs) as $cl) { if (!isset($allColsByTable[$tl][$cl])) { $stale[] = "omit $tl.$cl"; } } }
+foreach (accountExportColumnMasks() as $tl => $cs) { foreach (array_keys($cs) as $cl) { if (!isset($allColsByTable[$tl][strtolower($cl)])) { $stale[] = "mask $tl.$cl"; } } }
+foreach (accountExportOwnNetworkColumns() as $k => $why) { [$tl, $cl] = explode('.', $k); if (!isset($allColsByTable[$tl][$cl])) { $stale[] = "own $k"; } }
+chk('every omitted, masked and own-network column named in the file is a real column', $stale === [], implode(', ', $stale));
+
 /* ---- 3. secrets ---- */
 echo "3. secret-looking columns are on the reviewed deny list\n";
 $exportedTableNames = array_unique(array_map(fn($p) => $p['table'], $plan['export']));
@@ -219,6 +261,6 @@ chk('the row reader checks the row and byte limits INSIDE the read loop and writ
 chk('the whole-file builder streams to a handle: no array of all tables and no pretty-printed copy', strpos($strip($fnBody($core, 'accountExportStream')), 'JSON_PRETTY_PRINT') === false && strpos($core, 'JSON_PRETTY_PRINT') === false);
 chk('the endpoint streams to a temporary file and sends it with fpassthru, instead of echoing a built string', strpos($code, 'tmpfile()') !== false && strpos($code, 'fpassthru(') !== false && strpos($code, 'accountExportStream(') !== false && strpos($code, 'accountExportBuild(') === false && strpos($code, 'accountExportText(') === false);
 chk('the large-text tables have lower row limits than the general one', accountExportRowCap('tblSongRevisions') < ACCOUNT_EXPORT_MAX_ROWS && accountExportRowCap('tblActivityLog') < ACCOUNT_EXPORT_MAX_ROWS && accountExportRowCap('tblUserFavorites') === ACCOUNT_EXPORT_MAX_ROWS);
-chk('the person id is only ever bound, never joined into SQL', substr_count($core, "bind_param('i', \$userId)") >= 2 && !preg_match('/WHERE[^;]*\.\s*\$userId/', $core));
+chk('the person id is only ever bound, never joined into SQL', substr_count($core, "bind_param('i', \$userId)") >= 1 && strpos($core, 'array_fill(0, 1 + count($skip), $userId)') !== false && strpos($core, 'bind_param(str_repeat(\'i\', count($ids)), ...$ids)') !== false && !preg_match('/WHERE[^;]*\.\s*\$userId/', $core));
 
 exit($fail === 0 ? 0 : 1);
