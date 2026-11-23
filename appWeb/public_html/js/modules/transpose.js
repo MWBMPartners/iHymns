@@ -707,11 +707,7 @@ export class Transpose {
      * @param {number} offset
      */
     saveOffset(songId, offset) {
-        if (offset === 0) {
-            localStorage.removeItem(this.storagePrefix + songId);
-        } else {
-            localStorage.setItem(this.storagePrefix + songId, String(offset));
-        }
+        this._saveSongPref(this.storagePrefix, songId, offset);
     }
 
     /**
@@ -735,11 +731,7 @@ export class Transpose {
      * @param {number} capo
      */
     saveCapo(songId, capo) {
-        if (capo === 0) {
-            localStorage.removeItem(this.capoStoragePrefix + songId);
-        } else {
-            localStorage.setItem(this.capoStoragePrefix + songId, String(capo));
-        }
+        this._saveSongPref(this.capoStoragePrefix, songId, capo);
     }
 
     /**
@@ -761,11 +753,30 @@ export class Transpose {
      * @param {number} octave
      */
     saveOctave(songId, octave) {
-        if (octave === 0) {
-            localStorage.removeItem(this.octaveStoragePrefix + songId);
+        this._saveSongPref(this.octaveStoragePrefix, songId, octave);
+    }
+
+    /**
+     * The ONE place a per-song key, capo or octave is written to storage (PR 2b, #2177).
+     *
+     * ELI5: each of the three is saved under its own storage key per song, and removed when it goes back
+     * to zero. Now that these follow the person's account, every save must also tell the sync, but only
+     * when the stored text really changed (the three savers all run on every stepper click, and the two
+     * that did not change must not queue anything).
+     *
+     * @param {string} prefix  one of the three storage-key prefixes
+     * @param {string} songId  the song
+     * @param {number} n       the value (0 = "no choice", stored as no key at all)
+     */
+    _saveSongPref(prefix, songId, n) {
+        const key = prefix + songId;
+        const before = localStorage.getItem(key);
+        if (n === 0) {
+            localStorage.removeItem(key);
         } else {
-            localStorage.setItem(this.octaveStoragePrefix + songId, String(octave));
+            localStorage.setItem(key, String(n));
         }
+        if (localStorage.getItem(key) !== before) this.app?.syncStorage?.(key);
     }
 
     /**
