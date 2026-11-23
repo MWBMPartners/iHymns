@@ -172,6 +172,51 @@ chk('cvd: a real mode is valid; "none" is not (no value is a delete, not a set)'
 chk('an unknown section or key is never valid', !profileRegistryValidate('nope', 'nothing', 'x') && profileRegistryEntry('appearance', 'nothing') === null);
 chk('a list respects its item type and cap', profileRegistryValidate('content', 'favorites', ['MP-1', 'MP-2']) && !profileRegistryValidate('content', 'favorites', [1]) && !profileRegistryValidate('content', 'favorites', ['a' => 'b']) && !profileRegistryValidate('content', 'favorites', array_fill(0, 501, 'MP-1')));
 
+/* ---- every value the registry calls valid fits in what the server stores (2b review fix 6) ---- */
+/* The server refuses one stored item over this many bytes (PROFILE_SYNC_MAX_VALUE_BYTES). The registry's own rules must never
+   allow a value the server then refuses: that would be a value valid on paper that no device can ever save. */
+$_SERVER['SCRIPT_FILENAME'] = 'test';
+require_once $repo . '/appWeb/public_html/includes/profile_sync.php';
+/** The most bytes a value of this spec can take as stored JSON text. null = no limit (unbounded). Every character is counted as its worst case: 6 bytes (a control character or U+2028 is written as \uXXXX). */
+$worst = function (array $spec) use (&$worst): ?int {
+    $cap = isset($spec['maxBytes']) ? (int)$spec['maxBytes'] : null;
+    $own = null;
+    switch ($spec['type'] ?? '') {
+        case 'bool':  $own = 5; break;
+        case 'int':   $own = max(strlen((string)$spec['min']), strlen((string)$spec['max'])); break;
+        case 'float': $own = 26; break;
+        case 'enum':  $own = 2 + 6 * max(array_map('mb_strlen', (array)$spec['allowed'])); break;
+        case 'string': $own = isset($spec['maxLength']) ? 2 + 6 * (int)$spec['maxLength'] : null; break;
+        case 'list':
+            $w = isset($spec['maxItems']) && $spec['maxItems'] !== null ? $worst((array)$spec['item']) : null;
+            $own = $w === null ? null : 2 + (int)$spec['maxItems'] * ($w + 1);
+            break;
+        case 'json':
+            $shape = (array)($spec['shape'] ?? []);
+            if ($shape === []) { $own = null; break; }
+            $own = 2; $parts = 0;
+            foreach ($shape as $k => $sub) { $w = $worst($sub); if ($w === null) { $own = null; break; } $own += 2 + 6 * strlen((string)$k) + 1 + $w + 1; $parts++; }
+            break;
+    }
+    if ($cap !== null) { return $own === null ? $cap : min($own, $cap); }
+    return $own;
+};
+$over = []; $checked = 0;
+foreach ($reg as $id => $e) {
+    if (($e['storage'] ?? '') !== 'profile_items' || ($e['sync'] ?? '') !== 'profile_sync') { continue; }
+    $spec = ($e['type'] ?? '') === 'map' ? (array)$e['item'] : $e;
+    $checked++;
+    $w = $worst($spec);
+    if ($w === null || $w > PROFILE_SYNC_MAX_VALUE_BYTES) { $over[] = $id . ' (' . ($w ?? 'unbounded') . ')'; }
+    if (isset($e['maxBytes']) && (int)$e['maxBytes'] > PROFILE_SYNC_MAX_VALUE_BYTES) { $over[] = $id . ' maxBytes above the server limit'; }
+}
+chk("the worst case of every profile_items entry fits the server's per-item limit, or the entry declares maxBytes ($checked entries)", $checked >= 20 && $over === [], implode('; ', $over));
+$cjk = array_fill(0, 20, str_repeat('賛', 100));
+chk('a full list of long searches in a 3-byte script is INVALID (it could never be stored), a shorter one is valid',
+    !profileRegistryValidate('history', 'searches', $cjk) && profileRegistryValidate('history', 'searches', array_slice($cjk, 0, 8)) && profileRegistryValidate('history', 'searches', array_fill(0, 12, str_repeat('a', 100))));
+chk('...and what the registry calls valid is what the plan stores (no value_too_large for a valid value)',
+    profileSyncPlan([profileSyncPairKey(...PROFILE_SYNC_SEARCH_OPTION) => ['deleted' => false, 'value' => true]], [['section' => 'history', 'key' => 'searches', 'op' => 'set', 'value' => array_slice($cjk, 0, 8)]], 0, null, [])['rejected'] === []);
+
 /* ---- the public projection ---- */
 $pub = profileRegistryPublic();
 chk('the public projection has the version and every entry', $pub['schemaVersion'] === profileRegistryVersion() && count($pub['entries']) === count($reg));

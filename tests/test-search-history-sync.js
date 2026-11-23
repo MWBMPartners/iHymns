@@ -231,5 +231,29 @@ console.log('\n8 - the switch only changes this device when the account can be t
     check('when it can be queued the change is made, queued, and the box stays on', toggle.checked === true && localStorage.getItem(C.STORAGE_SYNC_SEARCH_HISTORY) === 'true' && s3.getOutbox().items['privacy.syncSearchHistory']?.value === true);
 }
 
+console.log('\n9 - the size limit: what the registry calls valid is storable, and the browser trims to fit\n');
+{
+    localStorage.clear();
+    const codec = await import(url(path.join(JS, 'modules', 'profile-web-codec.js')));
+    const serverLimit = Number(execFileSync('php', ['-r', '$_SERVER["SCRIPT_FILENAME"]="t"; require ' + J(path.join(REPO, 'appWeb', 'public_html', 'includes', 'profile_sync.php')) + '; echo PROFILE_SYNC_MAX_VALUE_BYTES;'], { encoding: 'utf8' }));
+    check('the entry carries a byte limit no bigger than the server\'s per-item limit', Number.isInteger(searches.maxBytes) && searches.maxBytes <= serverLimit, J(searches.maxBytes));
+    /* the same list judged by PHP's registry and by the browser's twin */
+    const cjk = (n, len) => Array.from({ length: n }, (_, i) => String.fromCodePoint(0x8CDB + i).repeat(len));
+    const lists = [cjk(20, 100), cjk(8, 100), cjk(13, 100), cjk(12, 100), cjk(20, 20), Array.from({ length: 20 }, () => ' '.repeat(100)), Array.from({ length: 12 }, () => ' '.repeat(100)), Array.from({ length: 20 }, () => '😀'.repeat(50)), ['a'], []];
+    const php = JSON.parse(execFileSync('php', ['-r', 'require ' + J(path.join(REPO, 'appWeb', 'public_html', 'includes', 'profile_registry.php')) + '; $in = json_decode(stream_get_contents(STDIN), true); echo json_encode(array_map(fn($l) => profileRegistryValidate("history", "searches", $l) ? 1 : 0, $in));'], { input: J(lists), encoding: 'utf8' }));
+    const web = lists.map((l) => (codec.validateSpec(searches, l) ? 1 : 0));
+    check('PHP and the browser give the same verdict on every list, including the 4 KiB boundary and U+2028 (which PHP writes as six characters)', J(php) === J(web) && php.includes(0) && php.includes(1), J(php) + ' vs ' + J(web));
+    /* the browser trims the oldest searches instead of sending something the account would refuse */
+    localStorage.setItem(C.STORAGE_SYNC_SEARCH_HISTORY, 'true');
+    let s4; const app4 = { config: { apiUrl: '/api', profileSync: { enabled: true } }, userAuth: { isLoggedIn: () => true, getUser: () => ({ id: 4 }) }, syncStorage(k, o) { s4.recordLocalChange(k, o || {}); } };
+    s4 = new ProfileSync(app4, { storage: window.localStorage, setTimer: () => 1, clearTimer: () => {} });
+    await s4.ensureSchema();
+    localStorage.setItem(C.STORAGE_SEARCH_HISTORY, J(cjk(20, 100)));
+    app4.syncStorage(C.STORAGE_SEARCH_HISTORY);
+    const queued = s4.getOutbox().items['history.searches']?.value;
+    check('20 long searches in a 3-byte script are trimmed (newest kept) to what fits, never cut inside a search',
+        Array.isArray(queued) && queued.length > 0 && queued.length < 20 && codec.encodedBytes(queued) <= searches.maxBytes && J(queued) === J(cjk(20, 100).slice(0, queued.length)) && queued.every((q) => Array.from(q).length === 100), J((queued || []).length));
+}
+
 console.log(failures === 0 ? '\nAll search-history checks pass.' : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

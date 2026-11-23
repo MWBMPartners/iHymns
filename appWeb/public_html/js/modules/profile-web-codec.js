@@ -30,8 +30,19 @@
 
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
+/**
+ * How many bytes a value takes as stored JSON text, the way the SERVER stores it (profileRegistryEncodedBytes() in PHP).
+ * `JSON.stringify` leaves U+2028 / U+2029 as they are (3 bytes each) but PHP writes them as the six characters \u2028 / \u2029,
+ * so they are counted the PHP way here; every other character takes the same space in both.
+ */
+export function encodedBytes(value) {
+    const text = JSON.stringify(value).replace(/[\u2028\u2029]/g, '\\u2028');
+    return new TextEncoder().encode(text).length;
+}
+
 /** Does `value` satisfy the registry spec? Mirrors profileValidateSpec() in PHP. */
 export function validateSpec(spec, value) {
+    if (spec && spec.maxBytes != null && encodedBytes(value) > spec.maxBytes) return false;
     switch (spec && spec.type) {
         case 'bool':
             return typeof value === 'boolean';

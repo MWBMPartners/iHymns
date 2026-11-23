@@ -33,6 +33,10 @@ declare(strict_types=1);
  *   (constraints)        enum: allowed[]. int/float: min, max (int also step, from).
  *                        string: pattern (no delimiters, so any language can use it), maxLength. json: shape{key=>spec}.
  *                        list: item{spec}, maxItems.
+ *                        any type: maxBytes (optional) - the most bytes the value may take once stored as JSON text
+ *                        (profileRegistryEncodedBytes()). Needed when maxItems x maxLength could in the worst case
+ *                        be larger than the server's per-item limit (4 KiB): the registry then calls a too-big
+ *                        value INVALID, so "valid" and "the server stores it" mean the same thing.
  *                        map (schema version 2): a whole SECTION of the same kind of item,
  *                        one stored row per item (for example one row per song). Its key is
  *                        always '*', and it carries itemKeyPattern (what an item's own key
@@ -255,6 +259,9 @@ function profileRegistry(): array
         /* The recent searches themselves. Only ever sent while privacy.syncSearchHistory is on; cleared at sign-out. */
         _profileAccount('history', 'searches', 'list', [
             'item' => ['type' => 'string', 'maxLength' => 100], 'maxItems' => 20, 'cap' => 20,
+            /* 20 searches of 100 characters can be far more than the 4 KiB the server stores for one item (a CJK character is
+               3 bytes, an emoji 4), so the size is part of the rule: a longer list is invalid, and a client trims to fit. */
+            'maxBytes' => 4096,
             'default' => null, 'clearAtSignOut' => true, 'since' => 2,
         ]),
 
@@ -347,6 +354,15 @@ function profileRegistryMapItemKeyValid(array $entry, string $itemKey): bool
 }
 
 /**
+ * PURE: how many bytes a value takes as stored JSON text. The ONE encoder flags (the same ones the server stores with),
+ * so the size a rule checks is the size that is stored. (Kept here, not in profile_sync.php, because the registry must not need it.)
+ */
+function profileRegistryEncodedBytes(mixed $value): int
+{
+    return strlen((string)json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+}
+
+/**
  * PURE: is `$value` acceptable for this spec? `$spec` is an entry, or a nested
  * spec inside a json shape or list item.
  *
@@ -359,6 +375,7 @@ function profileRegistryMapItemKeyValid(array $entry, string $itemKey): bool
  */
 function profileValidateSpec(array $spec, mixed $value): bool
 {
+    if (isset($spec['maxBytes']) && profileRegistryEncodedBytes($value) > (int)$spec['maxBytes']) { return false; }
     switch ($spec['type'] ?? '') {
         case 'bool':
             return is_bool($value);

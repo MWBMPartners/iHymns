@@ -547,7 +547,8 @@
                 "type": "string",
                 "maxLength": 100
             },
-            "maxItems": 20
+            "maxItems": 20,
+            "maxBytes": 4096
         },
         {
             "id": "content.favorites",

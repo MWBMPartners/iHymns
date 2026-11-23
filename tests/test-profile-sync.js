@@ -47,6 +47,9 @@ const C = await import(url(path.join(JS, 'constants.js')));
 const codec = await import(url(path.join(MODULES, 'profile-web-codec.js')));
 const entryOf = (section, key) => schema.entries.find((e) => (e.section === section && e.key === key) || (e.section === section && e.type === 'map'));
 
+/* The server's own per-item size limit, read from the real code (never typed here). */
+const SERVER_MAX_VALUE_BYTES = Number(execFileSync('php', ['-r', '$_SERVER["SCRIPT_FILENAME"]="t"; require ' + J(path.join(REPO, 'appWeb', 'public_html', 'includes', 'profile_sync.php')) + '; echo PROFILE_SYNC_MAX_VALUE_BYTES;'], { encoding: 'utf8' }));
+
 /* ---------- a pretend server that follows the real rules ---------- */
 function makeServer() {
     const s = { users: new Map(), requests: [], mode: null /* 'paused' | 'disabled' | '413' | null */, hold: null };
@@ -67,6 +70,7 @@ function makeServer() {
                 if (!e) { rejected.push({ section: c.section, key: c.key, reason: 'unknown_key' }); continue; }
                 const id = c.section + '.' + c.key;
                 if (c.op === 'set') {
+                    if (codec.encodedBytes(c.value) > SERVER_MAX_VALUE_BYTES) { rejected.push({ section: c.section, key: c.key, reason: 'value_too_large' }); continue; }
                     const okVal = e.type === 'map' ? codec.validateSpec(e.item, c.value) : codec.validateSpec(e, c.value);
                     if (!okVal) { rejected.push({ section: c.section, key: c.key, reason: 'invalid_value' }); continue; }
                     const cur = d.rows.get(id);

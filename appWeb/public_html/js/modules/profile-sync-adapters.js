@@ -34,7 +34,7 @@
  * @see js/modules/profile-web-codec.js  the text <-> value translator (twin of the server's)
  */
 
-import { decodeWebValue, encodeWebValue, validateSpec } from './profile-web-codec.js';
+import { decodeWebValue, encodeWebValue, validateSpec, encodedBytes } from './profile-web-codec.js';
 import { STORAGE_TRANSPOSE_PREFIX, STORAGE_CAPO_PREFIX, STORAGE_OCTAVE_PREFIX, STORAGE_SEARCH_HISTORY, STORAGE_SYNC_SEARCH_HISTORY } from '../constants.js';
 
 /**
@@ -129,6 +129,10 @@ function songPrefsProvider(entry, storage) {
 function searchHistoryProvider(entry, storage) {
     const get = (k) => { try { return storage.getItem(k); } catch (_e) { return null; } };
     const optionOn = () => get(STORAGE_SYNC_SEARCH_HISTORY) === 'true';
+    /* The limits come from the downloaded list of settings (never typed here): characters per search, searches kept, and the
+       size in bytes the account will store (a search in a language with 3 or 4 byte characters can make 20 of them too big). */
+    const maxLen = Number.isInteger(entry.item && entry.item.maxLength) ? entry.item.maxLength : 100;
+    const maxItems = Number.isInteger(entry.maxItems) ? entry.maxItems : 20;
     const tidy = (raw) => {
         let list;
         try { list = JSON.parse(raw); } catch (_e) { return null; }
@@ -136,10 +140,12 @@ function searchHistoryProvider(entry, storage) {
         const out = [];
         for (const q of list) {
             if (typeof q !== 'string') continue;
-            const t = Array.from(q.trim()).slice(0, 100).join('');
+            const t = Array.from(q.trim()).slice(0, maxLen).join('');
             if (t !== '' && !out.includes(t)) out.push(t);
-            if (out.length >= 20) break;
+            if (out.length >= maxItems) break;
         }
+        /* Too big for the account? Drop the OLDEST searches (the end of the list) until it fits. Never cut inside a search. */
+        while (out.length > 0 && Number.isInteger(entry.maxBytes) && encodedBytes(out) > entry.maxBytes) out.pop();
         return out;
     };
     return {
