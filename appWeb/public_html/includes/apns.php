@@ -126,6 +126,7 @@ declare(strict_types=1);
    load time, so requiring it here keeps this module (and its CLI test)
    standalone-loadable too. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'apple_siwa.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php'; /* songRelocateIsTransactionFatal() */
 
 /** Closed vocabulary for `tblApnsTokens.ApnsEnv` — VARCHAR, app-validated,
  *  never an ENUM (rule #20); matches the shipped column COMMENT exactly. */
@@ -163,6 +164,41 @@ function apnsTokensTableExists(\mysqli $db): bool
         $exists = false; /* un-migrated install → treat as absent → caller 503s */
     }
     return $exists;
+}
+
+/**
+ * Does the `tblApnsTokens.ApiTokenHash` column exist on THIS install?
+ *
+ * ELI5: a phone's push registration can be tied to the one sign-in that made it,
+ * so signing that sign-in out removes only its own registration. The column that
+ * remembers the tie is added by the foundation migration (B1), which is run by
+ * hand, so it may not be there yet. Every use of the column MUST sit behind this
+ * check (tests/php/test-account-foundation-gating.php enforces it); without the
+ * column the old rules apply.
+ *
+ * Remembered for the request. An error while asking means "not there" (not
+ * remembered), except an error that ENDS a transaction, which is passed up.
+ */
+function apnsTokenHashReady(\mysqli $db): bool
+{
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+    try {
+        $st = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblApnsTokens'
+                AND COLUMN_NAME = 'ApiTokenHash' LIMIT 1"
+        );
+        $st->execute();
+        $ready = $st->get_result()->fetch_row() !== null;
+        $st->close();
+        return $ready;
+    } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
+        return false;
+    }
 }
 
 /**

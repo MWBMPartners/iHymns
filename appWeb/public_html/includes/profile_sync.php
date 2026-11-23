@@ -28,6 +28,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'profile_sync_gate.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php'; /* songRelocateIsTransactionFatal(): errors that end a transaction must be passed up */
 
 if (!function_exists('profileItemsReady')) {
     /**
@@ -36,6 +37,7 @@ if (!function_exists('profileItemsReady')) {
      * Remembered for the rest of the request (the answer cannot change mid-request).
      * An error while asking counts as "not ready" (fail safe) and is NOT remembered,
      * so a brief database hiccup does not switch the feature off for a whole request.
+     * An error that ENDS a transaction is passed up, never swallowed (rule: songRelocateIsTransactionFatal).
      *
      * @param \mysqli $db a live connection from getDbMysqli()
      */
@@ -55,6 +57,7 @@ if (!function_exists('profileItemsReady')) {
             $stmt->close();
             return $ready;
         } catch (\Throwable $_e) {
+            if (songRelocateIsTransactionFatal($_e)) { throw $_e; } /* an error that ended a transaction is not "table missing" */
             return false;
         }
     }

@@ -87,6 +87,8 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php'; /* songRelocateIsTransactionFatal() */
+
 if (!function_exists('userSyncCap')) {
     /**
      * Apply a per-store size cap and REPORT whether it bit.
@@ -886,6 +888,45 @@ if (!function_exists('userSyncTombstonesReady')) {
         $ready = $stmt->get_result()->fetch_row() !== null;
         $stmt->close();
         return $ready;
+    }
+}
+
+if (!function_exists('userSyncItemTombstonesReady')) {
+    /**
+     * Has the favourites / custom-tags delete-marker table been created on THIS install?
+     *
+     * ELI5: before we write "this favourite was deliberately removed" we check the
+     * table for those notes exists. It is made by the foundation migration (B1),
+     * which is run by hand, so it may not be there yet.
+     *
+     * Under MYSQLI_REPORT_STRICT an absent table THROWS, so every use of
+     * `tblUserSyncTombstones` MUST sit behind this check (the guard
+     * tests/php/test-account-foundation-gating.php enforces it). Remembered for the
+     * rest of the request; an error while asking counts as "not ready" and is not
+     * remembered, except an error that ENDS a transaction, which is passed up.
+     *
+     * @param \mysqli $db Live connection.
+     * @return bool True when tblUserSyncTombstones exists.
+     */
+    function userSyncItemTombstonesReady(\mysqli $db): bool
+    {
+        static $ready = null;
+        if ($ready !== null) {
+            return $ready;
+        }
+        try {
+            $stmt = $db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblUserSyncTombstones' LIMIT 1"
+            );
+            $stmt->execute();
+            $ready = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return $ready;
+        } catch (\Throwable $_e) {
+            if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
+            return false;
+        }
     }
 }
 
