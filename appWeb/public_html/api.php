@@ -11130,6 +11130,98 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * profile_sync - one way to keep small personal items in step (PR 2b, 2b-3)
+         *
+         * The theme, text size, chord style, recent songbooks, a key and capo per
+         * song, and so on. A device sends only what it changed; the server keeps
+         * what the one registry allows, hands back what it refused, and numbers
+         * each accepted change so other devices can ask "what happened after N?".
+         *
+         *   GET  ?action=profile_sync&cursor=N       read
+         *   POST ?action=profile_sync                {schemaVersion, client:{platform,appVersion},
+         *                                             cursor, changes:[{section,key,op,value}]}
+         *        then reads, in the same reply.
+         * Replies:
+         *   200 {ok, cursor, more, resetCursor, schemaVersion, changes, rejected, applied}
+         *   400 {reason:'invalid_request'}; 401; 403; 405
+         *   409 {reason:'profile_sync_disabled'}  (not switched on for this site)
+         *       {reason:'profile_sync_not_ready'} (switched on, database objects not created yet)
+         *       {reason:'account_writes_off_here'} (POST only: saving is paused on this site; a GET still reads)
+         *   413 {reason:'body_too_large'} (over 64 KiB) or {reason:'too_many_changes'} (over 200)
+         *   429; 503 when the database cannot be used.
+         * All logic is in includes/profile_sync.php (rules #22, #48).
+         * ----------------------------------------------------------------- */
+        case 'profile_sync': {
+            $psMethod = $_SERVER['REQUEST_METHOD'];
+            if ($psMethod !== 'GET' && $psMethod !== 'POST') {
+                sendJson(['error' => 'GET or POST required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_sync.php';
+            /* A POST changes saved data: same-origin check. Two things must be true of EVERY POST, a Bearer one included:
+               the global gate at the top of this file already demanded `X-Requested-With: XMLHttpRequest`, and
+               validateCsrfRequest() demands that header again and refuses an Origin / Referer from another host. There is
+               NO exemption for a Bearer request. A native app passes because it sends the header and sends no Origin (an
+               absent Origin is allowed); a browser page passes because both headers agree with the site. */
+            if ($psMethod === 'POST' && !validateCsrfRequest(null)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $psUserId = (int)$authUser['Id'];
+            /* Dormant until an admin switches the new account behaviour on for this site. */
+            if (!profileSyncEnabledHere()) {
+                sendJson(profileSyncDisabledBody(), 409);
+                break;
+            }
+            /* Saving is a change to a person's data, so the per-site "pause saving" brake applies to a POST (a GET still reads). */
+            if ($psMethod === 'POST' && accountWritesRefuseIfOff()) { break; }
+            /* Per signed-in person; fails open (counting must never break a sync). */
+            enforceReadRateLimit('profile_sync', PROFILE_SYNC_RATE_PER_MINUTE, 0, 'uid:' . $psUserId);
+
+            $psReq = ['status' => 200, 'cursor' => 0, 'changes' => [], 'platform' => null];
+            if ($psMethod === 'POST') {
+                /* Read at most one byte more than the limit, so a huge body is never held in memory. */
+                $psReq = profileSyncParseRequest((string)file_get_contents('php://input', false, null, 0, PROFILE_SYNC_MAX_BODY_BYTES + 1));
+            } else {
+                $psCursor = profileSyncParseCursor($_GET['cursor'] ?? null);
+                if ($psCursor === null) { $psReq = ['status' => 400, 'reason' => 'invalid_request']; } else { $psReq['cursor'] = $psCursor; }
+            }
+            if ($psReq['status'] !== 200) {
+                sendJson(['error' => 'The request could not be accepted.', 'reason' => $psReq['reason']], $psReq['status']);
+                break;
+            }
+            try {
+                $db = getDbMysqli();
+                if (!profileItemsReady($db)) {
+                    sendJson(profileSyncNotReadyBody(), 409);
+                    break;
+                }
+                $psApply = null;
+                if ($psMethod === 'POST') {
+                    $psApply = profileSyncApply($db, $psUserId, $psReq['changes'], $psReq['platform']);
+                } elseif (accountWritesAllowedHere()) {
+                    /* A read still shows a change an older app made to the old settings box (2b-4). It only takes
+                       the person's lock when the box has changed, and only where saving is allowed (it copies). */
+                    profileSyncBridgeStep($db, $psUserId, static function () use ($db, $psUserId): void {
+                        profileSyncReconcileIfChanged($db, $psUserId);
+                    });
+                }
+                $psPull = profileSyncPull($db, $psUserId, (int)$psReq['cursor']);
+                sendJson(profileSyncReply($psPull, $psApply));
+            } catch (\Throwable $e) {
+                error_log('[api/profile_sync] ' . $e->getMessage());
+                sendJson(['error' => 'Could not sync right now, please retry.', 'reason' => 'profile_sync_unavailable'], 503);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
          * Batch existence check for a list of SongIds (#1329).
          * Public — only reveals whether already-public song ids still exist.
          * The client uses it to PRUNE songs that have been deleted from the

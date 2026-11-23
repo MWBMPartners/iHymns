@@ -1742,6 +1742,8 @@ export class Router {
         recent = recent.slice(0, 5);
 
         localStorage.setItem(key, JSON.stringify(recent));
+        /* #2177 / PR 2b: the songbooks opened lately follow the account (never the shared cookie): tell the sync. */
+        this.app?.syncStorage?.(key);
     }
 
     /**

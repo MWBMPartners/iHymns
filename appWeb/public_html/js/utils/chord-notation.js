@@ -195,3 +195,17 @@ export function chordToSolfege(chord, tonic, opts) {
         return SOLFEGE_DEGREES_MOVABLE[distance];
     });
 }
+
+/**
+ * Is the stored "two columns" setting switched on? (PR 2b, #2176)
+ *
+ * ELI5: the chord page has always saved this switch as the text "1" and removed it when off. Now the
+ * account can carry the setting too, and the account's copy arrives as a true/false value that the
+ * browser stores as the text "true". Both mean "on", so every reader must accept both.
+ *
+ * @param {string|null} stored what localStorage holds (or null when nothing is stored)
+ * @returns {boolean}
+ */
+export function chordColumnsStoredOn(stored) {
+    return stored === '1' || stored === 'true';
+}

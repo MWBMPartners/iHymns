@@ -49,6 +49,7 @@ import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
 import { SubdomainSync } from './modules/subdomain-sync.js';
 import { CrossSiteSync } from './modules/settings-sync.js';
+import { ProfileSync } from './modules/profile-sync.js';
 import { Gestures } from './modules/gestures.js';
 import { PullToRefresh } from './modules/pull-to-refresh.js';
 import { Analytics } from './modules/analytics.js';
@@ -170,6 +171,9 @@ class iHymnsApp {
         /** @type {CrossSiteSync|null} Rebuilt cross-site settings sync (#2143) — only when switched on for this channel */
         this.crossSiteSync = null;
 
+        /** @type {ProfileSync|null} Per-item sync of small personal settings (PR 2b) — only when switched on for this site */
+        this.profileSync = null;
+
         /** @type {Gestures} Touch gesture navigation (#143) */
         this.gestures = null;
 
@@ -270,6 +274,14 @@ class iHymnsApp {
                see api-client.js's own doc-comment on authHeaderProvider). */
             setAuthHeaderProvider(() => this.userAuth.authHeaders());
             this.userAuth.initUserMenu();
+            /* PR 2b (epic #2180): the per-item profile sync. Created only when this site has the new account
+               behaviour switched on AND its database table exists (config.profileSync.enabled); otherwise it
+               does not exist and settings.js keeps its older whole-box sync. After setAuthHeaderProvider()
+               so its first request carries the sign-in. */
+            if (this.config.profileSync?.enabled) {
+                this.profileSync = new ProfileSync(this);
+                this.profileSync.init();
+            }
             /* Background Sync for setlists + favourites (#338). Safe to
                call even if not signed in; the drain handlers short-
                circuit and re-bind on next login. */
@@ -1314,14 +1326,19 @@ class iHymnsApp {
      * travel; everything else is ignored.
      *
      * @param {string} key Full localStorage key (e.g. 'ihymns_favorites')
+     * @param {{origin?: 'local'|'account'}} [opts] origin 'account' = the value came from the person's account
      */
-    syncStorage(key) {
+    syncStorage(key, opts = {}) {
         /* The shared settings cookie (*.ihymns.app): the rebuilt sync when it is switched on for
            this channel, otherwise the old one. Either way only registered display settings travel
            and everything else is ignored. The hidden-frame "bridge" that used to be a second layer
            here never connected and was removed (#2143). */
         if (this.crossSiteSync) this.crossSiteSync.recordLocalChange(key);
         else this.subdomainSync?.sync(key);
+        /* PR 2b: also queue it for the person's account (small personal settings only; anything else is
+           ignored). `opts.origin === 'account'` means the value came FROM the account, so it updates the
+           cookie above but is never queued (values from the account are never sent back). */
+        this.profileSync?.recordLocalChange(key, opts);
     }
 
     /**

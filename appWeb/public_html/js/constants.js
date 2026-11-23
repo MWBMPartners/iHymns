@@ -15,6 +15,10 @@ export const STORAGE_FAVORITES      = 'ihymns_favorites';
 export const STORAGE_SETLISTS       = 'ihymns_setlists';
 export const STORAGE_HISTORY        = 'ihymns_history';
 export const STORAGE_SEARCH_HISTORY = 'ihymns_search_history';
+/* "Keep my recent searches in my account" (PR 2b, #2177; registry entry privacy.syncSearchHistory). 'true' when the
+   person switched it on, absent when off (the default). It decides whether the recent-searches list above travels to
+   the account at all. */
+export const STORAGE_SYNC_SEARCH_HISTORY = 'ihymns_sync_search_history';
 export const STORAGE_CUSTOM_TAGS    = 'ihymns_custom_tags';
 export const STORAGE_OWNER_ID       = 'ihymns_owner_id';
 
@@ -108,6 +112,17 @@ export const STORAGE_FAVORITES_DELETED = 'ihymns_favorites_deleted';
 /* The period picked on the home page's "Your most viewed" card (30d | 90d | 12m | all). A device
    choice for now (PR 2a, 2a-7); the registry entry home.mostViewedPeriod will carry it to the account. */
 export const STORAGE_MOST_VIEWED_PERIOD = 'ihymns_most_viewed_period';
+
+/* The profile sync's own bookkeeping (PR 2b, 2b-5; js/modules/profile-sync.js).
+   OUTBOX: the small personal changes this device has made and the server has not yet confirmed. It
+   survives a reload and being offline. CURSOR: how far this device has read the person's profile.
+   Both name the person they belong to INSIDE the stored value and are dropped when a different person
+   signs in on the same device (A7), so one person's pending changes are never sent to another's account.
+   SCHEMA: the last good copy of the server's list of personal settings (`profile_schema`) with its tag,
+   so the app still starts offline. None of the three travels in the shared settings cookie. */
+export const STORAGE_PROFILE_OUTBOX = 'ihymns_profile_outbox';
+export const STORAGE_PROFILE_CURSOR = 'ihymns_profile_cursor';
+export const STORAGE_PROFILE_SCHEMA = 'ihymns_profile_schema';
 
 /* Pending explicit set-list deletions (#1661) — the ids this device has
    deleted but not yet had acknowledged by a successful sync.
@@ -294,6 +309,13 @@ export const EVT_LIST_SORT_CHANGED = 'ihymns:list-sort-changed';
    settings.js, which re-applies theme, text size and the other visual
    settings so the change shows at once. */
 export const EVT_XSITE_SETTINGS_APPLIED = 'ihymns:xsite-settings-applied';
+/* The profile sync (js/modules/profile-sync.js) wrote values it received from the person's account into
+   local storage. detail.keys = the storage keys it changed. Settings listens and re-applies what is visual. */
+export const EVT_PROFILE_APPLIED = 'ihymns:profile-applied';
+/* The profile sync switched between "doing the work" and "not doing it" (signed in or out, the person's own settings-sync
+   switch, or the site answering that it is off or not ready). detail.active = the new answer. Dispatcher: ProfileSync.refreshActive().
+   Listener: search-history-sync-row.js, so the "Keep my recent searches" row appears and disappears at once. */
+export const EVT_PROFILE_ACTIVE_CHANGED = 'ihymns:profile-active-changed';
 
 /* ── Songbook Name Lookup ─────────────────────────────────────────────── */
 

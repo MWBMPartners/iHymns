@@ -28,8 +28,10 @@ import {
     EVT_AUTH_CHANGED,
     EVT_OFFLINE_SETTINGS_CHANGED,
     EVT_XSITE_SETTINGS_APPLIED,
+    EVT_PROFILE_APPLIED,
 } from '../constants.js';
 import { escapeHtml } from '../utils/html.js';
+import { bindSearchHistorySyncRow } from './search-history-sync-row.js';
 import { CROSS_SITE_KEYS } from './settings-sync-registry.js';
 /* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
    on every same-origin request, replacing the old global fetch monkey-patch. */
@@ -209,6 +211,8 @@ export class Settings {
         /* #2143 — the cross-site settings sync adopted a newer value from another
            iHymns site (settings-sync.js): re-apply everything visual so it shows at once. */
         document.addEventListener(EVT_XSITE_SETTINGS_APPLIED, () => this.reapplyAll());
+        /* PR 2b — the profile sync wrote values it read from the person's account: show them at once too. */
+        document.addEventListener(EVT_PROFILE_APPLIED, () => this.reapplyAll());
 
         /* Re-apply the Account section whenever auth state changes, even if
            the user is on the Settings page (no navigation triggered).
@@ -262,6 +266,9 @@ export class Settings {
     /** Is per-user settings sync currently active? */
     _isSyncEnabled() {
         if (!this.app.userAuth?.isLoggedIn?.()) return false;
+        /* PR 2b: while the per-item profile sync is doing this job, the older whole-box upload and download stand down
+           (the server keeps the old box in step for older apps). */
+        if (this.app.profileSync?.isActive?.()) return false;
         /* Default = on; only off when the user has explicitly opted out. */
         return localStorage.getItem(SYNC_TOGGLE_KEY) !== 'false';
     }
@@ -2056,14 +2063,21 @@ export class Settings {
             syncToggle.addEventListener('change', () => {
                 if (syncToggle.checked) {
                     localStorage.removeItem(SYNC_TOGGLE_KEY);
-                    /* Push current local prefs immediately so the server
-                       reflects this device's state once sync is on. */
-                    this._pushSyncedSettings();
+                    /* The older sync pushes this device's prefs at once. The new one never pushes everything (that would
+                       overwrite newer account values and bring back removed items): it starts again with a full read. */
+                    if (this.app.profileSync?.isActive?.()) this.app.profileSync.resumeAfterOptIn();
+                    else this._pushSyncedSettings();
                 } else {
                     localStorage.setItem(SYNC_TOGGLE_KEY, 'false');
                 }
+                /* The new sync steps aside while this person's own switch is off: tell anything that depends on it (the searches row). */
+                this.app.profileSync?.refreshActive?.();
             });
         }
+
+        /* "Keep my recent searches in my account" (#2177). Off unless switched on; the row only appears where the new
+           account sync is active for this site. The switch itself is a setting that follows the account. */
+        bindSearchHistorySyncRow(document, this.app, localStorage);
 
         /* Profile save — update display name + email */
         const profileForm = document.getElementById('profile-form');

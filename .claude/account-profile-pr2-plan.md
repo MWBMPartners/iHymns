@@ -32,6 +32,58 @@ Deviations from the plan (PR 2a):
   - Tag markers have no "exists" check (no registry to check against); only the 5,000 cap applies.
 - Docs: `api-docs.yaml` named the `song_view` field `songId`; the server reads `song_id`. Corrected.
 
+## Progress (PR 2b, branch `claude/account-pr2b`)
+
+| Step | Commit | Status |
+|---|---|---|
+| 2b-1 registry version 2 (`map` kind, four new entries) | 63aab863 | done |
+| 2b-2 the sync core | 46863e33 | done, needs Opus review |
+| 2b-3 the `profile_sync` endpoint | 52332a6f | done |
+| 2b-4 keep the old settings box and the profile in step | 162a3f80 | done, needs Opus review |
+| 2b-5 the browser's half | 1b0755cd | done, needs Opus review |
+| 2b-6 chords | 34e93cd7 | done |
+| 2b-6 recent songbooks | df7e839f | done |
+| 2b-6 per-song key, capo, octave | 39ad03a4 | done |
+| 2b-6 search history | 14d22bb2 | done |
+| gating guard: the core opens with its check and has one door | 60be7a76 | done |
+| Opus review fix 1: the server refuses recent searches unless opted in (`not_opted_in`) | 0b4390c8 | done |
+| Opus review fix 2: a shared browser carries neither the option nor the list to the next person | 2216d612 | done |
+| Opus review fix 3: the searches switch changes nothing unless it can be queued; the row follows "is the sync active" | 8ef3da89 | done |
+| Opus review fix 4: switching settings sync back on reads first (no `queueAllLocal`) | f5a4149f | done |
+| Opus review fix 5: a read and a send never overlap in the browser | 7d9f1c99 | done |
+| Opus review fix 6: a valid value always fits the stored size (`maxBytes`) | 8969b5e5 | done |
+| Opus review fix 7: delete markers per person and map section are capped at 5,000 | 90bf9819 | done |
+| Opus review fix 8: an empty or all-zero per-song value is a removal | 1172a250 | done |
+| Opus review fix 9: one letter case (upper) for per-song keys | c6da4d23 | done |
+| Opus review fix 10: a refused copy onto the old box cannot let a stale value return | 0a746678 | done |
+| Opus review fix 11: a per-person version counter that never goes down | b04d6b18 | done |
+| Opus review fix 12: the comment and docs no longer say a Bearer request is exempt; 405 documented | b32c39b8 | done |
+| Opus review fix 13: the "one door" guard derives its names from the file and reads real code | 73434149 | done |
+
+Deviations from the plan (PR 2b):
+- 2b-1: `library.recentSongbooks` joined `PERSONAL_DATA_KEYS` here, not in 2b-6, because the new lockstep check ("every web key cleared at sign-out is in `PERSONAL_DATA_KEYS`") needs it. The check "every web profile_sync entry has a web key or a hand-written provider" landed with the last provider (search history, 2b-6), because it cannot be true before.
+- 2b-2: an item key is compared ignoring letter case (`MP-1` and `mp-1` are one row, as the table treats them). `profileSyncApply()` was split into `profileSyncApplyLocked()` (caller holds the lock) and a wrapper, so 2b-4 could run its steps inside the same transaction.
+- 2b-3: rate limit is 120 a minute per signed-in person (`enforceReadRateLimit`), for both methods. A server error is `503 {reason:'profile_sync_unavailable'}`.
+- 2b-4: `userSettingsMutate()` was split into `userSettingsMutateLocked()` plus a wrapper (behaviour unchanged); `test-user-settings-mutate.php` was updated to check the split. The JavaScript twin of the converters is its own pure module `js/modules/profile-web-codec.js` (so the lockstep test is built in 2b-4, not 2b-5). Writing that test found a real fault (a list `[]` accepted for an object setting, and the reverse), now fixed.
+- 2b-5: the writes to chord style, recent songbooks and the "most viewed" period call `syncStorage` in this commit (planned for 2b-6), because the widened guard in `test-settings-sync-cookie.js` now covers them. That guard now follows names and properties, not only literal keys (it found the chord-style write the old pattern could not see).
+- 2b-6 search history: the "Keep my recent searches in my account" row is hidden until the page can say the new sync is active (the settings page is a shared cached page, so it cannot decide per site).
+
+Deviations from the plan (Opus review fixes):
+- Fix 6 chose a per-entry byte limit (`maxBytes`, 4096, on `history.searches` only) rather than shrinking `maxItems` x `maxLength`, because even 20 x 50 characters can exceed 4 KiB when a character is written as `\uXXXX` (6 bytes). The registry version stays 2 (an unreleased entry gained a constraint; nothing was added), and the Apple snapshot was regenerated.
+- Fix 9 changed the pattern of the unreleased `songPrefs.*` entry to upper case only (the server upper-cases a lower-case key before checking). The Apple snapshot was regenerated.
+- Fix 7 prunes OLDEST markers beyond 5,000 per person and section when a marker is written. A device away so long that it never saw a pruned removal keeps that one item until it changes again (the version counter of fix 11 means no number is reused).
+- Fix 11 was written after fix 7 in the commit order; fix 7 does not need it (the oldest markers go, never the newest).
+- Fix 2 stashes the searches list only while the option is on, and puts a returning person's list back whole (never merged); with the option off the older device-only list is left exactly as it was.
+- Fix 3 added a small module (`search-history-sync-row.js`) and a new event (`EVT_PROFILE_ACTIVE_CHANGED`) so the Settings row can be tested and can follow the sync switching on and off.
+- Fix 12 is a comment and documentation fix; the real behaviour (a Bearer POST needs `X-Requested-With`, and a foreign `Origin` is refused) was already right and is covered by `test-csrf-same-origin.php`.
+- Fix 13: the door of the core is "every function that reaches the table, directly or through another function of the file", except the two public `profileItem*` helpers.
+
+Follow-ups recorded from this work (NOT done):
+- The profile outbox and cursor are not yet cleared at sign-out (that is 2c-3). The outbox can hold recent searches if the person switched that option on.
+- (Fixed by review fix 1.) `history.searches` is only ever sent while the option is on, and now the SERVER checks that option too.
+- Old production code with a stale settings box can still overwrite a newer value until the new code is promoted (as the plan said).
+- The bridge copies a delete as the empty text on the old shelf; an old app reads that as "reset to default".
+
 ## 0. What the code changed about the old plan
 
 1. **G3 is already done.** `accountErase()` already blanks the person's audit rows, so G3 is dropped.

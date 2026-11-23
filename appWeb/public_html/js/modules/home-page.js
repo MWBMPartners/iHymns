@@ -291,6 +291,8 @@ function loadMyMostViewed() {
     select.addEventListener('change', () => {
         const picked = select.value;
         try { localStorage.setItem(STORAGE_MOST_VIEWED_PERIOD, picked); } catch { /* quota / private mode */ }
+        /* PR 2b: the chosen period follows the account (home.mostViewedPeriod): tell the sync. */
+        try { window.iHymnsApp?.syncStorage?.(STORAGE_MOST_VIEWED_PERIOD); } catch { /* the sync is best effort */ }
         load(picked, false);
     });
     load(remembered, true);

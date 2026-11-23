@@ -69,6 +69,8 @@ export class SearchHistory {
      */
     clear() {
         localStorage.removeItem(this.storageKey);
+        /* PR 2b (#2177): with "keep my recent searches in my account" on, clearing travels too. */
+        this.app.syncStorage(this.storageKey);
     }
 
     /**

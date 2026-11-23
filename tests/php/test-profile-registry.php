@@ -47,7 +47,10 @@ foreach ($reg as $id => $e) {
     $why = [];
     foreach ($FIELDS as $f) { if (!array_key_exists($f, $e)) { $why[] = "missing field $f"; } }
     if (($e['id'] ?? '') !== $id || $id !== ($e['section'] ?? '') . '.' . ($e['key'] ?? '')) { $why[] = 'id is not section.key'; }
-    if (!preg_match('/^[a-z][A-Za-z0-9]*$/', (string)($e['section'] ?? '')) || !preg_match('/^[a-z][A-Za-z0-9]*$/', (string)($e['key'] ?? ''))) { $why[] = 'section/key naming'; }
+    /* a map entry's key is the single character '*' (it stands for "any item of this section") */
+    $keyOk = ($e['type'] ?? '') === 'map' ? ($e['key'] ?? '') === '*' : (bool)preg_match('/^[a-z][A-Za-z0-9]*$/', (string)($e['key'] ?? ''));
+    if (!preg_match('/^[a-z][A-Za-z0-9]*$/', (string)($e['section'] ?? '')) || !$keyOk) { $why[] = 'section/key naming'; }
+    if (($e['key'] ?? '') === '*' && ($e['type'] ?? '') !== 'map') { $why[] = "only a map entry may use the key '*'"; }
     if (!in_array($e['type'] ?? '', PROFILE_TYPES, true)) { $why[] = 'unknown type'; }
     if (!in_array($e['scope'] ?? '', PROFILE_SCOPES, true)) { $why[] = 'unknown scope'; }
     if (!in_array($e['storage'] ?? '', PROFILE_STORAGES, true)) { $why[] = 'unknown storage'; }
@@ -66,6 +69,12 @@ foreach ($reg as $id => $e) {
         case 'enum': if (empty($e['allowed']) || count($e['allowed']) !== count(array_unique($e['allowed']))) { $why[] = 'enum needs unique allowed[]'; } break;
         case 'int': case 'float': if (!isset($e['min'], $e['max']) || $e['min'] > $e['max']) { $why[] = 'min/max'; } break;
         case 'list': if (!isset($e['item']['type'])) { $why[] = 'list needs item'; } break;
+        case 'map':
+            if (!isset($e['item']['type']) || !isset($e['itemKeyPattern']) || !isset($e['maxItems']) || !is_int($e['maxItems']) || $e['maxItems'] < 1) { $why[] = 'map needs item, itemKeyPattern and maxItems'; }
+            elseif (@preg_match('/' . str_replace('/', '\\/', $e['itemKeyPattern']) . '/D', '') === false) { $why[] = 'map itemKeyPattern is not a valid pattern'; }
+            if (($e['key'] ?? '') !== '*') { $why[] = "a map entry's key must be '*'"; }
+            if (($e['scope'] ?? '') !== 'device' && ($e['sync'] ?? '') === 'profile_sync' && ($e['cap'] ?? null) !== ($e['maxItems'] ?? -1)) { $why[] = 'map cap must equal maxItems'; }
+            break;
     }
     /* default valid */
     if (($e['default'] ?? null) !== null && !profileValidateSpec($e, $e['default'])) { $why[] = 'default is not a valid value'; }
@@ -87,8 +96,8 @@ foreach ($reg as $id => $e) {
         if ($e['scope'] !== 'account' || !in_array('web', $pl, true) && $pl !== ['all'] || $e['legacyWebKey'] === null) { $why[] = 'cookie entry must be a web account setting with a legacyWebKey'; }
         if ($e['section'] === 'content' || $e['section'] === 'device') { $why[] = 'content/device must never travel in the cookie'; }
     }
-    /* sign-out clearing: saved content only, never a display setting */
-    if ($e['clearAtSignOut'] === true && !($e['scope'] === 'account' && str_starts_with($e['storage'], 'table:'))) { $why[] = 'only saved-content kinds clear at sign-out'; }
+    /* sign-out clearing: saved content (own table) or a personal list kept as a profile item, never a display setting */
+    if ($e['clearAtSignOut'] === true && !($e['scope'] === 'account' && (str_starts_with($e['storage'], 'table:') || ($e['storage'] === 'profile_items' && $e['type'] === 'list')))) { $why[] = 'only saved-content kinds and personal lists clear at sign-out'; }
     if ($why) { $bad[$id] = implode('; ', $why); }
 }
 chk('every entry is well-formed (vocabulary, ids, defaults, scope rules, cookie and sign-out rules)', $bad === [], json_encode($bad));
@@ -96,9 +105,45 @@ chk('every entry is well-formed (vocabulary, ids, defaults, scope rules, cookie 
 /* the content kinds that must clear at sign-out (decision O2) */
 $clears = array_keys(array_filter($reg, fn($e) => $e['clearAtSignOut']));
 sort($clears);
-chk('sign-out clears exactly the saved content kinds: favourites, set lists, custom tags, history',
-    $clears === ['content.customTags', 'content.favorites', 'content.history', 'content.setlists'], implode(',', $clears));
-chk('no display setting is cleared at sign-out', count(array_filter($reg, fn($e) => $e['clearAtSignOut'] && $e['section'] !== 'content')) === 0);
+chk('sign-out clears exactly the saved content kinds (favourites, set lists, custom tags, history) and the two personal lists (recent songbooks, recent searches)',
+    $clears === ['content.customTags', 'content.favorites', 'content.history', 'content.setlists', 'history.searches', 'library.recentSongbooks'], implode(',', $clears));
+chk('no display setting is cleared at sign-out', count(array_filter($reg, fn($e) => $e['clearAtSignOut'] && !in_array($e['section'], ['content', 'history', 'library'], true))) === 0);
+
+/* ---- the map type (schema version 2) ---- */
+$mapSections = [];
+foreach ($reg as $e) { if ($e['type'] === 'map') { $mapSections[$e['section']] = true; } }
+$mixed = [];
+foreach ($reg as $e) { if (isset($mapSections[$e['section']]) && $e['type'] !== 'map') { $mixed[] = $e['id']; } }
+chk('a section that has a map entry has NO other entry (' . implode(',', array_keys($mapSections)) . ')', $mixed === [] && $mapSections !== [], implode(',', $mixed));
+$mapIds = array_keys(array_filter($reg, fn($e) => $e['type'] === 'map'));
+chk('the registry has at least one map entry, and every map id is section.*', $mapIds !== [] && count(array_filter($mapIds, fn($i) => !str_ends_with($i, '.*'))) === 0);
+chk('the schema version covers the newest entry (an addition bumps the version)', max(array_column($reg, 'since')) === profileRegistryVersion());
+chk('a map item looks up through section.*: exact id wins, a section with no map and no such key is unknown',
+    (profileRegistryEntry('songPrefs', 'MP-1008')['id'] ?? '') === 'songPrefs.*' && (profileRegistryEntry('songPrefs', '*')['id'] ?? '') === 'songPrefs.*'
+    && profileRegistryEntry('appearance', 'MP-1008') === null && profileRegistryEntry('nope', 'MP-1008') === null);
+chk('a map item key must match the pattern (a trailing newline, a path, "*" and an empty key are refused)',
+    profileRegistryValidate('songPrefs', 'MP-1008', ['transpose' => 2, 'capo' => 3, 'octave' => 0])
+    && !profileRegistryValidate('songPrefs', "MP-1008\n", ['transpose' => 2]) && !profileRegistryValidate('songPrefs', 'MP1008', ['transpose' => 2])
+    && !profileRegistryValidate('songPrefs', '../x-1', ['transpose' => 2]) && !profileRegistryValidate('songPrefs', '*', ['transpose' => 2]) && !profileRegistryValidate('songPrefs', '', ['transpose' => 2]));
+chk('a map item value must satisfy the item rule (ranges, known keys, an object)',
+    profileRegistryValidate('songPrefs', 'MP-1', ['transpose' => -11, 'capo' => 11, 'octave' => -2])
+    && !profileRegistryValidate('songPrefs', 'MP-1', ['transpose' => 12]) && !profileRegistryValidate('songPrefs', 'MP-1', ['capo' => -1])
+    && !profileRegistryValidate('songPrefs', 'MP-1', ['octave' => 3]) && !profileRegistryValidate('songPrefs', 'MP-1', ['mystery' => 1])
+    && !profileRegistryValidate('songPrefs', 'MP-1', 3) && !profileRegistryValidate('songPrefs', 'MP-1', ['transpose' => '2']));
+chk('a whole map is valid up to its cap and not one over',
+    profileRegistryValidate('songPrefs', '*', ['MP-1' => ['capo' => 1]])
+    && !profileRegistryValidate('songPrefs', '*', array_combine(array_map(fn($i) => 'MP-' . $i, range(1, 2001)), array_fill(0, 2001, ['capo' => 1]))));
+
+/* ---- the version-2 additions ---- */
+chk('library.recentSongbooks: up to 20 abbreviations, account scope, cleared at sign-out, old web key',
+    profileRegistryValidate('library', 'recentSongbooks', ['MP', 'SDAH']) && !profileRegistryValidate('library', 'recentSongbooks', ['MP-1'])
+    && !profileRegistryValidate('library', 'recentSongbooks', array_fill(0, 21, 'MP'))
+    && profileRegistryEntry('library', 'recentSongbooks')['legacyWebKey'] === 'ihymns_recent_songbooks' && profileRegistryEntry('library', 'recentSongbooks')['clearAtSignOut'] === true);
+chk('history.searches: up to 20 strings of up to 100 characters, cleared at sign-out',
+    profileRegistryValidate('history', 'searches', ['amazing grace']) && !profileRegistryValidate('history', 'searches', [str_repeat('x', 101)])
+    && !profileRegistryValidate('history', 'searches', array_fill(0, 21, 'a')) && profileRegistryEntry('history', 'searches')['clearAtSignOut'] === true);
+chk('privacy.syncSearchHistory: a real boolean, default off', profileRegistryValidate('privacy', 'syncSearchHistory', true) && profileRegistryEntry('privacy', 'syncSearchHistory')['default'] === false);
+chk('home.mostViewedPeriod has its web key', profileRegistryEntry('home', 'mostViewedPeriod')['legacyWebKey'] === 'ihymns_most_viewed_period');
 
 /* the decision O5 setting */
 $mv = profileRegistryEntry('home', 'mostViewedPeriod');
@@ -126,6 +171,51 @@ chk('display: only the five known keys, each in range',
 chk('cvd: a real mode is valid; "none" is not (no value is a delete, not a set)', profileRegistryValidate('appearance', 'cvd', 'protanopia') && !profileRegistryValidate('appearance', 'cvd', 'none'));
 chk('an unknown section or key is never valid', !profileRegistryValidate('nope', 'nothing', 'x') && profileRegistryEntry('appearance', 'nothing') === null);
 chk('a list respects its item type and cap', profileRegistryValidate('content', 'favorites', ['MP-1', 'MP-2']) && !profileRegistryValidate('content', 'favorites', [1]) && !profileRegistryValidate('content', 'favorites', ['a' => 'b']) && !profileRegistryValidate('content', 'favorites', array_fill(0, 501, 'MP-1')));
+
+/* ---- every value the registry calls valid fits in what the server stores (2b review fix 6) ---- */
+/* The server refuses one stored item over this many bytes (PROFILE_SYNC_MAX_VALUE_BYTES). The registry's own rules must never
+   allow a value the server then refuses: that would be a value valid on paper that no device can ever save. */
+$_SERVER['SCRIPT_FILENAME'] = 'test';
+require_once $repo . '/appWeb/public_html/includes/profile_sync.php';
+/** The most bytes a value of this spec can take as stored JSON text. null = no limit (unbounded). Every character is counted as its worst case: 6 bytes (a control character or U+2028 is written as \uXXXX). */
+$worst = function (array $spec) use (&$worst): ?int {
+    $cap = isset($spec['maxBytes']) ? (int)$spec['maxBytes'] : null;
+    $own = null;
+    switch ($spec['type'] ?? '') {
+        case 'bool':  $own = 5; break;
+        case 'int':   $own = max(strlen((string)$spec['min']), strlen((string)$spec['max'])); break;
+        case 'float': $own = 26; break;
+        case 'enum':  $own = 2 + 6 * max(array_map('mb_strlen', (array)$spec['allowed'])); break;
+        case 'string': $own = isset($spec['maxLength']) ? 2 + 6 * (int)$spec['maxLength'] : null; break;
+        case 'list':
+            $w = isset($spec['maxItems']) && $spec['maxItems'] !== null ? $worst((array)$spec['item']) : null;
+            $own = $w === null ? null : 2 + (int)$spec['maxItems'] * ($w + 1);
+            break;
+        case 'json':
+            $shape = (array)($spec['shape'] ?? []);
+            if ($shape === []) { $own = null; break; }
+            $own = 2; $parts = 0;
+            foreach ($shape as $k => $sub) { $w = $worst($sub); if ($w === null) { $own = null; break; } $own += 2 + 6 * strlen((string)$k) + 1 + $w + 1; $parts++; }
+            break;
+    }
+    if ($cap !== null) { return $own === null ? $cap : min($own, $cap); }
+    return $own;
+};
+$over = []; $checked = 0;
+foreach ($reg as $id => $e) {
+    if (($e['storage'] ?? '') !== 'profile_items' || ($e['sync'] ?? '') !== 'profile_sync') { continue; }
+    $spec = ($e['type'] ?? '') === 'map' ? (array)$e['item'] : $e;
+    $checked++;
+    $w = $worst($spec);
+    if ($w === null || $w > PROFILE_SYNC_MAX_VALUE_BYTES) { $over[] = $id . ' (' . ($w ?? 'unbounded') . ')'; }
+    if (isset($e['maxBytes']) && (int)$e['maxBytes'] > PROFILE_SYNC_MAX_VALUE_BYTES) { $over[] = $id . ' maxBytes above the server limit'; }
+}
+chk("the worst case of every profile_items entry fits the server's per-item limit, or the entry declares maxBytes ($checked entries)", $checked >= 20 && $over === [], implode('; ', $over));
+$cjk = array_fill(0, 20, str_repeat('賛', 100));
+chk('a full list of long searches in a 3-byte script is INVALID (it could never be stored), a shorter one is valid',
+    !profileRegistryValidate('history', 'searches', $cjk) && profileRegistryValidate('history', 'searches', array_slice($cjk, 0, 8)) && profileRegistryValidate('history', 'searches', array_fill(0, 12, str_repeat('a', 100))));
+chk('...and what the registry calls valid is what the plan stores (no value_too_large for a valid value)',
+    profileSyncPlan([profileSyncPairKey(...PROFILE_SYNC_SEARCH_OPTION) => ['deleted' => false, 'value' => true]], [['section' => 'history', 'key' => 'searches', 'op' => 'set', 'value' => array_slice($cjk, 0, 8)]], 0, null, [])['rejected'] === []);
 
 /* ---- the public projection ---- */
 $pub = profileRegistryPublic();
