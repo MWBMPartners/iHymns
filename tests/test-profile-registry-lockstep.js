@@ -163,6 +163,15 @@ const clearedWeb = dump.entries.filter((e) => e.clearAtSignOut === true && e.leg
 check('some entries are cleared at sign-out and have a web key (the check is not vacuous): ' + clearedWeb.map((e) => e.id).join(', '), clearedWeb.length >= 5);
 const notStashed = clearedWeb.filter((e) => !ownerMod.PERSONAL_DATA_KEYS.includes(e.legacyWebKey));
 check('every web key cleared at sign-out is in PERSONAL_DATA_KEYS', notStashed.length === 0, notStashed.map((e) => e.id + ' -> ' + e.legacyWebKey).join(', '));
+/* Every setting that travels through profile_sync and applies on the web must be reachable in this browser: it names the
+   old web storage key it lives under, OR a hand-written provider is registered for it (profile-sync-adapters.js). Otherwise
+   a setting the server accepts would silently never reach the browser. And a provider must not name an entry that is gone. */
+const adaptersMod = await import(path.join(PUB, 'js', 'modules', 'profile-sync-adapters.js'));
+const webSyncing = dump.entries.filter((e) => e.sync === 'profile_sync' && e.scope === 'account' && (e.platforms.includes('all') || e.platforms.includes('web')));
+const unreachable = webSyncing.filter((e) => !(typeof e.legacyWebKey === 'string' && e.legacyWebKey !== '') && !adaptersMod.ADAPTER_ENTRY_IDS.includes(e.id));
+check('every web profile_sync entry has a web storage key or a hand-written provider (' + webSyncing.length + ' entries)', webSyncing.length >= 20 && unreachable.length === 0, unreachable.map((e) => e.id).join(', '));
+const staleAdapters = adaptersMod.ADAPTER_ENTRY_IDS.filter((id) => !webSyncing.some((e) => e.id === id));
+check('every hand-written provider names an entry that exists and syncs on the web', staleAdapters.length === 0 && adaptersMod.ADAPTER_ENTRY_IDS.length >= 3, staleAdapters.join(', '));
 const mapOnly = dump.entries.filter((e) => e.type === 'map');
 check('every map entry is keyed "*" and has an item rule, a key pattern and a cap (a native client decodes the same fields)',
     mapOnly.length >= 1 && mapOnly.every((e) => e.key === '*' && e.item && typeof e.itemKeyPattern === 'string' && Number.isInteger(e.maxItems)));

@@ -35,7 +35,7 @@
  */
 
 import { decodeWebValue, encodeWebValue, validateSpec } from './profile-web-codec.js';
-import { STORAGE_TRANSPOSE_PREFIX, STORAGE_CAPO_PREFIX, STORAGE_OCTAVE_PREFIX } from '../constants.js';
+import { STORAGE_TRANSPOSE_PREFIX, STORAGE_CAPO_PREFIX, STORAGE_OCTAVE_PREFIX, STORAGE_SEARCH_HISTORY, STORAGE_SYNC_SEARCH_HISTORY } from '../constants.js';
 
 /**
  * The key, capo and octave chosen for each song are kept as THREE storage keys per song (a prefix plus the song id), each removed
@@ -116,13 +116,79 @@ function songPrefsProvider(entry, storage) {
     };
 }
 
+/**
+ * The provider for `history.searches`: the recent searches, which travel ONLY while the person has switched
+ * "Keep my recent searches in my account" on. (#2177)
+ *
+ * ELI5: what someone searched for is private. By default it never leaves the device. Only when the person switches the
+ * option on does this list read as a value (so it can be sent); with the option off it reads as "off", which the sync
+ * treats as "send nothing, and do not touch the account's copy". Turning the option off deletes the account's copy (the
+ * sync does that when the switch is flipped). A search longer than 100 characters is cut, and at most 20 are kept, so the
+ * list always fits the account's rules.
+ */
+function searchHistoryProvider(entry, storage) {
+    const get = (k) => { try { return storage.getItem(k); } catch (_e) { return null; } };
+    const optionOn = () => get(STORAGE_SYNC_SEARCH_HISTORY) === 'true';
+    const tidy = (raw) => {
+        let list;
+        try { list = JSON.parse(raw); } catch (_e) { return null; }
+        if (!Array.isArray(list)) return null;
+        const out = [];
+        for (const q of list) {
+            if (typeof q !== 'string') continue;
+            const t = Array.from(q.trim()).slice(0, 100).join('');
+            if (t !== '' && !out.includes(t)) out.push(t);
+            if (out.length >= 20) break;
+        }
+        return out;
+    };
+    return {
+        id: entry.id,
+        entry,
+        isMap: false,
+        matchKey: (k) => (k === STORAGE_SEARCH_HISTORY ? entry.key : null),
+        read() {
+            if (!optionOn()) return { state: 'off' };
+            const raw = get(STORAGE_SEARCH_HISTORY);
+            if (raw === null) return { state: 'absent' };
+            const list = tidy(raw);
+            if (list === null) return { state: 'invalid' };
+            if (list.length === 0) return { state: 'absent' };
+            return validateSpec(entry, list) ? { state: 'value', value: list } : { state: 'invalid' };
+        },
+        write(_item, value) {
+            if (!optionOn() || !validateSpec(entry, value)) return [];
+            const text = JSON.stringify(value);
+            if (get(STORAGE_SEARCH_HISTORY) === text) return [];
+            try { storage.setItem(STORAGE_SEARCH_HISTORY, text); } catch (_e) { return []; }
+            return [STORAGE_SEARCH_HISTORY];
+        },
+        remove() {
+            if (!optionOn() || get(STORAGE_SEARCH_HISTORY) === null) return [];
+            try { storage.removeItem(STORAGE_SEARCH_HISTORY); } catch (_e) { return []; }
+            return [STORAGE_SEARCH_HISTORY];
+        },
+        localItems() { return []; },   /* never claimed: it is private, and only travels once the person has said so */
+    };
+}
+
+/** The "keep my recent searches in my account" switch itself: an ordinary true/false setting kept under its own storage key. */
+function syncSearchHistoryProvider(entry, storage) {
+    return storageKeyProvider({ ...entry, legacyWebKey: STORAGE_SYNC_SEARCH_HISTORY }, storage);
+}
+
 /** Hand-written providers for settings that do not fit "one storage key, one value", keyed by registry entry id. @type {Record<string, (entry: object, storage: Storage) => object>} */
 export const ADAPTERS = {
     'songPrefs.*': songPrefsProvider,
+    'history.searches': searchHistoryProvider,
+    'privacy.syncSearchHistory': syncSearchHistoryProvider,
 };
 
 /** The registry entry ids that have a hand-written provider (a test checks every web entry has a storage key OR is listed here). */
 export const ADAPTER_ENTRY_IDS = Object.freeze(Object.keys(ADAPTERS));
+
+/** The storage keys that only hand-written providers know about (a test checks every write of one of them tells the sync). */
+export const ADAPTER_STORAGE_KEYS = Object.freeze([STORAGE_SEARCH_HISTORY, STORAGE_SYNC_SEARCH_HISTORY]);
 
 /** Does this entry apply on the web at all? (An Apple-only setting is kept for the account but never applied here.) */
 export function appliesOnWeb(entry) {

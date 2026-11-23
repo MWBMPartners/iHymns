@@ -15,6 +15,10 @@ export const STORAGE_FAVORITES      = 'ihymns_favorites';
 export const STORAGE_SETLISTS       = 'ihymns_setlists';
 export const STORAGE_HISTORY        = 'ihymns_history';
 export const STORAGE_SEARCH_HISTORY = 'ihymns_search_history';
+/* "Keep my recent searches in my account" (PR 2b, #2177; registry entry privacy.syncSearchHistory). 'true' when the
+   person switched it on, absent when off (the default). It decides whether the recent-searches list above travels to
+   the account at all. */
+export const STORAGE_SYNC_SEARCH_HISTORY = 'ihymns_sync_search_history';
 export const STORAGE_CUSTOM_TAGS    = 'ihymns_custom_tags';
 export const STORAGE_OWNER_ID       = 'ihymns_owner_id';
 

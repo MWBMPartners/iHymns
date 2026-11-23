@@ -46,6 +46,7 @@
 import {
     STORAGE_PROFILE_OUTBOX, STORAGE_PROFILE_CURSOR, STORAGE_PROFILE_SCHEMA,
     EVT_AUTH_CHANGED, EVT_PROFILE_APPLIED, ACCOUNT_WRITES_OFF_REASON,
+    STORAGE_SEARCH_HISTORY, STORAGE_SYNC_SEARCH_HISTORY,
 } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
 import { createPullGate } from '../utils/pull-gate.js';
@@ -226,16 +227,40 @@ export class ProfileSync {
      */
     recordLocalChange(storageKey, opts = {}) {
         if (opts.origin === 'account') return;
-        if (!this.isActive() || !this.providers) return;
+        if (!this.isActive()) return;
+        if (!this.providers) {
+            /* The list of settings has not loaded yet (the first moments after sign-in): load it, then record this change. */
+            this.ensureSchema().then((ok) => { if (ok) this.recordLocalChange(storageKey, opts); }).catch(() => {});
+            return;
+        }
         const hit = this.providers.forStorageKey(storageKey);
         if (!hit) return;
         const r = hit.provider.read(hit.item);
-        if (r.state === 'invalid') return;                         /* a bad local value is never sent, and never becomes a delete */
+        if (r.state !== 'value' && r.state !== 'absent') return;   /* invalid: never sent and never a delete; off: private, never sent */
         const section = hit.provider.entry.section;
         const key = hit.item;
         if (r.state === 'absent') this._enqueue(section, key, 'delete');
         else this._enqueue(section, key, 'set', r.value);
         this.schedulePush();
+    }
+
+    /**
+     * The person flipped "Keep my recent searches in my account". Switching ON also sends the current list; switching OFF
+     * deletes the account's copy (and the option itself is recorded either way, so other devices learn it).
+     *
+     * @param {boolean} on
+     */
+    async setSearchHistorySync(on) {
+        try {
+            if (on) this.storage.setItem(STORAGE_SYNC_SEARCH_HISTORY, 'true');
+            else this.storage.removeItem(STORAGE_SYNC_SEARCH_HISTORY);
+        } catch (_e) { return false; }
+        if (!this.isActive() || !(await this.ensureSchema())) return false;
+        this.recordLocalChange(STORAGE_SYNC_SEARCH_HISTORY);           /* the option itself: set true, or delete */
+        if (on) this.recordLocalChange(STORAGE_SEARCH_HISTORY);        /* now the list reads as a value, so it is sent */
+        else this._enqueue('history', 'searches', 'delete');           /* off: the account's copy goes */
+        this.schedulePush();
+        return true;
     }
 
     /** Queue every value this device holds (used when a person switches syncing back on). */

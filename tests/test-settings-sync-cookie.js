@@ -205,8 +205,9 @@ console.log('Every write of a shared or personal setting tells the sync (derived
        setting that syncs (chord style, recent songbooks, the "most viewed" period ...). Derived from the server's own list. */
     const dump = JSON.parse(execFileSync('php', [path.join(REPO, 'tools', 'dump-profile-schema.php')], { encoding: 'utf8' }));
     const profileKeys = dump.entries.filter((e) => e.sync === 'profile_sync' && e.scope === 'account' && typeof e.legacyWebKey === 'string' && e.legacyWebKey !== '').map((e) => e.legacyWebKey);
-    const WATCHED = new Set([...CROSS_SITE_KEYS, ...profileKeys]);
-    check('the watched keys include the display settings and the personal ones (' + WATCHED.size + ')', profileKeys.length >= 18 && [...CROSS_SITE_KEYS].every((k) => WATCHED.has(k)) && WATCHED.has(C.STORAGE_CHORD_NOTATION) && WATCHED.has(C.STORAGE_RECENT_SONGBOOKS));
+    const adapterKeys = (await import(path.join(PUB, 'js', 'modules', 'profile-sync-adapters.js'))).ADAPTER_STORAGE_KEYS;   /* keys only a hand-written provider knows (the recent-searches list and its switch) */
+    const WATCHED = new Set([...CROSS_SITE_KEYS, ...profileKeys, ...adapterKeys]);
+    check('the watched keys include the display settings and the personal ones (' + WATCHED.size + ')', profileKeys.length >= 18 && [...CROSS_SITE_KEYS].every((k) => WATCHED.has(k)) && WATCHED.has(C.STORAGE_CHORD_NOTATION) && WATCHED.has(C.STORAGE_RECENT_SONGBOOKS) && WATCHED.has(C.STORAGE_SEARCH_HISTORY));
     const files = execFileSync('git', ['ls-files', '-z', '--', 'appWeb/public_html/js'], { cwd: REPO, encoding: 'utf8' })
         .split('\0').filter((f) => f.endsWith('.js') && !/settings-sync(-core|-registry)?\.js$|subdomain-sync\.js$|storage-bridge\.js$|profile-sync(-adapters)?\.js$|profile-web-codec\.js$/.test(f));
     const offenders = []; let writes = 0; const writesByKey = new Map();

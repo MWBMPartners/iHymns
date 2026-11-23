@@ -499,6 +499,24 @@ declare(strict_types=1);
                     </small>
                 </label>
             </div>
+
+            <!-- #2177: only shown (by js/modules/settings.js) where the new account sync is on for this site.
+                 Off by default; what you searched for stays on this device unless you switch it on. -->
+            <div class="form-check form-switch mt-2 mb-0 d-none" id="setting-sync-search-history-wrap">
+                <input class="form-check-input"
+                       type="checkbox"
+                       id="setting-sync-search-history"
+                       role="switch"
+                       aria-label="Keep my recent searches in my account">
+                <label class="form-check-label" for="setting-sync-search-history">
+                    <strong>Keep my recent searches in my account</strong>
+                    <small class="form-text text-muted d-block">
+                        Off unless you switch it on. When on, your last few searches
+                        follow you to your other devices. Switching it off removes
+                        them from your account (the ones on this device stay).
+                    </small>
+                </label>
+            </div>
         </div>
     </div>
 
