@@ -239,6 +239,14 @@ chk('api-docs.yaml documents GET and POST of the action', str_contains($docs, '/
 foreach (PROFILE_SYNC_REJECT_REASONS as $why) {
     chk("api-docs.yaml lists the refusal reason $why", str_contains($docs, $why));
 }
+/* The cross-site rule must be described as it is (2b review fix 12): every POST needs X-Requested-With, a Bearer one too. */
+$docBlock = (string)substr($docs, (int)strpos($docs, 'operationId: profileSyncRead'), 9000);
+$docBlock = substr($docBlock, 0, (int)strpos($docBlock, '/api.php?action=tags:') ?: 9000);
+chk('api-docs.yaml does not claim a Bearer request is exempt from the same-origin check', !preg_match('/exempt from|is exempt|are exempt/i', $docBlock) && str_contains($docBlock, 'Bearer request included'));
+chk('api-docs.yaml documents the 405 for BOTH methods of the action', substr_count($docBlock, '"405":') === 2);
+$apiCodeOnly = ''; foreach (token_get_all('<?php ' . $block) as $t) { if (is_array($t) && in_array($t[0], [T_COMMENT, T_DOC_COMMENT], true)) { $apiCodeOnly .= $t[1]; } }
+chk('the comment in api.php does not claim a Bearer request is exempt, and says why a native app passes', !preg_match('/\bis exempt\b|so it is exempt/i', $apiCodeOnly) && str_contains($apiCodeOnly, 'NO exemption for a Bearer request'));
+/* (That the real validateCsrfRequest() refuses a request without the header, whatever else it carries, is checked in test-csrf-same-origin.php.) */
 foreach (['body_too_large', 'too_many_changes', 'invalid_request', 'profile_sync_not_ready', 'profile_sync_disabled', 'account_writes_off_here'] as $why) {
     chk("api-docs.yaml names the status reason $why", str_contains($docs, $why));
 }

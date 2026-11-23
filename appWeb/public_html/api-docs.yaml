@@ -7652,6 +7652,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+        "405":
+          description: The method is neither GET nor POST (the answer lists only these two).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "409":
           $ref: "#/components/responses/ProfileSyncRefused"
         "429":
@@ -7682,8 +7688,10 @@ paths:
         version. The reply `applied` counts the changes that were stored.
 
         A request may carry up to 200 changes and 64 KiB. Limited to 120 a minute per
-        person. Needs the `X-Requested-With: XMLHttpRequest` header like every POST; a
-        Bearer request is exempt from the same-origin check.
+        person. Needs the `X-Requested-With: XMLHttpRequest` header like every POST, a
+        Bearer request included (there is no exemption). A request that also carries an
+        `Origin` or `Referer` from another host is refused (**403**); a request with no
+        `Origin`, which is what a native app sends, is fine.
 
         **Paused site:** where saving to accounts is paused the POST is refused (**409**
         `account_writes_off_here`); keep the changes on the device and try again later.
@@ -7740,7 +7748,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "403":
-          description: Cross-origin request rejected (a cookie request without the same-origin header)
+          description: Cross-origin request rejected (no `X-Requested-With` header, Bearer or not, or an `Origin` / `Referer` from another host)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "405":
+          description: The method is neither GET nor POST.
           content:
             application/json:
               schema:

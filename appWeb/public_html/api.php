@@ -11159,8 +11159,11 @@ if ($action !== null) {
             }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_sync.php';
-            /* A POST changes saved data: same-origin check (the global X-Requested-With gate ran first; a Bearer
-               request is not cookie-borne, so it is exempt, rule #48). */
+            /* A POST changes saved data: same-origin check. Two things must be true of EVERY POST, a Bearer one included:
+               the global gate at the top of this file already demanded `X-Requested-With: XMLHttpRequest`, and
+               validateCsrfRequest() demands that header again and refuses an Origin / Referer from another host. There is
+               NO exemption for a Bearer request. A native app passes because it sends the header and sends no Origin (an
+               absent Origin is allowed); a browser page passes because both headers agree with the site. */
             if ($psMethod === 'POST' && !validateCsrfRequest(null)) {
                 sendJson(['error' => 'Cross-origin request rejected.'], 403);
                 break;
