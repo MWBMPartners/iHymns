@@ -6,9 +6,15 @@
 > `project-rules.md` (detailed rules), and `sessions/<date>-HANDOFF.md` (session history).
 > When something here goes stale, fix it **here and in the file it mirrors**.
 
-_Last updated: 2026-11-18 (see the first bullet under "Where things stand"); older text below dates from 2026-08-28 (branch `claude/dormant-features-settings-1sdw4t` — ProPresenter interop epic #1968 complete through P6 chords + dormant timeline; multi-licence orgs #1969; device management #1975; docs + security + a11y sweep in flight)._
+_Last updated: 2026-11-23 (see the first bullet under "Where things stand"); older text below dates from 2026-08-28 (branch `claude/dormant-features-settings-1sdw4t` — ProPresenter interop epic #1968 complete through P6 chords + dormant timeline; multi-licence orgs #1969; device management #1975; docs + security + a11y sweep in flight)._
 
 ## Where things stand
+- **2026-11-23 (newest):** the current picture is `sessions/2026-11-23-HANDOFF.md`. In one breath: version
+  1.4.1 (the patch marker `Release: patch` must be in the squash-merge COMMIT MESSAGE body, not only the
+  PR description); monthly HA audit paused (#2190); Dependabot bumps combined by hand (#2195); account
+  rewrite part 2a merged (#2197, epic #2180) and dormant behind the "New account behaviour" card
+  (`profile_sync_channels`); next is part 2b, then 2c, then part 3. #1082 timed lyrics: write our own small
+  PHP formatter, do not adopt subtitle-toolbox-php. Newer items override the older lines below.
 - **2026-11-18 (newest):** the current picture is `sessions/2026-11-18-HANDOFF.md`. In one breath: version
   1.4.0; cross-site settings sync rebuilt and **off by default** (rule #52, #2143); PHP 8.4 and 8.5
   supported, 8.6 prepared with an advisory CI check and a one-variable switch `PHP86_ENFORCE` (rule #53,

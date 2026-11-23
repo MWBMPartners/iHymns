@@ -3,7 +3,16 @@
 Short, lasting facts. Newest first within each section. Where this file and the newest handoff in
 `.claude/sessions/` disagree, the handoff wins. Fix this file when that happens.
 
-_Last updated: 2026-11-18 (second update)._
+_Last updated: 2026-11-23._
+
+## Added 2026-11-23
+
+- **Newest handoff:** `.claude/sessions/2026-11-23-HANDOFF.md` (replaces the 18 November one).
+- **Version 1.4.1.** A deliberate patch release needs `Release: patch` in the squash-merge **commit message**, not only the pull request description (#2190 versus #2194).
+- **Account rewrite part 2a is merged and dormant** (#2197) behind the "New account behaviour" card (`profile_sync_channels`). Part 2b must delete the `tblUserProfileItems` entry in `tests/php/fixtures/orphan-allowlist.php`.
+- **The monthly HA audit is paused** (#2190); run it by hand if wanted.
+- **Known failure:** `test-song-save-whole-rollback.php` fails on a real MariaDB 10.11 on clean `alpha` too; CI has no database so it skips.
+- **Timed lyrics export (#1082):** write our own small PHP formatter; do not adopt `subtitle-toolbox-php`.
 
 ## Added 2026-11-18
 
