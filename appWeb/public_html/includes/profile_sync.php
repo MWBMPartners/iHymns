@@ -500,3 +500,97 @@ if (!function_exists('profileSyncPull')) {
         return ['ready' => true, 'cursor' => $last, 'more' => $more, 'resetCursor' => $reset, 'changes' => $changes];
     }
 }
+
+/* ======================================================================
+ * THE REQUEST SHAPE (PR 2b, step 2b-3)
+ * ====================================================================== */
+
+/** The largest request body the endpoint reads, in bytes. A bigger one is a 413. */
+const PROFILE_SYNC_MAX_BODY_BYTES = 65536;
+
+/** The most `profile_sync` requests one signed-in person may make in a minute (generous: a device sends after a 1.5 second pause). */
+const PROFILE_SYNC_RATE_PER_MINUTE = 120;
+
+/**
+ * PURE: read a cursor from a query string. Missing or empty means 0; digits only (at most 15), or it is not a cursor.
+ *
+ * @return ?int the cursor, or null when it is malformed (the endpoint answers 400)
+ */
+function profileSyncParseCursor(mixed $raw): ?int
+{
+    if ($raw === null || $raw === '') { return 0; }
+    return (is_string($raw) && preg_match('/^[0-9]{1,15}$/D', $raw) === 1) ? (int)$raw : null;
+}
+
+/**
+ * PURE: check and unpack the body of a `profile_sync` POST.
+ *
+ * ELI5: is the request well formed and not too big? The answer is a status the endpoint sends as it is
+ * (400 invalid_request, 413 body_too_large, 413 too_many_changes) or 200 with the pieces. A client branches
+ * on the status and the reason, never on a sentence (rule #35).
+ *
+ * @param ?string $raw the raw request body (at most PROFILE_SYNC_MAX_BODY_BYTES + 1 bytes were read)
+ * @return array{status:int,reason:?string,cursor:int,changes:list<mixed>,platform:?string,schemaVersion:?int}
+ */
+function profileSyncParseRequest(?string $raw): array
+{
+    $fail = static fn(int $status, string $reason): array => ['status' => $status, 'reason' => $reason, 'cursor' => 0, 'changes' => [], 'platform' => null, 'schemaVersion' => null];
+    if ($raw === null || $raw === '') { return $fail(400, 'invalid_request'); }
+    if (strlen($raw) > PROFILE_SYNC_MAX_BODY_BYTES) { return $fail(413, 'body_too_large'); }
+    $b = json_decode($raw, true);
+    if (!is_array($b) || ($b !== [] && array_is_list($b))) { return $fail(400, 'invalid_request'); }
+
+    $changes = [];
+    if (array_key_exists('changes', $b)) {
+        if (!is_array($b['changes']) || !array_is_list($b['changes'])) { return $fail(400, 'invalid_request'); }
+        $changes = $b['changes'];
+    }
+    if (count($changes) > PROFILE_SYNC_MAX_CHANGES) { return $fail(413, 'too_many_changes'); }
+
+    $cursor = 0;
+    if (array_key_exists('cursor', $b)) {
+        if (!is_int($b['cursor']) || $b['cursor'] < 0) { return $fail(400, 'invalid_request'); }
+        $cursor = $b['cursor'];
+    }
+    $schemaVersion = null;
+    if (array_key_exists('schemaVersion', $b)) {
+        if (!is_int($b['schemaVersion']) || $b['schemaVersion'] < 0) { return $fail(400, 'invalid_request'); }
+        $schemaVersion = $b['schemaVersion'];
+    }
+    $platform = null;
+    if (array_key_exists('client', $b)) {
+        if (!is_array($b['client']) || ($b['client'] !== [] && array_is_list($b['client']))) { return $fail(400, 'invalid_request'); }
+        $platform = profileSyncCleanPlatform(is_string($b['client']['platform'] ?? null) ? $b['client']['platform'] : null);
+    }
+    return ['status' => 200, 'reason' => null, 'cursor' => $cursor, 'changes' => $changes, 'platform' => $platform, 'schemaVersion' => $schemaVersion];
+}
+
+/**
+ * PURE: the success reply, in one place so the endpoint, its docs and its test cannot disagree.
+ *
+ * @param array<string,mixed> $pull    what profileSyncPull() returned
+ * @param ?array<string,mixed> $apply  what profileSyncApply() returned (null for a read)
+ * @return array<string,mixed>
+ */
+function profileSyncReply(array $pull, ?array $apply): array
+{
+    return [
+        'ok'            => true,
+        'cursor'        => (int)$pull['cursor'],
+        'more'          => (bool)$pull['more'],
+        'resetCursor'   => (bool)$pull['resetCursor'],
+        'schemaVersion' => profileRegistryVersion(),
+        'changes'       => $pull['changes'],
+        'rejected'      => $apply['rejected'] ?? [],
+        'applied'       => (int)($apply['applied'] ?? 0),
+    ];
+}
+
+/** The body of a refusal because the switch is on but the database objects are not there yet. */
+function profileSyncNotReadyBody(): array
+{
+    return [
+        'error'  => 'This is not ready on this site yet.',
+        'reason' => PROFILE_SYNC_NOT_READY_REASON,
+    ];
+}

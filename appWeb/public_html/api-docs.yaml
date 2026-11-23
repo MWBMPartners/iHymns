@@ -7606,6 +7606,150 @@ paths:
         "429":
           $ref: "#/components/responses/RateLimited"
 
+  /api.php?action=profile_sync:
+    get:
+      operationId: profileSyncRead
+      tags: [Preferences]
+      summary: Read small personal items changed since a cursor
+      description: |
+        One way to keep small personal items in step across devices (account/profile
+        rewrite, PR 2b, step 2b-3): the theme, text size, chord style, recent
+        songbooks, the key and capo chosen for each song, and so on. The list of what
+        counts, and what values are allowed, is the `profile_schema` answer.
+
+        Every accepted change gets the next number of a per-person counter (its
+        `version`), in the order changes reached the server; a device clock is never
+        used. A read returns the changes with a version **above** the `cursor`, oldest
+        first, at most 500; `more: true` means another page is waiting, so ask again
+        with the returned `cursor`. A removed item comes back as `deleted: true` with no
+        value. A `cursor` higher than anything stored (a restored backup) is reset: the
+        whole list is returned and `resetCursor` is true, so replace your number.
+
+        Only on a site where an admin has switched **New account behaviour** on
+        (**409** `profile_sync_disabled`), and once the database objects exist
+        (**409** `profile_sync_not_ready`). A read still works on a site where saving
+        to accounts is paused.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [profile_sync] }
+        - name: cursor
+          in: query
+          required: false
+          description: The highest version this device has already seen. Missing means 0 (everything). Digits only.
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          $ref: "#/components/responses/ProfileSyncOk"
+        "400":
+          $ref: "#/components/responses/ProfileSyncBadRequest"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          $ref: "#/components/responses/ProfileSyncRefused"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          description: The database could not be used (reason `profile_sync_unavailable`). Retry later.
+    post:
+      operationId: profileSyncWrite
+      tags: [Preferences]
+      summary: Send the small personal items this device changed, then read what changed elsewhere
+      description: |
+        Send ONLY the items this device changed (never the whole list), then the reply
+        carries everything above your `cursor`, exactly like the GET. Each change is
+        `{section, key, op: "set" | "delete", value}`; `value` is the real JSON type
+        the registry names (a boolean is `true`, not `"true"`). Identity is the section
+        and key, never a position in a list.
+
+        Each change is judged on its own: the accepted ones are stored and the refused
+        ones come back in `rejected` with a reason, so one bad item never loses the rest.
+        Reasons: `unknown_key`, `device_only` (that setting never leaves the device),
+        `not_profile_item` (favourites, set lists and the like have their own sync),
+        `invalid_value`, `invalid_item_key`, `value_too_large` (over 4 KiB), `cap_reached`
+        (a map section such as the key and capo per song is full; nothing is thrown away to
+        make room). Sending a value that is already stored changes nothing and takes no
+        version. The reply `applied` counts the changes that were stored.
+
+        A request may carry up to 200 changes and 64 KiB. Limited to 120 a minute per
+        person. Needs the `X-Requested-With: XMLHttpRequest` header like every POST; a
+        Bearer request is exempt from the same-origin check.
+
+        **Paused site:** where saving to accounts is paused the POST is refused (**409**
+        `account_writes_off_here`); keep the changes on the device and try again later.
+        The GET still reads.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [profile_sync] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                schemaVersion: { type: integer, description: The `profile_schema` version the client was built against. }
+                client:
+                  type: object
+                  properties:
+                    platform:   { type: string, enum: [web, apple, android, tv], description: Recorded as who wrote each change. }
+                    appVersion: { type: string }
+                cursor: { type: integer, minimum: 0, description: The highest version this device has already seen. }
+                changes:
+                  type: array
+                  maxItems: 200
+                  items:
+                    type: object
+                    required: [section, key, op]
+                    properties:
+                      section: { type: string, example: appearance }
+                      key:     { type: string, example: theme }
+                      op:      { type: string, enum: [set, delete] }
+                      value:   { description: Required for `set`. The registry's real JSON type. }
+      responses:
+        "200":
+          $ref: "#/components/responses/ProfileSyncOk"
+        "400":
+          $ref: "#/components/responses/ProfileSyncBadRequest"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Cross-origin request rejected (a cookie request without the same-origin header)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          $ref: "#/components/responses/ProfileSyncRefused"
+        "413":
+          description: The request is too big
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:  { type: string }
+                  reason: { type: string, enum: [body_too_large, too_many_changes] }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "503":
+          description: The database could not be used (reason `profile_sync_unavailable`). Nothing was stored; retry later.
+
   /api.php?action=tags:
     get:
       operationId: listTags
@@ -25574,6 +25718,60 @@ components:
             properties:
               error:  { type: string }
               reason: { type: string, enum: [account_writes_off_here], example: account_writes_off_here }
+    ProfileSyncOk:
+      description: The accepted changes were stored (POST) and the changes above the cursor are returned
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ok:            { type: boolean, example: true }
+              cursor:        { type: integer, description: The highest version in this reply, or the cursor you sent when there is nothing new. Send it next time. }
+              more:          { type: boolean, description: Another page is waiting; ask again with `cursor`. }
+              resetCursor:   { type: boolean, description: Your cursor was higher than anything stored, so the whole list was returned. Replace your number. }
+              schemaVersion: { type: integer, description: The server's `profile_schema` version. }
+              changes:
+                type: array
+                maxItems: 500
+                items:
+                  type: object
+                  properties:
+                    section: { type: string }
+                    key:     { type: string }
+                    value:   { description: The value, or null when `deleted` is true. }
+                    deleted: { type: boolean }
+                    version: { type: integer }
+              rejected:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    section: { type: string }
+                    key:     { type: string }
+                    reason:  { type: string, enum: [unknown_key, device_only, not_profile_item, invalid_value, invalid_item_key, value_too_large, cap_reached] }
+              applied: { type: integer, description: How many of the sent changes were stored (0 for a GET). }
+    ProfileSyncBadRequest:
+      description: The request is malformed (reason `invalid_request`)
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:  { type: string }
+              reason: { type: string, enum: [invalid_request] }
+    ProfileSyncRefused:
+      description: |
+        Nothing was changed. Branch on the status and `reason`, never the sentence.
+        `profile_sync_disabled`: not switched on for this site. `profile_sync_not_ready`:
+        switched on but the database objects have not been created yet.
+        `account_writes_off_here` (POST only): saving to accounts is paused on this site.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:  { type: string }
+              reason: { type: string, enum: [profile_sync_disabled, profile_sync_not_ready, account_writes_off_here] }
     ProfileSyncDisabled:
       description: |
         The new account behaviour is not switched on for this site (account/profile
