@@ -43,7 +43,7 @@ import {
     STORAGE_FAVORITES, STORAGE_SETLISTS, STORAGE_CUSTOM_TAGS, STORAGE_HISTORY,
     STORAGE_SETLISTS_DELETED, STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT,
     STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED, STORAGE_RECENT_SONGBOOKS,
-    STORAGE_DATA_OWNER_UID, STORAGE_STASH_PREFIX,
+    STORAGE_DATA_OWNER_UID, STORAGE_STASH_PREFIX, STORAGE_SEARCH_HISTORY, STORAGE_SYNC_SEARCH_HISTORY,
 } from '../constants.js';
 
 /** The personal-content keys that belong to ONE person. Stashed, cleared, restored. */
@@ -54,6 +54,11 @@ export const PERSONAL_DATA_KEYS = Object.freeze([
     /* PR 2b (2b-1): the songbooks this person opened lately. A personal list the account now keeps (#2177),
        so on a shared device it belongs to one person and is stashed with the rest. */
     STORAGE_RECENT_SONGBOOKS,
+    /* PR 2b review (privacy): the "keep my recent searches in my account" choice, and the list it unlocks. Both belong to ONE
+       person. Without them on this list, person A's choice and searches stayed behind when A signed out, and person B's browser
+       then uploaded them into B's account. The LIST is only set aside while the choice is on (see searchListTravels()): while it
+       is off the list is the older, device-only kind and stays where it is, as before. */
+    STORAGE_SYNC_SEARCH_HISTORY, STORAGE_SEARCH_HISTORY,
 ]);
 
 /** Cleared along with the data, never restored (see the file header). */
@@ -91,9 +96,24 @@ export function recordDataOwner(storage, uid) {
     set(storage, STORAGE_DATA_OWNER_UID, id);
 }
 
+/**
+ * Is this person's recent-searches list one that belongs to their ACCOUNT (and so to them alone)? Only while they have
+ * switched "Keep my recent searches in my account" on. With it off the list is the older device-only list, which is not
+ * stashed, not cleared and not restored (exactly as before this option existed).
+ */
+function searchListTravels(storage) {
+    return get(storage, STORAGE_SYNC_SEARCH_HISTORY) === 'true';
+}
+
+/** The personal keys that count right now (the searches list only while it follows the account). */
+function activeKeys(storage) {
+    const travels = searchListTravels(storage);
+    return PERSONAL_DATA_KEYS.filter((k) => k !== STORAGE_SEARCH_HISTORY || travels);
+}
+
 /** Does the device hold any personal data at all? */
 function holdsPersonalData(storage) {
-    return PERSONAL_DATA_KEYS.some((k) => !isEmptyValue(get(storage, k)));
+    return activeKeys(storage).some((k) => !isEmptyValue(get(storage, k)));
 }
 
 /** Every stash key currently present (there should be at most one). */
@@ -111,7 +131,7 @@ function stashKeys(storage) {
 /** Take a copy of the personal keys (only those that hold something). */
 function snapshot(storage) {
     const data = {};
-    for (const k of PERSONAL_DATA_KEYS) {
+    for (const k of activeKeys(storage)) {
         const v = get(storage, k);
         if (!isEmptyValue(v)) data[k] = v;
     }
@@ -120,7 +140,7 @@ function snapshot(storage) {
 
 /** Remove the live personal data and the watermarks. */
 function clearLive(storage) {
-    for (const k of PERSONAL_DATA_KEYS) remove(storage, k);
+    for (const k of activeKeys(storage)) remove(storage, k);
     for (const k of WATERMARK_KEYS) remove(storage, k);
 }
 
@@ -175,8 +195,15 @@ function restoreStash(storage, uid) {
     if (!data || typeof data !== 'object') return false;
     for (const k of PERSONAL_DATA_KEYS) {
         if (typeof data[k] !== 'string') continue;
+        if (k === STORAGE_SEARCH_HISTORY) continue;   /* handled below: it is put back whole, never merged with whoever used the browser meanwhile */
         const merged = mergeRestored(get(storage, k), data[k]);
         set(storage, k, merged);
+    }
+    if (data[STORAGE_SYNC_SEARCH_HISTORY] === 'true') {
+        /* This person's choice is on, so their list is THEIR list: put it back exactly (or, if they had none, leave none),
+           never mixed with a device-only list somebody else typed while they were away. */
+        if (typeof data[STORAGE_SEARCH_HISTORY] === 'string') set(storage, STORAGE_SEARCH_HISTORY, data[STORAGE_SEARCH_HISTORY]);
+        else remove(storage, STORAGE_SEARCH_HISTORY);
     }
     return true;
 }

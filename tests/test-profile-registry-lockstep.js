@@ -170,6 +170,10 @@ const adaptersMod = await import(path.join(PUB, 'js', 'modules', 'profile-sync-a
 const webSyncing = dump.entries.filter((e) => e.sync === 'profile_sync' && e.scope === 'account' && (e.platforms.includes('all') || e.platforms.includes('web')));
 const unreachable = webSyncing.filter((e) => !(typeof e.legacyWebKey === 'string' && e.legacyWebKey !== '') && !adaptersMod.ADAPTER_ENTRY_IDS.includes(e.id));
 check('every web profile_sync entry has a web storage key or a hand-written provider (' + webSyncing.length + ' entries)', webSyncing.length >= 20 && unreachable.length === 0, unreachable.map((e) => e.id).join(', '));
+/* A key only a hand-written provider knows about (the searches list, the opt-in) is just as personal as one with a web key, and
+   nothing above would notice a missing one: it has no registry web key. So the keys the providers declare are checked here. */
+const adapterKeysNotStashed = adaptersMod.ADAPTER_STORAGE_KEYS.filter((k) => !ownerMod.PERSONAL_DATA_KEYS.includes(k));
+check('every storage key a hand-written provider owns is in PERSONAL_DATA_KEYS (' + adaptersMod.ADAPTER_STORAGE_KEYS.length + ' keys)', adaptersMod.ADAPTER_STORAGE_KEYS.length >= 2 && adapterKeysNotStashed.length === 0, adapterKeysNotStashed.join(', '));
 const staleAdapters = adaptersMod.ADAPTER_ENTRY_IDS.filter((id) => !webSyncing.some((e) => e.id === id));
 check('every hand-written provider names an entry that exists and syncs on the web', staleAdapters.length === 0 && adaptersMod.ADAPTER_ENTRY_IDS.length >= 3, staleAdapters.join(', '));
 const mapOnly = dump.entries.filter((e) => e.type === 'map');

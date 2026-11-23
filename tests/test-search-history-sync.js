@@ -124,5 +124,63 @@ check('this device\'s own list is untouched', J(history.getHistory()) === '["fro
 history.record('after switching off');
 check('and new searches are queued no more', sync.pendingCount() === 0);
 
+console.log('\n7 - a shared browser: one person\'s switch and searches never reach the next person\'s account\n');
+{
+    const owner = await import(url(path.join(JS, 'modules', 'account-data-owner.js')));
+    localStorage.clear();
+    let who = 1;
+    const accounts = new Map();                         // person -> Map(section.key -> row)
+    const sentBy = new Map();                           // person -> every request body they sent
+    const acct = (u) => { if (!accounts.has(u)) accounts.set(u, { max: 0, rows: new Map() }); return accounts.get(u); };
+    globalThis.fetch = async (input, init = {}) => {
+        const u = new URL(String(input), 'https://example.test/');
+        const mk = (b) => ({ ok: true, status: 200, headers: { get: () => null }, json: async () => b, clone() { return { json: async () => b }; } });
+        if (u.searchParams.get('action') === 'profile_schema') return mk(schema);
+        const a = acct(who);
+        const body = init.body ? JSON.parse(init.body) : null;
+        if (body) {
+            if (!sentBy.has(who)) sentBy.set(who, []);
+            sentBy.get(who).push(init.body);
+            for (const c of body.changes) { a.max += 1; a.rows.set(c.section + '.' + c.key, { section: c.section, key: c.key, value: c.op === 'set' ? c.value : null, deleted: c.op !== 'set', version: a.max }); }
+        }
+        const from = Number(u.searchParams.get('cursor') ?? body?.cursor ?? 0);
+        const rows = [...a.rows.values()].filter((r) => r.version > from).sort((x, y) => x.version - y.version);
+        return mk({ ok: true, cursor: rows.length ? rows[rows.length - 1].version : (from > a.max ? 0 : from), more: false, resetCursor: false, schemaVersion: schema.schemaVersion, changes: rows, rejected: [], applied: 0 });
+    };
+    let s2;
+    const app2 = { config: { apiUrl: '/api', profileSync: { enabled: true } }, userAuth: { isLoggedIn: () => true, getUser: () => ({ id: who }) }, syncStorage(k, o) { s2.recordLocalChange(k, o || {}); } };
+    s2 = new ProfileSync(app2, { storage: window.localStorage, setTimer: () => 1, clearTimer: () => {} });
+    await s2.ensureSchema();
+    const h2 = new SearchHistory(app2);
+    const signIn = async (uid) => { who = uid; owner.reconcileDataOwner(localStorage, uid); await s2.syncNow(); };
+
+    await signIn(1);
+    await s2.setSearchHistorySync(true);
+    h2.record('amazing grace'); h2.record('be thou my vision');
+    await s2.push();
+    check('person A opted in and her searches reached HER account', J(acct(1).rows.get('history.searches')?.value) === '["be thou my vision","amazing grace"]' && acct(1).rows.get('privacy.syncSearchHistory')?.value === true);
+
+    await signIn(2);                                    // A leaves the shared browser; B signs in
+    check('B does not inherit A\'s opt-in', localStorage.getItem(C.STORAGE_SYNC_SEARCH_HISTORY) === null);
+    check('B does not see A\'s searches', localStorage.getItem(C.STORAGE_SEARCH_HISTORY) === null);
+    h2.record('great is thy faithfulness');
+    await s2.push(); await s2.syncNow();
+    check('B\'s own search is kept on the device (the option is off for B)', J(h2.getHistory()) === '["great is thy faithfulness"]');
+    check('nothing of A\'s, and nothing of B\'s searches, was ever sent for B', (sentBy.get(2) || []).every((b) => !b.includes('amazing') && !b.includes('vision') && !b.includes('faithfulness') && !b.includes('syncSearchHistory')));
+    check('B\'s account holds no searches and no option', !acct(2).rows.has('history.searches') && !acct(2).rows.has('privacy.syncSearchHistory'));
+
+    localStorage.removeItem(C.STORAGE_SEARCH_HISTORY);  // B clears their device-only list before leaving
+    await signIn(1);                                    // A comes back
+    check('A gets her own switch back', localStorage.getItem(C.STORAGE_SYNC_SEARCH_HISTORY) === 'true');
+    check('...and her own searches back, untouched', J(h2.getHistory()) === '["be thou my vision","amazing grace"]');
+    check('...and B\'s searches never entered her list', !(localStorage.getItem(C.STORAGE_SEARCH_HISTORY) || '').includes('faithfulness'));
+
+    /* the device-only list of a person who never opted in is left exactly as it was (not stashed, not cleared) */
+    localStorage.removeItem(C.STORAGE_SYNC_SEARCH_HISTORY);
+    localStorage.setItem(C.STORAGE_SEARCH_HISTORY, J(['just on this device']));
+    owner.reconcileDataOwner(localStorage, 3);
+    check('with the option off, the older device-only list is not touched by a change of person (as before)', localStorage.getItem(C.STORAGE_SEARCH_HISTORY) === J(['just on this device']));
+}
+
 console.log(failures === 0 ? '\nAll search-history checks pass.' : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);
