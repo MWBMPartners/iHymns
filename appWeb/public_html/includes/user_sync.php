@@ -1245,6 +1245,21 @@ if (!function_exists('userSyncItemTombstoneKinds')) {
     }
 }
 
+if (!function_exists('userSyncItemTombstoneCap')) {
+    /**
+     * The most delete markers kept per person and kind. Past this the OLDEST are dropped, and
+     * a sync with no watermark hands back at most this many (the newest).
+     *
+     * ELI5: a person who removes thousands of things must not make their notes list (and every
+     * sync reply) grow without end. A removal older than the newest 5,000 is long settled on any
+     * device that has synced since.
+     */
+    function userSyncItemTombstoneCap(): int
+    {
+        return 5000;
+    }
+}
+
 if (!function_exists('userSyncLockPerson')) {
     /**
      * Take the per-person row lock (the SAME lock the settings writer takes, A1).
@@ -1286,7 +1301,7 @@ if (!function_exists('userSyncItemTombstoneWrite')) {
      * @param string   $reason    one of userSyncTombstoneReasons(); coerced if not
      * @return int how many ids were processed (0 when the table is not there yet)
      */
-    function userSyncItemTombstoneWrite(\mysqli $db, int $userId, string $kind, array $ids, string $deletedAt, string $reason = 'user'): int
+    function userSyncItemTombstoneWrite(\mysqli $db, int $userId, string $kind, array $ids, string $deletedAt, string $reason = 'user', ?int $cap = null): int
     {
         if ($ids === [] || !in_array($kind, userSyncItemTombstoneKinds(), true) || !userSyncItemTombstonesReady($db)) {
             return 0;
@@ -1305,7 +1320,89 @@ if (!function_exists('userSyncItemTombstoneWrite')) {
             $n++;
         }
         $stmt->close();
+        userSyncItemTombstonePrune($db, $userId, $kind, $cap ?? userSyncItemTombstoneCap());
         return $n;
+    }
+}
+
+if (!function_exists('userSyncItemTombstonePrune')) {
+    /**
+     * Keep only the newest `$cap` markers of one kind for one person; drop the oldest.
+     *
+     * @return int rows removed
+     */
+    function userSyncItemTombstonePrune(\mysqli $db, int $userId, string $kind, int $cap): int
+    {
+        if ($cap < 1 || !in_array($kind, userSyncItemTombstoneKinds(), true) || !userSyncItemTombstonesReady($db)) {
+            return 0;
+        }
+        $stmt = $db->prepare('SELECT COUNT(*) FROM tblUserSyncTombstones WHERE UserId = ? AND Kind = ?');
+        $stmt->bind_param('is', $userId, $kind);
+        $stmt->execute();
+        $count = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+        $stmt->close();
+        if ($count <= $cap) {
+            return 0;
+        }
+        /* The oldest ones are the rows after the first `$cap` when newest-first. Ids are read, then
+           removed by their own key, a batch at a time. */
+        $stmt = $db->prepare(
+            'SELECT ItemId FROM tblUserSyncTombstones WHERE UserId = ? AND Kind = ?
+              ORDER BY DeletedAt DESC, ItemId DESC LIMIT 1000 OFFSET ?'
+        );
+        $stmt->bind_param('isi', $userId, $kind, $cap);
+        $stmt->execute();
+        $old = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'ItemId');
+        $stmt->close();
+        $removed = 0;
+        $del = $db->prepare('DELETE FROM tblUserSyncTombstones WHERE UserId = ? AND Kind = ? AND ItemId = ?');
+        $itemId = '';
+        $del->bind_param('iss', $userId, $kind, $itemId);
+        foreach ($old as $itemId) {
+            $del->execute();
+            $removed += $del->affected_rows;
+        }
+        $del->close();
+        return $removed;
+    }
+}
+
+if (!function_exists('userSyncKnownFavoriteIds')) {
+    /**
+     * Of the song ids a device says it removed, which are worth a delete marker?
+     *
+     * ELI5: a note "removed on purpose" is only useful for a song that exists (another device
+     * may be adding it) or that this person really had. A made-up or long-gone id would only
+     * fill the notes list, so it gets no marker.
+     *
+     * Call it BEFORE the rows are deleted, so a favourite the person did have still counts.
+     *
+     * @param string[] $ids already cleaned song ids
+     * @return string[] the ids to write markers for (the caller's own spelling, order kept)
+     */
+    function userSyncKnownFavoriteIds(\mysqli $db, int $userId, array $ids): array
+    {
+        if ($ids === []) {
+            return [];
+        }
+        $marks = implode(',', array_fill(0, count($ids), '?'));
+        $types = str_repeat('s', count($ids));
+        $known = [];
+        $stmt = $db->prepare('SELECT SongId FROM tblUserFavorites WHERE UserId = ? AND SongId IN (' . $marks . ')');
+        $stmt->bind_param('i' . $types, $userId, ...$ids);
+        $stmt->execute();
+        foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) { $known[mb_strtolower((string)$r['SongId'], 'UTF-8')] = true; }
+        $stmt->close();
+        /* @deleted-visible: only asks "is this a real catalogue id?" so a marker is worth keeping (a
+           removal may be racing another device's add); a hidden / deleted song's id is still a real
+           id, and a removal marker for it is harmless and correct (#1694).
+           @disabled-visible: same reasoning for a disabled songbook (#1765). */
+        $stmt = $db->prepare('SELECT SongId FROM tblSongs WHERE SongId IN (' . $marks . ')');
+        $stmt->bind_param($types, ...$ids);
+        $stmt->execute();
+        foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) { $known[mb_strtolower((string)$r['SongId'], 'UTF-8')] = true; }
+        $stmt->close();
+        return array_values(array_filter($ids, static fn(string $id): bool => isset($known[mb_strtolower($id, 'UTF-8')])));
     }
 }
 
@@ -1369,27 +1466,30 @@ if (!function_exists('userSyncItemTombstoneList')) {
      * @param ?string $since the device's watermark, or null for all of them
      * @return array<int,array{id:string,deletedAt:string,reason:string}>
      */
-    function userSyncItemTombstoneList(\mysqli $db, int $userId, string $kind, ?string $since): array
+    function userSyncItemTombstoneList(\mysqli $db, int $userId, string $kind, ?string $since, ?int $cap = null): array
     {
         if (!in_array($kind, userSyncItemTombstoneKinds(), true) || !userSyncItemTombstonesReady($db)) {
             return [];
         }
+        /* Newest first, at most the cap (an integer from code, never from the request), then put back in time order. */
+        $limit = max(1, $cap ?? userSyncItemTombstoneCap());
         if ($since !== null) {
             $stmt = $db->prepare(
                 'SELECT ItemId, DeletedAt, Reason FROM tblUserSyncTombstones
-                  WHERE UserId = ? AND Kind = ? AND DeletedAt >= ? ORDER BY DeletedAt ASC'
+                  WHERE UserId = ? AND Kind = ? AND DeletedAt >= ? ORDER BY DeletedAt DESC LIMIT ' . (int)$limit
             );
             $stmt->bind_param('iss', $userId, $kind, $since);
         } else {
             $stmt = $db->prepare(
                 'SELECT ItemId, DeletedAt, Reason FROM tblUserSyncTombstones
-                  WHERE UserId = ? AND Kind = ? ORDER BY DeletedAt ASC'
+                  WHERE UserId = ? AND Kind = ? ORDER BY DeletedAt DESC LIMIT ' . (int)$limit
             );
             $stmt->bind_param('is', $userId, $kind);
         }
         $stmt->execute();
         $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         $stmt->close();
+        $rows = array_reverse($rows);
         return array_map(static fn(array $r): array => [
             'id'        => (string)$r['ItemId'],
             'deletedAt' => (string)$r['DeletedAt'],

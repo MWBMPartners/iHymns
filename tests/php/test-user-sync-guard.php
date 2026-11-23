@@ -1301,6 +1301,32 @@ if ($dbA === null) {
         _usgAssert(!in_array('CP-0007', array_column($toms, 'id'), true), '...and it is not listed in the removals handed back');
         _usgAssert(isset(userSyncItemTombstoneMap($dbA, 1, 'favorite')['CP-0008']), 'a row OLDER than its marker does not tear the marker up');
         _usgAssert(!in_array('CP-0008', array_column($toms, 'id'), true), '...yet it is still not listed while the row is being returned');
+
+        /* Review fix 8, real database: markers only for songs that exist or that the person had; capped per person; reply capped. */
+        $dbA->query('CREATE TABLE tblSongs (SongId VARCHAR(20) NOT NULL PRIMARY KEY) ENGINE=InnoDB');
+        $dbA->query("INSERT INTO tblSongs (SongId) VALUES ('CP-0100'), ('CP-0101')");
+        $dbA->query("DELETE FROM tblUserFavorites WHERE UserId = 1");
+        $dbA->query("DELETE FROM tblUserSyncTombstones WHERE UserId = 1");
+        $dbA->query("INSERT INTO tblUserFavorites (UserId, SongId) VALUES (1, 'CP-0555')");   /* a favourite the person had (not in tblSongs any more) */
+        $known = userSyncKnownFavoriteIds($dbA, 1, ['CP-0100', 'cp-0101', 'CP-0555', 'ZZ-9999', 'CP-0000']);
+        _usgAssert($known === ['CP-0100', 'cp-0101', 'CP-0555'], 'a marker is only worth writing for a song that exists or that the person really had: ' . json_encode($known));
+        _usgAssert(userSyncKnownFavoriteIds($dbA, 2, ['CP-0555']) === [], 'another person\'s favourite does not make the id known for this person');
+        _usgAssert(userSyncKnownFavoriteIds($dbA, 1, []) === [], 'no ids, no query');
+        foreach (['favorites_sync' => $favCode, 'favorites_remove' => $rmCode] as $caseK => $codeK) {
+            $kAt = strpos($codeK, 'userSyncKnownFavoriteIds('); $dAt = strpos($codeK, 'DELETE FROM tblUserFavorites');
+            _usgAssert($kAt !== false && $dAt !== false && $kAt < $dAt && !preg_match("/userSyncItemTombstoneWrite\\(\\\$db, \\\$(userId|authUserId), 'favorite', (\\\$deletedIds|\\[\\\$removeSongId\\])/", $codeK), "{$caseK}: the explicit-delete marker uses the known-ids filter, asked before the row is deleted");
+        }
+        $dbA->query("DELETE FROM tblUserSyncTombstones WHERE UserId = 1");
+        foreach (['T1', 'T2', 'T3', 'T4', 'T5'] as $i => $t) {
+            userSyncItemTombstoneWrite($dbA, 1, 'custom_tag', [$t], '2026-11-20 10:00:0' . $i, 'user', 3);
+        }
+        $left = userSyncItemTombstoneMap($dbA, 1, 'custom_tag');
+        ksort($left);
+        _usgAssert(array_keys($left) === ['T3', 'T4', 'T5'], 'past the cap the OLDEST markers are dropped (cap 3 here): ' . json_encode(array_keys($left)));
+        _usgAssert(userSyncItemTombstoneMap($dbA, 2, 'custom_tag') === [] && userSyncItemTombstoneMap($dbA, 1, 'favorite') === [], 'pruning never touches another person or another kind');
+        $listed = userSyncItemTombstoneList($dbA, 1, 'custom_tag', null, 2);
+        _usgAssert(array_column($listed, 'id') === ['T4', 'T5'], 'a sync with no watermark gets at most the cap, the newest, in time order');
+        _usgAssert(userSyncItemTombstoneCap() === 5000, 'the real cap is 5,000 per person and kind');
     } finally {
         mysqli_report(MYSQLI_REPORT_OFF);
         $dbA->query("DROP DATABASE IF EXISTS `{$dbName}`");

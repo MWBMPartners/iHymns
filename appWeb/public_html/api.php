@@ -6957,7 +6957,9 @@ if ($action !== null) {
             $deleted = 0;
             if ($deletedIds !== []) {
                 if ($markersReady) {
-                    userSyncItemTombstoneWrite($db, $userId, 'favorite', $deletedIds, userSyncNow($db), 'user');
+                    /* Only songs that exist (or that the person really had) get a marker; a made-up id
+                       would only fill the person's notes list. Asked BEFORE the rows are deleted. */
+                    userSyncItemTombstoneWrite($db, $userId, 'favorite', userSyncKnownFavoriteIds($db, $userId, $deletedIds), userSyncNow($db), 'user');
                 }
                 $del = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
                 $delId = '';
@@ -7218,13 +7220,15 @@ if ($action !== null) {
                 $db->begin_transaction();
                 try {
                     userSyncLockPerson($db, $authUserId);
+                    /* A marker only for a song that exists or that the person really had (asked before the delete). */
+                    $removeMarkIds = userSyncKnownFavoriteIds($db, $authUserId, [$removeSongId]);
                     $stmt = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
                     $stmt->bind_param('is', $authUserId, $removeSongId);
                     $stmt->execute();
                     $affected = $stmt->affected_rows;
                     $stmt->close();
                     /* Written even when no row existed (the removal may be racing another device's add). */
-                    userSyncItemTombstoneWrite($db, $authUserId, 'favorite', [$removeSongId], userSyncNow($db), 'user');
+                    userSyncItemTombstoneWrite($db, $authUserId, 'favorite', $removeMarkIds, userSyncNow($db), 'user');
                     $db->commit();
                 } catch (\Throwable $_rmErr) {
                     try { $db->rollback(); } catch (\Throwable $_r) { /* already gone */ }
