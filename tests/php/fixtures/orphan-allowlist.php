@@ -760,7 +760,6 @@ return [
            duplicate_song endpoint (manage/editor/api2.php) now writes it via
            INSERT...SELECT when copying a song's alt titles, so it is no longer
            reader-with-no-writer. Removing the entry keeps the count exact. */
-        'tblUserProfileItems'      => '#2180 deliberate: PR 2a ("Your most viewed") only READS the saved period, behind profileItemsReady(); the writer is the profile sync core in PR 2b (step 2b-2), which must delete this entry (the stale-entry check will say so)',
         'tblPresentationSlideOverrides' => '#2073 read by lyricLinesSnapshotDeletedEnrichment() so a delete does not lose it silently; the writer is the not-yet-built slide-override editor',
         'tblSongArrangements'      => '#1066 one-pass dormant — ?include=arrangements read side shipped, write side is future feature work',
         'tblSongRoyaltyIds'        => '#1066 one-pass dormant — ?include=royaltyIds read side shipped, write side is future feature work',
