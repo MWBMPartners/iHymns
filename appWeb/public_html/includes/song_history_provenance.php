@@ -39,11 +39,66 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'profile_sync_gate.php'; /* profile
 const SONG_VIEW_RATE_PER_MINUTE = 60;
 /** `song_view`: ...and at most this many a day. */
 const SONG_VIEW_RATE_PER_DAY = 3000;
+/**
+ * `song_view` for someone who is NOT signed in and cannot be told apart from their neighbours:
+ * the per-address limit is this many times higher. A whole congregation can sit behind ONE church
+ * router (CLAUDE.md rule #26), so a limit sized for one person would count most of them out.
+ */
+const SONG_VIEW_ANON_ADDRESS_MULTIPLIER = 10;
 /** `song_history_backfill`: at most this many an hour per person. */
 const SONG_BACKFILL_RATE_PER_HOUR = 10;
 
 /** The kinds of app that can say where a view came from. VARCHAR in the table (rule #20); checked here. */
 const SONG_HISTORY_PLATFORMS = ['web', 'apple', 'android'];
+
+if (!function_exists('songViewRatePlan')) {
+    /**
+     * PURE: which rate-limit buckets does ONE `song_view` call count against?
+     *
+     * ELI5: decide who "the caller" is, so a church full of phones behind one router is not
+     * treated as one very busy person.
+     *
+     *   | Who                                              | Counted against                                   |
+     *   |--------------------------------------------------|---------------------------------------------------|
+     *   | a signed-in person                               | that person (60 a minute, 3,000 a day)            |
+     *   | a Service Mode device with a LIVE presence token | that token (same numbers)                         |
+     *   | a device that sent its own device id             | that device (same numbers) AND the address, at 10x |
+     *   | anyone else                                      | the address, at 10x                               |
+     *
+     * The presence token only counts when the caller has checked it is live (`$presenceLive`): a
+     * made-up token must not be a way round the address limit. A device id cannot be checked, so
+     * it is always backed up by the (higher) address limit.
+     *
+     * @param ?int   $userId       the signed-in person's id, or null
+     * @param string $presenceToken the Service Mode presence token the caller sent ('' if none)
+     * @param bool   $presenceLive  true only when that token was checked and is live now
+     * @param string $deviceId      the optional client device id ('' if none or malformed)
+     * @param string $address       the remote address
+     * @return array<int,array{scope:string,key:string,perMin:int,perDay:int}>
+     */
+    function songViewRatePlan(?int $userId, string $presenceToken, bool $presenceLive, string $deviceId, string $address): array
+    {
+        $own = static fn(string $key): array => [
+            'scope' => 'song_view', 'key' => $key,
+            'perMin' => SONG_VIEW_RATE_PER_MINUTE, 'perDay' => SONG_VIEW_RATE_PER_DAY,
+        ];
+        $addr = [
+            'scope' => 'song_view_addr', 'key' => 'ip:' . substr($address, 0, 45),
+            'perMin' => SONG_VIEW_RATE_PER_MINUTE * SONG_VIEW_ANON_ADDRESS_MULTIPLIER,
+            'perDay' => SONG_VIEW_RATE_PER_DAY * SONG_VIEW_ANON_ADDRESS_MULTIPLIER,
+        ];
+        if ($userId !== null && $userId > 0) {
+            return [$own('uid:' . $userId)];
+        }
+        if ($presenceLive && preg_match('/^[A-Za-z0-9_\-]{43}$/', $presenceToken)) {
+            return [$own('pt:' . substr(hash('sha256', $presenceToken), 0, 24))];
+        }
+        if (preg_match('/^[A-Za-z0-9_\-]{8,64}$/', $deviceId)) {
+            return [$own('dev:' . substr(hash('sha256', $deviceId), 0, 24)), $addr];
+        }
+        return [$addr];
+    }
+}
 
 if (!function_exists('songHistoryProvenanceReady')) {
     /**

@@ -7803,9 +7803,15 @@ paths:
             the site that recorded it) and `Platform` (the optional `platform`
             below). Only real views from the live site count towards
             `popular_songs` and the CCLI view count.
-          * Recording is limited to **60 a minute and 3,000 a day** per signed-in
-            person, or else per address. Over the limit the answer is **429** with
-            `Retry-After`; apps ignore it (the call is fire-and-forget).
+          * Recording is limited to **60 a minute and 3,000 a day** per caller.
+            "Caller" is the signed-in person; else a Service Mode device (the live
+            `ihymns_sf_presence_token` cookie, checked against an active presence
+            row, so a made-up token does not count); else a device that sent its own
+            optional `device_id` (also backed up by the address limit); else the
+            address, at **ten times** the numbers (600 a minute, 30,000 a day),
+            because a whole congregation can sit behind one church router. Over the
+            limit the answer is **429** with `Retry-After`; apps ignore it (the call
+            is fire-and-forget).
       parameters:
         - name: action
           in: query
@@ -7824,6 +7830,10 @@ paths:
                   type: string
                   enum: [web, apple, android]
                   description: Which kind of app recorded the view. Anything else is ignored.
+                device_id:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{8,64}$'
+                  description: Optional random id the app keeps for this device, used only to count views per device instead of per address. Anything malformed is ignored.
       responses:
         "200":
           description: Logged (or silently dropped when consent is denied)

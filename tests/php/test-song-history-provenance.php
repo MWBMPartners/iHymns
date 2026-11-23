@@ -120,10 +120,25 @@ echo "the handlers\n";
 $units = phpSourceUnits((string)file_get_contents($web . '/api.php'));
 $view = $units["case 'song_view'"]['code'] ?? '';
 $back = $units["case 'song_history_backfill'"]['code'] ?? '';
-chk('song_view is rate limited behind the switch, using the constants (one place to change)',
-    (bool)preg_match('/profileSyncEnabledHere\(\)/', $view) && (bool)preg_match("/enforceReadRateLimit\(\s*'song_view'\s*,\s*SONG_VIEW_RATE_PER_MINUTE\s*,\s*SONG_VIEW_RATE_PER_DAY\s*,/", $view));
-chk('song_view limits per signed-in PERSON, else per address (the key override is built from the person\'s id)', (bool)preg_match('/SONG_VIEW_RATE_PER_DAY,\s*\$authUser\s*\?\s*\'@STR@\'\s*\.\s*\.?\s*\(int\)\s*\$authUser\[\'Id\'\]\s*:\s*\'@STR@\'\s*\)/', $view));
-chk('song_view has no number typed in (60 / 3000 appear only in the constants)', !preg_match('/enforceReadRateLimit\(\s*\'song_view\'\s*,\s*\d/', $view));
+chk('song_view is rate limited behind the switch, from the ONE plan function (no number typed in the handler)',
+    (bool)preg_match('/profileSyncEnabledHere\(\)/', $view)
+    && (bool)preg_match('/foreach\s*\(\s*songViewRatePlan\(/', $view)
+    && (bool)preg_match('/enforceReadRateLimit\(\s*\$viewBucket\[\'scope\'\]\s*,\s*\$viewBucket\[\'perMin\'\]\s*,\s*\$viewBucket\[\'perDay\'\]\s*,\s*\$viewBucket\[\'key\'\]\s*\)/', $view)
+    && !preg_match('/enforceReadRateLimit\(\s*\'song_view\'/', $view));
+chk('song_view checks the presence token is LIVE before trusting it (a made-up token is no way round the limit)', str_contains($view, 'serviceMode_presenceTokenLive(') && str_contains($view, "ihymns_sf_presence_token"));
+$plan = static fn(?int $u, string $tok, bool $live, string $dev, string $ip = '203.0.113.9'): array => songViewRatePlan($u, $tok, $live, $dev, $ip);
+$tokA = str_repeat('A', 43); $tokB = str_repeat('B', 43);
+$p1 = $plan(7, '', false, ''); $p2 = $plan(8, '', false, '');
+chk('a signed-in person is counted on their own (60 a minute, 3,000 a day)', count($p1) === 1 && $p1[0]['key'] === 'uid:7' && $p1[0]['perMin'] === 60 && $p1[0]['perDay'] === 3000 && $p1[0]['key'] !== $p2[0]['key']);
+$c1 = $plan(null, $tokA, true, ''); $c2 = $plan(null, $tokB, true, '', '203.0.113.9');
+chk('two congregation phones behind ONE router get their own buckets (not the address)', count($c1) === 1 && count($c2) === 1 && $c1[0]['key'] !== $c2[0]['key'] && str_starts_with($c1[0]['key'], 'pt:') && $c1[0]['perMin'] === 60);
+chk('a presence token that was NOT confirmed live is ignored (falls to the address)', $plan(null, $tokA, false, '')[0]['scope'] === 'song_view_addr');
+$d = $plan(null, '', false, 'device-abcdef12');
+chk('a device id is counted per device AND backed up by the address limit', count($d) === 2 && str_starts_with($d[0]['key'], 'dev:') && $d[1]['scope'] === 'song_view_addr');
+$a = $plan(null, '', false, '');
+chk('with nothing to tell callers apart, the address limit is 10 times higher (600 a minute, 30,000 a day)', count($a) === 1 && $a[0]['key'] === 'ip:203.0.113.9' && $a[0]['perMin'] === 600 && $a[0]['perDay'] === 30000 && SONG_VIEW_ANON_ADDRESS_MULTIPLIER === 10);
+chk('a malformed device id is ignored', $plan(null, '', false, "bad id'; DROP")[0]['scope'] === 'song_view_addr' && count($plan(null, '', false, "bad id'; DROP")) === 1);
+chk('a signed-in person is never moved to a presence bucket', $plan(7, $tokA, true, 'device-abcdef12')[0]['key'] === 'uid:7');
 chk('song_view stamps the row only when the columns exist', (bool)preg_match('/songHistoryProvenanceReady\(\$db\)/', $view) && str_contains($view, 'songHistoryProvenanceValues('));
 chk('song_view still has the plain insert for the switch-off / not-migrated case', (bool)preg_match("/INSERT INTO tblSongHistory \(SongId, UserId\) VALUES/", implode(' ', $units["case 'song_view'"]['strings'] ?? [])));
 chk('backfill is limited behind the switch with the constant, check and record paired (#1636)',

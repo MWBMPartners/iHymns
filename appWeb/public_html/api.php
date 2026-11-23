@@ -11218,12 +11218,28 @@ if ($action !== null) {
                apps (the view is fire-and-forget). Off, or the limiter's table missing: no limit. */
             $viewProvenanceOn = profileSyncEnabledHere();
             if ($viewProvenanceOn) {
-                enforceReadRateLimit(
-                    'song_view',
-                    SONG_VIEW_RATE_PER_MINUTE,
-                    SONG_VIEW_RATE_PER_DAY,
-                    $authUser ? 'uid:' . (int)$authUser['Id'] : ''
-                );
+                /* Who is "the caller"? A person, else a live Service Mode device, else a device that
+                   sent its own id, else the address at a 10x ceiling (a congregation behind one church
+                   router must not be counted as one person, rule #26). See songViewRatePlan(). */
+                $viewPresence = (isset($_COOKIE['ihymns_sf_presence_token']) && is_string($_COOKIE['ihymns_sf_presence_token']))
+                    ? $_COOKIE['ihymns_sf_presence_token'] : '';
+                $viewPresenceLive = false;
+                if (!$authUser && $viewPresence !== '') {
+                    try {
+                        require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+                        $viewPresenceLive = serviceMode_presenceTokenLive(getDbMysqli(), $viewPresence);
+                    } catch (\Throwable $_pe) { /* limiter lookups never block a view */ }
+                }
+                $viewDeviceId = is_array($body) && is_string($body['device_id'] ?? null) ? trim($body['device_id']) : '';
+                foreach (songViewRatePlan(
+                    $authUser ? (int)$authUser['Id'] : null,
+                    $viewPresence,
+                    $viewPresenceLive,
+                    $viewDeviceId,
+                    (string)($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0')
+                ) as $viewBucket) {
+                    enforceReadRateLimit($viewBucket['scope'], $viewBucket['perMin'], $viewBucket['perDay'], $viewBucket['key']);
+                }
             }
 
             try {
