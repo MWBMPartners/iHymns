@@ -22,8 +22,14 @@
  *     box keeps everything and the sign-in; "sign out anyway" clears; "try again" that works clears without a second question;
  *     three tries then a last question; a paused site's waiting removals count; a waiting profile change counts;
  *     with the switch off nothing is flushed, asked or cleared (the older behaviour).
+ *  3b. (PR 2c review) the real SetList / Favorites classes against a pretend server that is offline, answers 500, is
+ *     paused (a 200 that says readOnly) or is reached from a second tab: an edit whose push already failed is still counted
+ *     and asked about; a paused site never counts as "sent"; an edit made while a push is in the air keeps its mark.
+ *     The old version of this file counted "waiting stores" found by key-name suffix and used a fake store that could only
+ *     answer "sent", so it could not see this class of loss.
  *  4. MUTATION PROOFS (recorded in the 2c-3 commit): the count skipped (the "asks" rows go red), the clearing skipped,
- *     the flush skipped (the "sent before clearing" row goes red).
+ *     the flush skipped (the "sent before clearing" row goes red). PR 2c review added: the unsent mark never set, the
+ *     read-only reply treated as sent, the marker dropped without a real push.
  *
  * Usage: node tests/test-sign-out-clearing.js
  */
@@ -122,28 +128,59 @@ console.log('\n1 - the clearing function\n');
 /* ================= 2. the counting ================= */
 console.log('\n2 - the counting\n');
 {
-    /* the "waiting" stores are derived from constants.js, never typed here */
-    const waitingKeys = Object.entries(C).filter(([n, v]) => /^STORAGE_.*_(ADDED|DELETED|OUTBOX)$/.test(n) && typeof v === 'string');
-    check('constants.js names the waiting stores (' + waitingKeys.map(([n]) => n).join(', ') + ')', waitingKeys.length >= 4);
     const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'https://example.test/' });
     Object.assign(globalThis, { window: dom.window, document: dom.window.document, localStorage: dom.window.localStorage, CustomEvent: dom.window.CustomEvent, Event: dom.window.Event });
     Object.defineProperty(globalThis, 'navigator', { value: { onLine: true }, configurable: true, writable: true });
     const { Favorites } = await import(url(path.join(MODULES, 'favorites.js')) + '?c=' + Math.random());
     const { SetList } = await import(url(path.join(MODULES, 'setlist.js')) + '?c=' + Math.random());
     const { ProfileSync } = await import(url(path.join(MODULES, 'profile-sync.js')) + '?c=' + Math.random());
-    for (const [name, key] of waitingKeys) {
-        localStorage.clear();
-        const app = { config: { apiUrl: '/api', profileSync: { enabled: true } }, syncStorage() {}, userAuth: { isLoggedIn: () => true, getUser: () => ({ id: 1 }), authHeaders: () => ({}) } };
+    /* PR 2c review: the old loop found "waiting stores" by the SUFFIX of a constant's name and then wrote a fake value
+       straight into storage, so a store that never recorded its own edits still passed. Now each kind of change is made
+       through the REAL class, the way the app makes it, and the count must notice it. */
+    const mkApp = () => {
+        const app = { config: { apiUrl: '/api', profileSync: { enabled: true } }, syncStorage() {}, showToast() {}, userAuth: { isLoggedIn: () => true, getUser: () => ({ id: 1 }), authHeaders: () => ({}) } };
         app.favorites = new Favorites(app);
         app.setList = new SetList(app);
         app.profileSync = new ProfileSync(app, { storage: localStorage });
-        if (key === C.STORAGE_PROFILE_OUTBOX) localStorage.setItem(key, JSON.stringify({ uid: '1', seq: 1, items: { 'appearance.theme': { section: 'appearance', key: 'theme', op: 'set', value: 'dark', seq: 1 } } }));
-        else localStorage.setItem(key, JSON.stringify(['MP-1']));
+        return app;
+    };
+    const realEdits = {
+        'a set list created': (a) => a.setList.create('Sunday'),
+        'a set list renamed (not a deletion)': (a) => { localStorage.setItem(C.STORAGE_SETLISTS, JSON.stringify([{ id: 'sl-1', name: 'Mine', songs: [] }])); a.setList.rename('sl-1', 'Renamed'); },
+        'a set list deleted': (a) => { localStorage.setItem(C.STORAGE_SETLISTS, JSON.stringify([{ id: 'sl-1', name: 'Mine', songs: [] }])); a.setList.delete('sl-1'); },
+        'a favourite added': (a) => a.favorites.toggle('MP-1', 'T', 'MP', 1),
+        'a favourite removed': (a) => { localStorage.setItem(C.STORAGE_FAVORITES, JSON.stringify([{ id: 'MP-1', tags: [] }])); a.favorites.toggle('MP-1', 'T', 'MP', 1); },
+        'a favourite given a tag (not an add or a removal)': (a) => { localStorage.setItem(C.STORAGE_FAVORITES, JSON.stringify([{ id: 'MP-1', tags: [] }])); a.favorites.setTags('MP-1', ['Praise']); },
+        'a custom tag invented': (a) => a.favorites.saveCustomTag('Sunday'),
+        'a profile setting changed': (a) => a.profileSync._enqueue('appearance', 'theme', 'set', 'dark'),
+    };
+    for (const [what, edit] of Object.entries(realEdits)) {
+        localStorage.clear();
+        const app = mkApp();
+        app.favorites._syncReady = true; app.setList._syncReady = true;   /* arm nothing; we only count, the timers are cancelled below */
+        edit(app);
+        clearTimeout(app.favorites._syncTimer); clearTimeout(app.favorites._tagSyncTimer); clearTimeout(app.setList._syncTimer);
         const c = await guard.countUnsentChanges(app, { queueCount: async () => 0 });
-        check(`${name} is counted when it holds something (total ${c.total})`, c.total === 1, JSON.stringify(c));
+        check(`${what} is counted as 1 unsent change (total ${c.total})`, c.total === 1, JSON.stringify(c));
         localStorage.clear();
         const none = await guard.countUnsentChanges(app, { queueCount: async () => 0 });
-        check(`${name} counts nothing when empty`, none.total === 0);
+        check(`...and counts nothing once the browser holds nothing`, none.total === 0);
+    }
+    {
+        localStorage.clear();
+        const anon = mkApp();
+        anon.app = null;
+        anon.favorites.app.userAuth = { isLoggedIn: () => false };
+        anon.favorites.toggle('MP-9', 'T', 'MP', 9);
+        clearTimeout(anon.favorites._syncTimer);
+        check('a signed-out visitor\'s edit leaves no "unsent" mark (there is no account to tell)', localStorage.getItem(C.STORAGE_FAVORITES_UNSENT) === null);
+    }
+    {
+        const lockstep = (await import(url(path.join(MODULES, 'account-data-owner.js')))).PERSONAL_DATA_KEYS;
+        check('the three "unsent" marks are personal data (stashed and cleared with the lists they describe)',
+            [C.STORAGE_SETLISTS_UNSENT, C.STORAGE_FAVORITES_UNSENT, C.STORAGE_CUSTOM_TAGS_UNSENT].every((k) => lockstep.includes(k)));
+        const stores = [['setlist.js', 'markUnsent(localStorage, STORAGE_SETLISTS_UNSENT)'], ['favorites.js', 'markUnsent(localStorage, STORAGE_FAVORITES_UNSENT)'], ['favorites.js', 'markUnsent(localStorage, STORAGE_CUSTOM_TAGS_UNSENT)']];
+        for (const [f, needle] of stores) check(`${f} sets ${needle.split(', ')[1].replace(')', '')}`, fs.readFileSync(path.join(MODULES, f), 'utf8').includes(needle));
     }
     /* the settings upload waiting and the queue markers */
     const app2 = { settings: { hasUnsentChanges: () => true }, favorites: { getPendingAdds: () => [], getPendingDeletes: () => [] }, setList: { getPendingDeletes: () => [] } };
@@ -210,12 +247,22 @@ console.log('\n2b - the decision\n');
 console.log('\n3 - the real classes against a pretend server\n');
 const guardSrc = fs.readFileSync(path.join(MODULES, 'sign-out-guard.js'), 'utf8');
 const uaSrc = fs.readFileSync(path.join(MODULES, 'user-auth.js'), 'utf8');
-async function world({ enabled = true, favs = 'ok', profile = 'ok', answers = [], userAuthPath = path.join(MODULES, 'user-auth.js') } = {}) {
+/** The mutation proofs point these at a broken copy of a store; normally empty. */
+const OVERRIDE = {};
+async function world({ enabled = true, favs = 'ok', profile = 'ok', sl = 'ok', tags = 'ok', answers = [], userAuthPath = path.join(MODULES, 'user-auth.js') } = {}) {
     const dom = new JSDOM('<!doctype html><html><body></body></html>', { runScripts: 'dangerously', url: 'https://example.test/' });
     const { window } = dom;
     Object.assign(globalThis, { window, document: window.document, localStorage: window.localStorage, CustomEvent: window.CustomEvent, Event: window.Event, requestAnimationFrame: (f) => setTimeout(f, 0) });
     Object.defineProperty(globalThis, 'navigator', { value: { onLine: true, serviceWorker: undefined }, configurable: true, writable: true });
-    const w = { requests: [], mode: { favs, profile }, serverFavs: [], dialogs: [], answers: [...answers] };
+    const w = { requests: [], mode: { favs, profile, sl, tags }, serverFavs: [], serverLists: [], serverTags: [], dialogs: [], answers: [...answers] };
+    /* An in-memory offline queue (jsdom has no IndexedDB), so a marker left by an offline attempt is REAL here. */
+    const { offlineQueue } = await import(url(path.join(MODULES, 'offline-queue.js')));
+    const markers = {};
+    offlineQueue.enqueue = async (t) => { markers[t] = (markers[t] || 0) + 1; };
+    offlineQueue.count = async (t) => markers[t] || 0;
+    offlineQueue.drainLatest = async (t, send) => { if (markers[t] && await send()) markers[t] = 0; };
+    offlineQueue.bindAutoDrainLatest = () => {};
+    w.markers = markers;
     const api = await import(url(path.join(JS, 'utils', 'api-client.js')));
     api.setAuthHeaderProvider(() => ({ Authorization: 'Bearer tok' }));
     globalThis.fetch = async (input, init = {}) => {
@@ -226,12 +273,26 @@ async function world({ enabled = true, favs = 'ok', profile = 'ok', answers = []
         const json = (status, obj) => new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } });
         if (action === 'favorites_sync') {
             if (w.mode.favs === 'down') throw new TypeError('network down');
+            if (w.mode.favs === '500') return json(500, { error: 'boom' });
             if (w.mode.favs === 'readonly') return json(200, { favorites: body.favorites, readOnly: true, syncedAt: '2026-02-02 00:00:00' });
             w.serverFavs = (body.favorites || []).map((f) => f.id);
             return json(200, { favorites: body.favorites, syncedAt: '2026-02-02 00:00:00' });
         }
-        if (action === 'user_setlists_sync') return json(200, { setlists: body.setlists || [], tombstones: [], syncedAt: '2026-02-02 00:00:00' });
-        if (action === 'custom_tags_sync') return json(200, { tags: body.tags || [] });
+        if (action === 'user_setlists_sync') {
+            if (w.mode.sl === 'down') throw new TypeError('network down');
+            if (w.mode.sl === '500') return json(500, { error: 'boom' });
+            if (w.mode.sl === 'readonly') return json(200, { setlists: [], tombstones: [], readOnly: true, syncedAt: '2026-02-02 00:00:00' });
+            if (typeof w.mode.sl === 'function') await w.mode.sl(body);
+            w.serverLists = (body.setlists || []).map((l) => l.name);
+            return json(200, { setlists: body.setlists || [], tombstones: [], syncedAt: '2026-02-02 00:00:00' });
+        }
+        if (action === 'custom_tags_sync') {
+            if (w.mode.tags === 'down') throw new TypeError('network down');
+            if (w.mode.tags === '500') return json(500, { error: 'boom' });
+            if (w.mode.tags === 'readonly') return json(200, { tags: [], readOnly: true });
+            w.serverTags = body.tags || [];
+            return json(200, { tags: body.tags || [] });
+        }
         if (action === 'profile_schema') return json(200, schema);
         if (action === 'profile_sync') {
             if (w.mode.profile === 'down') return json(503, { reason: 'profile_sync_unavailable' });
@@ -240,8 +301,8 @@ async function world({ enabled = true, favs = 'ok', profile = 'ok', answers = []
         return json(200, { ok: true });
     };
     const { UserAuth } = await import(url(userAuthPath) + '?w=' + Date.now() + Math.random());
-    const { Favorites } = await import(url(path.join(MODULES, 'favorites.js')) + '?w=' + Math.random());
-    const { SetList } = await import(url(path.join(MODULES, 'setlist.js')) + '?w=' + Math.random());
+    const { Favorites } = await import(url(OVERRIDE.favorites || path.join(MODULES, 'favorites.js')) + '?w=' + Math.random());
+    const { SetList } = await import(url(OVERRIDE.setlist || path.join(MODULES, 'setlist.js')) + '?w=' + Math.random());
     const { ProfileSync } = await import(url(path.join(MODULES, 'profile-sync.js')) + '?w=' + Math.random());
     const app = { config: { apiUrl: '/api', profileSync: { enabled } }, syncStorage() {}, showToast() {} };
     app.showChoice = async (message, opts) => {
@@ -346,6 +407,126 @@ check('SWITCH OFF: sign-out is exactly the older one - no flush, no question, no
 
 check('a second click while the question is open opens no second question and signs nobody out', real.jState.dialogs === 1 && real.jState.second.signedOut === false && real.jState.firstResult.signedOut === false && real.jState.signedIn === true, JSON.stringify(real.jState));
 
+/* ================= 3b. edits whose push already failed (PR 2c review) ================= */
+console.log('\n3b - edits whose push already failed, a paused site, a second tab\n');
+async function lostEditScenarios(userAuthPath) {
+    const out = {};
+    /* The 1.5 second timer fires and the push runs (and fails): done by hand, exactly what the timer's callback does, so the test does not sleep. */
+    const settle = async (store, push = '_pushNow') => {
+        clearTimeout(store._syncTimer); clearTimeout(store._tagSyncTimer);
+        store._syncTimerPending = false; store._tagSyncTimerPending = false;
+        try { await store[push](); } catch (_e) { /* the timer's callback ignores it too */ }
+    };
+    const left = (w) => w.personalLeft().length;
+    /* k. the push after a set-list edit failed with a server error; the timer is long gone when the person signs out */
+    let w = await world({ userAuthPath, sl: '500', answers: [null] });
+    w.app.setList.create('Sunday service'); await settle(w.app.setList);
+    out.k = await w.app.userAuth.logout();
+    out.kState = { dialogs: w.dialogs.length, signedIn: w.app.userAuth.isLoggedIn(), lists: localStorage.getItem(C.STORAGE_SETLISTS) };
+    /* l. no signal when the edit was made: the push queued a marker and stopped */
+    w = await world({ userAuthPath, answers: [null] });
+    navigator.onLine = false;
+    w.app.setList.create('Offline service'); await settle(w.app.setList);
+    out.lMarkerBefore = w.markers['setlists-sync'] || 0;
+    out.l = await w.app.userAuth.logout();
+    out.lState = { dialogs: w.dialogs.length, signedIn: w.app.userAuth.isLoggedIn(), lists: localStorage.getItem(C.STORAGE_SETLISTS), marker: w.markers['setlists-sync'] || 0 };
+    navigator.onLine = true;
+    /* m. a paused site answers 200 with readOnly: nothing was saved, so it must not count as sent */
+    w = await world({ userAuthPath, sl: 'readonly', answers: [null] });
+    w.app.setList.create('Paused service'); await settle(w.app.setList);
+    out.m = await w.app.userAuth.logout();
+    out.mState = { dialogs: w.dialogs.length, signedIn: w.app.userAuth.isLoggedIn(), lists: localStorage.getItem(C.STORAGE_SETLISTS) };
+    /* m2. a set list deleted while the site is paused: the removal must stay queued */
+    w = await world({ userAuthPath, sl: 'readonly', answers: [null] });
+    w.app.setList.delete('sl-1'); await settle(w.app.setList);
+    out.m2State = { pending: w.app.setList.getPendingDeletes() };
+    out.m2 = await w.app.userAuth.logout();
+    out.m2Dialogs = w.dialogs.length;
+    /* n. the same edit when the server is fine: sent first, cleared, no question */
+    w = await world({ userAuthPath });
+    w.app.setList.create('Good service'); w.app.setList._syncTimerPending = false; clearTimeout(w.app.setList._syncTimer);
+    out.n = await w.app.userAuth.logout();
+    out.nState = { dialogs: w.dialogs.length, serverLists: [...w.serverLists], left: left(w) };
+    /* o. a SECOND TAB made an edit whose push failed (it shares this browser's storage); this tab signs out */
+    w = await world({ userAuthPath, sl: '500', answers: [null] });
+    {
+        const appB = { config: w.app.config, syncStorage() {}, showToast() {}, userAuth: w.app.userAuth };
+        const { SetList } = await import(url(OVERRIDE.setlist || path.join(MODULES, 'setlist.js')) + '?tab=' + Math.random());
+        const tabB = new SetList(appB); tabB._syncReady = true; appB.setList = tabB;
+        tabB.create('Made in the other tab'); clearTimeout(tabB._syncTimer);   /* the other tab's timer is not in this tab */
+    }
+    out.o = await w.app.userAuth.logout();
+    out.oState = { dialogs: w.dialogs.length, signedIn: w.app.userAuth.isLoggedIn(), lists: localStorage.getItem(C.STORAGE_SETLISTS) };
+    /* o2. ...and when the server is fine, THIS tab's sign-out sends the other tab's edit */
+    w = await world({ userAuthPath });
+    {
+        const appB = { config: w.app.config, syncStorage() {}, showToast() {}, userAuth: w.app.userAuth };
+        const { SetList } = await import(url(OVERRIDE.setlist || path.join(MODULES, 'setlist.js')) + '?tab=' + Math.random());
+        const tabB = new SetList(appB); tabB._syncReady = true; appB.setList = tabB;
+        tabB.create('Made in the other tab'); clearTimeout(tabB._syncTimer);
+    }
+    out.o2 = await w.app.userAuth.logout();
+    out.o2State = { dialogs: w.dialogs.length, serverLists: [...w.serverLists], left: left(w) };
+    /* p. a favourite given a tag (neither added nor removed), the push failed */
+    w = await world({ userAuthPath, favs: '500', answers: [null] });
+    w.app.favorites.setTags('MP-1', ['Praise']); await settle(w.app.favorites);
+    out.p = await w.app.userAuth.logout();
+    out.pState = { dialogs: w.dialogs.length, signedIn: w.app.userAuth.isLoggedIn() };
+    /* q. a custom tag invented, the push failed */
+    w = await world({ userAuthPath, tags: '500', answers: [null] });
+    w.app.favorites.saveCustomTag('Evening'); await settle(w.app.favorites, '_pushTagsNow');
+    out.q = await w.app.userAuth.logout();
+    out.qState = { dialogs: w.dialogs.length, signedIn: w.app.userAuth.isLoggedIn(), tags: localStorage.getItem(C.STORAGE_CUSTOM_TAGS) };
+    /* q2. a custom tag, paused site */
+    w = await world({ userAuthPath, tags: 'readonly', answers: [null] });
+    w.app.favorites.saveCustomTag('Evening'); await settle(w.app.favorites, '_pushTagsNow');
+    out.q2 = await w.app.userAuth.logout();
+    out.q2State = { dialogs: w.dialogs.length, tags: JSON.parse(localStorage.getItem(C.STORAGE_CUSTOM_TAGS) || '[]') };
+    /* q3. a custom tag with a good server: sent on sign-out */
+    w = await world({ userAuthPath });
+    w.app.favorites.saveCustomTag('Evening'); clearTimeout(w.app.favorites._tagSyncTimer); w.app.favorites._tagSyncTimerPending = false;
+    out.q3 = await w.app.userAuth.logout();
+    out.q3State = { dialogs: w.dialogs.length, serverTags: [...w.serverTags], left: left(w) };
+    /* r. an edit made while a push is in the air keeps its mark (nothing is marked sent that was not) */
+    w = await world({ userAuthPath, sl: async () => { w.app.setList.saveAll([...w.app.setList.getAll(), { id: 'sl-late', name: 'Typed during the push', songs: [] }]); clearTimeout(w.app.setList._syncTimer); } });
+    w.app.setList.create('First'); clearTimeout(w.app.setList._syncTimer);
+    await w.app.setList._pushNow();
+    out.rState = { mark: (w.app.setList.getUnsentStamp?.() ?? null) !== null };
+    /* s. "Sign out anyway" after a failed set-list push: signed out, cleared */
+    w = await world({ userAuthPath, sl: '500', answers: ['option2'] });
+    w.app.setList.create('Lost on purpose'); await settle(w.app.setList);
+    out.s = await w.app.userAuth.logout();
+    out.sState = { dialogs: w.dialogs.length, signedIn: w.app.userAuth.isLoggedIn(), left: left(w) };
+    /* t. the server was down at the first try and is back for "Try again": the edit is sent and the marker is gone */
+    w = await world({ userAuthPath, sl: '500', answers: ['option1'] });
+    w.app.setList.create('Retry me'); await settle(w.app.setList);
+    w.app.showChoice = async (message, opts) => { w.dialogs.push({ message, opts }); w.mode.sl = 'ok'; return 'option1'; };
+    out.t = await w.app.userAuth.logout();
+    out.tState = { dialogs: w.dialogs.length, serverLists: [...w.serverLists], left: left(w) };
+    /* u. only a "sync wanted" marker is left (no mark, nothing else), and the server is down: the marker must survive the failed attempt */
+    w = await world({ userAuthPath, sl: '500', answers: [null] });
+    w.markers['setlists-sync'] = 1;
+    out.u = await w.app.userAuth.logout();
+    out.uState = { dialogs: w.dialogs.length, marker: w.markers['setlists-sync'] || 0, signedIn: w.app.userAuth.isLoggedIn() };
+    return out;
+}
+const lost = await lostEditScenarios(path.join(MODULES, 'user-auth.js'));
+check('a set-list edit whose push FAILED (server error) is counted: the person is asked, nothing is cleared, still signed in', lost.k.signedOut === false && lost.kState.dialogs === 1 && lost.kState.signedIn === true && (lost.kState.lists || '').includes('Sunday service'), JSON.stringify(lost.kState));
+check('a set-list edit made with no signal (an offline marker was queued) is asked about, the marker is still there and the list is kept', lost.lMarkerBefore >= 1 && lost.l.signedOut === false && lost.lState.dialogs === 1 && lost.lState.marker >= 1 && (lost.lState.lists || '').includes('Offline service'), JSON.stringify(lost));
+check("a paused site's read-only 200 reply is NOT treated as sent: the person is asked and the set list is kept", lost.m.signedOut === false && lost.mState.dialogs === 1 && (lost.mState.lists || '').includes('Paused service'), JSON.stringify(lost.mState));
+check("a set list deleted while the site is paused stays queued for the next sync (a read-only reply changed nothing)", lost.m2State.pending.includes('sl-1') && lost.m2.signedOut === false && lost.m2Dialogs === 1, JSON.stringify(lost.m2State));
+check('a set-list edit with a healthy server is sent first and cleared with no question', lost.n.signedOut === true && lost.nState.dialogs === 0 && lost.nState.serverLists.includes('Good service') && lost.nState.left === 0, JSON.stringify(lost.nState));
+check("an edit made in a SECOND TAB whose push failed is counted by this tab's sign-out and asked about", lost.o.signedOut === false && lost.oState.dialogs === 1 && (lost.oState.lists || '').includes('Made in the other tab'), JSON.stringify(lost.oState));
+check("...and with a healthy server this tab's sign-out sends the other tab's edit before clearing", lost.o2.signedOut === true && lost.o2State.dialogs === 0 && lost.o2State.serverLists.includes('Made in the other tab') && lost.o2State.left === 0, JSON.stringify(lost.o2State));
+check('a favourite given a tag (neither added nor removed) whose push failed is asked about', lost.p.signedOut === false && lost.pState.dialogs === 1, JSON.stringify(lost.pState));
+check('a custom tag whose push failed is asked about and kept', lost.q.signedOut === false && lost.qState.dialogs === 1 && (lost.qState.tags || '').includes('Evening'), JSON.stringify(lost.qState));
+check("a custom tag on a paused site is asked about, and the paused site's empty list does not wipe it", lost.q2.signedOut === false && lost.q2State.dialogs === 1 && lost.q2State.tags.includes('Evening'), JSON.stringify(lost.q2State));
+check('a custom tag with a healthy server is sent on sign-out, then cleared with no question', lost.q3.signedOut === true && lost.q3State.dialogs === 0 && lost.q3State.serverTags.includes('Evening') && lost.q3State.left === 0, JSON.stringify(lost.q3State));
+check('an edit made while a push was in the air keeps its "unsent" mark (nothing is marked sent that was not)', lost.rState.mark === true, JSON.stringify(lost.rState));
+check('a lone offline "sync wanted" marker is not forgotten when its push fails: the person is asked and the marker is still there', lost.u.signedOut === false && lost.uState.dialogs === 1 && lost.uState.marker === 1, JSON.stringify(lost.uState));
+check('"Sign out anyway" after a failed push signs out and clears', lost.s.signedOut === true && lost.sState.dialogs === 1 && lost.sState.left === 0, JSON.stringify(lost.sState));
+check('"Try again" once the server is back sends the edit, and the person is not asked again', lost.t.signedOut === true && lost.tState.dialogs === 1 && lost.tState.serverLists.includes('Retry me') && lost.tState.left === 0, JSON.stringify(lost.tState));
+
 /* ================= 4. mutation proofs ================= */
 console.log('\n4 - mutation proofs\n');
 async function mutate(label, edit) {
@@ -383,6 +564,46 @@ async function mutate(label, edit) {
         return { guardText: g.replace(from, 'const flush = deps.flush || (async () => {}); /* MUTATED: nothing is sent */'), uaText: u };
     });
     check('MUTATION (the flush skipped): a change inside the 1.5 second wait is cleared without ever being sent', !m.bState.serverHas.includes('MP-5'));
+}
+
+/* PR 2c review mutations: break each new safeguard in a COPY and watch the matching row go red. */
+async function mutateStores(label, edit) {
+    const stamp = Date.now() + '_' + Math.random().toString(16).slice(2);
+    const files = [];
+    const write = (name, text) => { const f = path.join(MODULES, `zz_ihymns_test_${name}_${stamp}.js`); fs.writeFileSync(f, text); files.push(f); return f; };
+    try {
+        const sources = { guard: guardSrc, ua: uaSrc, setlist: fs.readFileSync(path.join(MODULES, 'setlist.js'), 'utf8'), favorites: fs.readFileSync(path.join(MODULES, 'favorites.js'), 'utf8') };
+        const changed = edit(sources);
+        const g = write('so_guard', changed.guard ?? sources.guard);
+        const u = write('so_ua', (changed.ua ?? sources.ua).replace("'./sign-out-guard.js'", `'./${path.basename(g)}'`));
+        if (changed.setlist) OVERRIDE.setlist = write('so_setlist', changed.setlist);
+        if (changed.favorites) OVERRIDE.favorites = write('so_favorites', changed.favorites);
+        return await lostEditScenarios(u);
+    } finally {
+        delete OVERRIDE.setlist; delete OVERRIDE.favorites;
+        for (const f of files) fs.rmSync(f, { force: true });
+    }
+}
+const replaceOnce = (text, from, to, what) => { if (!text.includes(from)) throw new Error('mutation setup: ' + what + ' not found; update this test'); return text.replace(from, to); };
+{
+    const m = await mutateStores('mark never set', (src) => ({ setlist: replaceOnce(src.setlist, 'markUnsent(localStorage, STORAGE_SETLISTS_UNSENT);', '/* MUTATED: never marked */', 'the set-list mark') }));
+    check('MUTATION (set-list edits never marked unsent): a failed push is lost without a word', m.kState.dialogs === 0 && m.k.signedOut === true);
+}
+{
+    const m = await mutateStores('read-only taken as sent', (src) => ({ ua: replaceOnce(src.ua, 'if (res.readOnly !== true) this.app.setList.clearUnsent?.(res.unsentStamp);', 'this.app.setList.clearUnsent?.(res.unsentStamp);', 'the read-only guard on the mark') }));
+    check('MUTATION (a paused site\'s reply treated as sent): the edit is lost without a word', m.mState.dialogs === 0 && m.m.signedOut === true);
+}
+{
+    const m = await mutateStores('paused deletions cleared', (src) => ({ ua: replaceOnce(src.ua, 'if (deleted.length > 0 && data.readOnly !== true)', 'if (deleted.length > 0)', 'the read-only guard on deletions') }));
+    check('MUTATION (a paused site clears the waiting deletions): the removal is forgotten', m.m2State.pending.length === 0);
+}
+{
+    const m = await mutateStores('markers dropped without a push', (src) => ({ guard: replaceOnce(src.guard, 'if (ok) { for (const t of types) await dropMarkers(t); }', 'for (const t of types) await dropMarkers(t); /* MUTATED */', 'the marker drop') }));
+    check('MUTATION (a queue marker dropped even when the push failed): the lone marker is forgotten and the loss is silent', m.uState.marker === 0 && m.uState.dialogs === 0);
+}
+{
+    const m = await mutateStores('flush ignores the mark', (src) => ({ setlist: replaceOnce(src.setlist, "if (!this._syncTimerPending && waiting() === 0 && this.getUnsentStamp() === null && !marker) return true;", "if (!this._syncTimerPending && waiting() === 0) return true; /* MUTATED */", 'the flushNow early return') }));
+    check('MUTATION (flushNow only knows the timer and deletions, as before): the other tab\'s edit is no longer sent at sign-out (the healthy-server row goes red)', !(m.o2.signedOut === true && m.o2State.dialogs === 0 && m.o2State.serverLists.includes('Made in the other tab')));
 }
 
 if (failures) { console.log(`\n${failures} failure(s)`); process.exit(1); }

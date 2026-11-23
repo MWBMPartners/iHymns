@@ -22,8 +22,12 @@
  *    box upload and the per-item profile sync. All four run at once, with an overall time limit so a hung network
  *    can never trap a person signed in.
  *  - "Count what is still unsent" reads: the profile outbox, favourite adds and removals still waiting, set-list
- *    removals still waiting, a waiting settings upload, and the offline queue's "a sync is wanted" markers. A marker is only
- *    added to the count when the matching list shows nothing (it would count the same change twice).
+ *    removals still waiting, a waiting settings upload, each store's own "has edits the account has not heard about" mark
+ *    (unsent-edits.js: this is what catches an edit whose push already failed) and the offline queue's "a sync is wanted"
+ *    markers. A mark or marker is only added to the count when the matching list shows nothing (it would count the same
+ *    change twice).
+ *  - A queue marker is dropped ONLY after its store really pushed and the account took it (flushNow() returns false for a
+ *    failed push and for a paused site's read-only answer, so the marker, and so the count, survives).
  *    Which queue types exist is derived from user-auth.js by tests/test-sign-out-clearing.js (rule #35).
  *  - A failure to read any one of them is ignored (never blocks sign-out).
  *  - The dialog is the app's own app.showChoice(); closing it answers null, which means "stay signed in".
@@ -97,22 +101,35 @@ export async function flushEverything(app, deps = {}) {
  */
 export async function countUnsentChanges(app, deps = {}) {
     const queueCount = deps.queueCount || ((t) => offlineQueue.count(t));
-    const parts = { profile: 0, favourites: 0, setlistDeletes: 0, settings: 0, queued: 0 };
+    const parts = { profile: 0, favourites: 0, setlistDeletes: 0, settings: 0, queued: 0, edits: 0 };
     const safely = (fn) => { try { return fn(); } catch (_e) { return 0; } };
     parts.profile = safely(() => (app?.profileSync?.isActive?.() ? app.profileSync.pendingCount() : 0)) || 0;
     parts.favourites = safely(() => (app?.favorites?.getPendingAdds?.().length || 0) + (app?.favorites?.getPendingDeletes?.().length || 0)) || 0;
     parts.setlistDeletes = safely(() => app?.setList?.getPendingDeletes?.().length || 0) || 0;
     parts.settings = safely(() => (app?.settings?.hasUnsentChanges?.() ? 1 : 0)) || 0;
+    /* PR 2c review: the per-store "has edits the account has not heard about" marks. An edit to a set list's songs or a
+       favourite's tags is in none of the lists above, and a push that already failed leaves no timer either, so without
+       these a lost change was never counted. A mark is counted once per store, and only when the store's own lists above
+       do not already name a change (it would count the same change twice). */
+    const marked = (store, getter) => safely(() => (store?.[getter]?.() ? 1 : 0)) || 0;
+    const setlistMark = marked(app?.setList, 'getUnsentStamp');
+    const favouriteMark = marked(app?.favorites, 'getUnsentStamp');
+    const tagMark = marked(app?.favorites, 'getTagsUnsentStamp');
+    if (parts.setlistDeletes === 0) parts.edits += setlistMark;
+    if (parts.favourites === 0) parts.edits += favouriteMark;
+    parts.edits += tagMark;
     for (const type of UNSENT_QUEUE_TYPES) {
         let rows = 0;
         try { rows = Number(await queueCount(type)) || 0; } catch (_e) { rows = 0; }
         if (rows <= 0) continue;
         /* A marker only says "a sync is wanted". Count it when nothing else already names the change. */
         if (type === 'favorites-sync' && parts.favourites > 0) continue;
-        if (type === 'setlists-sync' && parts.setlistDeletes > 0) continue;
+        if (type === 'setlists-sync' && (parts.setlistDeletes > 0 || setlistMark > 0)) continue;
+        if (type === 'favorites-sync' && favouriteMark > 0) continue;
+        if (type === 'custom-tags-sync' && tagMark > 0) continue;
         parts.queued += 1;
     }
-    return { total: parts.profile + parts.favourites + parts.setlistDeletes + parts.settings + parts.queued, parts };
+    return { total: parts.profile + parts.favourites + parts.setlistDeletes + parts.settings + parts.queued + parts.edits, parts };
 }
 
 /**

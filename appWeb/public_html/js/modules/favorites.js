@@ -10,12 +10,14 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
-import { STORAGE_FAVORITES, STORAGE_CUSTOM_TAGS, STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED, songbookLabel } from '../constants.js';
+import { STORAGE_FAVORITES, STORAGE_CUSTOM_TAGS, STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED, STORAGE_FAVORITES_UNSENT, STORAGE_CUSTOM_TAGS_UNSENT, songbookLabel } from '../constants.js';
 /* #1786 Option B — favourites is an ARRAY-mode list-sort surface: it is
    JS-rendered from an in-memory array (localStorage), not server-rendered
    DOM, so there is nothing for list-sort.js's DOM-reorder mode to grab hold
    of. wireListSortControl() + getListSort() are the array-mode contract;
    the actual comparator is the SAME shared core admin tables use (C1). */
+import { readUnsent, markUnsent, clearUnsentIf } from './unsent-edits.js';
+import { offlineQueue } from './offline-queue.js';
 import { wireListSortControl, getListSort } from './list-sort.js';
 import { multiKeyCompareMissingLast, titleSortKey } from '../utils/sort-compare.js';
 
@@ -77,8 +79,28 @@ export class Favorites {
     saveAll(favorites, { sync = true } = {}) {
         localStorage.setItem(this.storageKey, JSON.stringify(favorites));
         this.app.syncStorage(this.storageKey);
-        if (sync) this._scheduleSync();
+        if (sync) {
+            this._markUnsent();   /* PR 2c review: see setlist.js saveAll() */
+            this._scheduleSync();
+        }
     }
+
+    /** PR 2c review: note a local change (adds, removals and tag edits alike) the account has not heard about. Only when signed in. */
+    _markUnsent() {
+        if (this.app?.userAuth?.isLoggedIn?.()) markUnsent(localStorage, STORAGE_FAVORITES_UNSENT);
+    }
+
+    /** @returns {?string} stamp of the still-unsent favourites edits (null = all have reached the account) */
+    getUnsentStamp() { return readUnsent(localStorage, STORAGE_FAVORITES_UNSENT); }
+
+    /** Take the favourites "unsent" mark down, unless an edit happened after `stamp` was read. */
+    clearUnsent(stamp) { return clearUnsentIf(localStorage, STORAGE_FAVORITES_UNSENT, stamp); }
+
+    /** @returns {?string} stamp of the still-unsent custom-tag edits */
+    getTagsUnsentStamp() { return readUnsent(localStorage, STORAGE_CUSTOM_TAGS_UNSENT); }
+
+    /** Take the custom-tags "unsent" mark down, unless a tag was added after `stamp` was read. */
+    clearTagsUnsent(stamp) { return clearUnsentIf(localStorage, STORAGE_CUSTOM_TAGS_UNSENT, stamp); }
 
     /* =====================================================================
      * WHAT THE PERSON ADDED / REMOVED ON PURPOSE (account/profile rewrite PR 2a, 2a-4)
@@ -239,7 +261,7 @@ export class Favorites {
            additions, or the tail beyond the cap). The absorb helper merges
            them back and advances the sync watermark. */
         const res = await this.app.userAuth.syncFavorites(favs, 'replace');
-        return this.app.userAuth._absorbFavoritesSync(res) === true;
+        return this.app.userAuth._absorbFavoritesSync(res) === true && res?.readOnly !== true;   /* a paused site changed nothing: not sent */
     }
 
     /**
@@ -252,8 +274,11 @@ export class Favorites {
     async flushNow() {
         if (!this.app?.userAuth?.isLoggedIn?.()) return true;
         const waiting = () => this.getPendingAdds().length + this.getPendingDeletes().length;
-        const tagWaiting = !!this._tagSyncTimerPending;
-        const pushWaiting = !!this._syncTimerPending || waiting() > 0;
+        const marker = async (type) => { try { return (Number(await offlineQueue.count(type)) || 0) > 0; } catch { return false; } };
+        /* PR 2c review: besides the timers and the add/remove lists, the "unsent edits" marks and the offline "sync wanted"
+           markers count as waiting (a tag edit, or a push that already failed, used to be reported as sent). */
+        const tagWaiting = !!this._tagSyncTimerPending || this.getTagsUnsentStamp() !== null || await marker('custom-tags-sync');
+        const pushWaiting = !!this._syncTimerPending || waiting() > 0 || this.getUnsentStamp() !== null || await marker('favorites-sync');
         if (!pushWaiting && !tagWaiting) return true;
         let ok = true;
         if (pushWaiting) {
@@ -261,15 +286,12 @@ export class Favorites {
             this._syncTimerPending = false;
             /* Until the first reconcile has run a replace is not safe (review #1): nothing can be sent yet. */
             if (!this._syncReady) return false;
-            try { ok = (await this._pushNow()) && waiting() === 0; } catch { ok = false; }
+            try { ok = (await this._pushNow()) && waiting() === 0 && this.getUnsentStamp() === null; } catch { ok = false; }
         }
         if (tagWaiting) {
             clearTimeout(this._tagSyncTimer);
             this._tagSyncTimerPending = false;
-            try {
-                const merged = await this.app.userAuth.syncCustomTags(this.getCustomTags(), 'merge');
-                if (!Array.isArray(merged)) ok = false;
-            } catch { ok = false; }
+            try { if (!((await this._pushTagsNow()) && this.getTagsUnsentStamp() === null)) ok = false; } catch { ok = false; }
         }
         return ok;
     }
@@ -368,6 +390,7 @@ export class Favorites {
             custom.sort();
             localStorage.setItem(STORAGE_CUSTOM_TAGS, JSON.stringify(custom));
             this.app.syncStorage?.(STORAGE_CUSTOM_TAGS);
+            if (this.app?.userAuth?.isLoggedIn?.()) markUnsent(localStorage, STORAGE_CUSTOM_TAGS_UNSENT);   /* PR 2c review */
             this._scheduleTagSync();
         }
     }
@@ -386,8 +409,18 @@ export class Favorites {
         this._tagSyncTimerPending = true;   /* PR 2c-3: so sign-out can send it first (flushNow) */
         this._tagSyncTimer = setTimeout(() => {
             this._tagSyncTimerPending = false;
-            this.app.userAuth.syncCustomTags(this.getCustomTags(), 'merge');
+            this._pushTagsNow().catch(() => { /* retried by the offline queue; flushNow() reports it */ });
         }, 1500);
+    }
+
+    /**
+     * Send the custom-tag pool now.
+     * @returns {Promise<boolean>} true only when the account took it (not offline, not failed, not a paused site's read-only answer)
+     */
+    async _pushTagsNow() {
+        const auth = this.app.userAuth;
+        const res = await auth.syncCustomTagsDetailed(this.getCustomTags(), 'merge');
+        return auth._absorbCustomTagsSync(res) === true && res?.readOnly !== true;
     }
 
     /**
@@ -572,6 +605,7 @@ export class Favorites {
         if (!this._loadError) this._recordDelete(this.getAll().map(f => f.id));
         localStorage.removeItem(this.storageKey);
         this.app.syncStorage?.(this.storageKey);
+        this._markUnsent();
         /* Authoritative empty push so the cleared state reaches the other
            devices (WS-G #1019) — a local-only clear would just repopulate
            from the server on the next pull. getAll() now returns [] so

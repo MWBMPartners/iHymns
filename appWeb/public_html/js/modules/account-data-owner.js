@@ -45,6 +45,7 @@ import {
     STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED, STORAGE_RECENT_SONGBOOKS,
     STORAGE_DATA_OWNER_UID, STORAGE_STASH_PREFIX, STORAGE_SEARCH_HISTORY, STORAGE_SYNC_SEARCH_HISTORY,
     STORAGE_PROFILE_OUTBOX, STORAGE_PROFILE_CURSOR,
+    STORAGE_SETLISTS_UNSENT, STORAGE_FAVORITES_UNSENT, STORAGE_CUSTOM_TAGS_UNSENT,
 } from '../constants.js';
 
 /** The personal-content keys that belong to ONE person. Stashed, cleared, restored. */
@@ -60,6 +61,8 @@ export const PERSONAL_DATA_KEYS = Object.freeze([
        then uploaded them into B's account. The LIST is only set aside while the choice is on (see searchListTravels()): while it
        is off the list is the older, device-only kind and stays where it is, as before. */
     STORAGE_SYNC_SEARCH_HISTORY, STORAGE_SEARCH_HISTORY,
+    /* PR 2c review: the "has edits the account has not seen" marks. They describe the lists above, so they travel and clear with them. */
+    STORAGE_SETLISTS_UNSENT, STORAGE_FAVORITES_UNSENT, STORAGE_CUSTOM_TAGS_UNSENT,
 ]);
 
 /** Cleared along with the data, never restored (see the file header). */
