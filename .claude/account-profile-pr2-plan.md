@@ -14,6 +14,8 @@ Written 2026-11-23 against `origin/alpha` 1.4.1, after PR 1 (#2182) was merged. 
 | 2a-6 count real views once | 9cff71f0 | done |
 | 2a-7 "your most viewed" | 688c3643 | done |
 | 2a-8 push registrations tied to the sign-in | c7d9bdc5 | done |
+| Opus review fixes (1 stale marker beaten by a newer row, 2 removal during a sync, 3 views per device, 4 push tie and orphans, 6 claim drops removals, 7 erase lock and transaction inside the try, 8 marker cap, 10 skip-a-row as before) | a2481c94 .. 96c50480 | done |
+| Release-notes bullets taken out of this PR | fec45b2e | done, **re-add the five `WHATS-NEW.md` bullets (removed favourites stay removed, your most viewed, a fairer popular list, sign-out only silences that device, importing a backup is remembered) when production is ticked** |
 
 Deviations from the plan (PR 2a):
 - 2a-2: the guard has its own small tokeniser instead of `tests/php/lib/php_source_units.php`, because it must check that the ready-check comes BEFORE the statement (the shared library gives per-function views only). The 2a-6 and 2a-8 guards use the shared library.
@@ -23,6 +25,11 @@ Deviations from the plan (PR 2a):
 - 2a-5: the import also records the new items as deliberate adds (otherwise an imported favourite that has a delete marker would be held back).
 - 2a-6: `enforceReadRateLimit()` gained an optional key so the limit is per signed-in person; `song_view` and the backfill body carry an optional `platform` (the web sends `web`).
 - 2a-7: the default period is read from `tblUserProfileItems` (dormant until PR 2b writes it), so the orphan inventory needed one allowlist entry that 2b-2 must remove.
+- Follow-ups recorded from the Opus review, NOT done now:
+  - Finding 5: old-style `since` requests from cached PR 1 web bundles on a switched-on site can re-clear a marker on their second sync. Transitional; goes away as bundles refresh.
+  - Finding 9: `mb_strtolower` (used by the pure planners) is not the same as `utf8mb4_unicode_ci` accent-insensitive comparison; markers are not moved when a song id is relocated; the repeated hour at the end of daylight saving can mis-order a marker and a row.
+  - Rule-#34 weakness of `test-account-foundation-gating.php`: it only checks that a ready-check appears EARLIER in the same function, not that it guards the statement.
+  - Tag markers have no "exists" check (no registry to check against); only the 5,000 cap applies.
 - Docs: `api-docs.yaml` named the `song_view` field `songId`; the server reads `song_id`. Corrected.
 
 ## 0. What the code changed about the old plan
