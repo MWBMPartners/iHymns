@@ -196,28 +196,44 @@ console.log('A hostile cookie changes nothing:');
     check('...and nothing in the page was polluted', ({}).polluted === undefined && Object.keys({}).length === 0);
 }
 
-console.log('Every write of a shared setting tells the sync (derived from the tree):');
+console.log('Every write of a shared or personal setting tells the sync (derived from the tree):');
 {
     const stripJs = (s) => s.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1');
     const constantsText = stripJs(fs.readFileSync(path.join(PUB, 'js', 'constants.js'), 'utf8'));
     const nameToKey = new Map([...constantsText.matchAll(/export const (STORAGE_[A-Z0-9_]+)\s*=\s*'([^']+)'/g)].map((m) => [m[1], m[2]]));
+    /* PR 2b (2b-5): the keys are the shared-cookie settings AND every web storage key the profile registry names for an account
+       setting that syncs (chord style, recent songbooks, the "most viewed" period ...). Derived from the server's own list. */
+    const dump = JSON.parse(execFileSync('php', [path.join(REPO, 'tools', 'dump-profile-schema.php')], { encoding: 'utf8' }));
+    const profileKeys = dump.entries.filter((e) => e.sync === 'profile_sync' && e.scope === 'account' && typeof e.legacyWebKey === 'string' && e.legacyWebKey !== '').map((e) => e.legacyWebKey);
+    const WATCHED = new Set([...CROSS_SITE_KEYS, ...profileKeys]);
+    check('the watched keys include the display settings and the personal ones (' + WATCHED.size + ')', profileKeys.length >= 18 && [...CROSS_SITE_KEYS].every((k) => WATCHED.has(k)) && WATCHED.has(C.STORAGE_CHORD_NOTATION) && WATCHED.has(C.STORAGE_RECENT_SONGBOOKS));
     const files = execFileSync('git', ['ls-files', '-z', '--', 'appWeb/public_html/js'], { cwd: REPO, encoding: 'utf8' })
-        .split('\0').filter((f) => f.endsWith('.js') && !/settings-sync(-core|-registry)?\.js$|subdomain-sync\.js$|storage-bridge\.js$/.test(f));
-    const offenders = []; let writes = 0;
+        .split('\0').filter((f) => f.endsWith('.js') && !/settings-sync(-core|-registry)?\.js$|subdomain-sync\.js$|storage-bridge\.js$|profile-sync(-adapters)?\.js$|profile-web-codec\.js$/.test(f));
+    const offenders = []; let writes = 0; const writesByKey = new Map();
     for (const f of files) {
-        const lines = stripJs(fs.readFileSync(path.join(REPO, f), 'utf8')).split('\n');
+        const text = stripJs(fs.readFileSync(path.join(REPO, f), 'utf8'));
+        /* What a name in this file stands for: `const key = STORAGE_X`, `this.prop = STORAGE_X`, `{ prop: STORAGE_X }`. */
+        const alias = new Map();
+        for (const m of text.matchAll(/(?:\bconst\s+|\blet\s+|\bvar\s+|\bthis\.)(\w+)\s*=\s*(STORAGE_[A-Z0-9_]+|'[^']+')\s*[;,\n]/g)) alias.set(m[1], m[2]);
+        const lines = text.split('\n');
         lines.forEach((line, i) => {
-            const m = /localStorage\.(?:setItem|removeItem)\(\s*(STORAGE_[A-Z0-9_]+|'[^']+')/.exec(line);
+            const m = /localStorage\.(?:setItem|removeItem)\(\s*(this\.)?(\w+|'[^']+')/.exec(line);
             if (!m) return;
-            const key = m[1].startsWith("'") ? m[1].slice(1, -1) : nameToKey.get(m[1]);
-            if (!key || !CROSS_SITE_KEYS.includes(key)) return;
+            let name = m[2];
+            if (m[1] || (!name.startsWith("'") && !name.startsWith('STORAGE_') && alias.has(name))) name = alias.get(name) || name;
+            const key = name.startsWith("'") ? name.slice(1, -1) : nameToKey.get(name);
+            if (!key || !WATCHED.has(key)) return;
             writes++;
+            writesByKey.set(key, (writesByKey.get(key) || 0) + 1);
             const after = lines.slice(i, i + 16).join('\n');
-            if (!/syncStorage\(|recordRemoval\(|recordLocalChange\(/.test(after)) offenders.push(f.replace('appWeb/public_html/', '') + ':' + (i + 1) + ' ' + m[1]);
+            if (!/syncStorage\??\.?\(|recordRemoval\(|recordLocalChange\(/.test(after)) offenders.push(f.replace('appWeb/public_html/', '') + ':' + (i + 1) + ' ' + m[2]);
         });
     }
-    check('the scan found real writes of shared settings (' + writes + ')', writes >= 8,
+    check('the scan found real writes of shared and personal settings (' + writes + ')', writes >= 12,
         'Too few writes found: the scan pattern no longer matches the code, so this check would pass while checking nothing.');
+    check('...including the chord style, the recent songbooks and the "most viewed" period (found through names and properties, not only literal keys)',
+        [C.STORAGE_CHORD_NOTATION, C.STORAGE_CHORD_COLUMNS, C.STORAGE_RECENT_SONGBOOKS, C.STORAGE_MOST_VIEWED_PERIOD].every((k) => writesByKey.has(k)),
+        'found: ' + [...writesByKey.keys()].join(', '));
     check('every one is followed, within a few lines, by syncStorage / recordRemoval / recordLocalChange',
         offenders.length === 0, offenders.join('\n      '));
 }
@@ -238,9 +254,9 @@ console.log('The offline cache lists only files that exist, and includes the syn
     const missing = listed.filter((p) => !fs.existsSync(path.join(PUB, p)));
     check('the service worker lists JavaScript files (' + listed.length + ')', listed.length > 40);
     check('every listed /js/ file exists on disk (a missing one breaks the offline install)', missing.length === 0, missing.join(', '));
-    const syncModules = fs.readdirSync(path.join(PUB, 'js', 'modules')).filter((f) => /^settings-sync.*\.js$/.test(f)).map((f) => '/js/modules/' + f);
+    const syncModules = fs.readdirSync(path.join(PUB, 'js', 'modules')).filter((f) => /^(settings-sync|profile-sync|profile-web-codec).*\.js$/.test(f)).map((f) => '/js/modules/' + f);
     const notListed = syncModules.filter((p) => !listed.includes(p));
-    check('every settings-sync module is in the offline list (so the app starts offline)', syncModules.length >= 3 && notListed.length === 0, notListed.join(', '));
+    check('every settings-sync and profile-sync module is in the offline list (so the app starts offline)', syncModules.length >= 6 && notListed.length === 0, notListed.join(', '));
 }
 
 console.log('The server never trusts it, and the old overwrite is gone:');

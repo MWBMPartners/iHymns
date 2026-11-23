@@ -514,6 +514,8 @@ export class Transpose {
             } else {
                 localStorage.removeItem(STORAGE_CHORD_COLUMNS);
             }
+            /* #2176 / PR 2b: a personal setting that follows the account (never the shared cookie): tell the sync. */
+            this.app?.syncStorage?.(STORAGE_CHORD_COLUMNS);
         });
     }
 
@@ -796,5 +798,7 @@ export class Transpose {
         } else {
             localStorage.setItem(this.notationStorageKey, mode);
         }
+        /* #2176 / PR 2b: a personal setting that follows the account (never the shared cookie): tell the sync. */
+        this.app?.syncStorage?.(this.notationStorageKey);
     }
 }

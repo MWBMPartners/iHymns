@@ -28,6 +28,7 @@ import {
     EVT_AUTH_CHANGED,
     EVT_OFFLINE_SETTINGS_CHANGED,
     EVT_XSITE_SETTINGS_APPLIED,
+    EVT_PROFILE_APPLIED,
 } from '../constants.js';
 import { escapeHtml } from '../utils/html.js';
 import { CROSS_SITE_KEYS } from './settings-sync-registry.js';
@@ -209,6 +210,8 @@ export class Settings {
         /* #2143 — the cross-site settings sync adopted a newer value from another
            iHymns site (settings-sync.js): re-apply everything visual so it shows at once. */
         document.addEventListener(EVT_XSITE_SETTINGS_APPLIED, () => this.reapplyAll());
+        /* PR 2b — the profile sync wrote values it read from the person's account: show them at once too. */
+        document.addEventListener(EVT_PROFILE_APPLIED, () => this.reapplyAll());
 
         /* Re-apply the Account section whenever auth state changes, even if
            the user is on the Settings page (no navigation triggered).
@@ -262,6 +265,9 @@ export class Settings {
     /** Is per-user settings sync currently active? */
     _isSyncEnabled() {
         if (!this.app.userAuth?.isLoggedIn?.()) return false;
+        /* PR 2b: while the per-item profile sync is doing this job, the older whole-box upload and download stand down
+           (the server keeps the old box in step for older apps). */
+        if (this.app.profileSync?.isActive?.()) return false;
         /* Default = on; only off when the user has explicitly opted out. */
         return localStorage.getItem(SYNC_TOGGLE_KEY) !== 'false';
     }
@@ -2058,7 +2064,8 @@ export class Settings {
                     localStorage.removeItem(SYNC_TOGGLE_KEY);
                     /* Push current local prefs immediately so the server
                        reflects this device's state once sync is on. */
-                    this._pushSyncedSettings();
+                    if (this.app.profileSync?.isActive?.()) this.app.profileSync.queueAllLocal();
+                    else this._pushSyncedSettings();
                 } else {
                     localStorage.setItem(SYNC_TOGGLE_KEY, 'false');
                 }

@@ -109,6 +109,17 @@ export const STORAGE_FAVORITES_DELETED = 'ihymns_favorites_deleted';
    choice for now (PR 2a, 2a-7); the registry entry home.mostViewedPeriod will carry it to the account. */
 export const STORAGE_MOST_VIEWED_PERIOD = 'ihymns_most_viewed_period';
 
+/* The profile sync's own bookkeeping (PR 2b, 2b-5; js/modules/profile-sync.js).
+   OUTBOX: the small personal changes this device has made and the server has not yet confirmed. It
+   survives a reload and being offline. CURSOR: how far this device has read the person's profile.
+   Both name the person they belong to INSIDE the stored value and are dropped when a different person
+   signs in on the same device (A7), so one person's pending changes are never sent to another's account.
+   SCHEMA: the last good copy of the server's list of personal settings (`profile_schema`) with its tag,
+   so the app still starts offline. None of the three travels in the shared settings cookie. */
+export const STORAGE_PROFILE_OUTBOX = 'ihymns_profile_outbox';
+export const STORAGE_PROFILE_CURSOR = 'ihymns_profile_cursor';
+export const STORAGE_PROFILE_SCHEMA = 'ihymns_profile_schema';
+
 /* Pending explicit set-list deletions (#1661) — the ids this device has
    deleted but not yet had acknowledged by a successful sync.
    PERSISTED, not in-memory, and that is the whole point: a deletion made
@@ -294,6 +305,9 @@ export const EVT_LIST_SORT_CHANGED = 'ihymns:list-sort-changed';
    settings.js, which re-applies theme, text size and the other visual
    settings so the change shows at once. */
 export const EVT_XSITE_SETTINGS_APPLIED = 'ihymns:xsite-settings-applied';
+/* The profile sync (js/modules/profile-sync.js) wrote values it received from the person's account into
+   local storage. detail.keys = the storage keys it changed. Settings listens and re-applies what is visual. */
+export const EVT_PROFILE_APPLIED = 'ihymns:profile-applied';
 
 /* ── Songbook Name Lookup ─────────────────────────────────────────────── */
 
