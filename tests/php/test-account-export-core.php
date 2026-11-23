@@ -99,8 +99,8 @@ try {
     $db->query("INSERT INTO tblBulkImportJobs (UserId, Filename, TempPath, SizeBytes) VALUES (1, 'a.zip', '/tmp/x', 5), (2, 'b.zip', '/tmp/y', 6)");
     $db->query("INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES ('203.0.113.9', 'ann', 0)");
 
-    $out  = accountExportBuild($db, 1);
-    $text = accountExportEncode($out);
+    $text = accountExportText($db, 1);
+    $out  = json_decode($text, true);
     $has = fn(string $needle) => strpos($text, $needle) !== false;
 
     chk('the file names its format and version', $out['format'] === ACCOUNT_EXPORT_FORMAT && $out['formatVersion'] === ACCOUNT_EXPORT_FORMAT_VERSION && preg_match('/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/', $out['exportedAt']) === 1);
@@ -136,6 +136,43 @@ try {
     $big = accountExportBuild($db, 1)['tables']['tblUserCustomTags.UserId'];
     chk('a table over the row limit holds exactly the limit and says truncated', count($big['rows']) === ACCOUNT_EXPORT_MAX_ROWS && $big['truncated'] === true, count($big['rows']) . ' / ' . var_export($big['truncated'], true));
     $db->query('DELETE FROM tblUserCustomTags WHERE UserId = 1 AND Tag LIKE \'T%\'');
+
+    /* A LARGE account, inside a small memory budget (PR 2c review). The first version loaded every row of a table before
+       checking any limit and then built a second, pretty-printed copy: on a 128 MB host a heavy account ran PHP out of memory,
+       which is a fatal error nothing can catch. 1,500 song revisions of ~80 KB each are ~120 MB of text in the database; the
+       file is built in a child PHP process whose memory_limit is 64M, so the old code dies and the new one finishes. */
+    $db->query("INSERT INTO tblSongRevisions (SongId, UserId, Action, PreviousData, NewData)
+                SELECT CONCAT('MP-', seq), 1, 'edit', JSON_OBJECT('t', REPEAT('x', 40000)), JSON_OBJECT('t', REPEAT('y', 40000)) FROM seq_1_to_1500");
+    $db->query("INSERT INTO tblActivityLog (UserId, Action, Details) SELECT 1, 'song.edit', JSON_OBJECT('t', REPEAT('z', 20000)) FROM seq_1_to_3000");
+    $outFile = tempnam(sys_get_temp_dir(), 'ihymns-export-');
+    $child = <<<'PHPCHILD'
+        $_SERVER['SCRIPT_FILENAME'] = 'child';
+        require getenv('EXPORT_WEB') . '/includes/account_export.php';
+        mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+        $db = new mysqli(getenv('EXPORT_HOST'), getenv('EXPORT_USER'), getenv('EXPORT_PASS'), getenv('EXPORT_DB'), (int)getenv('EXPORT_PORT'));
+        $db->set_charset('utf8mb4');
+        $out = fopen(getenv('EXPORT_OUT'), 'wb');
+        accountExportStream($db, 1, $out);
+        fclose($out);
+        fwrite(STDOUT, 'peak=' . memory_get_peak_usage(true));
+PHPCHILD;
+    $env = ['EXPORT_WEB' => $web, 'EXPORT_HOST' => $hh, 'EXPORT_USER' => $us, 'EXPORT_PASS' => $pw, 'EXPORT_DB' => $name, 'EXPORT_PORT' => (string)$pt, 'EXPORT_OUT' => $outFile, 'PATH' => getenv('PATH') ?: ''];
+    $proc = proc_open([PHP_BINARY, '-d', 'memory_limit=64M', '-r', $child], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $env);
+    $stdout = stream_get_contents($pipes[1]); $stderr = stream_get_contents($pipes[2]);
+    $code = proc_close($proc);
+    $peak = preg_match('/peak=(\d+)/', $stdout, $mm) ? (int)$mm[1] : -1;
+    chk('a large account is exported inside a 64 MB memory limit (the child process finishes)', $code === 0 && $peak > 0, 'exit ' . $code . ' ' . trim(substr($stderr . $stdout, 0, 200)));
+    chk('...and its peak memory stays far under the limit (' . round($peak / 1048576, 1) . ' MB)', $peak > 0 && $peak < 40 * 1048576);
+    $bigText = (string)file_get_contents($outFile);
+    $bigOut  = json_decode($bigText, true);
+    chk('...the file is valid JSON of a sane size (under the 32 MiB total)', is_array($bigOut) && strlen($bigText) <= ACCOUNT_EXPORT_MAX_TOTAL_BYTES + 65536, strlen($bigText) . ' bytes');
+    $rev = $bigOut['tables']['tblSongRevisions.UserId'] ?? null;
+    chk('...the revisions table is cut at its byte limit and says truncated', $rev !== null && $rev['truncated'] === true && count($rev['rows']) > 10 && count($rev['rows']) < 1000, json_encode($rev === null ? null : count($rev['rows'])));
+    chk('...the favourites still come through whole (the bulky tables are read last)', array_column($bigOut['tables']['tblUserFavorites.UserId']['rows'] ?? [], 'SongId') === ['MP-1', 'MP-2']);
+    $log = $bigOut['tables']['tblActivityLog.UserId'] ?? null;
+    chk('...the audit log is held to its own lower row limit', $log !== null && count($log['rows']) <= accountExportRowCap('tblActivityLog') && $log['truncated'] === true, json_encode($log === null ? null : count($log['rows'])));
+    @unlink($outFile);
+    $db->query('DELETE FROM tblSongRevisions'); $db->query("DELETE FROM tblActivityLog WHERE Action = 'song.edit'");
 
     /* A table that does not exist yet (an install that has not run a migration) is skipped, not an error. */
     $db->query('DROP TABLE tblBulkImportJobs');

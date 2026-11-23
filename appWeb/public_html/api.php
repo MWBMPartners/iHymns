@@ -11252,24 +11252,36 @@ if ($action !== null) {
                 break;
             }
             $aeUserId = (int)$authUser['Id'];
-            /* Per signed-in person, 5 an hour; fails open (counting must never break a download). */
+            /* Per signed-in person, 5 an hour; fails open (counting must never break a download). The slot is used up
+               BEFORE the file is built (that is what protects the database from a flood) and is not given back if the
+               build fails, so a person who sees the "try again" message still has the other four. */
             enforceReadRateLimit('account_export', 0, 0, 'uid:' . $aeUserId, ACCOUNT_EXPORT_RATE_PER_HOUR);
+            /* The file is written to a temporary file as it is read (see account_export.php: memory stays small), and
+               only sent once it is complete, so a failure still answers with a proper 503 and no half a file. */
+            $aeFile = null;
             try {
                 $aeDb   = getDbMysqli();
-                $aeText = accountExportEncode(accountExportBuild($aeDb, $aeUserId));
+                $aeFile = tmpfile();
+                if ($aeFile === false) { throw new \RuntimeException('no temporary file'); }
+                accountExportStream($aeDb, $aeUserId, $aeFile);
+                $aeSize = (int)(fstat($aeFile)['size'] ?? 0);
+                rewind($aeFile);
             } catch (\Throwable $e) {
+                if (is_resource($aeFile)) { fclose($aeFile); }
                 error_log('[api/account_export] ' . $e->getMessage());
                 sendJson(['error' => 'Could not build your data file right now, please try again.', 'reason' => 'account_export_unavailable'], 503);
                 break;
             }
-            logActivity('account.export', 'user', (string)$aeUserId, ['bytes' => strlen($aeText)], 'success');
+            logActivity('account.export', 'user', (string)$aeUserId, ['bytes' => $aeSize], 'success');
             if (!headers_sent()) {
                 header('Content-Type: application/json; charset=UTF-8');
                 header('Content-Disposition: attachment; filename="ihymns-account-export-' . gmdate('Ymd') . '.json"');
                 header('Cache-Control: no-store');
                 header('X-Content-Type-Options: nosniff');
             }
-            echo $aeText;
+            while (ob_get_level() > 0) { ob_end_flush(); }   /* send straight out: a buffer would hold the whole file in memory again */
+            fpassthru($aeFile);
+            fclose($aeFile);
             break;
         }
 

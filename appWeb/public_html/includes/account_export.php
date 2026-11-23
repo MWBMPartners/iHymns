@@ -39,10 +39,22 @@ declare(strict_types=1);
  *    INFORMATION_SCHEMA and must match `^[A-Za-z0-9_]+$` before being put in SQL inside
  *    backticks (rule #5 clause (b)); the person's id is always a bound parameter. The
  *    only other text put into SQL is `accountExportRowFilters()`, constants in this file.
- *  - LIMITS. At most 10,000 rows per table (one extra row is read just to know whether
- *    the table was cut short), 5 MiB of text per table, 32 MiB in all. A table that hit
- *    a limit says so (`truncated: true`), and the bulky catalogue tables are read last
- *    so a heavy curator's audit log cannot push out their favourites.
+ *  - LIMITS. At most 10,000 rows per table (fewer for tables whose rows are large text:
+ *    `accountExportRowCaps()`), 5 MiB of text per table, 32 MiB in all. One extra row is read
+ *    just to know whether a table was cut short. A table that hit a limit says so
+ *    (`truncated: true`), and the bulky catalogue tables are read last so a heavy curator's
+ *    audit log cannot push out their favourites.
+ *  - MEMORY STAYS SMALL (PR 2c review). The file is WRITTEN AS IT IS READ: rows come off the
+ *    database one at a time (an unbuffered statement, not `get_result()`, which loads every row
+ *    first), the limits are checked while reading, each row is written out compactly and
+ *    forgotten, and the whole thing goes to a temporary file that the endpoint then sends. The
+ *    earlier version built the full array, then a pretty-printed copy, and on a 128 MB host
+ *    that ran out of memory, which PHP reports as a fatal error that no `catch` can catch. The
+ *    file is compact JSON and has the same shape as before, except that inside a table the
+ *    `rows` come before `truncated` (a table's cut-short mark is only known at its end).
+ *  - A failed attempt still counts towards the 5 downloads an hour. The count is taken before
+ *    the file is built (that is what protects the database from a flood); it is not given back.
+ *    A person who sees the "try again" message has the other four.
  *  - NOT GATED by the account sync switch (owner decision, 2026-11-23): it reads only
  *    the signed-in person's own data. The endpoint still needs sign-in, a same-origin
  *    request, and is limited to 5 an hour per person.
@@ -231,6 +243,29 @@ function accountExportBulkyTables(): array
     return ['tblactivitylog', 'tblsongrevisions', 'tbllyrics', 'tbllyriclinetranslations', 'tbllyriclineannotations', 'tblsongusageevents', 'tblsonghistory'];
 }
 
+/**
+ * Lower row limits for tables whose rows are large text (a song revision holds a whole song, an audit row holds
+ * a details document). The general limit stays ACCOUNT_EXPORT_MAX_ROWS. Lower-case keys.
+ *
+ * @return array<string,int>
+ */
+function accountExportRowCaps(): array
+{
+    return [
+        'tblsongrevisions'         => 1000,
+        'tbllyrics'                => 2000,
+        'tbllyriclinetranslations' => 5000,
+        'tbllyriclineannotations'  => 5000,
+        'tblactivitylog'           => 5000,
+    ];
+}
+
+/** PURE: the row limit for one table. */
+function accountExportRowCap(string $table): int
+{
+    return min(ACCOUNT_EXPORT_MAX_ROWS, accountExportRowCaps()[strtolower($table)] ?? ACCOUNT_EXPORT_MAX_ROWS);
+}
+
 /** PURE: is this a name that may be written inside backticks in SQL? */
 function accountExportNameSafe(string $name): bool
 {
@@ -323,14 +358,32 @@ function accountExportBinaryTypes(): array
     return ['blob', 'tinyblob', 'mediumblob', 'longblob', 'binary', 'varbinary'];
 }
 
+/** JSON flags for every piece of the file: invalid text is replaced rather than failing the whole download. */
+const ACCOUNT_EXPORT_JSON_FLAGS = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE;
+
+/** Write text to the output stream; a write that fails (disk full) stops the export instead of silently losing text. */
+function accountExportWrite($out, string $text): void
+{
+    if ($text !== '' && @fwrite($out, $text) === false) {
+        throw new \RuntimeException('The export could not be written.');
+    }
+}
+
 /**
- * Read one person's rows from one (table, column) pair, within the limits.
+ * Read one person's rows from one (table, column) pair, within the limits, and WRITE them to the output as they
+ * are read. Nothing is kept: one row is in memory at a time.
  *
- * @param int $budgetBytes how many more bytes the whole file may take
- * @return array{column:string,rows:list<array<string,mixed>>,truncated:bool,omittedColumns:list<string>,bytes:int}|null
- *         null when the table or column does not exist on this install (not migrated yet)
+ * ELI5: pour the rows straight into the file instead of collecting them in a bucket first.
+ *
+ * What is written (only if the table holds something, or was cut short before its first row):
+ *   <$prefix>"Table.Column":{"column":..,"omittedColumns":[..],"rows":[ {..},{..} ],"truncated":false}
+ *
+ * @param resource $out        the stream the text goes to
+ * @param string   $prefix     text written just before the table's key (the comma between tables)
+ * @param int      $budgetBytes how many more bytes the whole file may take
+ * @return array{written:bool,bytes:int}|null null when the table or column does not exist on this install (not migrated yet)
  */
-function accountExportReadTable(\mysqli $db, string $table, string $column, int $userId, int $budgetBytes): ?array
+function accountExportStreamTable(\mysqli $db, $out, string $prefix, string $table, string $column, int $userId, int $budgetBytes): ?array
 {
     if (!accountExportNameSafe($table) || !accountExportNameSafe($column)) {
         throw new \RuntimeException('Refusing to export a table or column with an unsafe name.');
@@ -350,37 +403,59 @@ function accountExportReadTable(\mysqli $db, string $table, string $column, int 
         }
         $select[] = '`' . $c['name'] . '`';
     }
+    $key    = json_encode($table . '.' . $column, ACCOUNT_EXPORT_JSON_FLAGS);
+    $header = $prefix . $key . ':{"column":' . json_encode($column, ACCOUNT_EXPORT_JSON_FLAGS)
+            . ',"omittedColumns":' . json_encode($omitted, ACCOUNT_EXPORT_JSON_FLAGS) . ',"rows":[';
     if ($select === []) {
-        return ['column' => $column, 'rows' => [], 'truncated' => false, 'omittedColumns' => $omitted, 'bytes' => 0];
+        return ['written' => false, 'bytes' => 0];   /* every column withheld: nothing to list */
     }
     $order = [];
     foreach (accountExportPrimaryKey($db, $table) as $pk) {
         if (accountExportNameSafe($pk)) { $order[] = '`' . $pk . '`'; }
     }
     $filter = accountExportRowFilters()[strtolower($table)] ?? '';
+    $cap    = accountExportRowCap($table);
     /* Identifiers are catalogue names checked above; the person's id is bound; $filter is a constant of this file. */
     $sql = 'SELECT ' . implode(', ', $select) . ' FROM `' . $table . '` WHERE `' . $column . '` = ?'
          . ($filter !== '' ? ' AND ' . $filter : '')
          . ($order !== [] ? ' ORDER BY ' . implode(', ', $order) : '')
-         . ' LIMIT ' . (ACCOUNT_EXPORT_MAX_ROWS + 1);
+         . ' LIMIT ' . ($cap + 1);
     $stmt = $db->prepare($sql);
     $stmt->bind_param('i', $userId);
     $stmt->execute();
-    $res = $stmt->get_result();
-    $rows = [];
-    $bytes = 0;
-    $truncated = false;
+    /* UNBUFFERED: bind_result() + fetch() hand over one row at a time. (get_result() would load every row into
+       memory before the first limit check, which is how the first version ran a small host out of memory.) */
+    $meta = $stmt->result_metadata();
+    $row  = [];
+    $refs = [];
+    foreach ($meta->fetch_fields() as $f) { $row[$f->name] = null; $refs[] = &$row[$f->name]; }
+    $meta->free();
+    $stmt->bind_result(...$refs);
+
+    $count      = 0;
+    $bytes      = 0;
+    $truncated  = false;
+    $started    = false;
     $tableLimit = min(ACCOUNT_EXPORT_MAX_TABLE_BYTES, $budgetBytes);
-    while ($row = $res->fetch_assoc()) {
-        if (count($rows) >= ACCOUNT_EXPORT_MAX_ROWS) { $truncated = true; break; }
-        $size = strlen((string)json_encode($row, JSON_INVALID_UTF8_SUBSTITUTE | JSON_UNESCAPED_UNICODE));
+    while ($stmt->fetch()) {
+        if ($count >= $cap) { $truncated = true; break; }
+        $copy = [];
+        foreach ($row as $k => $v) { $copy[$k] = $v; }   /* bind_result reuses the same variables: take a copy */
+        $enc  = json_encode($copy, ACCOUNT_EXPORT_JSON_FLAGS);
+        $enc  = is_string($enc) ? $enc : 'null';
+        $size = strlen($enc);
         if ($bytes + $size > $tableLimit) { $truncated = true; break; }
-        $bytes += $size;
-        $rows[] = $row;
+        accountExportWrite($out, ($started ? ',' : $header) . $enc);
+        $started = true;
+        $bytes  += $size;
+        $count++;
     }
-    $res->free();
     $stmt->close();
-    return ['column' => $column, 'rows' => $rows, 'truncated' => $truncated, 'omittedColumns' => $omitted, 'bytes' => $bytes];
+    if (!$started && !$truncated) {
+        return ['written' => false, 'bytes' => 0];   /* nothing held there: keep the file readable */
+    }
+    accountExportWrite($out, ($started ? '' : $header) . '],"truncated":' . ($truncated ? 'true' : 'false') . '}');
+    return ['written' => true, 'bytes' => $bytes];
 }
 
 /**
@@ -413,61 +488,73 @@ function accountExportAccountRow(\mysqli $db, int $userId): array
 }
 
 /**
- * Build the whole export for one person.
+ * Write the whole export for one person to a stream, as compact JSON, without ever holding it in memory.
  *
- * @return array<string,mixed> the structure that is written as the file (see accountExportEncode())
+ * @param resource $out a writable stream (the endpoint passes a temporary file)
  */
-function accountExportBuild(\mysqli $db, int $userId): array
+function accountExportStream(\mysqli $db, int $userId, $out): void
 {
     if ($userId <= 0) {
-        throw new \InvalidArgumentException('accountExportBuild() needs a positive user id.');
+        throw new \InvalidArgumentException('accountExportStream() needs a positive user id.');
     }
     $plan = accountExportPlan(array_map(
         static fn(array $fk): array => ['table' => $fk['table'], 'column' => $fk['column']],
         accountEraseFkGraph($db)
     ));
 
-    $tables   = [];
-    $notFound = [];
-    $spent    = 0;
+    $f = ACCOUNT_EXPORT_JSON_FLAGS;
+    accountExportWrite($out, '{"format":' . json_encode(ACCOUNT_EXPORT_FORMAT, $f)
+        . ',"formatVersion":' . ACCOUNT_EXPORT_FORMAT_VERSION
+        . ',"exportedAt":' . json_encode(gmdate('Y-m-d\TH:i:s\Z'), $f)
+        . ',"about":' . json_encode('Everything this site holds about your account. Passwords, sign-in codes, push keys and other secrets are never included. '
+            . 'A table marked "truncated" held more than the file could take. Only tables that hold something for you are listed.', $f)
+        . ',"account":' . json_encode((object)accountExportAccountRow($db, $userId), $f)
+        . ',"tables":{');
+
+    $spent  = 0;
+    $prefix = '';
     foreach ($plan['export'] as $p) {
         $left = ACCOUNT_EXPORT_MAX_TOTAL_BYTES - $spent;
         if ($left <= 0) {
             /* The file is full: say so for this table instead of leaving it out silently. */
-            $tables[$p['table'] . '.' . $p['column']] = ['column' => $p['column'], 'rows' => [], 'truncated' => true, 'omittedColumns' => []];
+            accountExportWrite($out, $prefix . json_encode($p['table'] . '.' . $p['column'], $f)
+                . ':{"column":' . json_encode($p['column'], $f) . ',"omittedColumns":[],"rows":[],"truncated":true}');
+            $prefix = ',';
             continue;
         }
-        $t = accountExportReadTable($db, $p['table'], $p['column'], $userId, $left);
-        if ($t === null) { $notFound[] = $p['table'] . '.' . $p['column']; continue; }
+        $t = accountExportStreamTable($db, $out, $prefix, $p['table'], $p['column'], $userId, $left);
+        if ($t === null) { continue; }   /* not on this install yet */
         $spent += $t['bytes'];
-        unset($t['bytes']);
-        if ($t['rows'] === [] && !$t['truncated']) { continue; }   /* nothing held there: keep the file readable */
-        $tables[$p['table'] . '.' . $p['column']] = $t;
+        if ($t['written']) { $prefix = ','; }
     }
 
     $excluded = [];
     foreach ($plan['excluded'] as $e) {
         $excluded[] = ['table' => $e['table'], 'column' => $e['column'], 'reason' => $e['reason']];
     }
-
-    return [
-        'format'        => ACCOUNT_EXPORT_FORMAT,
-        'formatVersion' => ACCOUNT_EXPORT_FORMAT_VERSION,
-        'exportedAt'    => gmdate('Y-m-d\TH:i:s\Z'),
-        'about'         => 'Everything this site holds about your account. Passwords, sign-in codes, push keys and other secrets are never included. '
-                         . 'A table marked "truncated" held more than the file could take. Only tables that hold something for you are listed.',
-        'account'       => accountExportAccountRow($db, $userId),
-        'tables'        => $tables,
-        'notIncluded'   => $excluded,
-    ];
+    accountExportWrite($out, '},"notIncluded":' . json_encode($excluded, $f) . '}');
 }
 
-/** The file's text. Invalid text is replaced rather than failing the whole download. */
-function accountExportEncode(array $export): string
+/**
+ * The whole export as text. For tests and tiny accounts only: the endpoint uses accountExportStream() with a
+ * temporary file so that it never holds the file in memory.
+ */
+function accountExportText(\mysqli $db, int $userId): string
 {
-    $json = json_encode($export, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
-    if ($json === false) {
-        throw new \RuntimeException('The export could not be written as JSON.');
-    }
-    return $json;
+    $m = fopen('php://temp', 'w+b');
+    accountExportStream($db, $userId, $m);
+    rewind($m);
+    $text = (string)stream_get_contents($m);
+    fclose($m);
+    return $text;
+}
+
+/**
+ * The whole export as an array (the text, read back). Tests only; see accountExportText().
+ *
+ * @return array<string,mixed>
+ */
+function accountExportBuild(\mysqli $db, int $userId): array
+{
+    return json_decode(accountExportText($db, $userId), true, 512, JSON_THROW_ON_ERROR);
 }

@@ -193,7 +193,7 @@ $at = fn(string $needle) => strpos($code, $needle);
 chk('the case exists', $case !== '' && $code !== '');
 chk('POST only', $at("REQUEST_METHOD'] !== 'POST'") !== false && $at("REQUEST_METHOD'] !== 'POST'") < ($at('validateCsrfRequest') ?: PHP_INT_MAX));
 chk('the same-origin check comes before the sign-in lookup', $at('validateCsrfRequest(null)') !== false && $at('validateCsrfRequest(null)') < ($at('getAuthenticatedUser()') ?: -1));
-chk('the limit (per person, 5 an hour) is applied before the data is read', $at('enforceReadRateLimit(') !== false && $at('enforceReadRateLimit(') < ($at('accountExportBuild(') ?: -1)
+chk('the limit (per person, 5 an hour) is applied before the data is read', $at('enforceReadRateLimit(') !== false && $at('enforceReadRateLimit(') < ($at('accountExportStream(') ?: -1)
     && strpos($code, 'ACCOUNT_EXPORT_RATE_PER_HOUR') !== false && ACCOUNT_EXPORT_RATE_PER_HOUR === 5);
 chk('it is not behind the account sync switch (owner decision) and not behind the saving brake (a read)', strpos($code, 'profileSyncEnabledHere') === false && strpos($code, 'accountWritesRefuseIfOff') === false);
 chk('it answers a failure with a reason code, not a stack trace', strpos($code, "'account_export_unavailable'") !== false && strpos($code, '503') !== false);
@@ -201,6 +201,24 @@ chk('it sends the file as a download and never caches it', strpos($code, 'Conten
 chk('nothing in the case reads a password hash or a token itself', !preg_match('/PasswordHash|RefreshToken|ApiTokenHash/', $code));
 $core = (string)file_get_contents($web . '/includes/account_export.php');
 chk('the core takes its list of tables from the same map the erasure uses', strpos($core, 'accountEraseFkGraph(') !== false);
+/* PR 2c review: memory. The rows must come off the database one at a time and go straight into the file. */
+$fnBody = static function (string $src, string $name): string {
+    $p = strpos($src, 'function ' . $name . '(');
+    if ($p === false) { return ''; }
+    $o = strpos($src, '{', strpos($src, ')', $p));
+    $depth = 0; $n = strlen($src);
+    for ($i = $o; $i < $n; $i++) {
+        if ($src[$i] === '{') { $depth++; } elseif ($src[$i] === '}') { $depth--; if ($depth === 0) { return substr($src, $o, $i - $o + 1); } }
+    }
+    return '';
+};
+$strip = static function (string $php): string { $o = ''; foreach (token_get_all('<?php ' . $php) as $tk) { $o .= is_array($tk) ? (in_array($tk[0], [T_COMMENT, T_DOC_COMMENT], true) ? '' : $tk[1]) : $tk; } return $o; };
+$rows = $strip($fnBody($core, 'accountExportStreamTable'));
+chk('the row reader exists and reads UNBUFFERED (bind_result + fetch), never get_result()/fetch_all()/store_result() (they load every row first)', $rows !== '' && strpos($rows, 'bind_result(') !== false && strpos($rows, '->fetch()') !== false && !preg_match('/get_result\(|fetch_all\(|store_result\(|MYSQLI_STORE_RESULT/', $rows));
+chk('the row reader checks the row and byte limits INSIDE the read loop and writes each row out as it goes', preg_match('/while\s*\(\$stmt->fetch\(\)\)\s*\{.*\$cap.*\$tableLimit.*accountExportWrite\(/s', $rows) === 1);
+chk('the whole-file builder streams to a handle: no array of all tables and no pretty-printed copy', strpos($strip($fnBody($core, 'accountExportStream')), 'JSON_PRETTY_PRINT') === false && strpos($core, 'JSON_PRETTY_PRINT') === false);
+chk('the endpoint streams to a temporary file and sends it with fpassthru, instead of echoing a built string', strpos($code, 'tmpfile()') !== false && strpos($code, 'fpassthru(') !== false && strpos($code, 'accountExportStream(') !== false && strpos($code, 'accountExportBuild(') === false && strpos($code, 'accountExportText(') === false);
+chk('the large-text tables have lower row limits than the general one', accountExportRowCap('tblSongRevisions') < ACCOUNT_EXPORT_MAX_ROWS && accountExportRowCap('tblActivityLog') < ACCOUNT_EXPORT_MAX_ROWS && accountExportRowCap('tblUserFavorites') === ACCOUNT_EXPORT_MAX_ROWS);
 chk('the person id is only ever bound, never joined into SQL', substr_count($core, "bind_param('i', \$userId)") >= 2 && !preg_match('/WHERE[^;]*\.\s*\$userId/', $core));
 
 exit($fail === 0 ? 0 : 1);
