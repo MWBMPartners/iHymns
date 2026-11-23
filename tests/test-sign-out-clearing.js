@@ -315,6 +315,19 @@ async function scenarios(userAuthPath, label) {
     const before = w.requests.length;
     out.i = await w.app.userAuth.logout();
     out.iState = { dialogs: w.dialogs.length, signedIn: w.app.userAuth.isLoggedIn(), personal: w.personalLeft(), syncRequests: w.requests.slice(before).filter((r) => /_sync$/.test(r.action)).length, logouts: w.serverLogouts() };
+    /* j. a second click while the question is open */
+    w = await world({ userAuthPath, favs: 'down', answers: [] });
+    addFavouriteWhileOffline(w);
+    let release; const held = new Promise((r) => { release = r; });
+    w.app.showChoice = async (message, opts) => { w.dialogs.push({ message, opts }); await held; return null; };
+    const first = w.app.userAuth.logout();
+    await flush(60);
+    const secondPromise = w.app.userAuth.logout();   /* the second click, while the first question is still open */
+    await flush(60);
+    const dialogsWhileOpen = w.dialogs.length;
+    release();
+    const [firstResult, second] = await Promise.all([first, secondPromise]);
+    out.jState = { dialogs: dialogsWhileOpen, second, firstResult, signedIn: w.app.userAuth.isLoggedIn() };
     return out;
 }
 const real = await scenarios(path.join(MODULES, 'user-auth.js'), 'real');
@@ -330,6 +343,8 @@ check("a paused site's removal waiting to be sent is counted and asked about (ne
 check('a profile change the server cannot take is counted and asked about, and stays in the outbox while signed in', real.g.signedOut === false && real.gState.dialogs === 1 && /^1 change has/.test(real.gState.msg || '') && real.gState.outbox === true, JSON.stringify(real.gState));
 check('a profile change the server takes is sent first; the outbox is then cleared with the rest', real.h.signedOut === true && real.hState.dialogs === 0 && real.hState.sentProfile >= 1 && real.hState.outbox === null && real.hState.personal.length === 0, JSON.stringify(real.hState));
 check('SWITCH OFF: sign-out is exactly the older one - no flush, no question, nothing cleared', real.i.signedOut === true && real.iState.dialogs === 0 && real.iState.syncRequests === 0 && real.iState.personal.length >= 3 && real.iState.signedIn === false && real.iState.logouts === 1, JSON.stringify(real.iState));
+
+check('a second click while the question is open opens no second question and signs nobody out', real.jState.dialogs === 1 && real.jState.second.signedOut === false && real.jState.firstResult.signedOut === false && real.jState.signedIn === true, JSON.stringify(real.jState));
 
 /* ================= 4. mutation proofs ================= */
 console.log('\n4 - mutation proofs\n');

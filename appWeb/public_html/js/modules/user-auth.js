@@ -421,6 +421,17 @@ export class UserAuth {
      * @returns {Promise<{signedOut: boolean}>} signedOut false = the person chose to stay signed in; nothing was changed
      */
     async logout() {
+        /* A second click while the first is still asking must not open a second question (or clear twice). */
+        if (this._signOutInProgress) return { signedOut: false };
+        this._signOutInProgress = true;
+        try {
+            return await this._logoutOnce();
+        } finally {
+            this._signOutInProgress = false;
+        }
+    }
+
+    async _logoutOnce() {
         const guarded = signOutGuardActive(this.app);
         if (guarded && this.isLoggedIn()) {
             if ((await confirmSignOut(this.app)) !== 'go') return { signedOut: false };
