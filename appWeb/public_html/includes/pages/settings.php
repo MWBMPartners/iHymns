@@ -354,8 +354,7 @@ declare(strict_types=1);
          YOUR DATA (PR 2c, epic #2180)
 
          ELI5: a button that downloads one file with everything the site
-         keeps about you. (A delete-my-account button joins it in the next
-         step.)
+         keeps about you, and a delete-my-account panel that asks twice.
 
          Empty of script on purpose (rule #30): behaviour is wired by
          js/modules/account-data.js, imported from router.js's
@@ -380,6 +379,47 @@ declare(strict_types=1);
                 <i class="fa-solid fa-download me-1" aria-hidden="true"></i>
                 Download everything we hold about you
             </button>
+
+            <!-- DELETE MY ACCOUNT (PR 2c-2). A panel, not a pop-up, so it is easy to reach with a keyboard.
+                 Nothing is sent until the person has typed DELETE and given their password or an email code.
+                 The server (account_delete) re-checks both. -->
+            <hr class="my-3">
+            <h3 class="h6 text-danger">Delete my account</h3>
+            <p class="text-muted small">
+                This permanently removes your favourites, set lists, settings and history, and signs you out
+                everywhere. It cannot be undone. Set lists you have already shared with other people stay
+                visible to them, but can no longer be changed.
+            </p>
+            <button type="button" class="btn btn-outline-danger btn-sm" id="account-delete-open" aria-expanded="false" aria-controls="account-delete-panel">
+                <i class="fa-solid fa-trash me-1" aria-hidden="true"></i>
+                Delete my account&hellip;
+            </button>
+            <div id="account-delete-msg" class="alert d-none py-2 small mt-3"></div>
+            <div id="account-delete-panel" class="d-none mt-3" role="group" aria-labelledby="account-delete-heading">
+                <p class="small fw-semibold mb-2" id="account-delete-heading">To delete your account, prove it is you and confirm.</p>
+                <div class="mb-2">
+                    <label for="account-delete-password" class="form-label small mb-1">Your password</label>
+                    <input type="password" class="form-control form-control-sm" id="account-delete-password" autocomplete="current-password">
+                </div>
+                <details class="mb-2">
+                    <summary class="small">I do not have a password</summary>
+                    <div class="mt-2">
+                        <label for="account-delete-email" class="form-label small mb-1">Email address on your account</label>
+                        <input type="email" class="form-control form-control-sm mb-2" id="account-delete-email" autocomplete="email">
+                        <button type="button" class="btn btn-outline-secondary btn-sm mb-2" id="account-delete-send-code">Email me a code</button>
+                        <label for="account-delete-code" class="form-label small mb-1">The 6-digit code</label>
+                        <input type="text" class="form-control form-control-sm" id="account-delete-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6">
+                    </div>
+                </details>
+                <div class="mb-3">
+                    <label for="account-delete-typed" class="form-label small mb-1">Type <strong>DELETE</strong> to confirm</label>
+                    <input type="text" class="form-control form-control-sm" id="account-delete-typed" autocomplete="off" autocapitalize="characters" spellcheck="false">
+                </div>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-danger btn-sm" id="account-delete-go" disabled>Delete my account for good</button>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" id="account-delete-cancel">Cancel</button>
+                </div>
+            </div>
         </div>
     </div>
 

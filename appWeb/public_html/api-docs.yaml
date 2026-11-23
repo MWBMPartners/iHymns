@@ -20171,6 +20171,16 @@ paths:
         The erasure is also reachable by an administrator via
         `admin_user_delete`, through the same core, so the two funnels cannot
         diverge.
+
+        **The web Settings page uses this too (PR 2c-2).** Its "Delete my
+        account" panel sends the password (or an `email_code` from
+        `auth_email_login_request`) together with `confirm: "DELETE"` once the
+        person has typed the word, and explains each refusal by status: 400 no
+        proof given, 401 wrong proof, 403 not same-origin, 409 with reason
+        `account_writes_off_here` (saving is paused on this site) or without
+        a reason (last global administrator), 429 too many attempts, 503 the
+        erasure refused. Not behind the account sync switch; the "pause saving"
+        brake still applies (it is a change to saved data).
       security:
         - bearerAuth: []
         - cookieAuth: []

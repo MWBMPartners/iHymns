@@ -20,7 +20,7 @@ import {
     STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT,
 } from '../constants.js';
 import { performAppleSignIn } from './apple-signin.js';
-import { reconcileDataOwner, recordDataOwner, protectOnUnplannedSignOut } from './account-data-owner.js';
+import { reconcileDataOwner, recordDataOwner, protectOnUnplannedSignOut, stashAndClear } from './account-data-owner.js';
 import { apiFetch } from '../utils/api-client.js';
 /* #947/#340 — dormant CAPTCHA widget, wired into the four gated auth forms
    (registration / login / password_reset / email_login) below. No-op unless
@@ -441,6 +441,19 @@ export class UserAuth {
         } catch {
             /* Non-critical — never let cache cleanup break sign-out. */
         }
+    }
+
+    /**
+     * The account has just been deleted on the server (PR 2c-2). Its tokens are gone, so there is nothing to ask the
+     * server and nothing to keep: clear this browser's copy of the person's saved data (no set-aside copy: there is no
+     * account left for it to come back to) and forget the sign-in. Unlike a sign-out there is no "unsent changes" question,
+     * because there is no account for them to reach.
+     */
+    afterAccountDeleted() {
+        try { stashAndClear(localStorage, null); }
+        catch (e) { console.warn('[user-auth] could not clear saved data after deleting the account:', e); }
+        this.clearCredentials({ planned: true });
+        try { navigator.serviceWorker?.controller?.postMessage({ type: 'CLEAR_USER_CACHES' }); } catch { /* best effort */ }
     }
 
     /**
