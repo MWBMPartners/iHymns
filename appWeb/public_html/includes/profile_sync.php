@@ -288,6 +288,9 @@ function profileSyncPlan(array $rows, array $changes, int $maxVersion, ?string $
         if (($entry['scope'] ?? '') === 'device') { $reject('device_only'); continue; }
         if (($entry['sync'] ?? '') !== 'profile_sync' || ($entry['storage'] ?? '') !== 'profile_items') { $reject('not_profile_item'); continue; }
         $isMap = ($entry['type'] ?? '') === 'map';
+        /* One canonical case for an item key (upper): `mp-1` and `MP-1` are one item (the table compares ignoring case anyway),
+           and the key that is stored, returned and counted is always the upper-case one. (The refusal still echoes the key as sent.) */
+        if ($isMap) { $key = strtoupper($key); }
         if ($isMap && !profileRegistryMapItemKeyValid($entry, $key)) { $reject('invalid_item_key'); continue; }
         if ($op !== 'set' && $op !== 'delete') { $reject('invalid_value'); continue; }
 

@@ -244,7 +244,7 @@ function profileRegistry(): array
         /* The key, capo and octave a person chose for each song. A MAP: one stored row per song, so two devices
            changing two different songs never fight. All three at zero means "no choice": that is a delete, not a set. */
         _profileAccount('songPrefs', '*', 'map', [
-            'itemKeyPattern' => '^[A-Za-z0-9]{1,10}-[0-9]{1,6}$',
+            'itemKeyPattern' => '^[A-Z0-9]{1,10}-[0-9]{1,6}$',   /* ONE canonical case (upper): `mp-1` and `MP-1` must never be two items. The server turns a lower-case key into this before checking. */
             'item' => ['type' => 'json', 'shape' => [
                 'transpose' => ['type' => 'int', 'min' => -11, 'max' => 11, 'step' => 1, 'from' => -11],
                 'capo'      => ['type' => 'int', 'min' => 0, 'max' => 11, 'step' => 1, 'from' => 0],

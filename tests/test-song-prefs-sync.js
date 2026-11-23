@@ -109,6 +109,25 @@ check('an item from the account becomes the three notes, with the zero one absen
 check('a deletion from the account removes the song\'s notes', localStorage.getItem('ihymns_transpose_MP-6') === null);
 check('neither is sent back', sync.pendingCount() === 0);
 
+console.log('\n4b - one letter case for a song id, so mp-1 and MP-1 can never be two items\n');
+{
+    localStorage.clear();
+    const pp = buildProviders(schema, localStorage).forPair('songPrefs', 'MP-9');
+    check('a storage key in lower case still names the song, in the canonical (upper) case', pp.matchKey('ihymns_capo_mp-9') === 'MP-9' && pp.matchKey('ihymns_transpose_Mp-9') === 'MP-9');
+    localStorage.setItem('ihymns_capo_mp-9', '3');
+    check('a note kept under a lower-case key is read as the song\'s note (not as "no choice", which would send a delete)', J(pp.read('MP-9')) === J({ state: 'value', value: { transpose: 0, capo: 3, octave: 0 } }));
+    check('the song is listed once, under the canonical case', J(pp.localItems().map((x) => x.item)) === '["MP-9"]');
+    localStorage.setItem('ihymns_transpose_MP-9', '2');
+    sync.recordLocalChange('ihymns_capo_mp-9'); sync.recordLocalChange('ihymns_transpose_MP-9');
+    check('changes under either case queue ONE item, keyed in upper case', J(Object.keys(sync.getOutbox().items).filter((k) => /9$/i.test(k))) === '["songPrefs.MP-9"]' && J(sync.getOutbox().items['songPrefs.MP-9'].value) === J({ transpose: 2, capo: 3, octave: 0 }));
+    pp.write('MP-9', { transpose: 2, capo: 5, octave: 0 });
+    check('writing from the account leaves ONE copy of each note (the lower-case twin is removed)', localStorage.getItem('ihymns_capo_MP-9') === '5' && localStorage.getItem('ihymns_capo_mp-9') === null);
+    localStorage.setItem('ihymns_octave_mp-9', '1');
+    pp.remove('MP-9');
+    check('removing takes the notes under every case away', ['ihymns_transpose_MP-9', 'ihymns_capo_MP-9', 'ihymns_octave_mp-9', 'ihymns_octave_MP-9'].every((k) => localStorage.getItem(k) === null));
+    localStorage.clear();
+}
+
 console.log('\n5 - every write of a per-song note tells the sync (derived from the tree)\n');
 {
     const stripJs = (s) => s.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1');

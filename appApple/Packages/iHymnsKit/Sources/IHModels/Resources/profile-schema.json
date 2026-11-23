@@ -479,7 +479,7 @@
             "cookie": false,
             "legacyWebKey": null,
             "since": 2,
-            "itemKeyPattern": "^[A-Za-z0-9]{1,10}-[0-9]{1,6}$",
+            "itemKeyPattern": "^[A-Z0-9]{1,10}-[0-9]{1,6}$",
             "item": {
                 "type": "json",
                 "shape": {

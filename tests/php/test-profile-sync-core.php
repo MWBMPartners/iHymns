@@ -132,6 +132,15 @@ chk('the cap is counted as items are added in one request (the third is refused)
 $p = profileSyncPlan([$P('songPrefs', 'MP-1') => $marker], [$set('songPrefs', 'MP-1', ['capo' => 1])], 0, null, ['songPrefs' => 2000]);
 chk('bringing a deleted item back counts as a new live item (the cap applies)', $p['writes'] === [] && ($p['rejected'][0]['reason'] ?? '') === 'cap_reached');
 
+/* one canonical case for a map item key */
+$p = profileSyncPlan([], [$set('songPrefs', 'mp-1', ['capo' => 1])], 0, null, []);
+chk('a lower-case song id is stored under its upper-case form', count($p['writes']) === 1 && $p['writes'][0]['key'] === 'MP-1' && $p['rejected'] === []);
+$p = profileSyncPlan([], [$set('songPrefs', 'mp-1', ['capo' => 1]), $set('songPrefs', 'MP-1', ['capo' => 4]), $set('songPrefs', 'Mp-1', ['capo' => 5])], 0, null, ['songPrefs' => 0]);
+chk('mp-1, MP-1 and Mp-1 in one batch are ONE item (one write, one slot of the cap, the last value)', count($p['writes']) === 1 && $p['writes'][0]['key'] === 'MP-1' && $p['writes'][0]['json'] === '{"capo":5}');
+$p = profileSyncPlan([$P('songPrefs', 'MP-1') => $live(['capo' => 1])], [$del('songPrefs', 'mp-1')], 0, null, ['songPrefs' => 1]);
+chk('a lower-case delete removes the upper-case item', count($p['writes']) === 1 && $p['writes'][0]['deleted'] === true && $p['writes'][0]['key'] === 'MP-1');
+chk('the registry itself only knows the upper-case form (a pattern with one case)', !profileRegistryMapItemKeyValid(profileRegistryEntry('songPrefs', '*'), 'mp-1') && profileRegistryMapItemKeyValid(profileRegistryEntry('songPrefs', '*'), 'MP-1'));
+
 /* "no choice at all" for a song is a removal, never a stored row */
 $p = profileSyncPlan([$P('songPrefs', 'MP-1') => $live(['capo' => 2])], [$set('songPrefs', 'MP-1', ['transpose' => 0, 'capo' => 0, 'octave' => 0])], 4, null, ['songPrefs' => 1]);
 chk('all three at zero on a stored song becomes a delete marker (no value stored)', count($p['writes']) === 1 && $p['writes'][0]['deleted'] === true && $p['writes'][0]['json'] === null && $p['writes'][0]['version'] === 5 && $p['applied'] === 1);
@@ -324,6 +333,13 @@ try {
     $text = (string)$db->query("SELECT COALESCE(GROUP_CONCAT(ValueJson), '') FROM tblUserProfileItems WHERE UserId = 2")->fetch_row()[0];
     chk('device B pushing searches is refused (not_opted_in) and the account holds none of its words', ($r['rejected'][0]['reason'] ?? '') === 'not_opted_in' && $held === 0 && !str_contains($text, 'thou art'));
     chk('...and a pull tells every device the list is deleted', in_array(true, array_map(fn($c) => $c['section'] === 'history' && $c['deleted'] === true, profileSyncPull($db, 2, 0)['changes']), true));
+    $db->query('DELETE FROM tblUserProfileItems WHERE UserId = 2');
+
+    /* one canonical case on real rows: mp-3 then MP-3 is one row, stored upper-case */
+    profileSyncApply($db, 2, [$set('songPrefs', 'mp-3', ['capo' => 1])], 'web');
+    profileSyncApply($db, 2, [$set('songPrefs', 'MP-3', ['capo' => 2])], 'web');
+    $cr = $db->query("SELECT BINARY ItemKey, ValueJson, Version FROM tblUserProfileItems WHERE UserId = 2 AND Section = 'songPrefs'")->fetch_all(MYSQLI_NUM);
+    chk('mp-3 and MP-3 on real rows are ONE row, its key stored in upper case, holding the later value', count($cr) === 1 && $cr[0][0] === 'MP-3' && json_decode((string)$cr[0][1], true) === ['capo' => 2]);
     $db->query('DELETE FROM tblUserProfileItems WHERE UserId = 2');
 
     /* delete markers in a map section are bounded: set-then-delete over and over must not grow the table for ever */

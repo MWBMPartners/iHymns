@@ -65,9 +65,12 @@ function makeServer() {
         const d = user(u);
         const rejected = []; let applied = 0;
         if (method === 'POST') {
-            for (const c of body.changes) {
-                const e = entryOf(c.section, c.key);
-                if (!e) { rejected.push({ section: c.section, key: c.key, reason: 'unknown_key' }); continue; }
+            for (const sent of body.changes) {
+                const e = entryOf(sent.section, sent.key);
+                if (!e) { rejected.push({ section: sent.section, key: sent.key, reason: 'unknown_key' }); continue; }
+                /* the real server keeps ONE case for a map item key (upper), and the table ignores case, so `mp-1` and `MP-1` are one row */
+                const c = { ...sent, key: e.type === 'map' ? String(sent.key).toUpperCase() : sent.key };
+                if (e.type === 'map' && !new RegExp(e.itemKeyPattern).test(c.key)) { rejected.push({ section: sent.section, key: sent.key, reason: 'invalid_item_key' }); continue; }
                 const id = c.section + '.' + c.key;
                 if (c.op === 'set') {
                     if (codec.encodedBytes(c.value) > SERVER_MAX_VALUE_BYTES) { rejected.push({ section: c.section, key: c.key, reason: 'value_too_large' }); continue; }

@@ -51,7 +51,12 @@ export const SONG_PREF_PREFIXES = Object.freeze({ transpose: STORAGE_TRANSPOSE_P
  * "no choice", which is a delete, not a set, and writing zero removes the note (as the page itself does).
  */
 function songPrefsProvider(entry, storage) {
-    const idRe = new RegExp('^(?:' + String(entry.itemKeyPattern).replace(/^\^/, '').replace(/\$$/, '') + ')$');
+    /* The account keeps ONE case for a song id (upper: the registry's pattern). A key on this device might differ in case
+       (an older build, a hand-typed link), so keys are matched ignoring case but ALWAYS reported and written in the canonical case,
+       so `mp-1` and `MP-1` can never become two items in the outbox or on the account. */
+    const body = String(entry.itemKeyPattern).replace(/^\^/, '').replace(/\$$/, '');
+    const idRe = new RegExp('^(?:' + body + ')$');
+    const idReAnyCase = new RegExp('^(?:' + body + ')$', 'i');
     const names = Object.keys(SONG_PREF_PREFIXES);
     const get = (k) => { try { return storage.getItem(k); } catch (_e) { return null; } };
     const whole = (txt) => {                         // the same reading the page uses: whole number, anything else is zero
@@ -62,10 +67,23 @@ function songPrefsProvider(entry, storage) {
         for (const prefix of Object.values(SONG_PREF_PREFIXES)) {
             if (storageKey.startsWith(prefix)) {
                 const id = storageKey.slice(prefix.length);
-                return idRe.test(id) ? id : null;
+                return idReAnyCase.test(id) ? id.toUpperCase() : null;
             }
         }
         return null;
+    };
+    /** Every storage key under `prefix` that holds this song, in any letter case (the canonical-case one first). */
+    const keysFor = (prefix, songId) => {
+        const out = [];
+        const exact = prefix + songId;
+        if (get(exact) !== null) out.push(exact);
+        try {
+            for (let i = 0; i < storage.length; i++) {
+                const k = storage.key(i) || '';
+                if (k !== exact && k.startsWith(prefix) && k.slice(prefix.length).toUpperCase() === songId) out.push(k);
+            }
+        } catch (_e) { /* nothing */ }
+        return out;
     };
     return {
         id: entry.id,
@@ -75,7 +93,7 @@ function songPrefsProvider(entry, storage) {
         read(songId) {
             if (!idRe.test(songId)) return { state: 'invalid' };
             const value = {};
-            for (const n of names) value[n] = whole(get(SONG_PREF_PREFIXES[n] + songId));
+            for (const n of names) { const ks = keysFor(SONG_PREF_PREFIXES[n], songId); value[n] = ks.length ? whole(get(ks[0])) : 0; }
             if (names.every((n) => value[n] === 0)) return { state: 'absent' };
             return validateSpec(entry.item, value) ? { state: 'value', value } : { state: 'invalid' };
         },
@@ -88,6 +106,11 @@ function songPrefsProvider(entry, storage) {
                 const before = get(k);
                 try { if (want === 0) storage.removeItem(k); else storage.setItem(k, String(want)); } catch (_e) { continue; }
                 if (get(k) !== before) changed.push(k);
+                /* a note kept under another letter case is the SAME note: take it away so there is one copy */
+                for (const other of keysFor(SONG_PREF_PREFIXES[n], songId)) {
+                    if (other === k) continue;
+                    try { storage.removeItem(other); changed.push(other); } catch (_e) { /* nothing */ }
+                }
             }
             return changed;
         },
@@ -95,9 +118,9 @@ function songPrefsProvider(entry, storage) {
             if (!idRe.test(songId)) return [];
             const changed = [];
             for (const n of names) {
-                const k = SONG_PREF_PREFIXES[n] + songId;
-                if (get(k) === null) continue;
-                try { storage.removeItem(k); changed.push(k); } catch (_e) { /* nothing to do */ }
+                for (const k of keysFor(SONG_PREF_PREFIXES[n], songId)) {
+                    try { storage.removeItem(k); changed.push(k); } catch (_e) { /* nothing to do */ }
+                }
             }
             return changed;
         },
