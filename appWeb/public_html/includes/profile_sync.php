@@ -306,20 +306,25 @@ function profileSyncPlan(array $rows, array $changes, int $maxVersion, ?string $
                 if ($opt === null || $opt['deleted'] || $opt['value'] !== true) { $reject('not_opted_in'); continue; }
             }
             if ($pair === $optionPair) { $optionTouched = true; }
-            if ($isLive && profileSyncSameValue($now['value'], $value)) { $unchanged++; continue; }   /* nothing changed: no write, no new version */
-            if ($isMap && !$isLive) {
-                /* A NEW item in a map section: refuse when the section is full. Nothing is ever evicted. */
-                if (($counts[$section] ?? 0) >= (int)($entry['maxItems'] ?? 0)) { $reject('cap_reached'); continue; }
-                $counts[$section] = ($counts[$section] ?? 0) + 1;
+            if ($isMap && profileRegistryMapItemIsEmpty($entry, $value)) {
+                /* "No choice at all" (an empty object, or every number zero) is a removal, never a stored row. */
+                $op = 'delete';
+            } else {
+                if ($isLive && profileSyncSameValue($now['value'], $value)) { $unchanged++; continue; }   /* nothing changed: no write, no new version */
+                if ($isMap && !$isLive) {
+                    /* A NEW item in a map section: refuse when the section is full. Nothing is ever evicted. */
+                    if (($counts[$section] ?? 0) >= (int)($entry['maxItems'] ?? 0)) { $reject('cap_reached'); continue; }
+                    $counts[$section] = ($counts[$section] ?? 0) + 1;
+                }
+                $version++;
+                $state[$pair] = ['deleted' => false, 'value' => $value];
+                $writes[$pair] = ['section' => $section, 'key' => $key, 'json' => $json, 'deleted' => false, 'version' => $version, 'platform' => $platform];
+                $applied++;
+                continue;
             }
-            $version++;
-            $state[$pair] = ['deleted' => false, 'value' => $value];
-            $writes[$pair] = ['section' => $section, 'key' => $key, 'json' => $json, 'deleted' => false, 'version' => $version, 'platform' => $platform];
-            $applied++;
-            continue;
         }
 
-        /* delete */
+        /* delete (also what an empty map item becomes, above) */
         if ($pair === $optionPair) { $optionTouched = true; }
         if (!$isLive) { $unchanged++; continue; }             /* nothing there, or already a marker: nothing to do */
         if ($isMap) { $counts[$section] = max(0, ($counts[$section] ?? 0) - 1); }

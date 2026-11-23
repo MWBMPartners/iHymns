@@ -132,6 +132,22 @@ chk('the cap is counted as items are added in one request (the third is refused)
 $p = profileSyncPlan([$P('songPrefs', 'MP-1') => $marker], [$set('songPrefs', 'MP-1', ['capo' => 1])], 0, null, ['songPrefs' => 2000]);
 chk('bringing a deleted item back counts as a new live item (the cap applies)', $p['writes'] === [] && ($p['rejected'][0]['reason'] ?? '') === 'cap_reached');
 
+/* "no choice at all" for a song is a removal, never a stored row */
+$p = profileSyncPlan([$P('songPrefs', 'MP-1') => $live(['capo' => 2])], [$set('songPrefs', 'MP-1', ['transpose' => 0, 'capo' => 0, 'octave' => 0])], 4, null, ['songPrefs' => 1]);
+chk('all three at zero on a stored song becomes a delete marker (no value stored)', count($p['writes']) === 1 && $p['writes'][0]['deleted'] === true && $p['writes'][0]['json'] === null && $p['writes'][0]['version'] === 5 && $p['applied'] === 1);
+$p = profileSyncPlan([$P('songPrefs', 'MP-1') => $live(['capo' => 2])], [$set('songPrefs', 'MP-1', [])], 4, null, ['songPrefs' => 1]);
+chk('an empty {} on a stored song is a delete too', count($p['writes']) === 1 && $p['writes'][0]['deleted'] === true);
+$p = profileSyncPlan([], [$set('songPrefs', 'MP-1', ['capo' => 0]), $set('songPrefs', 'MP-2', [])], 4, null, []);
+chk('...and for a song nothing is stored for, it changes nothing (no row, no version)', $p['writes'] === [] && $p['unchanged'] === 2 && $p['maxVersion'] === 4);
+$p = profileSyncPlan([$P('songPrefs', 'MP-1') => $marker], [$set('songPrefs', 'MP-1', ['transpose' => 0])], 4, null, []);
+chk('...nor for a song that is already a marker', $p['writes'] === [] && $p['unchanged'] === 1);
+$p = profileSyncPlan([], [$set('songPrefs', 'MP-1', ['transpose' => 0, 'capo' => 3])], 4, null, []);
+chk('a value with ANY real choice is still stored', count($p['writes']) === 1 && $p['writes'][0]['deleted'] === false);
+$p = profileSyncPlan([$P('songPrefs', 'MP-1') => $live(['capo' => 2])], [$set('songPrefs', 'MP-1', [])], 4, null, ['songPrefs' => 2000]);
+$p2 = profileSyncPlan([], [$set('songPrefs', 'MP-7', ['capo' => 1])], 4, null, ['songPrefs' => 1999]);
+chk('the removal frees a place under the section limit', count($p['writes']) === 1 && count($p2['writes']) === 1);
+chk('the empty-item rule applies to map items only (an object setting with {} is still stored)', count(profileSyncPlan([], [$set('reading', 'display', [])], 0, null, [])['writes']) === 1);
+
 /* the recent-searches privacy rule (the server enforces it, whatever a client sends) */
 $OPT = $P('privacy', 'syncSearchHistory'); $LST = $P('history', 'searches');
 $p = profileSyncPlan([], [$set('history', 'searches', ['grace'])], 0, null, []);

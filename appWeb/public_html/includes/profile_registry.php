@@ -354,6 +354,24 @@ function profileRegistryMapItemKeyValid(array $entry, string $itemKey): bool
 }
 
 /**
+ * PURE: is this value of a map item "no choice at all"? For the key, capo and octave of a song that means an empty object
+ * or every given number equal to zero - the same as a song the person never set anything for. Such a value is never stored:
+ * the sync turns it into a removal (so the table never fills with rows that say nothing).
+ *
+ * @param array<string,mixed> $entry the map entry
+ */
+function profileRegistryMapItemIsEmpty(array $entry, mixed $value): bool
+{
+    if (($entry['type'] ?? '') !== 'map' || (($entry['item']['type'] ?? '') !== 'json') || !is_array($value) || ($value !== [] && array_is_list($value))) {
+        return false;
+    }
+    foreach ($value as $v) {
+        if (!(is_int($v) || is_float($v)) || $v != 0) { return false; }
+    }
+    return true;
+}
+
+/**
  * PURE: how many bytes a value takes as stored JSON text. The ONE encoder flags (the same ones the server stores with),
  * so the size a rule checks is the size that is stored. (Kept here, not in profile_sync.php, because the registry must not need it.)
  */
