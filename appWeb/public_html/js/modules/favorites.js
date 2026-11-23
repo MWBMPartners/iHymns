@@ -10,7 +10,7 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
-import { STORAGE_FAVORITES, STORAGE_CUSTOM_TAGS, songbookLabel } from '../constants.js';
+import { STORAGE_FAVORITES, STORAGE_CUSTOM_TAGS, STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED, songbookLabel } from '../constants.js';
 /* #1786 Option B — favourites is an ARRAY-mode list-sort surface: it is
    JS-rendered from an in-memory array (localStorage), not server-rendered
    DOM, so there is nothing for list-sort.js's DOM-reorder mode to grab hold
@@ -80,6 +80,81 @@ export class Favorites {
         if (sync) this._scheduleSync();
     }
 
+    /* =====================================================================
+     * WHAT THE PERSON ADDED / REMOVED ON PURPOSE (account/profile rewrite PR 2a, 2a-4)
+     *
+     * ELI5: besides "this is my list", the app tells the server "I removed these on
+     * purpose" and "I added these on purpose". That is what lets a removed favourite
+     * STAY removed on the person's other devices. The two lists below are kept in
+     * storage (so a removal made offline is not forgotten), recorded even when signed
+     * out, capped at 500 each (the newest are kept), and an id is only ever in ONE of
+     * them: adding it takes it off the removed list and the other way round.
+     * A sync clears only the ids it actually sent (see clearPendingSent()).
+     * ===================================================================== */
+
+    /** @returns {string[]} ids added on purpose and not yet acknowledged */
+    getPendingAdds() { return this._readIdList(STORAGE_FAVORITES_ADDED); }
+
+    /** @returns {string[]} ids removed on purpose and not yet acknowledged */
+    getPendingDeletes() { return this._readIdList(STORAGE_FAVORITES_DELETED); }
+
+    _readIdList(key) {
+        try {
+            const v = JSON.parse(localStorage.getItem(key)) || [];
+            return Array.isArray(v) ? v.filter(id => typeof id === 'string' && id) : [];
+        } catch {
+            /* A corrupt list must not wedge every future sync; the worst case is one removal the
+               person has to repeat. */
+            return [];
+        }
+    }
+
+    _writeIdList(key, ids) {
+        const unique = [...new Set(ids)];
+        const kept = unique.length > 500 ? unique.slice(unique.length - 500) : unique; /* newest 500 */
+        try {
+            if (kept.length === 0) localStorage.removeItem(key);
+            else localStorage.setItem(key, JSON.stringify(kept));
+        } catch { /* quota: the favourite change itself still applied locally */ }
+    }
+
+    /** Note that the person added these on purpose. */
+    _recordAdd(ids) {
+        const list = (ids || []).filter(id => typeof id === 'string' && id);
+        if (list.length === 0) return;
+        const gone = new Set(list);
+        this._writeIdList(STORAGE_FAVORITES_DELETED, this.getPendingDeletes().filter(id => !gone.has(id)));
+        this._writeIdList(STORAGE_FAVORITES_ADDED, [...this.getPendingAdds().filter(id => !gone.has(id)), ...list]);
+    }
+
+    /** Note that the person removed these on purpose. */
+    _recordDelete(ids) {
+        const list = (ids || []).filter(id => typeof id === 'string' && id);
+        if (list.length === 0) return;
+        const gone = new Set(list);
+        this._writeIdList(STORAGE_FAVORITES_ADDED, this.getPendingAdds().filter(id => !gone.has(id)));
+        this._writeIdList(STORAGE_FAVORITES_DELETED, [...this.getPendingDeletes().filter(id => !gone.has(id)), ...list]);
+    }
+
+    /**
+     * Drop the ids a sync has just had accepted, and ONLY those: a change made while the
+     * request was in flight is still pending and must survive to the next one.
+     *
+     * An id that was sent as "added" also leaves the removed list, so a stray id in both
+     * lists (a restored backup) can never delete a favourite that was just added.
+     *
+     * @param {?{added?: string[], deleted?: string[]}} sent what the request carried
+     */
+    clearPendingSent(sent) {
+        if (!sent) return;
+        const sentAdded = new Set(sent.added || []);
+        const sentDeleted = new Set(sent.deleted || []);
+        if (sentAdded.size) this._writeIdList(STORAGE_FAVORITES_ADDED, this.getPendingAdds().filter(id => !sentAdded.has(id)));
+        if (sentAdded.size || sentDeleted.size) {
+            this._writeIdList(STORAGE_FAVORITES_DELETED, this.getPendingDeletes().filter(id => !sentDeleted.has(id) && !sentAdded.has(id)));
+        }
+    }
+
     /**
      * Check if a song ID is in favourites.
      * @param {string} songId
@@ -105,6 +180,7 @@ export class Favorites {
         if (index >= 0) {
             /* Remove from favourites */
             favorites.splice(index, 1);
+            this._recordDelete([songId]); /* PR 2a: tell the server this was removed on purpose */
             this.saveAll(favorites);
             added = false;
         } else {
@@ -117,6 +193,7 @@ export class Favorites {
                 tags: [],
                 addedAt: new Date().toISOString(),
             });
+            this._recordAdd([songId]); /* PR 2a: ...and this was added on purpose */
             this.saveAll(favorites);
             added = true;
         }
@@ -445,6 +522,8 @@ export class Favorites {
 
     /** Clear all favourites (and propagate the clear to the server). */
     clearAll() {
+        /* PR 2a: every favourite being cleared is a removal on purpose. Read BEFORE removing. */
+        if (!this._loadError) this._recordDelete(this.getAll().map(f => f.id));
         localStorage.removeItem(this.storageKey);
         this.app.syncStorage?.(this.storageKey);
         /* Authoritative empty push so the cleared state reaches the other
@@ -922,6 +1001,7 @@ export class Favorites {
 
         let favorites = this.getAll();
         favorites = favorites.filter(f => !this.selectedIds.has(f.id));
+        this._recordDelete([...this.selectedIds]); /* PR 2a: bulk removal on purpose */
         this.saveAll(favorites);
 
         this.app.showToast(`Removed ${count} favourite${count !== 1 ? 's' : ''}`, 'info');

@@ -94,6 +94,17 @@ export const STORAGE_AUTH_USER          = 'ihymns_auth_user';
 export const STORAGE_SETLISTS_SYNCED_AT  = 'ihymns_setlists_synced_at';
 export const STORAGE_FAVORITES_SYNCED_AT = 'ihymns_favorites_synced_at';
 
+/* Favourites the person added / removed ON PURPOSE on this device that the server has not yet
+   acknowledged (account/profile rewrite PR 2a, step 2a-4). The client half of the favourites delete
+   markers: the server distinguishes a protocol-2 client by the PRESENCE of a `deleted` key, and uses
+   `added` to tell "added back on purpose" from "an old copy that still holds it".
+   PERSISTED, like STORAGE_SETLISTS_DELETED, so a removal made offline (or just before the tab closed)
+   is still announced. Recorded even when signed out, capped at 500 each (newest kept). Both keys are
+   PERSONAL DATA (account-data-owner.js stashes and clears them with the favourites), and a sync clears
+   only the ids it actually sent. */
+export const STORAGE_FAVORITES_ADDED   = 'ihymns_favorites_added';
+export const STORAGE_FAVORITES_DELETED = 'ihymns_favorites_deleted';
+
 /* Pending explicit set-list deletions (#1661) — the ids this device has
    deleted but not yet had acknowledged by a successful sync.
    PERSISTED, not in-memory, and that is the whole point: a deletion made

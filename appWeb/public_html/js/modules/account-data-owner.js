@@ -42,12 +42,15 @@
 import {
     STORAGE_FAVORITES, STORAGE_SETLISTS, STORAGE_CUSTOM_TAGS, STORAGE_HISTORY,
     STORAGE_SETLISTS_DELETED, STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT,
+    STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED,
     STORAGE_DATA_OWNER_UID, STORAGE_STASH_PREFIX,
 } from '../constants.js';
 
 /** The personal-content keys that belong to ONE person. Stashed, cleared, restored. */
 export const PERSONAL_DATA_KEYS = Object.freeze([
     STORAGE_FAVORITES, STORAGE_SETLISTS, STORAGE_CUSTOM_TAGS, STORAGE_HISTORY, STORAGE_SETLISTS_DELETED,
+    /* PR 2a (2a-4): what this person added / removed on purpose and has not yet told the server. */
+    STORAGE_FAVORITES_ADDED, STORAGE_FAVORITES_DELETED,
 ]);
 
 /** Cleared along with the data, never restored (see the file header). */

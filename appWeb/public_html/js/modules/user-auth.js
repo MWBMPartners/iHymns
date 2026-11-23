@@ -786,10 +786,23 @@ export class UserAuth {
     _absorbFavoritesSync(res) {
         if (!res || !Array.isArray(res.favorites) || !this.app.favorites) return false;
         if (!this._replyIsStillForRequester(res.uid)) return false; /* fast account switch: drop it */
-        this.app.favorites.saveAll(
-            this._mergeFavorites(this.app.favorites.getAll(), res.favorites),
-            { sync: false }
+        /* PR 2a (2a-4): DROP what was removed on another device BEFORE merging. The merge lets the
+           local copy win for a shared id, so a favourite another device removed would otherwise
+           survive its own delete marker. An id still WAITING in "added" is never dropped: the person
+           added it on purpose after that removal, and the next sync will say so. */
+        const fav = this.app.favorites;
+        const waitingAdds = new Set(fav.getPendingAdds?.() ?? []);
+        const dead = new Set(
+            (Array.isArray(res.tombstones) ? res.tombstones : [])
+                .map((t) => (t && typeof t.id === 'string') ? t.id : null)
+                .filter((id) => id && !waitingAdds.has(id))
         );
+        const localList = dead.size ? fav.getAll().filter((f) => f && !dead.has(f.id)) : fav.getAll();
+        const serverList = dead.size ? res.favorites.filter((f) => f && !dead.has(f.id)) : res.favorites;
+        fav.saveAll(this._mergeFavorites(localList, serverList), { sync: false });
+        /* Forget the ids this request carried, and only those. NOT on a read-only (paused-site)
+           reply: the server changed nothing, so the person's removals still have to be sent. */
+        if (!res.readOnly) fav.clearPendingSent?.(res.sent);
         this._setSyncedAt(STORAGE_FAVORITES_SYNCED_AT, res.syncedAt);
         /* A7: the device's favourites now mirror the REQUESTER's account. */
         recordDataOwner(localStorage, res.uid ?? this.getUser()?.id);
@@ -977,6 +990,13 @@ export class UserAuth {
             return null;
         }
 
+        /* PR 2a (2a-4): ALWAYS send both lists, even empty. The server tells a protocol-2 client by
+           the presence of the `deleted` key, so a quiet sync must still carry it. An id in both
+           lists is sent as "added" only (adding wins, as it does on the server). */
+        const sentAdded = this.app.favorites?.getPendingAdds?.() ?? [];
+        const addedSet = new Set(sentAdded);
+        const sentDeleted = (this.app.favorites?.getPendingDeletes?.() ?? []).filter((id) => !addedSet.has(id));
+
         try {
             const res = await apiFetch(`${this.app.config.apiUrl}?action=favorites_sync`, {
                 method: 'POST',
@@ -992,6 +1012,8 @@ export class UserAuth {
                     ...(this._syncedAt(STORAGE_FAVORITES_SYNCED_AT)
                         ? { since: this._syncedAt(STORAGE_FAVORITES_SYNCED_AT) }
                         : {}),
+                    deleted: sentDeleted,
+                    added: sentAdded,
                 }),
             });
 
@@ -1010,6 +1032,10 @@ export class UserAuth {
                 syncedAt: typeof data.syncedAt === 'string' ? data.syncedAt : null,
                 truncated: data.truncated === true,
                 readOnly: this._noteReadOnly(data),
+                /* PR 2a: removals made on other devices, and what THIS request carried (so the absorb
+                   step clears exactly those ids). Absent from an older or switched-off server. */
+                tombstones: Array.isArray(data.tombstones) ? data.tombstones : [],
+                sent: { added: sentAdded, deleted: sentDeleted },
                 uid,
             };
         } catch (err) {
