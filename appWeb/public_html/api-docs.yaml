@@ -4555,6 +4555,17 @@ paths:
                     endpoint (auth_register, auth_forgot_password,
                     auth_email_login_request, song_request_submit); a missing or
                     invalid token there returns the same 403 documented below.
+                deviceInstallId:
+                  type: string
+                  pattern: '^[A-Za-z0-9\-]{8,64}$'
+                  description: >-
+                    OPTIONAL (PR 3, step H1). A random id the app makes once per install.
+                    When present, signing in again on the same install REPLACES that
+                    person's earlier sign-in for that install, so the devices list shows
+                    one row per device. A malformed value is ignored, never an error. The
+                    same optional field (with `deviceName`, `platform`, `appVersion`) is
+                    accepted by `auth_register`, `auth_apple`, `auth_email_login_verify`
+                    and `auth_device_code_poll`.
       responses:
         "200":
           description: Login successful

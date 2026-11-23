@@ -195,9 +195,13 @@ function apiTokenCleanInstallId(mixed $raw): ?string
  * @param ?array      $meta        device details, or null for none (see the header)
  * @param string      $issuedVia   one of API_TOKEN_ISSUED_VIA
  * @param int|null    $expiresAtTs OUT: the Unix time the token expires at
+ * @param string|null $installId   the device's install id when the caller has it apart from `$meta`
+ *                                 (the emailed-link route has no `$meta`; PR 3 step H1). Wins over
+ *                                 `$meta['deviceInstallId']`. Pass it by NAME to skip `$expiresAtTs`:
+ *                                 `apiTokenMint($db, $uid, null, 'email', installId: $id)`.
  * @return string the RAW token (64 hex characters). Returned once; only its hash is stored.
  */
-function apiTokenMint(\mysqli $db, int $uid, ?array $meta, string $issuedVia, ?int &$expiresAtTs = null): string
+function apiTokenMint(\mysqli $db, int $uid, ?array $meta, string $issuedVia, ?int &$expiresAtTs = null, ?string $installId = null): string
 {
     $token       = bin2hex(random_bytes(32));
     $tokenHash   = hash('sha256', $token);
@@ -209,7 +213,8 @@ function apiTokenMint(\mysqli $db, int $uid, ?array $meta, string $issuedVia, ?i
         if ($via === null) {
             error_log('[api_tokens/mint] unknown issuedVia "' . $issuedVia . '" stored as NULL');
         }
-        $installId = apiTokenCleanInstallId($meta['deviceInstallId'] ?? null);
+        /* H1: an explicit install id wins; both go through the same cleaner, so a bad one is dropped, never a failed sign-in. */
+        $installId = apiTokenCleanInstallId($installId ?? ($meta['deviceInstallId'] ?? null));
         $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt, IssuedVia, DeviceInstallId) VALUES (?, ?, ?, ?, ?)');
         $stmt->bind_param('sisss', $tokenHash, $uid, $expiresAt, $via, $installId);
     } else {
@@ -218,6 +223,11 @@ function apiTokenMint(\mysqli $db, int $uid, ?array $meta, string $issuedVia, ?i
     }
     $stmt->execute();
     $stmt->close();
+
+    /* H1: one device keeps one row. Only when the install id was recorded (so only when the columns exist). */
+    if (isset($installId) && $installId !== null) {
+        apiTokenReplaceSameInstall($db, $uid, $installId, $tokenHash);
+    }
 
     if ($meta !== null) {
         apiTokenDeviceMetaStore(
@@ -229,6 +239,56 @@ function apiTokenMint(\mysqli $db, int $uid, ?array $meta, string $issuedVia, ?i
         );
     }
     return $token;
+}
+
+/**
+ * One device keeps one sign-in row (PR 3, step H1).
+ *
+ * ELI5: when an app signs in again on the same install (a second password sign-in, a swap of the
+ * shared token for its own, an emailed link), the sign-in it made last time is no longer needed. This
+ * deletes that older sign-in so the devices list shows ONE row per device, and hands the older
+ * sign-in's notification registrations over to the new one so notifications keep arriving.
+ *
+ * Detailed:
+ *  - Scoped by BOTH the person AND the install id. Another person who happens to hold the same install
+ *    id is never touched (an install id is never trusted across people). A sign-in with NO install id
+ *    (the shared older-app token) is never matched, because `DeviceInstallId = ?` cannot match NULL.
+ *  - Runs inside the caller's transaction when there is one (the emailed-link route), so the new row
+ *    and the removal of the old one stand or fall together.
+ *  - The push rows are re-tied BEFORE the old rows go, and only when the push column exists.
+ *  - No rotation on a timer: a lost reply would leave the device holding a dead token.
+ *
+ * @param string $newHash sha256 of the token just made (kept)
+ * @return int how many older sign-ins were removed
+ */
+function apiTokenReplaceSameInstall(\mysqli $db, int $userId, string $installId, string $newHash): int
+{
+    if (!apiTokensFoundationColumnsExist($db)) {
+        return 0;
+    }
+    $st = $db->prepare('SELECT Token FROM tblApiTokens WHERE UserId = ? AND DeviceInstallId = ? AND Token <> ?');
+    $st->bind_param('iss', $userId, $installId, $newHash);
+    $st->execute();
+    $old = array_map(static fn($r) => (string)$r[0], $st->get_result()->fetch_all(MYSQLI_NUM));
+    $st->close();
+    if ($old === []) {
+        return 0;
+    }
+    $marks = implode(',', array_fill(0, count($old), '?'));
+    $types = str_repeat('s', count($old));
+    /* Move the older sign-ins' notification registrations to the new sign-in first. */
+    if (function_exists('apnsTokenHashReady') && apnsTokenHashReady($db)) {
+        $mv = $db->prepare('UPDATE tblApnsTokens SET ApiTokenHash = ? WHERE UserId = ? AND ApiTokenHash IN (' . $marks . ')');
+        $mv->bind_param('si' . $types, $newHash, $userId, ...$old);
+        $mv->execute();
+        $mv->close();
+    }
+    $del = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND DeviceInstallId = ? AND Token IN (' . $marks . ')');
+    $del->bind_param('is' . $types, $userId, $installId, ...$old);
+    $del->execute();
+    $removed = $del->affected_rows;
+    $del->close();
+    return $removed;
 }
 
 /**
@@ -323,7 +383,7 @@ function apiTokenHashesForDevicePrefix(\mysqli $db, int $userId, string $deviceP
  *
  * @param mixed $body The decoded JSON request body (or a non-array, e.g.
  *                     when json_decode() failed).
- * @return array{deviceName:?string,platform:?string,appVersion:?string}
+ * @return array{deviceName:?string,platform:?string,appVersion:?string,deviceInstallId:?string}
  */
 function apiTokenDeviceMetaFromBody(mixed $body): array
 {
@@ -349,7 +409,9 @@ function apiTokenDeviceMetaFromBody(mixed $body): array
         $appVersion = ($trimmed !== '' && preg_match('/^[A-Za-z0-9.\-]{1,20}$/', $trimmed)) ? $trimmed : null;
     }
 
-    return ['deviceName' => $deviceName, 'platform' => $platform, 'appVersion' => $appVersion];
+    /* H1: the install id rides along with the other details. Anything malformed is dropped, never a failed sign-in. */
+    return ['deviceName' => $deviceName, 'platform' => $platform, 'appVersion' => $appVersion,
+            'deviceInstallId' => apiTokenCleanInstallId($body['deviceInstallId'] ?? null)];
 }
 
 /**

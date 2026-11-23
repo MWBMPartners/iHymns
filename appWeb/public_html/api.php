@@ -5548,7 +5548,7 @@ if ($action !== null) {
                way as auth_login/auth_apple above (never required, best-
                effort, never blocks sign-in). */
             $deviceMeta = apiTokenDeviceMetaFromBody($body);
-            $loginResult = completeEmailLogin($verified['email'], $verified['userId'], $deviceMeta['deviceName'], $deviceMeta['platform'], $deviceMeta['appVersion']);
+            $loginResult = completeEmailLogin($verified['email'], $verified['userId'], $deviceMeta['deviceName'], $deviceMeta['platform'], $deviceMeta['appVersion'], $deviceMeta['deviceInstallId']);   /* H1: the install id travels with this sign-in too */
 
             /* Cross-subdomain auth cookie (#390) — completeEmailLogin()
                issues a 30-day token in tblApiTokens; mirror that lifetime
@@ -9408,7 +9408,9 @@ if ($action !== null) {
                device name. Guarded by tests/php/test-api-token-device-meta.php. */
             /* C3 (epic #2180): through the ONE token maker. `null` meta = no-device-meta
                (the reason is the paragraph above). */
-            $token       = apiTokenMint($db, (int)$userId, null, 'device_code', $expiresAtTs);
+            /* H1: only the install id is passed (NOT device details: the guard above stays), so a TV that pairs again
+               replaces its own earlier sign-in instead of adding a row. A missing/bad id is simply ignored. */
+            $token       = apiTokenMint($db, (int)$userId, null, 'device_code', $expiresAtTs, apiTokenCleanInstallId($body['deviceInstallId'] ?? null));
             setAuthTokenCookie($token, $expiresAtTs);
             $updLogin = $db->prepare('UPDATE tblUsers SET LastLoginAt = NOW(), LoginCount = LoginCount + 1 WHERE Id = ?');
             $updLogin->bind_param('i', $userId);

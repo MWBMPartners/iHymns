@@ -2105,9 +2105,11 @@ function verifyEmailLoginCode(string $email, string $code): ?array
  *                                 null).
  * @param string|null $platform    #1409 OPTIONAL 'apple'|'android'|'web'.
  * @param string|null $appVersion  #1409 OPTIONAL client app version string.
+ * @param string|null $installId   PR 3 step H1: OPTIONAL install id; mints inside the login transaction so
+ *                                 the same install's older sign-in is replaced atomically.
  * @return array{token: string, user: array} Bearer token and user info
  */
-function completeEmailLogin(string $email, ?int $userId, ?string $deviceName = null, ?string $platform = null, ?string $appVersion = null): array
+function completeEmailLogin(string $email, ?int $userId, ?string $deviceName = null, ?string $platform = null, ?string $appVersion = null, ?string $installId = null): array
 {
     $db = getDbMysqli();
 
@@ -2121,7 +2123,7 @@ function completeEmailLogin(string $email, ?int $userId, ?string $deviceName = n
        no-ops but the explicit null-guard still prevents the crash.) */
     $db->begin_transaction();
     try {
-        $result = _completeEmailLoginTxn($db, $email, $userId);
+        $result = _completeEmailLoginTxn($db, $email, $userId, $installId);
         $db->commit();
     } catch (\Throwable $e) {
         try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
@@ -2150,7 +2152,7 @@ function completeEmailLogin(string $email, ?int $userId, ?string $deviceName = n
  *
  * @return array{token: string, user: array}
  */
-function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId): array
+function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId, ?string $installId = null): array
 {
     if ($userId === null) {
         /* Create a new user from the email address */
@@ -2251,7 +2253,9 @@ function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId): array
        does not write it itself. */
     /* C3 (epic #2180): through the ONE token maker; `null` meta because the caller
        writes the device details after this transaction (see above). */
-    $token = apiTokenMint($db, (int)$userId, null, 'email');
+    /* H1: the install id (when the app sent one) is recorded here, inside this transaction; a named
+       argument skips the by-reference expiry. */
+    $token = apiTokenMint($db, (int)$userId, null, 'email', installId: $installId);
 
     return [
         'token' => $token,

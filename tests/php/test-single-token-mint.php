@@ -99,13 +99,13 @@ foreach ([$web . '/api.php', $web . '/manage/includes/auth.php'] as $file) {
 }
 chk("the six sign-in routes were found ($calls calls)", $calls >= 6);
 foreach (API_TOKEN_ISSUED_VIA as $word) {
-    if ($word === 'enrol') { continue; }   /* reserved for step H1 */
+    if ($word === 'enrol') { continue; }   /* reserved for step H5 (flipped there) */
     chk("the word '$word' is used by a route (or the vocabulary has a dead word)", isset($used[$word]));
 }
 
 /* ---- 3. the maker itself, against a pretend database ---- */
 echo "3. the maker's behaviour\n";
-final class MintRes { public function __construct(private array $rows) {} public function fetch_row() { return $this->rows[0] ?? null; } }
+final class MintRes { public function __construct(private array $rows) {} public function fetch_row() { return $this->rows[0] ?? null; } /* H1: the same-install lookup reads a list; the pretend database holds no older sign-ins */ public function fetch_all(int $mode = 2) { return []; } }
 final class MintStmt
 {
     public int $affected_rows = 1;
