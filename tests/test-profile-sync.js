@@ -351,6 +351,31 @@ console.log('\n12 - app.js hands the options through\n');
     check('settings.js stands its older whole-box sync down while the profile sync is active', /profileSync\?\.isActive\?\.\(\)\) return false/.test(settingsJs));
 }
 
+console.log('\n14 - switching settings sync back on never overwrites newer account values or brings back removed items\n');
+{
+    const server = makeServer();
+    const d = await device(server);
+    await d.sync.ensureSchema();
+    /* the account moved on while this device had sync switched off */
+    server.seed(1, 'appearance', 'theme', 'light');                 // changed on another device
+    server.seed(1, 'songPrefs', 'MP-1', { transpose: 2, capo: 0, octave: 0 });
+    server.seed(1, 'songPrefs', 'MP-1', null);                      // ... and then removed there (a delete marker)
+    d.use();
+    d.ls.setItem(C.STORAGE_THEME, 'dark');                          // stale on this device
+    d.ls.setItem(C.STORAGE_TRANSPOSE_PREFIX + 'MP-1', '2');         // the removed per-song choice, still here
+    d.ls.setItem(C.STORAGE_FONT_SIZE, '20');                        // something the account never heard of
+    const ok = await d.sync.resumeAfterOptIn();
+    await d.sync.push();
+    check('the read finished', ok === true);
+    check('the account\'s newer theme was NOT overwritten by this device\'s older one', server.user(1).rows.get('appearance.theme').value === 'light' && d.ls.getItem(C.STORAGE_THEME) === 'light');
+    check('the per-song item removed on the account stays removed (not brought back)', server.user(1).rows.get('songPrefs.MP-1').deleted === true && d.ls.getItem(C.STORAGE_TRANSPOSE_PREFIX + 'MP-1') === null);
+    check('a value the account has never heard of IS sent (nothing is lost)', server.user(1).rows.get('appearance.fontSize')?.value === 20);
+    check('no request carried the stale theme or the removed song', posts(server).every((r) => !J(r.body.changes).includes('"dark"') && !J(r.body.changes).includes('MP-1')));
+    const fs = await import('node:fs');
+    const settingsJs = fs.readFileSync(path.join(MODULES, 'settings.js'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1');
+    check('settings.js uses the resume route, and nothing queues "everything this device holds" any more', /profileSync\.resumeAfterOptIn\(\)/.test(settingsJs) && !/queueAllLocal/.test(settingsJs) && !/queueAllLocal/.test(fs.readFileSync(path.join(MODULES, 'profile-sync.js'), 'utf8')));
+}
+
 console.log('\n13 - the refusal reasons: the browser and the server agree (rule #35)\n');
 {
     const { PERMANENT_REJECTIONS } = await import(url(path.join(MODULES, 'profile-sync.js')) + '?t=' + Math.random());

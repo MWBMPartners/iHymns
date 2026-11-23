@@ -286,15 +286,21 @@ export class ProfileSync {
         return true;
     }
 
-    /** Queue every value this device holds (used when a person switches syncing back on). */
-    queueAllLocal() {
-        if (!this.isActive() || !this.providers) return 0;
-        let n = 0;
-        for (const p of this.providers.all) {
-            for (const { item, value } of p.localItems()) { this._enqueue(p.entry.section, item, 'set', value); n++; }
-        }
-        if (n > 0) this.schedulePush();
-        return n;
+    /**
+     * The person switched settings sync back ON after it had been off. Nothing is queued from here: what this device
+     * holds may be older than the account (the account kept changing, and per-song items may have been removed there),
+     * so sending it all would overwrite newer values and bring back what was deleted. Instead the device starts again
+     * the way a first sign-in does: read EVERYTHING the account holds (it wins), then claim only the values the account
+     * has never heard of (not even a removal), then send what is waiting.
+     *
+     * @returns {Promise<boolean>} true when the read finished
+     */
+    async resumeAfterOptIn() {
+        if (!this.isActive()) return false;
+        const rec = this._getCursorRecord();
+        rec.claimed = false;
+        this._saveCursorRecord(rec);
+        return this.syncNow();
     }
 
     schedulePush(delay = PUSH_DELAY_MS) {

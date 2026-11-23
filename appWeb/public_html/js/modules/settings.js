@@ -2063,9 +2063,9 @@ export class Settings {
             syncToggle.addEventListener('change', () => {
                 if (syncToggle.checked) {
                     localStorage.removeItem(SYNC_TOGGLE_KEY);
-                    /* Push current local prefs immediately so the server
-                       reflects this device's state once sync is on. */
-                    if (this.app.profileSync?.isActive?.()) this.app.profileSync.queueAllLocal();
+                    /* The older sync pushes this device's prefs at once. The new one never pushes everything (that would
+                       overwrite newer account values and bring back removed items): it starts again with a full read. */
+                    if (this.app.profileSync?.isActive?.()) this.app.profileSync.resumeAfterOptIn();
                     else this._pushSyncedSettings();
                 } else {
                     localStorage.setItem(SYNC_TOGGLE_KEY, 'false');
