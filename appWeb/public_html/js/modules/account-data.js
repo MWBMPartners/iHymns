@@ -29,6 +29,7 @@
 
 import { apiFetch } from '../utils/api-client.js';
 import { announce } from '../utils/announce.js';
+import { isCaptchaRefusal } from './captcha-widget.js';
 import { EVT_AUTH_CHANGED, ACCOUNT_WRITES_OFF_REASON } from '../constants.js';
 
 const EXPORT_ENDPOINT = '/api?action=account_export';
@@ -152,7 +153,9 @@ export function buildDeleteBody({ password = '', emailCode = '', typed = '' } = 
 export function deleteMessageForResponse(status, reason = null) {
     switch (status) {
         case 400:
-            return 'Please enter your password, or ask for an email code, so we know it is really you.';
+            return 'Please enter your password, or ask for an email code, so we know it is really you. '
+                + 'If your account only signs in with Apple and has no email address, this page cannot confirm it is you: '
+                + 'please delete it in the iHymns app instead (Account, then Danger Zone).';
         case 401:
             return 'That did not match. Check your password or code and try again. If you were signed out, sign in again first.';
         case 403:
@@ -166,9 +169,16 @@ export function deleteMessageForResponse(status, reason = null) {
         case 503:
             return 'Deleting accounts is not available right now. Nothing has been changed. Please try again later.';
         default:
+            /* A gateway timing out (502, 504 and the like) can answer AFTER the server finished: the account may be gone. Only
+               the server's own answers (400-level refusals, its 500 which leaves the account untouched, its 503) mean "nothing changed". */
+            if (status > 500 && status !== 503) return DELETE_RESULT_UNKNOWN_MESSAGE;
             return 'Your account could not be deleted. Nothing has been changed. Please try again.';
     }
 }
+
+/** What to say when we cannot tell whether the account was deleted (the connection was cut off after the request was sent). */
+export const DELETE_RESULT_UNKNOWN_MESSAGE = 'The connection was cut off while we were deleting your account, so we cannot tell whether it was deleted. '
+    + 'To find out, try signing in again: if you can sign in, your account is still there and you can try again; if you cannot, it has been deleted.';
 
 /**
  * Ask for an email code (for an account that has no password). The reply is always the same polite
@@ -192,6 +202,13 @@ export async function requestEmailCode(email, deps = {}) {
         if (res.ok) return { ok: true, status: res.status, message: 'If that address is on an account, a code has been sent. It lasts 10 minutes.' };
         if (res.status === 429) return { ok: false, status: 429, message: 'Too many codes have been asked for. Please wait a while and try again.' };
         if (res.status === 503) return { ok: false, status: 503, message: 'Email codes are not available on this site.' };
+        /* The sign-in code request can ask for a robot check first (403, reason captcha_required). This panel does not show that
+           check, so say so plainly instead of the vague "try again later" that can never work. Chosen by status + reason (rule #35). */
+        let data = null;
+        try { data = await res.clone().json(); } catch (_e) { /* not JSON */ }
+        if (isCaptchaRefusal(res.status, data)) {
+            return { ok: false, status: 403, message: 'This site wants to check you are not a robot before it sends a code, and this page cannot show that check. Please use your password instead, or delete your account in the iHymns app.' };
+        }
         return { ok: false, status: res.status, message: 'A code could not be sent from here. Try again later.' };
     } catch (_e) {
         return { ok: false, status: 0, message: 'You seem to be offline. Please try again when you are back online.' };
@@ -210,6 +227,10 @@ export async function deleteAccount(input, deps = {}) {
     if (!deleteConfirmationOk(input?.typed)) {
         return { ok: false, status: 0, message: `Type the word ${DELETE_CONFIRM_WORD} to confirm.` };
     }
+    /* Known to be offline BEFORE sending: nothing was sent, so nothing can have changed. */
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        return { ok: false, status: 0, message: 'You seem to be offline. Nothing has been changed. Please try again when you are back online.' };
+    }
     let res;
     try {
         res = await request(DELETE_ENDPOINT, {
@@ -218,7 +239,9 @@ export async function deleteAccount(input, deps = {}) {
             body: JSON.stringify(buildDeleteBody(input)),
         });
     } catch (_e) {
-        return { ok: false, status: 0, message: 'You seem to be offline. Nothing has been changed. Please try again when you are back online.' };
+        /* The request may have reached the server before the connection dropped, and the server may have finished: we cannot say
+           "nothing has been changed". Tell the truth and show how to find out. */
+        return { ok: false, status: 0, unknown: true, message: DELETE_RESULT_UNKNOWN_MESSAGE };
     }
     if (res.ok) return { ok: true, status: res.status };
     let reason = null;

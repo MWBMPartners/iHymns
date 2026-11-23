@@ -413,6 +413,11 @@ declare(strict_types=1);
                         <input type="text" class="form-control form-control-sm" id="account-delete-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6">
                     </div>
                 </details>
+                <p class="text-muted small mb-2">
+                    Your account only signs in with Apple, and has no password or email address? This page cannot confirm
+                    it is you. Please delete your account in the iHymns app for iPhone, iPad or Apple TV instead
+                    (Account, then Danger Zone).
+                </p>
                 <div class="mb-3">
                     <label for="account-delete-typed" class="form-label small mb-1">Type <strong>DELETE</strong> to confirm</label>
                     <input type="text" class="form-control form-control-sm" id="account-delete-typed" autocomplete="off" autocapitalize="characters" spellcheck="false">

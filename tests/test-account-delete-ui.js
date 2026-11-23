@@ -83,8 +83,28 @@ for (const [status, body, word] of [[401, {}, /did not match/i], [409, { reason:
     check(`a ${status}${body.reason ? ' (' + body.reason + ')' : ''} is explained in plain words`, r.ok === false && r.status === status && word.test(r.message), r.message);
 }
 {
-    const r = await M.deleteAccount({ password: 'pw', typed: 'DELETE' }, { request: async () => { throw new TypeError('offline'); } });
-    check('offline: nothing changed, and it says so', r.ok === false && r.status === 0 && /nothing has been changed/i.test(r.message));
+    /* PR 2c review: a request cut off AFTER it was sent may have been finished by the server, so "nothing has been changed" would be a lie. */
+    Object.defineProperty(globalThis, 'navigator', { value: { onLine: false }, configurable: true, writable: true });
+    const calls = [];
+    const off = await M.deleteAccount({ password: 'pw', typed: 'DELETE' }, { request: async (...x) => { calls.push(x); return respond(200); } });
+    check('known to be offline BEFORE sending: nothing is sent, and it says nothing has been changed', off.ok === false && off.status === 0 && calls.length === 0 && /nothing has been changed/i.test(off.message));
+    Object.defineProperty(globalThis, 'navigator', { value: { onLine: true }, configurable: true, writable: true });
+    const cut = await M.deleteAccount({ password: 'pw', typed: 'DELETE' }, { request: async () => { throw new TypeError('connection reset'); } });
+    check('a request cut off after it was sent: it does NOT claim nothing changed; it says the result is unknown and how to find out (sign in again)',
+        cut.ok === false && cut.unknown === true && !/nothing has been changed/i.test(cut.message) && /cannot tell whether/i.test(cut.message) && /try signing in again/i.test(cut.message), cut.message);
+    for (const status of [502, 504]) {
+        const g = await M.deleteAccount({ password: 'pw', typed: 'DELETE' }, { request: async () => respond(status, {}) });
+        check(`a ${status} from a gateway is treated as "result unknown" too`, g.ok === false && !/nothing has been changed/i.test(g.message) && /cannot tell whether/i.test(g.message), g.message);
+    }
+    check("the server's own 500 and 503 (which leave the account untouched) still say nothing changed", [500, 503].every((st) => /nothing has been changed/i.test(M.deleteMessageForResponse(st))));
+}
+{
+    check('the 400 explanation tells an Apple-only account with no email to use the app instead (no dead end)', /Apple/.test(M.deleteMessageForResponse(400)) && /iHymns app/.test(M.deleteMessageForResponse(400)) && /Danger Zone/.test(M.deleteMessageForResponse(400)));
+    check('the panel itself says so up front, before anyone is stuck', /only signs in with Apple[\s\S]*iHymns app/.test(cardHtml));
+    const cap = await M.requestEmailCode('me@example.test', { request: async () => respond(403, { reason: 'captcha_required', error: 'x' }) });
+    check('the email-code route says plainly when the site wants a robot check this page cannot show (no widget, no vague "try later")', cap.ok === false && cap.status === 403 && /robot/i.test(cap.message) && /password/i.test(cap.message) && !/try again later/i.test(cap.message), cap.message);
+    const other = await M.requestEmailCode('me@example.test', { request: async () => respond(403, { reason: 'something_else' }) });
+    check('any other 403 keeps the general message', /could not be sent/i.test(other.message));
 }
 {
     const sent = [];
