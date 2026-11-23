@@ -225,6 +225,7 @@ export class History {
                     },
                     body: JSON.stringify({
                         views: local.map(h => ({ song_id: h.id, viewed_at: h.viewedAt })),
+                        platform: 'web', /* PR 2a: which kind of app uploaded these */
                     }),
                 });
                 if (res.ok) localStorage.setItem(STORAGE_HISTORY_BACKFILLED, 'true');

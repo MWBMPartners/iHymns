@@ -109,6 +109,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'print_usage.php';
 /* ihymns_fputcsv() — the CSV formula-injection neutraliser every admin CSV
    export in this codebase goes through. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'csv_safe.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_history_provenance.php'; /* songHistoryCountableSql(): only real live-site views count (PR 2a, 2a-6) */
 
 /**
  * Parse + validate the report's date-range window from a `$_GET`-shaped
@@ -192,6 +193,12 @@ function ccliReportSystemRows(
        interpolated (rule #5's allow-listed-literal carve-out). */
     $ccliFilter = $showAll ? '' : "AND s.Ccli <> ''";
 
+    /* PR 2a (2a-6): with the new account behaviour on, the view count leaves out views recorded by test
+       sites and views uploaded later from a device list, so the licence return counts real live views.
+       '1=1' (every row, as before) when the switch is off or the new columns are not there yet. A fixed
+       fragment from songHistoryCountableSql(), never request data. */
+    $countableViews = songHistoryCountableSql($db);
+
     $hasUsageEvents = _printUsageTableExists($db);
 
     $printedJoin   = '';
@@ -250,6 +257,7 @@ function ccliReportSystemRows(
                  FROM tblSongHistory
                 WHERE ViewedAt >= ?
                   AND ViewedAt <  DATE_ADD(?, INTERVAL 1 DAY)
+                  AND $countableViews
                 GROUP BY SongId
            ) h ON h.SongId = s.SongId
           $printedJoin

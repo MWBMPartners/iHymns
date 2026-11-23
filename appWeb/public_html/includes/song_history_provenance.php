@@ -5,9 +5,10 @@ declare(strict_types=1);
 /**
  * song_history_provenance.php - which views are real, and where they came from
  * ============================================================================
- * Account/profile rewrite, PR 2a (epic #2180). This step (2a-2) adds only the
- * "do the new columns exist here?" check; step 2a-6 adds the rest of the file
- * (what a view is stamped with, and which rows count as popularity).
+ * Account/profile rewrite, PR 2a (epic #2180), steps 2a-2 and 2a-6. Holds the
+ * "do the new columns exist here?" check, what a new view is stamped with, the
+ * one SQL fragment that says "only real views from the live site count", and
+ * the rate limits for recording views (one place to change them).
  *
  * ELI5
  * ----
@@ -29,6 +30,20 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php'; /* songRelocateIsTransactionFatal() */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'environment.php';       /* ihymns_environment(): which copy of the site recorded a view */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'profile_sync_gate.php'; /* profileSyncEnabledHere(): the per-site switch */
+
+/* ---- the recording limits: ONE place to change them (owner decision 2026-11-23) ---- */
+
+/** `song_view`: at most this many a minute per signed-in person, or else per address. */
+const SONG_VIEW_RATE_PER_MINUTE = 60;
+/** `song_view`: ...and at most this many a day. */
+const SONG_VIEW_RATE_PER_DAY = 3000;
+/** `song_history_backfill`: at most this many an hour per person. */
+const SONG_BACKFILL_RATE_PER_HOUR = 10;
+
+/** The kinds of app that can say where a view came from. VARCHAR in the table (rule #20); checked here. */
+const SONG_HISTORY_PLATFORMS = ['web', 'apple', 'android'];
 
 if (!function_exists('songHistoryProvenanceReady')) {
     /**
@@ -60,5 +75,74 @@ if (!function_exists('songHistoryProvenanceReady')) {
             if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
             return false;
         }
+    }
+}
+
+if (!function_exists('songHistoryProvenanceValues')) {
+    /**
+     * What to stamp on a NEW view row: where it came from.
+     *
+     * ELI5: a real view is a person opening a song on a live site. We write down that
+     * it is a real view ('view'), which copy of the site saw it, and which kind of app
+     * sent it (only if the app said so, and only a kind we know).
+     *
+     * @param ?array $body the decoded request body (may carry `platform`)
+     * @return array{source:string,channel:string,platform:?string}
+     */
+    function songHistoryProvenanceValues(?array $body): array
+    {
+        $platform = null;
+        if (is_array($body) && isset($body['platform']) && is_string($body['platform'])) {
+            $candidate = strtolower(trim($body['platform']));
+            if (in_array($candidate, SONG_HISTORY_PLATFORMS, true)) {
+                $platform = $candidate;
+            }
+        }
+        return ['source' => 'view', 'channel' => ihymns_environment(), 'platform' => $platform];
+    }
+}
+
+if (!function_exists('songHistoryCountableSqlFor')) {
+    /**
+     * PURE: the SQL condition that says "this view row counts as popularity".
+     *
+     * ELI5: when the new behaviour is on and the new columns exist, only a REAL view
+     * (not one uploaded later from a device list) recorded by the LIVE site (or an old
+     * row with no site recorded) counts. Otherwise every row counts, as before.
+     * The text is built only from fixed words and a checked table alias, never from
+     * request data.
+     *
+     * @param bool   $switchOn      the per-site switch is ticked here
+     * @param bool   $columnsReady  the three new columns exist
+     * @param string $alias         the table alias in the query ('' for none, else letters/digits/underscore)
+     */
+    function songHistoryCountableSqlFor(bool $switchOn, bool $columnsReady, string $alias = ''): string
+    {
+        if (!$switchOn || !$columnsReady) {
+            return '1=1';
+        }
+        if ($alias !== '' && !preg_match('/^[A-Za-z_][A-Za-z0-9_]{0,30}$/', $alias)) {
+            return '1=1'; /* a bad alias must never reach SQL */
+        }
+        $p = $alias === '' ? '' : $alias . '.';
+        return "{$p}Source = 'view' AND ({$p}Channel = 'production' OR {$p}Channel IS NULL)";
+    }
+}
+
+if (!function_exists('songHistoryCountableSql')) {
+    /**
+     * The condition above, resolved for THIS site and database. Use it in every query
+     * that turns view rows into a COUNT that means popularity or licence reporting
+     * ("most popular", the CCLI view count). Never in the person's own history.
+     *
+     * @param \mysqli $db    live connection
+     * @param string  $alias table alias used in the query
+     */
+    function songHistoryCountableSql(\mysqli $db, string $alias = ''): string
+    {
+        if (!profileSyncEnabledHere()) {
+            return '1=1';
+        }
+        return songHistoryCountableSqlFor(true, songHistoryProvenanceReady($db), $alias);
     }
 }

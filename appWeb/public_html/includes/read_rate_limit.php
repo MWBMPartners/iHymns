@@ -142,8 +142,10 @@ function _readRateLimitResolveKey(): string
  *                        UTC minute get 429. Choose GENEROUSLY — real clients
  *                        must never trip it.
  * @param int    $perDay  Optional per-day ceiling (0 = no daily cap; default).
+ * @param string $keyOverride Optional bucket key to use instead of the token-or-address one
+ *                        (e.g. 'uid:42' to limit per signed-in PERSON; account/profile rewrite 2a-6).
  */
-function enforceReadRateLimit(string $scope, int $perMin, int $perDay = 0): void
+function enforceReadRateLimit(string $scope, int $perMin, int $perDay = 0, string $keyOverride = ''): void
 {
     /* Nothing to enforce if no positive limit was given. */
     if ($perMin <= 0 && $perDay <= 0) { return; }
@@ -157,7 +159,10 @@ function enforceReadRateLimit(string $scope, int $perMin, int $perDay = 0): void
         /* Existence-gate: un-migrated install → clean no-op (fail open). */
         if (!_readRateLimitTableExists($db)) { return; }
 
-        $rateKey = _readRateLimitResolveKey();
+        /* A caller that knows WHO this is (a signed-in person) may bucket by that instead of by
+           device token or address ($keyOverride, e.g. 'uid:42'): the rate key column is VARCHAR(72),
+           and the value is capped to fit. Empty means the normal token-or-address bucket. */
+        $rateKey = $keyOverride !== '' ? substr($keyOverride, 0, 72) : _readRateLimitResolveKey();
         $scope   = substr($scope, 0, 40);          // honour the column width
 
         /* Build the active windows. WindowStart is computed SQL-side per query

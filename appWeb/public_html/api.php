@@ -256,6 +256,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    call sites — never a per-handler copy of the decision. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_sync.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_sync_gate.php'; /* PR 2a: the per-site switch for the new account behaviour (off by default) */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_history_provenance.php'; /* PR 2a: what a view is stamped with, and which views count */
 /* #1671 F5 — the ONE namespaced user-preference store. `user_settings` used to
    be a whole-blob replace, which cannot survive a second product sharing this
    database: whichever client saved last wiped the other's keys. The pure merge
@@ -10902,6 +10903,7 @@ if ($action !== null) {
                      JOIN tblSongs s ON s.SongId = h.SongId
                      LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                      WHERE h.ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
+                       AND ' . songHistoryCountableSql($db, 'h') . '
                        AND ' . songVisibleSql($db, 's') . '
                        AND ' . songServableSql($db, 's') . '
                      GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, sb.Name, s.Language
@@ -11096,6 +11098,20 @@ if ($action !== null) {
                test site cannot put views into a real person's history. */
             $viewUserId = ($authUser && accountWritesAllowedHere()) ? $authUser['Id'] : null;
 
+            /* PR 2a (2a-6, owner decision 2026-11-23): with the new account behaviour switched on for
+               this site, recording views is limited per signed-in PERSON (or else per address). The
+               numbers live in ONE place (song_history_provenance.php). A 429 is simply ignored by the
+               apps (the view is fire-and-forget). Off, or the limiter's table missing: no limit. */
+            $viewProvenanceOn = profileSyncEnabledHere();
+            if ($viewProvenanceOn) {
+                enforceReadRateLimit(
+                    'song_view',
+                    SONG_VIEW_RATE_PER_MINUTE,
+                    SONG_VIEW_RATE_PER_DAY,
+                    $authUser ? 'uid:' . (int)$authUser['Id'] : ''
+                );
+            }
+
             try {
                 $db = getDbMysqli();
                 /* #1343-B — resolve a PublicId to its SongId so the history row keys
@@ -11104,11 +11120,21 @@ if ($action !== null) {
                 if (songPublicId_looksLikePublicId($viewSongId)) {
                     $viewSongId = songPublicId_resolveToSongId($db, $viewSongId);
                 }
-                $stmt = $db->prepare(
-                    'INSERT INTO tblSongHistory (SongId, UserId) VALUES (?, ?)'
-                );
-                /* UserId(i nullable) — anonymous views OK. */
-                $stmt->bind_param('si', $viewSongId, $viewUserId);
+                if ($viewProvenanceOn && songHistoryProvenanceReady($db)) {
+                    /* Stamp where the view came from, so test sites and uploaded lists can be left
+                       out of "most popular" (see songHistoryCountableSql()). */
+                    $prov = songHistoryProvenanceValues(is_array($body) ? $body : null);
+                    $stmt = $db->prepare(
+                        'INSERT INTO tblSongHistory (SongId, UserId, Source, Channel, Platform) VALUES (?, ?, ?, ?, ?)'
+                    );
+                    $stmt->bind_param('sisss', $viewSongId, $viewUserId, $prov['source'], $prov['channel'], $prov['platform']);
+                } else {
+                    $stmt = $db->prepare(
+                        'INSERT INTO tblSongHistory (SongId, UserId) VALUES (?, ?)'
+                    );
+                    /* UserId(i nullable) — anonymous views OK. */
+                    $stmt->bind_param('si', $viewSongId, $viewUserId);
+                }
                 $stmt->execute();
                 $stmt->close();
                 sendJson(['ok' => true]);
@@ -11230,6 +11256,17 @@ if ($action !== null) {
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
+            /* PR 2a (2a-6): with the new account behaviour on, an upload of old views is limited to a
+               few an hour per person, and each row is stamped as an UPLOAD so it never counts towards
+               "most popular". #1636's two-call contract: the check reads, the record writes. */
+            $backfillProvenanceOn = profileSyncEnabledHere();
+            if ($backfillProvenanceOn) {
+                $backfillIp = $_SERVER['REMOTE_ADDR'] ?? '';
+                checkRateLimit('song_history_backfill', $backfillIp, SONG_BACKFILL_RATE_PER_HOUR, 3600, true, $userId);
+                recordRateLimitHit('song_history_backfill', rateLimitKey($backfillIp, $userId));
+            }
+            $backfillStamped = $backfillProvenanceOn && songHistoryProvenanceReady($db);
+
             /* Insert with the client-supplied ViewedAt so the order is
                preserved. The client sends a UTC ISO-8601 string; we parse it
                to a UTC epoch and bind it through FROM_UNIXTIME(), so the value
@@ -11239,12 +11276,24 @@ if ($action !== null) {
                missing timestamp binds NULL → COALESCE → NOW(). Per-row
                try/catch skips orphan song ids (FK violation) without aborting
                the batch. Cap at 50 — the read path only surfaces 50 most recent. */
-            $insert = $db->prepare(
-                'INSERT INTO tblSongHistory (UserId, SongId, ViewedAt) VALUES (?, ?, COALESCE(FROM_UNIXTIME(?), NOW()))'
-            );
+            $backfillChannel  = ihymns_environment();
+            $backfillPlatform = songHistoryProvenanceValues($body)['platform'];
+            if ($backfillStamped) {
+                $insert = $db->prepare(
+                    "INSERT INTO tblSongHistory (UserId, SongId, ViewedAt, Source, Channel, Platform) VALUES (?, ?, COALESCE(FROM_UNIXTIME(?), NOW()), 'backfill', ?, ?)"
+                );
+            } else {
+                $insert = $db->prepare(
+                    'INSERT INTO tblSongHistory (UserId, SongId, ViewedAt) VALUES (?, ?, COALESCE(FROM_UNIXTIME(?), NOW()))'
+                );
+            }
             $sidBound = '';
             $epochBound = null;
-            $insert->bind_param('isi', $userId, $sidBound, $epochBound);
+            if ($backfillStamped) {
+                $insert->bind_param('isiss', $userId, $sidBound, $epochBound, $backfillChannel, $backfillPlatform);
+            } else {
+                $insert->bind_param('isi', $userId, $sidBound, $epochBound);
+            }
             $imported = 0;
             foreach (array_slice($body['views'], 0, 50) as $v) {
                 if (!is_array($v)) continue;

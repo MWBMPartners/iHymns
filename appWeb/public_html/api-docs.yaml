@@ -7438,6 +7438,12 @@ paths:
         excluded, and the caller's language preference is applied after the
         limit — so the list can come back shorter than `limit` asked for.
 
+        **New account behaviour (account/profile rewrite, PR 2a).** On a site where
+        an admin has switched it on (and once the foundation migration has been
+        run), only real views recorded by the live site count: views uploaded
+        later from a device list, and views recorded by the test copies of the
+        site, are left out. Anywhere else every row counts, as before.
+
         **2026-09-08 correction.** Every parameter and the response key on this
         entry were wrong, and wrong in the quiet way: a client built from the
         old page sent `days=30`, silently got a SEVEN-day window instead
@@ -7691,6 +7697,18 @@ paths:
         paused saving to accounts on this site, the view is still counted but
         WITHOUT the signed-in person (as an anonymous view), and the answer is
         still 200 (this action never returns the `account_writes_off_here` 409).
+
+        **New account behaviour (account/profile rewrite, PR 2a).** Only on a site
+        where an admin has switched **New account behaviour** on (and, for the
+        stamp, once the foundation migration has been run). Anywhere else none of
+        this applies.
+          * Each new row is stamped with `Source = view`, `Channel` (the copy of
+            the site that recorded it) and `Platform` (the optional `platform`
+            below). Only real views from the live site count towards
+            `popular_songs` and the CCLI view count.
+          * Recording is limited to **60 a minute and 3,000 a day** per signed-in
+            person, or else per address. Over the limit the answer is **429** with
+            `Retry-After`; apps ignore it (the call is fire-and-forget).
       parameters:
         - name: action
           in: query
@@ -7702,9 +7720,13 @@ paths:
           application/json:
             schema:
               type: object
-              required: [songId]
+              required: [song_id]
               properties:
-                songId: { type: string, example: CP-0202 }
+                song_id: { type: string, example: CP-0202, description: "Song id (the older doc named this `songId`; the server has always read `song_id`)" }
+                platform:
+                  type: string
+                  enum: [web, apple, android]
+                  description: Which kind of app recorded the view. Anything else is ignored.
       responses:
         "200":
           description: Logged (or silently dropped when consent is denied)
@@ -7712,6 +7734,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SuccessResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   # ===========================================================================
   # PREFERENCES
@@ -9926,6 +9950,12 @@ paths:
         client runs this once per device, guarded by a localStorage flag; the
         read path dedupes, so an occasional duplicate row is invisible.
         Capped at 50 views; ViewedAt preserved (invalid → NOW()).
+
+        **New account behaviour (account/profile rewrite, PR 2a).** On a site where
+        an admin has switched it on: at most **10 uploads an hour per person**
+        (otherwise **429** with `Retry-After`), and each row is stamped
+        `Source = backfill` (plus `Channel` and the optional `platform`), so an
+        uploaded row never counts towards `popular_songs` or the CCLI view count.
       security:
         - bearerAuth: []
       parameters:
@@ -9950,9 +9980,15 @@ paths:
                     properties:
                       song_id:   { type: string, pattern: "^[A-Za-z0-9_-]{1,32}$" }
                       viewed_at: { type: string, format: date-time }
+                platform:
+                  type: string
+                  enum: [web, apple, android]
+                  description: Which kind of app uploaded these. Anything else is ignored.
       responses:
         "409":
           $ref: "#/components/responses/AccountWritesOff"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Imported count
           content:

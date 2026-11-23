@@ -11,7 +11,7 @@ Written 2026-11-23 against `origin/alpha` 1.4.1, after PR 1 (#2182) was merged. 
 | 2a-3 delete markers for favourites and custom tags | PENDING_2A3 | done, needs Opus review |
 | 2a-4 the web sends what it added and deleted | PENDING_2A4 | done, needs Opus review |
 | 2a-5 import goes through the stores | PENDING_2A5 | done |
-| 2a-6 count real views once | | not started |
+| 2a-6 count real views once | PENDING_2A6 | done |
 | 2a-7 "your most viewed" | | not started |
 | 2a-8 push registrations tied to the sign-in | | not started |
 
