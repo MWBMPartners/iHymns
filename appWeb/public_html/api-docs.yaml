@@ -3848,6 +3848,39 @@ paths:
         The payload accepts BOTH the legacy bare-id array and the tagged
         `{id, tags}` object form. A bare id leaves any existing server tags
         intact; a `{id, tags}` entry sets them. Maximum 500 favorites.
+
+        ### Removed favourites stay removed (account/profile rewrite, PR 2a)
+        Only on a site where an admin has switched **New account behaviour** on
+        (and only once the foundation migration has been run). Anywhere else the
+        request and reply are exactly as above, with no extra reply fields.
+
+        Send `deleted` (possibly `[]`) to say "these are the favourites the
+        person removed on purpose" and, optionally, `added` ("these are the
+        ones the person added on purpose"). The presence of the `deleted` key
+        is the protocol marker ("protocol 2"):
+          * ids in `deleted` are removed and a **delete marker** is written for
+            each (even when no row existed);
+          * a favourite that has a marker is NOT saved again, even when sent in
+            `favorites`, unless it is also in `added`;
+          * favourites merely absent from `favorites` are left alone;
+          * saving a favourite on purpose (in `added`) tears up its marker.
+
+        A request without `deleted` (the Apple apps today) keeps the old
+        rules, plus: a favourite with a marker is held back when `since` is
+        given and the marker is dated at or after `since`; with no `since`, it
+        is treated as a deliberate add and saved (so an iPhone can favourite a
+        song again).
+
+        The reply then also carries `tombstones` (removals made on other
+        devices, dated at or after `since`, for the client to drop locally) and
+        `protocol` (`2` when `deleted`/`added` were honoured, otherwise `1`). The
+        web client forgets the ids it sent on ANY reply that is not the read-only
+        (paused-site) one, protocol `1` included, so stale removals never queue
+        up and replay when the switch is later ticked; a client that wants to
+        keep them until protocol `2` is free to. The read-only reply on a paused
+        site carries `tombstones` too. `tombstones` never lists an item that the
+        same reply returns in `favorites`, and holds at most the newest 5,000
+        markers.
       security:
         - bearerAuth: []
       parameters:
@@ -3883,6 +3916,23 @@ paths:
                         pattern: "^[A-Za-z]+-\\d+$"
                       - $ref: "#/components/schemas/FavoriteEntry"
                   example: [{ "id": "CP-0202", "tags": ["Easter"] }, "MP-0042"]
+                since:
+                  type: string
+                  description: >
+                    The `syncedAt` the previous reply gave (`YYYY-MM-DD HH:MM:SS`).
+                    Guards `replace` deletions and delete markers (see above).
+                deleted:
+                  type: array
+                  maxItems: 500
+                  description: >
+                    Favourites the person removed on purpose (protocol 2). The key
+                    being present, even as `[]`, is what switches the rules.
+                  items: { type: string, pattern: "^[A-Za-z]+-\\d+$" }
+                added:
+                  type: array
+                  maxItems: 500
+                  description: Favourites the person added on purpose (clears their delete markers).
+                  items: { type: string, pattern: "^[A-Za-z]+-\\d+$" }
       responses:
         "409":
           $ref: "#/components/responses/AccountWritesOff"
@@ -3897,6 +3947,20 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/FavoriteEntry"
+                  syncedAt:
+                    type: string
+                    nullable: true
+                  truncated: { type: boolean }
+                  cap: { type: integer }
+                  readOnly: { type: boolean }
+                  tombstones:
+                    type: array
+                    description: Only on a site with the new account behaviour switched on.
+                    items: { $ref: "#/components/schemas/ItemTombstone" }
+                  protocol:
+                    type: integer
+                    enum: [1, 2]
+                    description: Only on a site with the new account behaviour switched on. `2` = `deleted`/`added` were honoured.
         "400":
           description: Invalid request body
           content:
@@ -3915,7 +3979,14 @@ paths:
       operationId: removeFavorite
       tags: [Favorites]
       summary: Remove a favorite
-      description: Remove a single song from the authenticated user's favorites.
+      description: |
+        Remove a single song from the authenticated user's favorites.
+
+        On a site where an admin has switched **New account behaviour** on (and
+        once the foundation migration has been run) the removal also writes a
+        **delete marker**, under the person's row lock, so a device holding an
+        older copy cannot bring the favourite back through `favorites_sync`.
+        The reply is unchanged.
       security:
         - bearerAuth: []
       parameters:
@@ -4018,6 +4089,12 @@ paths:
         Reconcile the local custom-tag pool with the server (WS-G #1019).
         `mode=replace` (default for edits) deletes tags absent from the
         payload; `mode=merge` (first-login backfill) only adds. Max 200 tags.
+
+        ### Removed tags stay removed (account/profile rewrite, PR 2a)
+        Same rules as `favorites_sync`, for the `custom_tag` kind: on a site with
+        **New account behaviour** switched on, `deleted` / `added` lists, delete
+        markers, and `tombstones` + `protocol` in the reply. Anywhere else the
+        request and reply are exactly as above. (No client sends these for tags yet.)
       security:
         - bearerAuth: []
       parameters:
@@ -4044,6 +4121,19 @@ paths:
                   maxItems: 200
                   items: { type: string, maxLength: 50 }
                   example: ["Easter", "Quiet Time"]
+                since:
+                  type: string
+                  description: The `syncedAt` the previous reply gave (`YYYY-MM-DD HH:MM:SS`).
+                deleted:
+                  type: array
+                  maxItems: 200
+                  description: Tags the person removed on purpose (protocol 2). The key being present, even as `[]`, switches the rules.
+                  items: { type: string, maxLength: 50 }
+                added:
+                  type: array
+                  maxItems: 200
+                  description: Tags the person added on purpose (clears their delete markers).
+                  items: { type: string, maxLength: 50 }
       responses:
         "409":
           $ref: "#/components/responses/AccountWritesOff"
@@ -4057,6 +4147,19 @@ paths:
                   tags:
                     type: array
                     items: { type: string }
+                  syncedAt:
+                    type: string
+                    nullable: true
+                  truncated: { type: boolean }
+                  cap: { type: integer }
+                  readOnly: { type: boolean }
+                  tombstones:
+                    type: array
+                    description: Only on a site with the new account behaviour switched on.
+                    items: { $ref: "#/components/schemas/ItemTombstone" }
+                  protocol:
+                    type: integer
+                    enum: [1, 2]
         "400":
           description: Invalid request body
           content:
@@ -4818,6 +4921,14 @@ paths:
         tokens, but only when this session declared `platform: apple` (account/
         profile rewrite A6); signing out a browser leaves the person's iPhone
         notification registrations alone.
+
+        **New account behaviour (PR 2a, G4).** On a site where an admin has
+        switched it on (and once the foundation migration has been run), each
+        push registration remembers the sign-in it was made under, so signing out
+        removes ONLY the registrations tied to THIS session (plus, for an Apple
+        session, older registrations tied to no session). Other devices of the
+        same person keep their notifications. Anywhere else the A6 rule above
+        applies unchanged. The reply is the same either way.
       security:
         - bearerAuth: []
       parameters:
@@ -5728,6 +5839,13 @@ paths:
         (or any session of another or unknown platform) leaves the person's
         iPhone notification registrations alone. The same rule applies to
         `auth_logout`.
+
+        **New account behaviour (PR 2a, G4).** On a site where an admin has
+        switched it on (and once the foundation migration has been run), only the
+        push registrations tied to the sign-in(s) being removed are cleared, plus,
+        for an Apple session, older registrations tied to no session. The full
+        hash of each removed sign-in is read before its row is deleted. Anywhere
+        else the A6 rule above applies unchanged.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -7340,6 +7458,12 @@ paths:
         excluded, and the caller's language preference is applied after the
         limit — so the list can come back shorter than `limit` asked for.
 
+        **New account behaviour (account/profile rewrite, PR 2a).** On a site where
+        an admin has switched it on (and once the foundation migration has been
+        run), only real views recorded by the live site count: views uploaded
+        later from a device list, and views recorded by the test copies of the
+        site, are left out. Anywhere else every row counts, as before.
+
         **2026-09-08 correction.** Every parameter and the response key on this
         entry were wrong, and wrong in the quiet way: a client built from the
         old page sent `days=30`, silently got a SEVEN-day window instead
@@ -7399,6 +7523,88 @@ paths:
                     description: >-
                       Present and true ONLY when the database was unreachable —
                       `songs` is then an empty list rather than an error.
+
+  /api.php?action=my_most_viewed:
+    get:
+      operationId: myMostViewed
+      tags: [Discovery]
+      summary: The signed-in person's own most-viewed songs
+      description: |
+        "Your most viewed" (account/profile rewrite, PR 2a, #2175). The songs the
+        signed-in person has opened most often over a period, most viewed first,
+        at most 20. It counts ALL of the person's own views (every source, every
+        copy of the site): it is one account everywhere. It never counts anybody
+        else's views. Hidden songs and songs in a disabled songbook are left out,
+        and the person's language preference is applied after the limit, so the
+        list can be shorter than 20.
+
+        With no `period`, the person's saved choice (the `home.mostViewedPeriod`
+        profile item) is used, otherwise `12m`.
+
+        Only on a site where an admin has switched **New account behaviour** on;
+        anywhere else the answer is **409** `profile_sync_disabled`. Limited to
+        60 a minute per person (**429**).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [my_most_viewed] }
+        - name: period
+          in: query
+          required: false
+          description: >-
+            How far back to count: `30d` = 30 days, `90d` = 90 days, `12m` = 365
+            days, `all` = no limit. Anything else is a 400.
+          schema: { type: string, enum: [30d, 90d, 12m, all] }
+      responses:
+        "200":
+          description: The songs, most viewed first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songs:
+                    type: array
+                    maxItems: 20
+                    items:
+                      type: object
+                      properties:
+                        songId:       { type: string, example: CP-0202 }
+                        title:        { type: string, example: Amazing Grace }
+                        number:       { type: integer, example: 202 }
+                        songbook:     { type: string, example: CP }
+                        songbookName: { type: string, nullable: true, example: Christian Praise }
+                        language:     { type: string, nullable: true, example: en }
+                        views:        { type: integer, example: 12 }
+                  period:
+                    type: string
+                    enum: [30d, 90d, 12m, all]
+                    description: The period actually used.
+                  fallback:
+                    type: boolean
+                    description: Present and true ONLY when the database was unreachable (`songs` is then empty).
+        "400":
+          description: "Unknown `period` (reason: invalid_period)"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:  { type: string }
+                  reason: { type: string, enum: [invalid_period] }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          $ref: "#/components/responses/ProfileSyncDisabled"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api.php?action=tags:
     get:
@@ -7593,6 +7799,24 @@ paths:
         paused saving to accounts on this site, the view is still counted but
         WITHOUT the signed-in person (as an anonymous view), and the answer is
         still 200 (this action never returns the `account_writes_off_here` 409).
+
+        **New account behaviour (account/profile rewrite, PR 2a).** Only on a site
+        where an admin has switched **New account behaviour** on (and, for the
+        stamp, once the foundation migration has been run). Anywhere else none of
+        this applies.
+          * Each new row is stamped with `Source = view`, `Channel` (the copy of
+            the site that recorded it) and `Platform` (the optional `platform`
+            below). Only real views from the live site count towards
+            `popular_songs` and the CCLI view count.
+          * Recording is limited to **60 a minute and 3,000 a day** per caller.
+            "Caller" is the signed-in person; else a Service Mode device (the live
+            `ihymns_sf_presence_token` cookie, checked against an active presence
+            row, so a made-up token does not count); else a device that sent its own
+            optional `device_id` (also backed up by the address limit); else the
+            address, at **ten times** the numbers (600 a minute, 30,000 a day),
+            because a whole congregation can sit behind one church router. Over the
+            limit the answer is **429** with `Retry-After`; apps ignore it (the call
+            is fire-and-forget).
       parameters:
         - name: action
           in: query
@@ -7604,9 +7828,17 @@ paths:
           application/json:
             schema:
               type: object
-              required: [songId]
+              required: [song_id]
               properties:
-                songId: { type: string, example: CP-0202 }
+                song_id: { type: string, example: CP-0202, description: "Song id (the older doc named this `songId`; the server has always read `song_id`)" }
+                platform:
+                  type: string
+                  enum: [web, apple, android]
+                  description: Which kind of app recorded the view. Anything else is ignored.
+                device_id:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{8,64}$'
+                  description: Optional random id the app keeps for this device, used only to count views per device instead of per address. Anything malformed is ignored.
       responses:
         "200":
           description: Logged (or silently dropped when consent is denied)
@@ -7614,6 +7846,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SuccessResponse"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   # ===========================================================================
   # PREFERENCES
@@ -8818,6 +9052,15 @@ paths:
         could otherwise register a token against any active session by
         guessing its numeric id. Ordinary `kind: device` tokens are not
         session-scoped and skip this check entirely.
+
+        **New account behaviour (PR 2a, G4).** On a site where an admin has
+        switched it on (and once the foundation migration has been run), the
+        registration also remembers which sign-in it was made under (a hash of the
+        session token, never the token), including when an existing registration
+        is re-registered. Signing that session out (`auth_logout` /
+        `device_signout`) then removes only its own registration. A request with
+        no session token, or anywhere the behaviour is off, registers exactly as
+        before. The reply is unchanged.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -9828,6 +10071,12 @@ paths:
         client runs this once per device, guarded by a localStorage flag; the
         read path dedupes, so an occasional duplicate row is invisible.
         Capped at 50 views; ViewedAt preserved (invalid → NOW()).
+
+        **New account behaviour (account/profile rewrite, PR 2a).** On a site where
+        an admin has switched it on: at most **10 uploads an hour per person**
+        (otherwise **429** with `Retry-After`), and each row is stamped
+        `Source = backfill` (plus `Channel` and the optional `platform`), so an
+        uploaded row never counts towards `popular_songs` or the CCLI view count.
       security:
         - bearerAuth: []
       parameters:
@@ -9852,9 +10101,15 @@ paths:
                     properties:
                       song_id:   { type: string, pattern: "^[A-Za-z0-9_-]{1,32}$" }
                       viewed_at: { type: string, format: date-time }
+                platform:
+                  type: string
+                  enum: [web, apple, android]
+                  description: Which kind of app uploaded these. Anything else is ignored.
       responses:
         "409":
           $ref: "#/components/responses/AccountWritesOff"
+        "429":
+          $ref: "#/components/responses/RateLimited"
         "200":
           description: Imported count
           content:
@@ -25318,6 +25573,20 @@ components:
             properties:
               error:  { type: string }
               reason: { type: string, enum: [account_writes_off_here], example: account_writes_off_here }
+    ProfileSyncDisabled:
+      description: |
+        The new account behaviour is not switched on for this site (account/profile
+        rewrite, PR 2a). An admin switches it on per site (live, beta or dev). The
+        response is **409** with `reason: profile_sync_disabled`. NOTHING was
+        changed. A client should branch on the 409 status and the `reason` code
+        (never the sentence) and treat the feature as unavailable on this site.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:  { type: string }
+              reason: { type: string, enum: [profile_sync_disabled], example: profile_sync_disabled }
     RateLimited:
       description: |
         Too Many Requests — the per-window read rate limit was exceeded
@@ -26442,6 +26711,24 @@ components:
             type: string
             maxLength: 50
           example: ["Easter", "Communion"]
+
+    ItemTombstone:
+      type: object
+      description: >
+        A delete marker: something the person removed on purpose on some device
+        (account/profile rewrite, PR 2a). The client drops its own copy.
+      required: [id, deletedAt, reason]
+      properties:
+        id:
+          type: string
+          description: The removed item (a SongId for a favourite, the tag text for a custom tag)
+          example: CP-0202
+        deletedAt:
+          type: string
+          description: Database-clock time of the removal (`YYYY-MM-DD HH:MM:SS`)
+        reason:
+          type: string
+          enum: [user, expired, admin]
 
     # -------------------------------------------------------------------------
     # Song markup models (#1266 Phase 1 — dormant, no client caller yet)

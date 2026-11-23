@@ -948,6 +948,30 @@ function serviceMode_presenceRole(\mysqli $db, string $presenceToken): string
 }
 
 /**
+ * Is this presence token live right now (a real, active, unexpired row)? Used to tell a genuine
+ * Service Mode device from someone who merely made a token up, e.g. for a per-device rate limit.
+ * Fails to false (never throws) on an un-migrated install or any lookup error.
+ */
+function serviceMode_presenceTokenLive(\mysqli $db, string $presenceToken): bool
+{
+    if (!preg_match('/^[A-Za-z0-9_\-]{43}$/', $presenceToken) || !serviceMode_presenceTableExists($db)) {
+        return false;
+    }
+    try {
+        $stmt = $db->prepare(
+            'SELECT 1 FROM tblServicePresence WHERE PresenceToken = ? AND IsActive = 1 AND ExpiresAt > UTC_TIMESTAMP() LIMIT 1'
+        );
+        $stmt->bind_param('s', $presenceToken);
+        $stmt->execute();
+        $live = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+        return $live;
+    } catch (\Throwable $_e) {
+        return false;
+    }
+}
+
+/**
  * #1406 — validate a client-declared join role against the closed vocabulary.
  * Anything unrecognised (including absent) fails OPEN to 'congregant' —
  * never blocks a join over a role the client mis-typed.

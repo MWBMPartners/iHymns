@@ -422,6 +422,30 @@ $homeCardEnd = '</div>';
     </div>
     <?= $homeCardEnd ?>
 
+    <?= $homeCard('my-most-viewed') ?>
+    <!-- Your most viewed (#2175, account/profile rewrite PR 2a step 2a-7). The home fragment is shared-cache, so
+         it cannot know who is looking or whether the new account behaviour is switched on for this site: the
+         section starts hidden and js/modules/home-page.js shows it only when a signed-in person gets a 200 from
+         ?action=my_most_viewed (a 409 means "not switched on here", so it simply stays hidden). -->
+    <div class="mb-4" id="my-most-viewed-section" style="display:none">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2">
+            <h2 class="h5 mb-0"><i class="fa-solid fa-chart-simple me-2" aria-hidden="true"></i>Your Most Viewed</h2>
+            <div>
+                <label for="my-most-viewed-period" class="visually-hidden">Show my most viewed songs for</label>
+                <select id="my-most-viewed-period" class="form-select form-select-sm w-auto">
+                    <option value="30d">Last 30 days</option>
+                    <option value="90d">Last 90 days</option>
+                    <option value="12m">Last 12 months</option>
+                    <option value="all">All time</option>
+                </select>
+            </div>
+        </div>
+        <?php /* a11y audit M10 — see the matching comment on Recently Viewed above. */ ?>
+        <div id="my-most-viewed-list" class="list-group list-group-flush"></div>
+        <p id="my-most-viewed-empty" class="text-muted small mb-0 d-none">No songs viewed in this period yet.</p>
+    </div>
+    <?= $homeCardEnd ?>
+
     <?= $homeCard('popular-songs') ?>
     <!-- Popular Songs (#303) -->
     <div class="mb-4" id="popular-songs-section">

@@ -1119,7 +1119,7 @@ export class Router {
                     apiFetch(`${this.apiUrl}?action=song_view`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ song_id: songId })
+                        body: JSON.stringify({ song_id: songId, platform: 'web' }) /* PR 2a: say which kind of app recorded it */
                     }).catch(() => {}); // fire-and-forget
                 }
 

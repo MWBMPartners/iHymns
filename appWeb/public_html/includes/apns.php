@@ -126,6 +126,7 @@ declare(strict_types=1);
    load time, so requiring it here keeps this module (and its CLI test)
    standalone-loadable too. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'apple_siwa.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php'; /* songRelocateIsTransactionFatal() */
 
 /** Closed vocabulary for `tblApnsTokens.ApnsEnv` — VARCHAR, app-validated,
  *  never an ENUM (rule #20); matches the shipped column COMMENT exactly. */
@@ -163,6 +164,113 @@ function apnsTokensTableExists(\mysqli $db): bool
         $exists = false; /* un-migrated install → treat as absent → caller 503s */
     }
     return $exists;
+}
+
+/**
+ * Does the `tblApnsTokens.ApiTokenHash` column exist on THIS install?
+ *
+ * ELI5: a phone's push registration can be tied to the one sign-in that made it,
+ * so signing that sign-in out removes only its own registration. The column that
+ * remembers the tie is added by the foundation migration (B1), which is run by
+ * hand, so it may not be there yet. Every use of the column MUST sit behind this
+ * check (tests/php/test-account-foundation-gating.php enforces it); without the
+ * column the old rules apply.
+ *
+ * Remembered for the request. An error while asking means "not there" (not
+ * remembered), except an error that ENDS a transaction, which is passed up.
+ */
+function apnsTokenHashReady(\mysqli $db): bool
+{
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+    try {
+        $st = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblApnsTokens'
+                AND COLUMN_NAME = 'ApiTokenHash' LIMIT 1"
+        );
+        $st->execute();
+        $ready = $st->get_result()->fetch_row() !== null;
+        $st->close();
+        return $ready;
+    } catch (\Throwable $_e) {
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
+        return false;
+    }
+}
+
+/**
+ * Remove the push registrations that belong to a sign-out. THE only place that deletes
+ * push registrations by person (account/profile rewrite PR 2a, step 2a-8, G4).
+ *
+ * ELI5: when a phone signs out, its notifications should stop, and ONLY its own. A
+ * registration now remembers which sign-in it was made under (`ApiTokenHash`), so
+ * signing that one session out removes that registration and leaves the person's other
+ * devices alone. Registrations made before this (no remembered sign-in) keep the older
+ * rule from A6: they go only when the session being signed out is an Apple one.
+ *
+ * Two modes:
+ *  - `$perSession` true (the new account behaviour is on AND the column exists): delete
+ *    the rows tied to the given sessions, plus, when `$sessionOwnsApplePush`, the rows
+ *    tied to no session at all.
+ *  - otherwise (the previous behaviour, unchanged): when `$sessionOwnsApplePush`, delete
+ *    every one of the person's registrations; when not, delete nothing.
+ *
+ * Every value is bound; the `IN (...)` list is built from placeholders only.
+ *
+ * @param \mysqli  $db                   live connection
+ * @param int      $userId               the person (every delete is filtered by it)
+ * @param string[] $sessionHashes        full sha256 hashes of the sign-ins being ended
+ * @param bool     $sessionOwnsApplePush apiTokenSessionOwnsApplePush() for the ended session (A6)
+ * @param bool     $perSession           use the per-session rule (see above)
+ * @return int rows removed
+ */
+function apnsDeleteForSessions(\mysqli $db, int $userId, array $sessionHashes, bool $sessionOwnsApplePush, bool $perSession): int
+{
+    if (!apnsTokensTableExists($db)) {
+        return 0;
+    }
+    $removed = 0;
+    if (!$perSession || !apnsTokenHashReady($db)) {
+        /* The previous behaviour (A6): an Apple session removes the person's registrations; any other does not. */
+        if ($sessionOwnsApplePush) {
+            $del = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
+            $del->bind_param('i', $userId);
+            $del->execute();
+            $removed += $del->affected_rows;
+            $del->close();
+        }
+        return $removed;
+    }
+    $hashes = array_values(array_unique(array_filter($sessionHashes, static fn($h) => is_string($h) && preg_match('/^[a-f0-9]{64}$/', $h) === 1)));
+    if ($hashes !== []) {
+        $marks = implode(',', array_fill(0, count($hashes), '?'));
+        $del = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ? AND ApiTokenHash IN (' . $marks . ')');
+        $del->bind_param('i' . str_repeat('s', count($hashes)), $userId, ...$hashes);
+        $del->execute();
+        $removed += $del->affected_rows;
+        $del->close();
+    }
+    if ($sessionOwnsApplePush) {
+        /* Registrations made before they were tied to a sign-in keep the A6 rule. So do
+           registrations whose sign-in has since disappeared (removed by a password change or
+           swept as expired): nothing can sign them out any more, so an Apple sign-out is the
+           chance to clear them. A registration tied to one of the person's LIVE sign-ins stays. */
+        $now = gmdate('Y-m-d H:i:s');
+        $del = $db->prepare(
+            'DELETE FROM tblApnsTokens
+              WHERE UserId = ?
+                AND (ApiTokenHash IS NULL
+                     OR ApiTokenHash NOT IN (SELECT Token FROM tblApiTokens WHERE UserId = ? AND ExpiresAt > ?))'
+        );
+        $del->bind_param('iis', $userId, $userId, $now);
+        $del->execute();
+        $removed += $del->affected_rows;
+        $del->close();
+    }
+    return $removed;
 }
 
 /**

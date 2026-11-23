@@ -58,6 +58,27 @@ console.log('\n1 - the storage core\n');
     st.setItem(C.STORAGE_SETLISTS_SYNCED_AT, '2026-01-01 00:00:00');
     check('no owner + anonymous data: the first person to sign in claims it', core.reconcileDataOwner(st, 7).action === 'claim' && core.readDataOwner(st) === '7');
     check('the same person again: nothing moves', core.reconcileDataOwner(st, '7').action === 'same');
+    {
+        /* review fix 6: removals noted while nobody was signed in are not applied to whoever signs in first */
+        const an = new FakeStorage();
+        an.setItem(C.STORAGE_FAVORITES, JSON.stringify([{ id: 'MP-1' }]));
+        an.setItem(C.STORAGE_FAVORITES_ADDED, JSON.stringify(['MP-1']));
+        an.setItem(C.STORAGE_FAVORITES_DELETED, JSON.stringify(['CP-9']));
+        an.setItem(C.STORAGE_SETLISTS_DELETED, JSON.stringify(['sl-old']));
+        const r0 = core.reconcileDataOwner(an, 5);
+        check('first sign-in claims anonymous data and drops the removals made while signed out',
+            r0.action === 'claim' && an.getItem(C.STORAGE_FAVORITES_DELETED) === null && an.getItem(C.STORAGE_SETLISTS_DELETED) === null);
+        check('...but keeps the favourites themselves and what was added on purpose',
+            JSON.parse(an.getItem(C.STORAGE_FAVORITES))[0].id === 'MP-1' && an.getItem(C.STORAGE_FAVORITES_ADDED) === JSON.stringify(['MP-1']));
+        /* a removal made AFTER the claim (signed in as that person) is theirs and survives a same-person reconcile */
+        an.setItem(C.STORAGE_FAVORITES_DELETED, JSON.stringify(['CP-7']));
+        core.reconcileDataOwner(an, 5);
+        check('removals made after the claim are the owner\'s and are kept', an.getItem(C.STORAGE_FAVORITES_DELETED) === JSON.stringify(['CP-7']));
+        /* a returning person's own earlier removals (in their stash) are not dropped */
+        core.protectOnUnplannedSignOut(an, 5);
+        core.reconcileDataOwner(an, 5);
+        check('a returning person gets their own stashed removals back', an.getItem(C.STORAGE_FAVORITES_DELETED) === JSON.stringify(['CP-7']), String(an.getItem(C.STORAGE_FAVORITES_DELETED)));
+    }
     const r = core.reconcileDataOwner(st, 8);
     check('a different person: the data is set aside', r.action === 'switched' && r.stashed === true);
     check('the live favourites are empty for the new person', st.getItem(C.STORAGE_FAVORITES) === null && st.getItem(C.STORAGE_SETLISTS) === null);

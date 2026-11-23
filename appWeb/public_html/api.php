@@ -255,6 +255,8 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    over-cap user silently lost the tail of their collection. One helper, three
    call sites — never a per-handler copy of the decision. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_sync.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_sync_gate.php'; /* PR 2a: the per-site switch for the new account behaviour (off by default) */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_history_provenance.php'; /* PR 2a: what a view is stamped with, and which views count */
 /* #1671 F5 — the ONE namespaced user-preference store. `user_settings` used to
    be a whole-blob replace, which cannot survive a second product sharing this
    database: whichever client saved last wiped the other's keys. The pure merge
@@ -3915,16 +3917,19 @@ if ($action !== null) {
                    iPhone notification registrations (it used to delete every
                    Apple device's row). Step G4 later ties each registration to
                    its own session. */
-                if ($authedUser && apiTokenSessionOwnsApplePush($signedOutPlatform)) {
+                /* G4 (PR 2a): with the new account behaviour on, each registration is tied to
+                   the sign-in it was made under, so ONLY this session's registrations go (plus,
+                   for an Apple session, the older ones tied to no session). Off: exactly A6. */
+                if ($authedUser) {
                     try {
                         require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
-                        if (apnsTokensTableExists($db)) {
-                            $apnsUserId = (int)$authedUser['Id'];
-                            $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
-                            $delApns->bind_param('i', $apnsUserId);
-                            $delApns->execute();
-                            $delApns->close();
-                        }
+                        apnsDeleteForSessions(
+                            $db,
+                            (int)$authedUser['Id'],
+                            [$tokenHash],
+                            apiTokenSessionOwnsApplePush($signedOutPlatform),
+                            profileSyncEnabledHere()
+                        );
                     } catch (\Throwable $e) {
                         error_log('[api/auth_logout] apns token cleanup failed: ' . $e->getMessage());
                     }
@@ -6258,6 +6263,9 @@ if ($action !== null) {
                BEFORE its row is deleted, so a stale browser can be removed from
                the device list without stopping the iPhone's notifications. */
             $signedOutPlatform = apiTokenSessionPlatform($db, $userId, $deviceId, true);
+            /* G4 (PR 2a): the FULL hashes for this prefix, read BEFORE the rows are deleted, so the
+               push registrations tied to exactly these sign-ins can be removed afterwards. */
+            $signedOutHashes = profileSyncEnabledHere() ? apiTokenHashesForDevicePrefix($db, $userId, $deviceId) : [];
             $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token LIKE CONCAT(?, "%")');
             $stmt->bind_param('is', $userId, $deviceId);
             $stmt->execute();
@@ -6275,18 +6283,17 @@ if ($action !== null) {
                sign-out/410") — same cleanup as auth_logout above, wrapped
                defensively so a signed-out device never sees a 500 because
                of this best-effort cleanup. */
-            if (apiTokenSessionOwnsApplePush($signedOutPlatform)) {
-                try {
-                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
-                    if (apnsTokensTableExists($db)) {
-                        $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
-                        $delApns->bind_param('i', $userId);
-                        $delApns->execute();
-                        $delApns->close();
-                    }
-                } catch (\Throwable $e) {
-                    error_log('[api/device_signout] apns token cleanup failed: ' . $e->getMessage());
-                }
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+                apnsDeleteForSessions(
+                    $db,
+                    $userId,
+                    $signedOutHashes,
+                    apiTokenSessionOwnsApplePush($signedOutPlatform),
+                    profileSyncEnabledHere()
+                );
+            } catch (\Throwable $e) {
+                error_log('[api/device_signout] apns token cleanup failed: ' . $e->getMessage());
             }
 
             sendJson(['ok' => true]);
@@ -6503,13 +6510,36 @@ if ($action !== null) {
             }
 
             try {
-                $ins = $db->prepare(
-                    'INSERT INTO tblApnsTokens (Kind, UserId, SessionId, PushToken, ApnsEnv, ExpiresAt)
-                     VALUES (?, ?, ?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE Kind = VALUES(Kind), UserId = VALUES(UserId),
-                         SessionId = VALUES(SessionId), ApnsEnv = VALUES(ApnsEnv), ExpiresAt = VALUES(ExpiresAt)'
-                );
-                $ins->bind_param('siisss', $kind, $userId, $sessionId, $binToken, $apnsEnv, $sessionExpiresAt);
+                /* G4 (PR 2a): with the new account behaviour on, remember which sign-in this
+                   registration was made under (the hash of the session token, the same value the
+                   sign-in table stores), including when an existing registration is updated, so
+                   signing THAT session out removes only its own registration. Off, no session
+                   token, or the column not there yet: the previous statement. */
+                $apnsBearer = getAuthBearerToken();
+                $apnsSessionHash = ($apnsBearer !== null && $apnsBearer !== '') ? hash('sha256', $apnsBearer) : null;
+                if ($apnsSessionHash !== null && profileSyncEnabledHere() && apnsTokenHashReady($db)) {
+                    $ins = $db->prepare(
+                        'INSERT INTO tblApnsTokens (Kind, UserId, SessionId, PushToken, ApnsEnv, ExpiresAt, ApiTokenHash)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE Kind = VALUES(Kind), UserId = VALUES(UserId),
+                             SessionId = VALUES(SessionId), ApnsEnv = VALUES(ApnsEnv), ExpiresAt = VALUES(ExpiresAt),
+                             ApiTokenHash = VALUES(ApiTokenHash)'
+                    );
+                    $ins->bind_param('siissss', $kind, $userId, $sessionId, $binToken, $apnsEnv, $sessionExpiresAt, $apnsSessionHash);
+                } else {
+                    /* The previous statement, with ONE addition once the column exists: a registration
+                       that is re-made without a sign-in to tie it to (the switch is off, or there is no
+                       session token) forgets any older tie. Otherwise it would stay tied to the
+                       PREVIOUS owner's session and could survive that person signing out. */
+                    $forgetTie = apnsTokenHashReady($db) ? ', ApiTokenHash = NULL' : '';
+                    $ins = $db->prepare(
+                        'INSERT INTO tblApnsTokens (Kind, UserId, SessionId, PushToken, ApnsEnv, ExpiresAt)
+                         VALUES (?, ?, ?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE Kind = VALUES(Kind), UserId = VALUES(UserId),
+                             SessionId = VALUES(SessionId), ApnsEnv = VALUES(ApnsEnv), ExpiresAt = VALUES(ExpiresAt)' . $forgetTie
+                    );
+                    $ins->bind_param('siisss', $kind, $userId, $sessionId, $binToken, $apnsEnv, $sessionExpiresAt);
+                }
                 $ins->execute();
                 $ins->close();
             } catch (\Throwable $e) {
@@ -6822,6 +6852,22 @@ if ($action !== null) {
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
+            /* PR 2a (epic #2180): the NEW rules - delete markers, `deleted` / `added` lists - apply
+               only when this site's switch is ticked (includes/profile_sync_gate.php). Off (the
+               default) means this handler behaves exactly as it did before. The markers also need
+               the B1 table: checked here, remembered for the request, and every marker call below
+               re-checks it. */
+            $psOn         = profileSyncEnabledHere();
+            $markersReady = $psOn && userSyncItemTombstonesReady($db);
+            /* A request that carries a `deleted` key (even `[]`) is "protocol 2": it names what the
+               person removed, so absence no longer means "deleted". */
+            $protocol2 = $psOn && userSyncExplicitProtocol($body);
+            $resolveSid = static function (string $s) use ($db): string {
+                return songPublicId_looksLikePublicId($s) ? (string)songPublicId_resolveToSongId($db, $s) : $s;
+            };
+            $deletedIds = $protocol2 ? userSyncCleanSongIdList($body['deleted'] ?? null, $resolveSid) : [];
+            $addedIds   = $protocol2 ? userSyncCleanSongIdList($body['added'] ?? null, $resolveSid) : [];
+
             /* READ-ONLY merge on a paused site: return the stored favourites and change
                NOTHING (no inserts, no deletes, no `syncedAt`, so the device does not
                arm its deleting syncs). */
@@ -6833,7 +6879,7 @@ if ($action !== null) {
                 $stmt->execute();
                 $roRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
                 $stmt->close();
-                sendJson([
+                $roReply = [
                     'favorites' => array_map(static function ($row) {
                         $t = $row['Tags'] !== null ? json_decode($row['Tags'], true) : [];
                         return ['id' => $row['SongId'], 'tags' => is_array($t) ? array_values($t) : []];
@@ -6842,7 +6888,13 @@ if ($action !== null) {
                     'truncated' => false,
                     'cap'       => 500,
                     'readOnly'  => true,
-                ]);
+                ];
+                if ($psOn) {
+                    /* A paused site still tells a device what was removed elsewhere (read only). */
+                    $roReply['tombstones'] = userSyncItemTombstoneList($db, $userId, 'favorite', $since);
+                    $roReply['protocol']   = 1;
+                }
+                sendJson($roReply);
                 break;
             }
 
@@ -6886,6 +6938,46 @@ if ($action !== null) {
                 $localFavs[$sid] = $tags;
             }
 
+            /* PR 2a: with the markers table ready, everything from here to the commit is ONE
+               transaction under the person's row lock (the same lock the settings writer takes), so
+               a row and its delete marker can never exist together and two requests for one person
+               cannot interleave. Order inside it (plan 2a-3): explicit deletes, explicit adds,
+               read the markers, the old reads/absence deletes, upsert. */
+            try {
+            /* Inside the try, so a lock-wait timeout on the person's row can never leave a
+               transaction open: the catch below rolls back whatever was started. */
+            if ($markersReady) {
+                $db->begin_transaction();
+                userSyncLockPerson($db, $userId);
+            }
+
+            /* Explicit deletes (protocol 2). The marker is written EVEN WHEN NO ROW EXISTS (the delete
+               may be racing another device's add), then the row is removed. Before the B1 table
+               exists no marker is written but the row is still removed. */
+            $deleted = 0;
+            if ($deletedIds !== []) {
+                if ($markersReady) {
+                    /* Only songs that exist (or that the person really had) get a marker; a made-up id
+                       would only fill the person's notes list. Asked BEFORE the rows are deleted. */
+                    userSyncItemTombstoneWrite($db, $userId, 'favorite', userSyncKnownFavoriteIds($db, $userId, $deletedIds), userSyncNow($db), 'user');
+                }
+                $del = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
+                $delId = '';
+                $del->bind_param('is', $userId, $delId);
+                foreach ($deletedIds as $delId) {
+                    $del->execute();
+                    $deleted += $del->affected_rows;
+                }
+                $del->close();
+            }
+            /* Explicit adds: the person added these on purpose, so tear up their markers. Only ids that
+               are also in the payload (so a marker is never cleared without the row being saved). */
+            if ($markersReady && $addedIds !== []) {
+                userSyncItemTombstoneClear($db, $userId, 'favorite', array_values(array_intersect($addedIds, array_keys($localFavs))));
+            }
+            /* Read the markers AFTER the two steps above, so they already reflect them. */
+            $tombMap = $markersReady ? userSyncItemTombstoneMap($db, $userId, 'favorite') : [];
+
             /* Existing server favourites — id + tags (for the replace diff and
                the MERGE-mode tag union below). CreatedAt joins the SELECT for
                #1649's watermark guard: tblUserFavorites has no UpdatedAt, so
@@ -6905,6 +6997,21 @@ if ($action !== null) {
                 $serverTagMap[$r['SongId']] = is_array($decoded) ? $decoded : [];
             }
 
+            /* A row saved AFTER its delete marker was put there by older code that does not know
+               about markers (the live site before this change, a site with the switch off, a
+               cached old web page): the later save is the truth, so tear up the stale marker. Done
+               inside the lock, before the markers are used below. */
+            if ($markersReady && $tombMap !== []) {
+                $revived = userSyncItemTombstonesRevivedByRows(
+                    $tombMap,
+                    array_map(static fn(array $r): array => ['id' => (string)$r['SongId'], 'ts' => (string)$r['CreatedAt']], $serverRows)
+                );
+                if ($revived !== []) {
+                    userSyncItemTombstoneClear($db, $userId, 'favorite', $revived);
+                    $tombMap = array_diff_key($tombMap, array_flip($revived));
+                }
+            }
+
             /* Authoritative replace, guarded (#1649): delete server favourites
                the client no longer has — but ONLY when the payload was complete
                (not clipped by the 500 cap) and the row predates the client's
@@ -6920,10 +7027,9 @@ if ($action !== null) {
                 $syncMode,
                 $truncated,
                 $since,
-                false,
+                $protocol2, /* a protocol-2 request names its deletions, so absence deletes nothing */
                 userSyncAbsenceDeleteRequiresSince() /* A8 */
             );
-            $deleted = 0;
             if (count($deletableIds) > 0) {
                 $del = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
                 $delId = '';
@@ -6933,6 +7039,17 @@ if ($action !== null) {
                     $deleted += $del->affected_rows;
                 }
                 $del->close();
+                /* An absence delete is a deletion too: leave a marker so a stale device cannot bring it back. */
+                if ($markersReady) {
+                    userSyncItemTombstoneWrite($db, $userId, 'favorite', $deletableIds, userSyncNow($db), 'user');
+                }
+            }
+
+            /* Which sent favourites may be saved? Those with no delete marker, plus deliberate adds
+               (see userSyncItemUpsertPlan()). With no markers the plan simply saves every one. */
+            $plan = userSyncItemUpsertPlan(array_map('strval', array_keys($localFavs)), $addedIds, $tombMap, $since, $protocol2);
+            if ($markersReady && $plan['clear'] !== []) {
+                userSyncItemTombstoneClear($db, $userId, 'favorite', $plan['clear']);
             }
 
             /* Upsert each payload favourite. Tags are only overwritten when
@@ -6948,7 +7065,8 @@ if ($action !== null) {
             $tagsBound = null;
             $upsert->bind_param('iss', $userId, $songIdBound, $tagsBound);
             $newlyAdded = 0;
-            foreach ($localFavs as $sid => $tags) {
+            foreach ($plan['upsert'] as $sid) {
+                $tags = $localFavs[$sid];
                 $songIdBound = $sid;
                 if ($syncMode === 'merge') {
                     /* MERGE = first-login reconcile: UNION the incoming tags
@@ -6977,6 +7095,10 @@ if ($action !== null) {
                     $upsert->execute();
                     if ($upsert->affected_rows === 1) $newlyAdded++; /* 1=insert, 2=update, 0=no change */
                 } catch (\Throwable $_e) {
+                    /* An error that ENDS the transaction must go up, never be skipped (PR 2a: this
+                       loop can now run inside one). Only then: with no transaction (the switch is off
+                       or the table is not there) one failed row is skipped exactly as before. */
+                    if ($markersReady && songRelocateIsTransactionFatal($_e)) { throw $_e; }
                     /* Orphan song id / transient error — skip, keep the batch. */
                 }
             }
@@ -7001,6 +7123,25 @@ if ($action !== null) {
                 return ['id' => $row['SongId'], 'tags' => is_array($t) ? array_values($t) : []];
             }, $finalRows);
 
+            /* The markers to hand back (so the device drops what was removed elsewhere), read inside
+               the same transaction. */
+            $replyTombstones = $markersReady
+                ? userSyncItemTombstonesWithoutLive(
+                    userSyncItemTombstoneList($db, $userId, 'favorite', $since),
+                    array_column($finalRows, 'SongId')
+                )
+                : [];
+
+            if ($markersReady) {
+                $db->commit();
+            }
+            } catch (\Throwable $_syncErr) {
+                if ($markersReady) {
+                    try { $db->rollback(); } catch (\Throwable $_r) { /* already gone */ }
+                }
+                throw $_syncErr;
+            }
+
             /* Audit (#535) — one row per sync, since the sync is the
                meaningful user action. `truncated` added by #1649: an over-cap
                sync is the single most useful thing to see in the log when a
@@ -7015,13 +7156,20 @@ if ($action !== null) {
                 ]);
             }
 
-            sendJson([
+            $favReply = [
                 'favorites' => $finalFavs,
                 /* #1649 — client stores this and returns it as `since`. */
                 'syncedAt'  => $syncedAt,
                 'truncated' => $truncated,
                 'cap'       => 500,
-            ]);
+            ];
+            if ($psOn) {
+                /* PR 2a: `protocol` is 2 when this request's `deleted` / `added` lists were honoured
+                   (a client clears the ids it sent only then); `tombstones` are removals made elsewhere. */
+                $favReply['tombstones'] = $replyTombstones;
+                $favReply['protocol']   = $protocol2 ? 2 : 1;
+            }
+            sendJson($favReply);
             break;
 
         /* -----------------------------------------------------------------
@@ -7064,12 +7212,36 @@ if ($action !== null) {
             }
 
             $db = getDbMysqli();
-            $stmt = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
             $authUserId = (int)$authUser['Id'];
-            $stmt->bind_param('is', $authUserId, $removeSongId);
-            $stmt->execute();
-            $affected = $stmt->affected_rows;
-            $stmt->close();
+            /* PR 2a (epic #2180): when this site's switch is ticked AND the B1 marker table exists, a
+               removal is also written down as a delete marker, under the person's row lock, so a
+               device with an older copy cannot bring the favourite back. Otherwise exactly as before. */
+            $markersReady = profileSyncEnabledHere() && userSyncItemTombstonesReady($db);
+            if ($markersReady) {
+                $db->begin_transaction();
+                try {
+                    userSyncLockPerson($db, $authUserId);
+                    /* A marker only for a song that exists or that the person really had (asked before the delete). */
+                    $removeMarkIds = userSyncKnownFavoriteIds($db, $authUserId, [$removeSongId]);
+                    $stmt = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
+                    $stmt->bind_param('is', $authUserId, $removeSongId);
+                    $stmt->execute();
+                    $affected = $stmt->affected_rows;
+                    $stmt->close();
+                    /* Written even when no row existed (the removal may be racing another device's add). */
+                    userSyncItemTombstoneWrite($db, $authUserId, 'favorite', $removeMarkIds, userSyncNow($db), 'user');
+                    $db->commit();
+                } catch (\Throwable $_rmErr) {
+                    try { $db->rollback(); } catch (\Throwable $_r) { /* already gone */ }
+                    throw $_rmErr;
+                }
+            } else {
+                $stmt = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
+                $stmt->bind_param('is', $authUserId, $removeSongId);
+                $stmt->execute();
+                $affected = $stmt->affected_rows;
+                $stmt->close();
+            }
             if ($affected > 0) {
                 logActivity('favorites.remove', 'song', $removeSongId, [], 'success', $authUserId);
             }
@@ -7156,6 +7328,26 @@ if ($action !== null) {
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
+            /* PR 2a (epic #2180): the same delete-marker rules as favorites_sync, for custom tags
+               (server side only; the web has no tag-removal screen yet). Applies only when this
+               site's switch is ticked; off means exactly the previous behaviour. */
+            $psOn         = profileSyncEnabledHere();
+            $markersReady = $psOn && userSyncItemTombstonesReady($db);
+            $protocol2    = $psOn && userSyncExplicitProtocol($body);
+            $cleanTagList = static function ($raw): array {
+                $out = [];
+                if (!is_array($raw)) { return []; }
+                foreach ($raw as $t) {
+                    if (!is_string($t)) { continue; }
+                    $t = mb_substr(trim($t), 0, 50);
+                    if ($t !== '') { $out[$t] = true; }
+                    if (count($out) >= 200) { break; }
+                }
+                return array_keys($out);
+            };
+            $deletedTags = $protocol2 ? $cleanTagList($body['deleted'] ?? null) : [];
+            $addedTags   = $protocol2 ? $cleanTagList($body['added'] ?? null) : [];
+
             /* READ-ONLY merge on a paused site: return the stored tags and change
                NOTHING (no inserts, no `syncedAt`). */
             if ($readOnly) {
@@ -7164,13 +7356,18 @@ if ($action !== null) {
                 $stmt->execute();
                 $roTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
                 $stmt->close();
-                sendJson([
+                $roTagReply = [
                     'tags'      => $roTags,
                     'syncedAt'  => null,
                     'truncated' => false,
                     'cap'       => 200,
                     'readOnly'  => true,
-                ]);
+                ];
+                if ($psOn) {
+                    $roTagReply['tombstones'] = userSyncItemTombstoneList($db, $userId, 'custom_tag', $since);
+                    $roTagReply['protocol']   = 1;
+                }
+                sendJson($roTagReply);
                 break;
             }
 
@@ -7190,12 +7387,58 @@ if ($action !== null) {
             $localTags = $capped['items'];
             $truncated = $capped['truncated'];
 
+            /* PR 2a: with the marker table ready, everything from here to the commit is ONE
+               transaction under the person's row lock (explicit deletes, explicit adds, read the
+               markers, absence deletes, insert). */
+            try {
+            /* Inside the try, so a lock-wait timeout on the person's row can never leave a
+               transaction open: the catch below rolls back whatever was started. */
+            if ($markersReady) {
+                $db->begin_transaction();
+                userSyncLockPerson($db, $userId);
+            }
+
+            $deleted = 0;
+            if ($deletedTags !== []) {
+                if ($markersReady) {
+                    userSyncItemTombstoneWrite($db, $userId, 'custom_tag', $deletedTags, userSyncNow($db), 'user');
+                }
+                $del = $db->prepare('DELETE FROM tblUserCustomTags WHERE UserId = ? AND Tag = ?');
+                $delTag = '';
+                $del->bind_param('is', $userId, $delTag);
+                foreach ($deletedTags as $delTag) {
+                    $del->execute();
+                    $deleted += $del->affected_rows;
+                }
+                $del->close();
+            }
+            if ($markersReady && $addedTags !== []) {
+                userSyncItemTombstoneClear($db, $userId, 'custom_tag', array_values(array_intersect($addedTags, $localTags)));
+            }
+            $tagTombMap = $markersReady ? userSyncItemTombstoneMap($db, $userId, 'custom_tag') : [];
+
+            /* Same as favourites: a tag saved AFTER its marker (by older code) beats the marker. */
+            if ($markersReady && $tagTombMap !== []) {
+                $stmt = $db->prepare('SELECT Tag, CreatedAt FROM tblUserCustomTags WHERE UserId = ?');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $tagAgeRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+                $revivedTags = userSyncItemTombstonesRevivedByRows(
+                    $tagTombMap,
+                    array_map(static fn(array $r): array => ['id' => (string)$r['Tag'], 'ts' => (string)$r['CreatedAt']], $tagAgeRows)
+                );
+                if ($revivedTags !== []) {
+                    userSyncItemTombstoneClear($db, $userId, 'custom_tag', $revivedTags);
+                    $tagTombMap = array_diff_key($tagTombMap, array_flip($revivedTags));
+                }
+            }
+
             /* Replace: delete tags the client no longer has — subject to the
                shared #1649 guards (a truncated payload deletes nothing; a tag
                created after the client's `since` watermark is another device's
                and is kept). The SELECT stays inside the replace branch so merge
                mode still costs no extra query. */
-            $deleted = 0;
             if ($syncMode === 'replace') {
                 /* CreatedAt joins the SELECT for the watermark guard — it is
                    the only age signal tblUserCustomTags carries, and the DB
@@ -7216,7 +7459,7 @@ if ($action !== null) {
                     $syncMode,
                     $truncated,
                     $since,
-                    false,
+                    $protocol2, /* a protocol-2 request names its deletions, so absence deletes nothing */
                     userSyncAbsenceDeleteRequiresSince() /* A8 */
                 );
                 if (count($deletableTags) > 0) {
@@ -7228,14 +7471,24 @@ if ($action !== null) {
                         $deleted += $del->affected_rows;
                     }
                     $del->close();
+                    /* An absence delete is a deletion too: leave a marker. */
+                    if ($markersReady) {
+                        userSyncItemTombstoneWrite($db, $userId, 'custom_tag', $deletableTags, userSyncNow($db), 'user');
+                    }
                 }
+            }
+
+            /* Which sent tags may be saved? Those with no marker, plus deliberate adds. */
+            $tagPlan = userSyncItemUpsertPlan($localTags, $addedTags, $tagTombMap, $since, $protocol2);
+            if ($markersReady && $tagPlan['clear'] !== []) {
+                userSyncItemTombstoneClear($db, $userId, 'custom_tag', $tagPlan['clear']);
             }
 
             /* Insert any new tags (ignore duplicates). */
             $insert = $db->prepare('INSERT IGNORE INTO tblUserCustomTags (UserId, Tag) VALUES (?, ?)');
             $tagBound = '';
             $insert->bind_param('is', $userId, $tagBound);
-            foreach ($localTags as $t) {
+            foreach ($tagPlan['upsert'] as $t) {
                 $tagBound = $t;
                 $insert->execute();
             }
@@ -7251,6 +7504,20 @@ if ($action !== null) {
             $finalTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
             $stmt->close();
 
+            $replyTagTombstones = $markersReady
+                ? userSyncItemTombstonesWithoutLive(userSyncItemTombstoneList($db, $userId, 'custom_tag', $since), $finalTags)
+                : [];
+
+            if ($markersReady) {
+                $db->commit();
+            }
+            } catch (\Throwable $_tagSyncErr) {
+                if ($markersReady) {
+                    try { $db->rollback(); } catch (\Throwable $_r) { /* already gone */ }
+                }
+                throw $_tagSyncErr;
+            }
+
             /* Audit (#1649) — this handler had no logging at all, unlike
                favorites.sync. A deleting or truncated tag sync is precisely
                what a curator needs to see when a user reports lost tags. */
@@ -7263,13 +7530,18 @@ if ($action !== null) {
                 ]);
             }
 
-            sendJson([
+            $tagReply = [
                 'tags'      => $finalTags,
                 /* #1649 — client stores this and returns it as `since`. */
                 'syncedAt'  => $syncedAt,
                 'truncated' => $truncated,
                 'cap'       => 200,
-            ]);
+            ];
+            if ($psOn) {
+                $tagReply['tombstones'] = $replyTagTombstones;
+                $tagReply['protocol']   = $protocol2 ? 2 : 1;
+            }
+            sendJson($tagReply);
             break;
 
         /* =================================================================
@@ -10707,6 +10979,7 @@ if ($action !== null) {
                      JOIN tblSongs s ON s.SongId = h.SongId
                      LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                      WHERE h.ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
+                       AND ' . songHistoryCountableSql($db, 'h') . '
                        AND ' . songVisibleSql($db, 's') . '
                        AND ' . songServableSql($db, 's') . '
                      GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, sb.Name, s.Language
@@ -10801,6 +11074,58 @@ if ($action !== null) {
             } catch (\Throwable $e) {
                 error_log('[api/song_history] ' . $e->getMessage());
                 sendJson(['history' => [], 'fallback' => true]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * "Your most viewed" (account/profile rewrite PR 2a, step 2a-7, #2175)
+         *
+         * GET ?action=my_most_viewed&period=30d|90d|12m|all
+         *
+         * The signed-in person's OWN most-opened songs over a period. Counts all of
+         * their views (one account, everywhere). With no `period` the person's saved
+         * choice (profile item home.mostViewedPeriod) is used, else 12 months.
+         * Replies: 200 {songs:[{songId,title,number,songbook,songbookName,language,views}],
+         * period}; 400 {reason:'invalid_period'}; 401; 405; 409 {reason:'profile_sync_disabled'}
+         * (the new account behaviour is not switched on for this site); 429. Logic lives in
+         * includes/my_most_viewed.php.
+         * ----------------------------------------------------------------- */
+        case 'my_most_viewed':
+            if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+                sendJson(['error' => 'GET method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            /* Dormant until an admin switches the new account behaviour on for this site. */
+            if (!profileSyncEnabledHere()) {
+                sendJson(profileSyncDisabledBody(), 409);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'my_most_viewed.php';
+            $mvUserId = (int)$authUser['Id'];
+            /* Per signed-in person; fails open (counting must never break a read). */
+            enforceReadRateLimit('my_most_viewed', MY_MOST_VIEWED_RATE_PER_MINUTE, 0, 'uid:' . $mvUserId);
+
+            $mvRaw = $_GET['period'] ?? null;
+            if ($mvRaw !== null && $mvRaw !== '' && !myMostViewedPeriodValid($mvRaw)) {
+                sendJson(['error' => 'Unknown period.', 'reason' => 'invalid_period'], 400);
+                break;
+            }
+            try {
+                $db = getDbMysqli();
+                $mvPeriod = ($mvRaw === null || $mvRaw === '') ? myMostViewedDefaultPeriod($db, $mvUserId) : (string)$mvRaw;
+                $mvSongs = myMostViewedRows($db, $mvUserId, $mvPeriod);
+                /* Language filter (#736): applied in memory after the LIMIT, like popular_songs. */
+                $_langPred = makeLanguageFilterPredicate(resolvePreferredLanguagesForRequest($authUser));
+                $mvSongs = array_slice(array_values(array_filter($mvSongs, $_langPred)), 0, MY_MOST_VIEWED_KEEP);
+                sendJson(['songs' => $mvSongs, 'period' => $mvPeriod]);
+            } catch (\Throwable $e) {
+                error_log('[api/my_most_viewed] ' . $e->getMessage());
+                sendJson(['songs' => [], 'period' => ($mvRaw !== null && $mvRaw !== '' ? (string)$mvRaw : MY_MOST_VIEWED_DEFAULT_PERIOD), 'fallback' => true]);
             }
             break;
 
@@ -10901,6 +11226,36 @@ if ($action !== null) {
                test site cannot put views into a real person's history. */
             $viewUserId = ($authUser && accountWritesAllowedHere()) ? $authUser['Id'] : null;
 
+            /* PR 2a (2a-6, owner decision 2026-11-23): with the new account behaviour switched on for
+               this site, recording views is limited per signed-in PERSON (or else per address). The
+               numbers live in ONE place (song_history_provenance.php). A 429 is simply ignored by the
+               apps (the view is fire-and-forget). Off, or the limiter's table missing: no limit. */
+            $viewProvenanceOn = profileSyncEnabledHere();
+            if ($viewProvenanceOn) {
+                /* Who is "the caller"? A person, else a live Service Mode device, else a device that
+                   sent its own id, else the address at a 10x ceiling (a congregation behind one church
+                   router must not be counted as one person, rule #26). See songViewRatePlan(). */
+                $viewPresence = (isset($_COOKIE['ihymns_sf_presence_token']) && is_string($_COOKIE['ihymns_sf_presence_token']))
+                    ? $_COOKIE['ihymns_sf_presence_token'] : '';
+                $viewPresenceLive = false;
+                if (!$authUser && $viewPresence !== '') {
+                    try {
+                        require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+                        $viewPresenceLive = serviceMode_presenceTokenLive(getDbMysqli(), $viewPresence);
+                    } catch (\Throwable $_pe) { /* limiter lookups never block a view */ }
+                }
+                $viewDeviceId = is_array($body) && is_string($body['device_id'] ?? null) ? trim($body['device_id']) : '';
+                foreach (songViewRatePlan(
+                    $authUser ? (int)$authUser['Id'] : null,
+                    $viewPresence,
+                    $viewPresenceLive,
+                    $viewDeviceId,
+                    (string)($_SERVER['REMOTE_ADDR'] ?? '0.0.0.0')
+                ) as $viewBucket) {
+                    enforceReadRateLimit($viewBucket['scope'], $viewBucket['perMin'], $viewBucket['perDay'], $viewBucket['key']);
+                }
+            }
+
             try {
                 $db = getDbMysqli();
                 /* #1343-B — resolve a PublicId to its SongId so the history row keys
@@ -10909,11 +11264,21 @@ if ($action !== null) {
                 if (songPublicId_looksLikePublicId($viewSongId)) {
                     $viewSongId = songPublicId_resolveToSongId($db, $viewSongId);
                 }
-                $stmt = $db->prepare(
-                    'INSERT INTO tblSongHistory (SongId, UserId) VALUES (?, ?)'
-                );
-                /* UserId(i nullable) — anonymous views OK. */
-                $stmt->bind_param('si', $viewSongId, $viewUserId);
+                if ($viewProvenanceOn && songHistoryProvenanceReady($db)) {
+                    /* Stamp where the view came from, so test sites and uploaded lists can be left
+                       out of "most popular" (see songHistoryCountableSql()). */
+                    $prov = songHistoryProvenanceValues(is_array($body) ? $body : null);
+                    $stmt = $db->prepare(
+                        'INSERT INTO tblSongHistory (SongId, UserId, Source, Channel, Platform) VALUES (?, ?, ?, ?, ?)'
+                    );
+                    $stmt->bind_param('sisss', $viewSongId, $viewUserId, $prov['source'], $prov['channel'], $prov['platform']);
+                } else {
+                    $stmt = $db->prepare(
+                        'INSERT INTO tblSongHistory (SongId, UserId) VALUES (?, ?)'
+                    );
+                    /* UserId(i nullable) — anonymous views OK. */
+                    $stmt->bind_param('si', $viewSongId, $viewUserId);
+                }
                 $stmt->execute();
                 $stmt->close();
                 sendJson(['ok' => true]);
@@ -11035,6 +11400,17 @@ if ($action !== null) {
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
+            /* PR 2a (2a-6): with the new account behaviour on, an upload of old views is limited to a
+               few an hour per person, and each row is stamped as an UPLOAD so it never counts towards
+               "most popular". #1636's two-call contract: the check reads, the record writes. */
+            $backfillProvenanceOn = profileSyncEnabledHere();
+            if ($backfillProvenanceOn) {
+                $backfillIp = $_SERVER['REMOTE_ADDR'] ?? '';
+                checkRateLimit('song_history_backfill', $backfillIp, SONG_BACKFILL_RATE_PER_HOUR, 3600, true, $userId);
+                recordRateLimitHit('song_history_backfill', rateLimitKey($backfillIp, $userId));
+            }
+            $backfillStamped = $backfillProvenanceOn && songHistoryProvenanceReady($db);
+
             /* Insert with the client-supplied ViewedAt so the order is
                preserved. The client sends a UTC ISO-8601 string; we parse it
                to a UTC epoch and bind it through FROM_UNIXTIME(), so the value
@@ -11044,12 +11420,24 @@ if ($action !== null) {
                missing timestamp binds NULL → COALESCE → NOW(). Per-row
                try/catch skips orphan song ids (FK violation) without aborting
                the batch. Cap at 50 — the read path only surfaces 50 most recent. */
-            $insert = $db->prepare(
-                'INSERT INTO tblSongHistory (UserId, SongId, ViewedAt) VALUES (?, ?, COALESCE(FROM_UNIXTIME(?), NOW()))'
-            );
+            $backfillChannel  = ihymns_environment();
+            $backfillPlatform = songHistoryProvenanceValues($body)['platform'];
+            if ($backfillStamped) {
+                $insert = $db->prepare(
+                    "INSERT INTO tblSongHistory (UserId, SongId, ViewedAt, Source, Channel, Platform) VALUES (?, ?, COALESCE(FROM_UNIXTIME(?), NOW()), 'backfill', ?, ?)"
+                );
+            } else {
+                $insert = $db->prepare(
+                    'INSERT INTO tblSongHistory (UserId, SongId, ViewedAt) VALUES (?, ?, COALESCE(FROM_UNIXTIME(?), NOW()))'
+                );
+            }
             $sidBound = '';
             $epochBound = null;
-            $insert->bind_param('isi', $userId, $sidBound, $epochBound);
+            if ($backfillStamped) {
+                $insert->bind_param('isiss', $userId, $sidBound, $epochBound, $backfillChannel, $backfillPlatform);
+            } else {
+                $insert->bind_param('isi', $userId, $sidBound, $epochBound);
+            }
             $imported = 0;
             foreach (array_slice($body['views'], 0, 50) as $v) {
                 if (!is_array($v)) continue;
