@@ -199,8 +199,15 @@ export function reconcileDataOwner(storage, currentUid) {
     if (owner === uid) return { action: 'same' };
 
     if (owner === null) {
-        /* Nobody's data: anonymous. The person may be coming back after a session
-           ended on its own; give them their own stash back first. */
+        /* Nobody's data: anonymous. The removals noted while nobody was signed in were never
+           about THIS person's account (the device had no account then), so whoever signs in first
+           must not have them applied to their account: drop the lists of pending removals and
+           keep the favourites and set lists themselves. Done BEFORE the stash is given back, so
+           a returning person's own earlier removals are not touched. */
+        remove(storage, STORAGE_FAVORITES_DELETED);
+        remove(storage, STORAGE_SETLISTS_DELETED);
+        /* The person may be coming back after a session ended on its own; give them their own
+           stash back. */
         const restored = restoreStash(storage, uid);
         /* Claim it now, not only when a sync later succeeds: if that sync fails
            (offline) and somebody else signs in next, this data must not be
