@@ -2848,7 +2848,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 Links silently fail (links open in Safari instead of the app). Paste the same value
                 in both places.
             </p>
-            <form method="post" class="row g-3 align-items-end mb-4">
+            <form method="post" class="row g-3 mb-4">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="action" value="save_apple">
                 <div class="col-md-4">
