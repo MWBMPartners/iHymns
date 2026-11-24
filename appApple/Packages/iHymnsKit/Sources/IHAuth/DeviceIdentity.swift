@@ -33,6 +33,16 @@ public protocol DeviceIdentityProviding: Sendable {
 public actor DeviceIdentity: DeviceIdentityProviding {
     private let store: any TokenStoring
 
+    /// The id once it is known: it never changes after that, so later calls
+    /// answer from here without touching the Keychain.
+    private var known: String?
+
+    /// The lookup-or-create that is running right now, if any. A second caller
+    /// that arrives while it runs waits for the SAME one instead of starting its
+    /// own (an actor lets another call in whenever one is waiting on the
+    /// Keychain, so without this two first-time callers could each make an id).
+    private var inFlight: Task<String, Error>?
+
     /// - Parameter store: Where the id lives. In the app this MUST be the
     ///   this-device-only item (`AuthStorage.live()` builds it); the actor
     ///   cannot check that itself.
@@ -41,10 +51,27 @@ public actor DeviceIdentity: DeviceIdentityProviding {
     }
 
     public func installId() async throws -> String {
-        if let existing = try await store.load(), Self.isUsable(existing) {
+        if let known { return known }
+        if let inFlight { return try await inFlight.value }
+        let store = self.store
+        let task = Task { try await Self.loadOrCreate(in: store) }
+        inFlight = task
+        do {
+            let id = try await task.value
+            known = id
+            inFlight = nil
+            return id
+        } catch {
+            inFlight = nil // a failure is not remembered: the next call tries again
+            throw error
+        }
+    }
+
+    /// Reads the saved id, or makes and saves a new one (first use, or an unreadable value).
+    private static func loadOrCreate(in store: any TokenStoring) async throws -> String {
+        if let existing = try await store.load(), isUsable(existing) {
             return existing
         }
-        // First use (or an unreadable value): make a new one and keep it.
         let fresh = UUID().uuidString.lowercased()
         try await store.save(fresh)
         return fresh

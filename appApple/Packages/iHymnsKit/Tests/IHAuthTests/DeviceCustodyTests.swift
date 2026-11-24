@@ -178,4 +178,30 @@ struct DeviceCustodyTests {
         #expect(await state.record().signedOutHere)
         #expect(await DeviceSignInState(store: store).record().signedOutHere)
     }
+
+    @Test("The install id is made once even when many callers ask at the same moment")
+    func installIdIsSingleFlight() async throws {
+        let store = InMemoryTokenStore()
+        let identity = DeviceIdentity(store: store)
+        let ids = try await withThrowingTaskGroup(of: String.self) { group -> [String] in
+            for _ in 0..<20 { group.addTask { try await identity.installId() } }
+            var all: [String] = []
+            for try await id in group { all.append(id) }
+            return all
+        }
+        #expect(Set(ids).count == 1)
+        #expect(try await store.load() == ids.first)
+    }
+
+    @Test("A failed first save is not remembered: the next ask tries again and then keeps one id")
+    func installIdRetriesAfterFailure() async throws {
+        let store = InMemoryTokenStore()
+        let identity = DeviceIdentity(store: store)
+        await store.setFailing(saves: true)
+        await #expect(throws: InMemoryTokenStore.Failure.self) { _ = try await identity.installId() }
+        await store.setFailing(saves: false)
+        let id = try await identity.installId()
+        #expect(try await store.load() == id)
+        #expect(try await identity.installId() == id)
+    }
 }

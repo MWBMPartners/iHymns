@@ -17,7 +17,8 @@
 //      remotely signed-out, or timed-out device signing itself back in.
 //   3. Otherwise, only when the site has the switch on (`app_status.deviceSignin`):
 //        a. a key in iCloud Keychain that is not known dead -> redeem it. 401
-//           (one answer for every unusable key) -> remember the key as dead.
+//           (one answer for every unusable key) -> remember the key as dead
+//           and carry on to step b.
 //        b. else a shared older-app sign-in not yet swapped -> `auth_device_enrol`.
 //           On success the new token is saved FIRST, only then is the shared
 //           token's fingerprint recorded. 401 -> that shared token is dead,
@@ -117,7 +118,7 @@ extension SessionController {
 
         if deviceSignInEnabled, let key = await usableKey(support, record: record) {
             switch await redeemKey(key, support: support) {
-            case .signedIn, .signedOut:
+            case .signedIn:
                 return
             case .tryNext:
                 break
@@ -140,7 +141,7 @@ extension SessionController {
         }
     }
 
-    private enum StepOutcome { case signedIn, signedOut, tryNext }
+    private enum StepOutcome { case signedIn, tryNext }
 
     /// Step 3a: swap an automatic sign-in key for this device's own sign-in.
     private func redeemKey(_ key: String, support: DeviceSignInSupport) async -> StepOutcome {
@@ -153,11 +154,10 @@ extension SessionController {
             setState(.signedIn(token: result.session.token), userId: result.session.user.id)
             return .signedIn
         } catch APIError.unauthorized {
-            // One answer for every unusable key: remember this one as dead so it is not retried every launch.
+            // One answer for every unusable key: remember this one as dead so it is not retried every launch,
+            // then carry on: a shared sign-in may still be swappable, and a dead key must not strand the device.
             await support.signInState.markKeyDead(hash: TokenFingerprint.sha256Hex(key))
-            await apiClient.updateBearerToken(nil)
-            setState(.signedOut)
-            return .signedOut
+            return .tryNext
         } catch {
             return .tryNext
         }

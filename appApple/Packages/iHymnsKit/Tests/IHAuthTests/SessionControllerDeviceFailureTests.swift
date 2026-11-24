@@ -168,4 +168,28 @@ struct SessionControllerDeviceFailureTests {
             #expect(try await h.keyStore.load() == D.key)
         }
     }
+
+    @Test("Path 3a: a 401 on the key marks it dead and CARRIES ON: the shared sign-in is then swapped")
+    func deadKeyFallsThroughToSharedSwap() async throws {
+        try await MockTransportLock.shared.withLock { () async throws in
+            defer { MockURLProtocol.requestHandler = nil }
+            let h = try await D.makeHarness(legacy: D.legacyToken, key: D.key)
+            D.route(h.log) { action in
+                switch action {
+                case "auth_enrol_key_redeem": return (401, D.refusal(401, "enrol_key_invalid"))
+                case "auth_device_enrol": return (200, D.signInOK(withKey: true))
+                default: return (200, D.meOK)
+                }
+            }
+
+            try await h.controller.restoreFromStorage(deviceSignInEnabled: true)
+
+            #expect(h.log.actions == ["auth_enrol_key_redeem", "auth_device_enrol"])
+            #expect(await h.notebook.isKeyDead(hash: TokenFingerprint.sha256Hex(D.key)))
+            #expect(await h.controller.state == .signedIn(token: D.newToken))
+            #expect(try await h.deviceStore.load() == D.newToken)
+            // The swap asked for a new key, because the held one is dead.
+            #expect(try await h.keyStore.load() == D.newKey)
+        }
+    }
 }
