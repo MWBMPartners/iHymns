@@ -200,11 +200,26 @@ $check('a protected row that the editor did not send back is kept', $plan['delet
    stored "English " (tab, CR, LF, vertical tab, NUL) groups with the
    "English" the editor sends back. */
 echo "\nPart A3 — surrounding whitespace (#2137 review round 5)\n";
-$sameAsDefaultTrim = true;
+$sameAsDefaultTrim = true;                /* PHP's trim() and our set strip exactly the same bytes */
+$ourSetOnlyStripsWhatPhpStrips = true;    /* no byte in our set is one PHP's trim() would keep */
+$extraBytesPhpStrips = [];                /* bytes PHP's trim() strips that our fixed set does not */
 for ($b = 0; $b < 256; $b++) {
-    if (trim('x' . chr($b)) !== trim('x' . chr($b), IHYMNS_TRANSLATION_LINK_TRIM)) { $sameAsDefaultTrim = false; }
+    $phpStrips  = trim('x' . chr($b)) === 'x';
+    $ourStrips  = trim('x' . chr($b), IHYMNS_TRANSLATION_LINK_TRIM) === 'x';
+    if ($phpStrips !== $ourStrips) { $sameAsDefaultTrim = false; }
+    if ($ourStrips && !$phpStrips) { $ourSetOnlyStripsWhatPhpStrips = false; }
+    if ($phpStrips && !$ourStrips) { $extraBytesPhpStrips[] = $b; }
 }
-$check('the save and the key trim exactly the characters PHP\'s own trim() does (checked for every byte)', $sameAsDefaultTrim);
+/* PHP 8.6 may add bytes to trim()'s default set. The save and the stored key both use OUR fixed
+   set (IHYMNS_TRANSLATION_LINK_TRIM), so they always agree with each other and a stored value is
+   keyed the same way on every PHP version — that is the property this part protects. Below 8.6 the
+   set must still equal PHP's default exactly; from 8.6 it must never strip MORE than PHP does, and
+   the extra bytes PHP strips are listed so a change is visible rather than silent (rule #53). */
+if (PHP_VERSION_ID >= 80600) {
+    $check('(PHP 8.6+) our trim set never strips a byte that PHP\'s own trim() keeps (extra bytes PHP strips: ' . json_encode($extraBytesPhpStrips) . ')', $ourSetOnlyStripsWhatPhpStrips);
+} else {
+    $check('the save and the key trim exactly the characters PHP\'s own trim() does (checked for every byte)', $sameAsDefaultTrim);
+}
 $padded = ['a trailing space' => 'English ', 'a tab' => "English\t", 'a carriage return' => "English\r",
            'a leading line feed' => "\nEnglish", 'a trailing vertical tab' => "English\x0B", 'a trailing NUL' => "English\0",
            'spaces around a retired code' => " iw\t"];

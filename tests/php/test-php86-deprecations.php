@@ -63,7 +63,8 @@ $FIXED = [
     'mb_ereg_replace', 'mb_eregi_replace', 'mb_ereg_replace_callback', 'mb_ereg_match',
     'mb_ereg_search', 'mb_ereg_search_pos', 'mb_ereg_search_regs', 'mb_ereg_search_init',
     'mb_ereg_search_getregs', 'mb_ereg_search_getpos', 'mb_ereg_search_setpos',
-    'mb_convert_variables',
+    /* 'mb_convert_variables' was on this list from the early UPGRADING notes, but real PHP 8.6.0
+       does not deprecate it (CI's own check said so), so it was taken off 2026-11-24. */
     'mysqli_get_charset', 'mysqli_stmt_init',
     'spl_object_hash', 'spl_classes',
     /* Deprecated since 8.5 (do-nothing since 8.0/8.1): kept in the fixed list so the check

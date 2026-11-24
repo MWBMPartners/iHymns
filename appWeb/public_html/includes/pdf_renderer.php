@@ -281,7 +281,9 @@ function _pdfAdaptCss(string $css): string
 function _pdfMpdfFormatForPageSize($pageSize): string
 {
     $map = ['A4' => 'A4', 'Letter' => 'LETTER', 'Legal' => 'LEGAL'];
-    return $map[$pageSize] ?? 'A4';
+    /* PHP 8.6 deprecates using null as an array key (an absent page size is
+       null), so only a string is ever looked up; anything else is the A4 default. */
+    return is_string($pageSize) ? ($map[$pageSize] ?? 'A4') : 'A4';
 }
 
 /**
