@@ -744,6 +744,7 @@ if ($hasSchema) {
                                 in volumes later).
                             </p>
 
+                            <div class="table-responsive">
                             <table class="table table-sm align-middle mb-2" id="edit-members-table">
                                 <thead>
                                     <tr class="text-muted small">
@@ -764,6 +765,7 @@ if ($hasSchema) {
                                     </tr>
                                 </tfoot>
                             </table>
+                            </div>
 
                             <div class="d-flex gap-2 align-items-end">
                                 <div class="flex-grow-1">

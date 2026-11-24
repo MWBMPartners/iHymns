@@ -1321,6 +1321,7 @@ if ($hasSchema) {
                                 that's the whole point.
                             </p>
 
+                            <div class="table-responsive">
                             <table class="table table-sm align-middle mb-2">
                                 <thead>
                                     <tr class="text-muted small">
@@ -1335,6 +1336,7 @@ if ($hasSchema) {
                                     <!-- populated by openWorkEditModal -->
                                 </tbody>
                             </table>
+                            </div>
 
                             <div class="d-flex gap-2 align-items-end mb-3">
                                 <div class="flex-grow-1">
@@ -1374,6 +1376,7 @@ if ($hasSchema) {
                                 a constituent work stays its own separate Work with its own members and page.
                             </p>
 
+                            <div class="table-responsive">
                             <table class="table table-sm align-middle mb-2">
                                 <thead>
                                     <tr class="text-muted small">
@@ -1387,6 +1390,7 @@ if ($hasSchema) {
                                     <!-- populated by openWorkEditModal -->
                                 </tbody>
                             </table>
+                            </div>
 
                             <div class="d-flex gap-2 align-items-end mb-3">
                                 <div class="flex-grow-1">

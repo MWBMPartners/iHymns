@@ -3510,6 +3510,7 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
                     <?php endif; ?>
                     · <?= count($manifestPreview['plan']) ?> row(s).
                 </div>
+                <div class="table-responsive">
                 <table class="table table-sm align-middle mb-0">
                     <thead>
                         <tr class="text-muted small">
@@ -3534,6 +3535,7 @@ $ietfPickerVer    = is_file($_ietfPickerPath) ? (string)filemtime($_ietfPickerPa
                         <?php endforeach; ?>
                     </tbody>
                 </table>
+                </div>
                 <?php if (!$manifestPreview['confirmed']): ?>
                     <p class="small text-muted mt-3 mb-0">
                         Re-upload the same file with <strong>Confirm</strong> ticked to apply

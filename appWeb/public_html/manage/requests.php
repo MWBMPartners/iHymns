@@ -257,6 +257,7 @@ try {
         <div class="card-admin p-4 text-center text-muted">No requests in this bucket.</div>
     <?php else: ?>
         <div class="card-admin p-0">
+            <div class="table-responsive">
             <table class="table table-sm table-hover mb-0 cp-sortable admin-table-responsive">
                 <thead>
                     <tr class="text-muted small">
@@ -380,6 +381,7 @@ try {
                 <?php endforeach; ?>
                 </tbody>
             </table>
+            </div>
         </div>
     <?php endif; ?>
 

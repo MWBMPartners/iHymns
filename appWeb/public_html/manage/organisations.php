@@ -847,6 +847,7 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
 
             <div class="card-admin p-3 mb-4">
                 <h2 class="h6 mb-3">All organisations</h2>
+                <div class="table-responsive">
                 <table class="table table-sm mb-0 align-middle cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
@@ -926,6 +927,7 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
                         <?php endif; ?>
                     </tbody>
                 </table>
+                </div>
             </div>
 
             <form method="POST" class="card-admin p-3 mb-4">
@@ -1296,6 +1298,7 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
                         <?php if (!$editMembers): ?>
                             <p class="text-muted small mb-0">No members yet.</p>
                         <?php else: ?>
+                            <div class="table-responsive">
                             <table class="table table-sm align-middle mb-0 cp-sortable admin-table-responsive">
                                 <thead>
                                     <tr class="text-muted small">
@@ -1340,6 +1343,7 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
                                     <?php endforeach; ?>
                                 </tbody>
                             </table>
+                            </div>
                         <?php endif; ?>
                     </div>
                 </div>
