@@ -1677,7 +1677,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          SYSTEM MAINTENANCE SECTION (WS-K #1021)
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-cone-striped me-2"></i>System maintenance
                 <span class="badge bg-secondary ms-1 text-uppercase"><?= htmlspecialchars($envCurrent, ENT_QUOTES, 'UTF-8') ?></span>
@@ -1753,7 +1753,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          SEARCH ENGINE VISIBILITY SECTION (#2024/#2025)
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4" id="search-visibility">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-search me-2"></i>Search engine visibility
             </h2>
@@ -1820,7 +1820,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          CROSS-SITE SETTINGS SYNC (#2143)
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4" id="cross-site-sync">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-arrow-left-right me-2"></i>Settings that follow visitors between iHymns sites
             </h2>
@@ -1875,7 +1875,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          NEW ACCOUNT BEHAVIOUR — per-channel switch (account/profile rewrite PR 2a)
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4" id="profile-sync">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-person-check me-2"></i>New account behaviour
             </h2>
@@ -1928,7 +1928,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          ONE SIGN-IN PER DEVICE — per-channel switch (account/profile rewrite PR 3 H2)
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4" id="device-signin">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-phone me-2"></i>A sign-in for each device
             </h2>
@@ -1983,7 +1983,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          ACCOUNT WRITES — per-channel emergency brake (account/profile rewrite C1)
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4" id="account-writes">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-person-lock me-2"></i>Saving changes to people&rsquo;s accounts
             </h2>
@@ -2044,7 +2044,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          FEATURE GATING SECTION (#1481 — two-flag nested topology)
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4" id="feature-gating">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-shield-lock me-2"></i>Feature gating
             </h2>
@@ -2106,7 +2106,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          SONG EDITOR SECTION (#1601 — the v2 cutover switch)
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-pencil-square me-2"></i>Song Editor
             </h2>
@@ -2149,7 +2149,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          INTAPPSAPI GATEWAY SECTION (#1725/#1732) — dormant by design
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-broadcast-pin me-2"></i>IntAppsAPI Gateway
             </h2>
@@ -2250,7 +2250,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          CUERCODE QR SECTION (owner directive 2026-08-05) — dormant until keyed
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-qr-code me-2"></i>CueRCode QR Generator
             </h2>
@@ -2316,7 +2316,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          contract, so the anchor lives here rather than being assumed.
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4" id="captcha">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-shield-check me-2"></i>CAPTCHA (bot protection)
             </h2>
@@ -2540,7 +2540,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          OUTBOUND WEBHOOKS SECTION (#1909)
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-broadcast me-2"></i>Partner webhooks
             </h2>
@@ -2651,7 +2651,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          LANGUAGE REGISTRY REFRESH SECTION (BCP 47 registry plan §3, M1)
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-translate me-2"></i>Language registry refresh
             </h2>
@@ -2722,7 +2722,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          LIVE FOLLOW SECTION (#1770 §4.7 — app-default idle timeout)
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-broadcast-pin me-2"></i>Live Follow
             </h2>
@@ -2767,7 +2767,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          PUBLIC-DOMAIN SUGGESTION SECTION (#1862, epic #1863)
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-shield-check me-2"></i>Public-domain suggestion
             </h2>
@@ -2809,7 +2809,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          APPLE NATIVE APP SECTION (#1401 Team ID + #1402 Sign in with Apple)
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-apple me-2"></i>Apple native app
             </h2>
@@ -3030,7 +3030,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          =========================== -->
     <?php $nativeAppsAnySet = ($nativeAppIos !== '' || $nativeAppAndroid !== '' || $nativeAppAmazon !== ''); ?>
     <div class="card bg-body-tertiary border-secondary mb-4">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-phone me-2"></i>Native app stores
             </h2>
@@ -3103,7 +3103,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          EMAIL SERVICE SECTION
          =========================== -->
     <div class="card bg-body-tertiary border-secondary mb-4">
-        <div class="card-header d-flex align-items-center justify-content-between">
+        <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
             <h2 class="h5 mb-0">
                 <i aria-hidden="true" class="bi bi-envelope-at me-2"></i>Email service
             </h2>

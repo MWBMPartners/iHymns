@@ -193,7 +193,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <?php endif; ?>
 
         <div class="card bg-body-tertiary border-secondary mb-4">
-            <div class="card-header d-flex align-items-center justify-content-between">
+            <div class="card-header d-flex align-items-center justify-content-between admin-card-header">
                 <h2 class="h6 mb-0"><i aria-hidden="true" class="bi bi-clock-history me-1"></i>Scope: features</h2>
                 <?php if ($featuresRow !== null): ?>
                     <span class="badge <?= $isStale ? 'bg-warning text-dark' : 'bg-success' ?>">

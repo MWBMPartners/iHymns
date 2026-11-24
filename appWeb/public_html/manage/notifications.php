@@ -757,7 +757,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          FEED TABLE
          =========================== -->
     <div class="card bg-body-tertiary border-secondary">
-        <div class="card-header d-flex justify-content-between align-items-center">
+        <div class="card-header d-flex justify-content-between align-items-center admin-card-header">
             <span class="small text-secondary">
                 <?= number_format($totalRows) ?> notification<?= $totalRows === 1 ? '' : 's' ?>
                 — page <?= $page ?> of <?= $totalPages ?>

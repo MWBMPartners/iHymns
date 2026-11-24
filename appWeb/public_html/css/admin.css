@@ -1505,6 +1505,24 @@ body:has(.navbar-admin) .modal-content.bg-dark {
 }
 
 /* ==========================================================================
+   CARD HEADERS THAT HOLD A TITLE PLUS BUTTONS/BADGES (#2203) — a header that
+   is a one-line flex row pushes the whole page sideways on a phone when its
+   status badge is long (configuration was 406px wide at 360px; one badge
+   reads "Team ID not set (AASA uses placeholder)"). Letting the header, and
+   the group of buttons/badges inside it, wrap onto a second line fixes it.
+   At wide sizes everything still fits on one line, so nothing changes there.
+   Add the class to any new "card-header d-flex" (guard:
+   tests/test-admin-narrow-layout.js).
+============================================================================= */
+.admin-card-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+.admin-card-header > .d-flex {
+    flex-wrap: wrap;
+}
+
+/* ==========================================================================
    v2 EDITOR "WHO SINGS" PANEL (#2073 commit 7) — the Structure tab's per-
    section voice-part / echo / rounds drawer (manage/editor/v2/voices-panel.js).
    Sibling of the chords box + per-line enrichment panel right above it in
