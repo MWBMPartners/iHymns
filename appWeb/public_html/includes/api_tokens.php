@@ -391,6 +391,12 @@ function apiTokenReplaceSameInstall(\mysqli $db, int $userId, string $installId,
 /** How long an ended sign-in is remembered as "this install was signed out" (days). Same as a key's life. */
 const API_TOKEN_ENDED_KEEP_DAYS = ACCOUNT_ENROL_KEY_LIFETIME_DAYS;
 
+/**
+ * The most sign-ins apiTokenSignOutHashes() will end in one call. One device is one row, and a device-id prefix match
+ * is capped at 10 rows, so 20 is generous; anything bigger is "end everything" and belongs to apiTokenRevokeAllForUser().
+ */
+const API_TOKEN_SIGNOUT_MAX_HASHES = 20;
+
 /** The expiry stamped on an ended sign-in: one second ago, so every `ExpiresAt > now` check refuses it. */
 function apiTokenEndedStamp(): string
 {
@@ -410,6 +416,12 @@ function apiTokenSignOutHashes(\mysqli $db, int $userId, array $hashes): int
     $hashes = array_values(array_unique(array_filter($hashes, static fn($h) => is_string($h) && preg_match('/^[a-f0-9]{64}$/', $h) === 1)));
     if ($hashes === []) {
         return 0;
+    }
+    /* Security review finding 6: this is the door for signing out a FEW named sign-ins (one device, or one prefix
+       match). Handing it "every sign-in this person has" would be a second way to end everything, one that
+       skips the bulk door's work (the keys, the push rows). So a long list is refused instead of quietly done. */
+    if (count($hashes) > API_TOKEN_SIGNOUT_MAX_HASHES) {
+        throw new \InvalidArgumentException('apiTokenSignOutHashes() ends a few named sign-ins; to end everything use apiTokenRevokeAllForUser().');
     }
     $marks = implode(',', array_fill(0, count($hashes), '?'));
     $types = str_repeat('s', count($hashes));

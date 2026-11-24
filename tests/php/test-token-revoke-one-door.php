@@ -52,6 +52,17 @@ function isBulkTokenWrite(string $q): bool
     $explicit = preg_match('/\bToken\s*=\s*\?/i', $q) || preg_match('/\bToken\s+LIKE\b/i', $q) || preg_match('/\bToken\s+IN\s*\(/i', $q);
     return !$explicit;
 }
+/** Is this SQL a read that returns the tokens of EVERY sign-in a person has (it names the person but not particular sign-ins)? */
+function isUnfilteredHashRead(string $q): bool
+{
+    if (!preg_match('/^\s*SELECT\b/i', $q) || !preg_match('/\bFROM\s+tblApiTokens\b/i', $q) || !preg_match('/\bToken\b/i', $q) || !preg_match('/\bUserId\b/i', $q)) { return false; }
+    return !(preg_match('/\bToken\s*(=|<>|!=|LIKE\b|IN\s*\()/i', $q) || preg_match('/\bDeviceInstallId\s*=/i', $q));
+}
+/** Is this a write that picks sign-ins by a LIST of tokens (so it can end many at once)? */
+function isListTokenWrite(string $q): bool
+{
+    return (bool)preg_match('/^\s*(DELETE\s+FROM|UPDATE)\s+tblApiTokens\b/i', $q) && (bool)preg_match('/\bToken\s+IN\s*\(/i', $q);
+}
 function isKeyTableWrite(string $q): bool
 {
     return (bool)preg_match('/^\s*(INSERT\s+(IGNORE\s+)?INTO|UPDATE|DELETE\s+FROM|REPLACE\s+INTO)\s+tblAccountEnrolKeys\b/i', $q);
@@ -64,12 +75,18 @@ chk('an update that ends all of a person\'s sign-ins is bulk', isBulkTokenWrite(
 chk('a delete by one token, by a prefix or by a list is not bulk',
     !isBulkTokenWrite('DELETE FROM tblApiTokens WHERE Token = ?') && !isBulkTokenWrite('DELETE FROM tblApiTokens WHERE UserId = ? AND Token LIKE CONCAT(?, "%")')
     && !isBulkTokenWrite('DELETE FROM tblApiTokens WHERE UserId = ? AND Token IN (?,?)'));
+chk('a read of every hash a person has is recognised; reads that name particular sign-ins or one install are not',
+    isUnfilteredHashRead('SELECT Token FROM tblApiTokens WHERE UserId = ?') && isUnfilteredHashRead('SELECT Token, ExpiresAt FROM tblApiTokens WHERE UserId = ? AND ExpiresAt > ?')
+    && !isUnfilteredHashRead('SELECT Token FROM tblApiTokens WHERE UserId = ? AND Token LIKE CONCAT(?, "%") LIMIT 10')
+    && !isUnfilteredHashRead('SELECT Token FROM tblApiTokens WHERE UserId = ? AND DeviceInstallId = ? AND Token <> ?')
+    && !isUnfilteredHashRead('SELECT COUNT(*) FROM tblApiTokens WHERE UserId = ?'));
+chk('a write by a LIST of tokens is recognised (that is what "select all hashes, then delete by list" turns into)', isListTokenWrite('DELETE FROM tblApiTokens WHERE UserId = ? AND Token IN (?,?)') && !isListTokenWrite('DELETE FROM tblApiTokens WHERE UserId = ? AND Token = ?'));
 chk('the expiry sweep (no person) is not bulk', !isBulkTokenWrite('DELETE FROM tblApiTokens WHERE ExpiresAt < ?'));
 chk('a read is not a write', !isBulkTokenWrite('SELECT Token FROM tblApiTokens WHERE UserId = ?') && !isKeyTableWrite('SELECT * FROM tblAccountEnrolKeys WHERE UserId = ?'));
 chk('key-table writes of every kind are seen', isKeyTableWrite('INSERT INTO tblAccountEnrolKeys (KeyHash) VALUES (?)') && isKeyTableWrite('UPDATE tblAccountEnrolKeys SET RevokedAt = ?') && isKeyTableWrite('DELETE FROM tblAccountEnrolKeys WHERE UserId = ?'));
 
 echo "every bulk write, found from the tree\n";
-$bulk = []; $keyWrites = []; $doorCallers = []; $scanned = 0;
+$bulk = []; $keyWrites = []; $doorCallers = []; $scanned = 0; $listWrites = []; $signOutCallers = []; $readAllPlusSignOut = [];
 $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($repo . '/appWeb', FilesystemIterator::SKIP_DOTS));
 foreach ($it as $f) {
     $path = $f->getPathname();
@@ -86,6 +103,15 @@ foreach ($it as $f) {
                long-ended keys is the single named exception; any other kind of write there still counts. */
             if (isKeyTableWrite($q) && !($rel === 'appWeb/.sql/cleanup.php' && preg_match('/^\s*DELETE\s+FROM\s+tblAccountEnrolKeys\s+WHERE\s+ExpiresAt\s*<\s*\?\s+OR\s+\(RevokedAt\s+IS\s+NOT\s+NULL\s+AND\s+RevokedAt\s*<\s*\?\)\s*$/i', $q))) { $keyWrites[] = "$rel#$unit"; }
         }
+        $unitReadsAll = false;
+        foreach ($u['sqlOnly'] as $q) {
+            if (isListTokenWrite($q)) { $listWrites[] = "$rel#$unit"; }
+            if (isUnfilteredHashRead($q)) { $unitReadsAll = true; }
+        }
+        if ($unit !== 'apiTokenSignOutHashes' && str_contains($u['code'], 'apiTokenSignOutHashes(')) {
+            $signOutCallers[] = "$rel#$unit";
+            if ($unitReadsAll) { $readAllPlusSignOut[] = "$rel#$unit"; }
+        }
         if ($unit !== 'apiTokenRevokeAllForUser' && $unit !== '(file scope)' && str_contains($u['code'], 'apiTokenRevokeAllForUser(')) { $doorCallers[] = "$rel#$unit"; }
     }
 }
@@ -95,6 +121,14 @@ chk('every bulk token write is inside apiTokenRevokeAllForUser() (found: ' . imp
 chk('the scan sees the door\'s own bulk write (so an empty result would be a broken scan)', in_array('appWeb/public_html/includes/api_tokens.php#apiTokenRevokeAllForUser', $bulk, true));
 $keyOutside = array_values(array_filter(array_unique($keyWrites), fn($k) => !str_starts_with($k, 'appWeb/public_html/includes/account_enrol_keys.php#')));
 chk('every write to the key table is inside includes/account_enrol_keys.php (outside: ' . implode(', ', $keyOutside) . ')', $keyOutside === [] && $keyWrites !== []);
+/* Security review finding 6: "select every hash, then end them by list" must not be a way round the bulk door. */
+$listOutside = array_values(array_unique(array_filter($listWrites, fn($k) => $k !== 'appWeb/public_html/includes/api_tokens.php#apiTokenSignOutHashes' && $k !== 'appWeb/public_html/includes/api_tokens.php#apiTokenReplaceSameInstall')));
+chk('a write that picks sign-ins by a list of tokens appears only in apiTokenSignOutHashes() and apiTokenReplaceSameInstall() (outside: ' . implode(', ', $listOutside) . ')',
+    $listOutside === [] && in_array('appWeb/public_html/includes/api_tokens.php#apiTokenSignOutHashes', $listWrites, true));
+chk('no function both reads every sign-in a person has AND calls apiTokenSignOutHashes() (' . count($signOutCallers) . ' callers found; offenders: ' . implode(', ', $readAllPlusSignOut) . ')',
+    count($signOutCallers) >= 2 && $readAllPlusSignOut === []);
+$capUnit = phpSourceUnits((string)file_get_contents($web . '/includes/api_tokens.php'))['apiTokenSignOutHashes']['code'] ?? '';
+chk('apiTokenSignOutHashes() refuses a long list (the cap is in the function, and is small)', str_contains($capUnit, 'count($hashes) > API_TOKEN_SIGNOUT_MAX_HASHES') && str_contains($capUnit, 'InvalidArgumentException') && API_TOKEN_SIGNOUT_MAX_HASHES <= 20 && API_TOKEN_SIGNOUT_MAX_HASHES >= 10);
 $needers = ['api.php#case \'auth_change_password\'', 'manage/includes/auth.php#resetPassword', 'manage/includes/auth.php#changeUserPassword', 'manage/includes/auth.php#setUserActive'];
 $calls = implode('|', $doorCallers);
 $missing = [];
@@ -164,6 +198,15 @@ $legacy2 = hash('sha256', apiTokenMint($db, 1, null, 'password'));
 chk('signing out hashes: an install-bound one is ended and remembered, a shared one deleted, someone else\'s hash ignored',
     apiTokenSignOutHashes($db, 1, [$devC, $legacy2, $bobTok, 'not-a-hash']) === 2
     && apiTokenInstallSignInEnded($db, 1, 'install-CCCC-3333') && (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE Token = '$legacy2'")->fetch_row()[0] === 0 && $live(2) === 1);
+
+/* Security review finding 6: a long list is refused, a normal one is not. */
+$many = [];
+for ($i = 0; $i < API_TOKEN_SIGNOUT_MAX_HASHES + 1; $i++) { $many[] = hash('sha256', 'cap-' . $i); }
+$threwCap = false;
+try { apiTokenSignOutHashes($db, 1, $many); } catch (\InvalidArgumentException $e) { $threwCap = true; }
+chk('signing out more than ' . API_TOKEN_SIGNOUT_MAX_HASHES . ' named sign-ins in one call is refused (it is "end everything", which has its own door)', $threwCap);
+chk('exactly ' . API_TOKEN_SIGNOUT_MAX_HASHES . ' is fine', apiTokenSignOutHashes($db, 1, array_slice($many, 0, API_TOKEN_SIGNOUT_MAX_HASHES)) === 0);
+chk('duplicates and junk do not count toward the cap', apiTokenSignOutHashes($db, 1, array_merge(array_slice($many, 0, 5), array_slice($many, 0, 5), array_fill(0, 40, 'junk'))) === 0);
 
 /* A rolled-back failure leaves everything as it was. */
 $hBefore = $live(1);
