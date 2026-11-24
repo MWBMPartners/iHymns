@@ -255,9 +255,12 @@ struct ProfileSyncEngineTests {
             read: { cursor in await gate.wait(); return ProfileSyncReply(cursor: cursor) },
             send: { ProfileSyncReply(cursor: $0.cursor) }
         )
-        async let first = harness.engine.sync(userId: 1, transport: slow)
+        // Take the pieces out of the harness first, so the background task does not share the whole harness.
+        let engine = harness.engine
+        let realTransport = harness.server.transport
+        async let first = engine.sync(userId: 1, transport: slow)
         while !(await gate.hasWaiter) { await Task.yield() }                     // the first sync is now inside its read
-        let second = await harness.engine.sync(userId: 1, transport: harness.server.transport)
+        let second = await engine.sync(userId: 1, transport: realTransport)
         await gate.open()
         #expect(second == .busy)
         #expect(await first == .done(changedLocal: false))
