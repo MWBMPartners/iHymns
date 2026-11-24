@@ -11,6 +11,7 @@ const {chromium}=require(process.env.LAYOUT_AUDIT_PLAYWRIGHT||'playwright');cons
 (async()=>{const b=await chromium.launch();const c=await b.newContext({viewport:{width:W,height:800}});
 await c.addCookies([{name:'ihymns_auth',value:'a'.repeat(64),url:'http://localhost:8000'}]);
 await c.route(/cdn\.jsdelivr|gravatar|cdnjs|google/,r=>{const u=r.request().url();const N=(process.env.LAYOUT_AUDIT_NPM||S+'/npm');let f=null;if(/bootstrap@5.*min.css/.test(u))f=N+'/x_bootstrap-5.3.6.tgz/package/dist/css/bootstrap.min.css';else if(/bundle/.test(u))f=N+'/x_bootstrap-5.3.6.tgz/package/dist/js/bootstrap.bundle.min.js';else if(/icons.*css/.test(u))f=N+'/x_bootstrap-icons-1.11.3.tgz/package/font/bootstrap-icons.min.css';if(f)r.fulfill({path:f});else r.abort()});
+if(process.env.LAYOUT_AUDIT_THEME)await c.addInitScript(t=>{try{localStorage.setItem('ihymns_theme',t)}catch(e){}},process.env.LAYOUT_AUDIT_THEME);
 const p=await c.newPage();
 for(const pg of pages){await p.goto('http://localhost:8000'+pg);await p.waitForTimeout(200);
 const o=await p.evaluate(()=>{const sel='input:not([type=hidden]):not([type=checkbox]):not([type=radio]),select,textarea,.btn,summary,.form-check';const out=[];

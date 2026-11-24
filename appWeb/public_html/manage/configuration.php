@@ -2188,7 +2188,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     real credentials are pasted here.
                 </p>
             <?php endif; ?>
-            <form method="post" class="row g-3 align-items-end mb-2">
+            <form method="post" class="row g-3 admin-form-row mb-2">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="action" value="save_intappsapi">
                 <div class="col-md-6">
@@ -2281,7 +2281,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     moment it is saved.
                 </p>
             <?php endif; ?>
-            <form method="post" class="row g-3 align-items-end mb-2">
+            <form method="post" class="row g-3 admin-form-row mb-2">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="action" value="save_cuercode">
                 <div class="col-md-6">
@@ -2423,7 +2423,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </form>
                 </div>
             <?php endif; ?>
-            <form method="post" class="row g-3 align-items-end mb-2">
+            <form method="post" class="row g-3 admin-form-row mb-2">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="action" value="save_captcha">
                 <div class="col-md-4">
@@ -2738,7 +2738,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 (site admin) or <a href="/manage/my-organisations">My organisations</a>
                 (org admin).
             </p>
-            <form method="post" class="row g-3 align-items-end">
+            <form method="post" class="row g-3 admin-form-row">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="action" value="save_live_follow_idle">
                 <div class="col-auto">
@@ -2754,6 +2754,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </div>
                 </div>
                 <div class="col-auto">
+                    <span class="form-label admin-label-spacer" aria-hidden="true"></span>
                     <button type="submit" class="btn btn-primary">
                         <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                     </button>
@@ -2779,7 +2780,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 published before this year is public domain. This is a SUGGESTION only —
                 curators still tick the Public Domain box themselves; nothing here auto-sets it.
             </p>
-            <form method="post" class="row g-3 align-items-end">
+            <form method="post" class="row g-3 admin-form-row">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="action" value="save_pd_publication_threshold">
                 <div class="col-auto">
@@ -2795,6 +2796,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </div>
                 </div>
                 <div class="col-auto">
+                    <span class="form-label admin-label-spacer" aria-hidden="true"></span>
                     <button type="submit" class="btn btn-primary">
                         <i aria-hidden="true" class="bi bi-save me-1"></i>Save
                     </button>

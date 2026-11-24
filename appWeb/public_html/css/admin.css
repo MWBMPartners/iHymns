@@ -1466,6 +1466,29 @@ body:has(.navbar-admin) .modal-content.bg-dark {
 }
 
 /* ==========================================================================
+   FORM ROWS WITH HELP TEXT (#2203) — "align-items-end" lines a row's columns
+   up along their BOTTOM edge. When one column has help text under its box
+   and the next has none, the boxes then end up at different heights (the
+   IntAppsAPI, CAPTCHA and Web Push cards were 21–64px out). The fix is to
+   line the columns up along the TOP instead (.admin-form-row), and to give
+   a column that has no label (a Save button, say) an invisible label-sized
+   line (.admin-label-spacer) so its control still starts on the same line
+   as its neighbours. The spacer carries the SAME classes as the row's real
+   labels (e.g. "form-label small") so it is exactly as tall as one; the
+   guard tests/test-form-row-alignment.js checks that.
+============================================================================= */
+.admin-form-row {
+    align-items: flex-start;
+}
+.admin-label-spacer {
+    display: block;
+    visibility: hidden;
+}
+.admin-label-spacer::before {
+    content: "\00a0";
+}
+
+/* ==========================================================================
    v2 EDITOR "WHO SINGS" PANEL (#2073 commit 7) — the Structure tab's per-
    section voice-part / echo / rounds drawer (manage/editor/v2/voices-panel.js).
    Sibling of the chords box + per-line enrichment panel right above it in
