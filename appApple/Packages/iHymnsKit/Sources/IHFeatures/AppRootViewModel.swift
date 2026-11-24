@@ -205,6 +205,10 @@ public final class AppRootViewModel {
     @ObservationIgnored
     let setlistSyncStateStore: SetlistSyncStateStore
 
+    /// Owns the shared-settings sync (PR 3b, I4): see `AppRootViewModel+ProfileSync.swift`.
+    @ObservationIgnored
+    let profileSync: ProfileSyncCoordinator
+
     /// Edits the server refused in the last set-list sync because the same
     /// setlist had changed on another device first (the server's copy is
     /// already in `setlists`). Empty when nothing was refused.
@@ -347,7 +351,8 @@ public final class AppRootViewModel {
         // unchanged; only `+Live.swift`'s `makeLive(environment:)` (iOS) passes a real one.
         nowSingingActivity: (any NowSingingActivityControlling)? = nil,
         spotlightIndexer: SpotlightIndexer = SpotlightIndexer(),
-        setlistSyncStateStore: SetlistSyncStateStore = SetlistSyncStateStore()
+        setlistSyncStateStore: SetlistSyncStateStore = SetlistSyncStateStore(),
+        profileSync: ProfileSyncCoordinator? = nil
     ) {
         self.sessionController = sessionController
         self.apiClient = apiClient
@@ -362,6 +367,7 @@ public final class AppRootViewModel {
         self.nowSingingActivity = nowSingingActivity
         self.spotlightIndexer = spotlightIndexer
         self.setlistSyncStateStore = setlistSyncStateStore
+        self.profileSync = profileSync ?? ProfileSyncCoordinator.live()
         observeSessionState()
         observeLiveSyncEvents()
         configureNowSingingActivity()

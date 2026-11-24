@@ -87,6 +87,25 @@ public final class SettingsViewModel {
     ///   Tests inject a store built on a throwaway
     ///   `UserDefaults(suiteName:)` the same way `AppRootViewModel`'s own
     ///   `recentSearchesStore`/`recentlyViewedStore` parameters are tested.
+    /// Listens for "the account changed a setting on this device" (PR 3b, I4) and reloads. Held so
+    /// it can be removed in `deinit`; `nonisolated(unsafe)` because `deinit` is nonisolated and
+    /// by then nothing else references this object (same reasoning as
+    /// `AppRootViewModel.sessionObservationTask`).
+    @ObservationIgnored
+    nonisolated(unsafe) private var appliedObserver: (any NSObjectProtocol)?
+
+    /// Re-reads every setting from the store. Called when the shared-settings sync
+    /// changed a value underneath this view model (`didSet` re-saves the same value, harmlessly).
+    public func reloadFromStore() {
+        theme = store.theme
+        cvdMode = store.cvdMode
+        dyslexiaReadingModeEnabled = store.dyslexiaReadingModeEnabled
+    }
+
+    deinit {
+        if let appliedObserver { NotificationCenter.default.removeObserver(appliedObserver) }
+    }
+
     public init(store: IHSettingsStore = IHSettingsStore()) {
         self.store = store
         // Read the CURRENTLY-persisted values first, into plain locals, so
@@ -101,5 +120,10 @@ public final class SettingsViewModel {
         analyticsConsentEnabled = store.analyticsConsentEnabled
         dyslexiaReadingModeEnabled = store.dyslexiaReadingModeEnabled
         apiEnvironmentOverride = store.apiEnvironmentOverride
+        appliedObserver = NotificationCenter.default.addObserver(
+            forName: .ihProfileSettingsApplied, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reloadFromStore() }
+        }
     }
 }

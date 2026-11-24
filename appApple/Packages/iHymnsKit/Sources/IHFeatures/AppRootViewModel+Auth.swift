@@ -147,6 +147,7 @@ extension AppRootViewModel {
         // reading BEFORE `currentUser` is cleared (it is the key), so the next
         // account that signs in starts from a clean first sync.
         if let userId = currentUser?.id { setlistSyncStateStore.clear(forUser: userId) }
+        profileSync.forget(userId: currentUser?.id)
         setlistConflicts = []
         currentUser = nil
         favorites = []
@@ -205,6 +206,9 @@ extension AppRootViewModel {
         await loadSetlistsIfNeeded()
         await flushPendingSetlistOps()
         await refreshSetlistsFromServer()
+        // PR 3b (I4): the shared settings (theme, colour-vision mode, text size, ...),
+        // when the site has the new account sync switched on. A no-op otherwise.
+        await syncProfileSettings()
     }
 
     /// Re-hydrates sign-in state from the Keychain, but only once per app

@@ -216,7 +216,7 @@ public struct RootContainerView: View {
             .sheet(isPresented: $isPresentingOnboarding, onDismiss: markOnboardingSeen) {
                 OnboardingView { isPresentingOnboarding = false }
             }
-            .onChange(of: scenePhase) { _, newPhase in viewModel.setLiveScenePhaseActive(newPhase == .active) }
+            .onChange(of: scenePhase) { _, newPhase in viewModel.sceneBecameActive(newPhase == .active) }
     }
     private var liveStatusBanner: some View { LiveStatusBanner(rootViewModel: viewModel, navigationState: navigationState) }
     /// Persists `IHSettingsStore.hasSeenOnboarding = true` — see the
