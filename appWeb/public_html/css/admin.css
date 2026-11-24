@@ -136,6 +136,11 @@ a.btn:active {
     margin-right: auto;
     padding-left: 1.5rem;
     padding-right: 1.5rem;
+    /* #2203 — break a single very long word (e.g. "iOS/iPadOS/macOS/tvOS/…" on
+       the help page, which browsers will not split at a slash) rather than let
+       it push the page wider than the screen. Only a word that would otherwise
+       stick out is broken; normal text and tables are not affected. */
+    overflow-wrap: break-word;
 }
 
 /* ==========================================================================
@@ -1520,6 +1525,22 @@ body:has(.navbar-admin) .modal-content.bg-dark {
 }
 .admin-card-header > .d-flex {
     flex-wrap: wrap;
+}
+
+/* ==========================================================================
+   ACCORDION HEADERS WITH SEVERAL PIECES (#2203) — missing-numbers shows, on
+   one line per songbook: a code badge, the songbook name, a count, a status
+   badge and Bootstrap's arrow. A name with one long word ("Miscellaneous")
+   cannot shrink, so on a phone the line ran 39px past the screen. Below
+   576px let the pieces wrap onto a second line. Add the class to any
+   accordion-button with three or more pieces (guard:
+   tests/test-admin-narrow-layout.js).
+============================================================================= */
+@media (max-width: 575.98px) {
+    .admin-accordion-summary {
+        flex-wrap: wrap;
+        row-gap: 0.25rem;
+    }
 }
 
 /* ==========================================================================

@@ -188,7 +188,7 @@ foreach ($reports as $r) {
                 ?>
                     <div class="accordion-item">
                         <h2 class="accordion-header" id="h-<?= htmlspecialchars($accId) ?>">
-                            <button class="accordion-button<?= $expanded ? '' : ' collapsed' ?>"
+                            <button class="accordion-button admin-accordion-summary<?= $expanded ? '' : ' collapsed' ?>"
                                     type="button"
                                     data-bs-toggle="collapse"
                                     data-bs-target="#b-<?= htmlspecialchars($accId) ?>"
