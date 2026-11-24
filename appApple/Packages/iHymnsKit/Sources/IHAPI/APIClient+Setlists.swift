@@ -9,7 +9,7 @@
 //
 // DETAILED: `userSetlists()`/`sharedSetlist(shareId:)` are idempotent GETs,
 // so they go through the retrying `performIdempotentGET` every catalogue
-// read uses. `syncSetlists(_:mode:)`/`shareSetlist(_:existingShareId:)` are
+// read uses. `syncSetlists(_:mode:since:deleted:)`/`shareSetlist(_:existingShareId:)` are
 // POSTs, so — matching `APIClient+Auth.swift`'s explicit "never auto-retry
 // non-idempotent POSTs" policy (strategy §1.5) — they go through the
 // non-retrying `performOnce` instead, exactly like `favoritesSync`/
@@ -30,14 +30,29 @@ extension APIClient {
     }
 
     /// `?action=user_setlists_sync` — reconciles `setlists` with the server
-    /// under `mode`, returning the server's resulting authoritative list.
+    /// under `mode`, returning the server's whole answer: the resulting
+    /// authoritative list plus the protocol-2 extras (`syncedAt`,
+    /// `tombstones`, `conflicts`).
     ///
     /// ELI5: "Here's what my setlists look like on this device — reconcile
-    /// that with the server and tell me the full, up-to-date result."
-    public func syncSetlists(_ setlists: [Setlist], mode: SetlistSyncMode) async throws -> [Setlist] {
-        let endpoint = try Endpoint.setlistsSync(mode: mode, setlists: setlists)
+    /// that with the server and tell me the full, up-to-date result, what
+    /// was deleted elsewhere, and anything you refused."
+    ///
+    /// - Parameters:
+    ///   - since: The `syncedAt` of the last successful sync, or `nil` on a
+    ///     first sync (see `Endpoint.setlistsSync(mode:setlists:since:deleted:)`).
+    ///   - deleted: Ids this person deleted on purpose. Pass an empty list,
+    ///     not `nil`, when there are none: the key's mere presence is what
+    ///     selects protocol 2.
+    public func syncSetlists(
+        _ setlists: [Setlist],
+        mode: SetlistSyncMode,
+        since: String?,
+        deleted: [String]?
+    ) async throws -> SetlistSyncResult {
+        let endpoint = try Endpoint.setlistsSync(mode: mode, setlists: setlists, since: since, deleted: deleted)
         let data = try await performOnce(endpoint)
-        return try Self.decodeSetlists(from: data)
+        return try Self.decodeSetlistSyncResult(from: data)
     }
 
     /// `?action=setlist_share` — publishes (or refreshes, if

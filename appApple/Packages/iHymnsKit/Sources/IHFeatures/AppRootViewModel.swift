@@ -152,6 +152,11 @@ public final class AppRootViewModel {
     /// that file for the full design).
     public internal(set) var captchaConfig: CaptchaConfig?
 
+    /// The whole `app_status` answer from launch (`nil` until read, or when
+    /// the read failed). Today it supplies the site's `deviceSignin` and
+    /// `profileSync` switches (PR 3b); `captchaConfig` above is the same read.
+    public internal(set) var appStatus: AppStatus?
+
     /// Every favourited song this device knows about, most-recently-added
     /// first — an OFFLINE-FIRST mirror of `IHPersistence.OfflineStore`'s
     /// `favorite` table (#181), NOT a `LoadState`-gated network read: it's
@@ -193,6 +198,21 @@ public final class AppRootViewModel {
     /// `hasLoadedFavoritesFromCache` above, for the identical reason.
     @ObservationIgnored
     var hasLoadedSetlistsFromCache = false
+
+    /// Remembers the server's last `syncedAt` reading per user, for set-list
+    /// sync protocol 2 (`AppRootViewModel+Setlists.swift`). Injectable so a
+    /// test can pass a throwaway `UserDefaults` suite.
+    @ObservationIgnored
+    let setlistSyncStateStore: SetlistSyncStateStore
+
+    /// Owns the shared-settings sync (PR 3b, I4): see `AppRootViewModel+ProfileSync.swift`.
+    @ObservationIgnored
+    let profileSync: ProfileSyncCoordinator
+
+    /// Edits the server refused in the last set-list sync because the same
+    /// setlist had changed on another device first (the server's copy is
+    /// already in `setlists`). Empty when nothing was refused.
+    public internal(set) var setlistConflicts: [SetlistSyncConflict] = []
 
     /// Whether `restoreSessionIfNeeded()` (`AppRootViewModel+Auth.swift`) has
     /// already run this app launch — same one-shot guard shape as
@@ -330,7 +350,9 @@ public final class AppRootViewModel {
         // PR-16 (#1429) — `nil` DEFAULT keeps every existing call site
         // unchanged; only `+Live.swift`'s `makeLive(environment:)` (iOS) passes a real one.
         nowSingingActivity: (any NowSingingActivityControlling)? = nil,
-        spotlightIndexer: SpotlightIndexer = SpotlightIndexer()
+        spotlightIndexer: SpotlightIndexer = SpotlightIndexer(),
+        setlistSyncStateStore: SetlistSyncStateStore = SetlistSyncStateStore(),
+        profileSync: ProfileSyncCoordinator? = nil
     ) {
         self.sessionController = sessionController
         self.apiClient = apiClient
@@ -344,6 +366,8 @@ public final class AppRootViewModel {
         self.usageActivityStore = usageActivityStore
         self.nowSingingActivity = nowSingingActivity
         self.spotlightIndexer = spotlightIndexer
+        self.setlistSyncStateStore = setlistSyncStateStore
+        self.profileSync = profileSync ?? ProfileSyncCoordinator.live()
         observeSessionState()
         observeLiveSyncEvents()
         configureNowSingingActivity()
@@ -354,46 +378,16 @@ public final class AppRootViewModel {
         liveObservationTask?.cancel()
     }
 
-    // `cachedSongSummaries()` moved to `AppRootViewModel+Offline.swift` (PR-10 LOC relief).
-    // `restoreSessionIfNeeded()`/`isSignedInNow()` (native login/account UI
-    // task) live in `AppRootViewModel+Auth.swift` — moved out purely to keep
-    // this file under the repo's LOC-budget tripwire now that it also
-    // carries `favorites`/`currentUser` state; see that file's own header
-    // for the full "why `isSignedInNow()` exists instead of just reading
-    // `sessionState`" race-condition explanation.
-
-    // `filteredSongs` (#1399's original substring match, now #1436's
-    // number-mode + songbook/language facet filtering on top of it) lives
-    // in `AppRootViewModel+Search.swift` — a Swift extension can't add new
-    // STORED properties, but every property that search/filter logic needs
-    // to read (`searchText`/`selectedSongbookAbbreviations`/
-    // `selectedLanguages`/`catalogueLoadState`) is already declared above,
-    // so the behaviour itself is free to live in its own file purely to
-    // keep this one from re-growing past the repo's LOC-budget tripwire.
-
-    // `loadCatalogueIfNeeded()`/`loadCatalogue()` (#1399's original fetch
-    // pair) AND `songDetail(id:)`/`songLinks(id:)`/`relatedSongs(id:)`/
-    // `songbooks()`/`songOfTheDay()` (#1399/#180/#1437/#183's read
-    // pass-throughs to `APIClient`) all live in `AppRootViewModel+Catalog.swift`
-    // — moved out purely to keep this file from crossing the repo's
-    // LOC-budget tripwire (`Scripts/loc-budget.sh`), most recently (#1415)
-    // to pay for this file's new `spotlightIndexer` stored property above.
-    // Every one of them only touches `apiClient`/`offlineStore`/
-    // `spotlightIndexer` (already `internal`-visible on this file), so the
-    // move is behaviourally a no-op EXCEPT for one new line #1415 adds
-    // inside `loadCatalogue()` itself — see that file's own header.
-
-    // `recordRecentlyViewed(_:)` (#183, the "last opened song" hook called
-    // from `SongDetailViewModel`'s successful primary load) lives in
-    // `AppRootViewModel+Activity.swift` — moved out (#1446) for the same
-    // LOC-budget reasoning as `AppRootViewModel+Catalog.swift`'s header.
-
-    // `observeSessionState()` (mirrors `sessionController`'s state onto
-    // `sessionState`, force-ends hosting on sign-out) lives in
-    // `AppRootViewModel+Auth.swift` (#1429 LOC-budget tripwire — see that
-    // file for the full rationale); `sessionObservationTask` above is
-    // `internal` for exactly this cross-file mutation.
-
-    // `loadAppStatus()`/`captchaRequired(for:)` (#947/#340 native scaffold)
-    // live in `AppRootViewModel+Captcha.swift` — same LOC-budget reasoning.
+    // WHERE THE BEHAVIOUR LIVES (each moved out of this file only to keep it
+    // under the repo's LOC-budget tripwire, `Scripts/loc-budget.sh`; a Swift
+    // extension cannot add stored properties, so every property those files
+    // use is declared above):
+    //   - `cachedSongSummaries()`          -> `AppRootViewModel+Offline.swift`
+    //   - `restoreSessionIfNeeded()`, `isSignedInNow()`, `observeSessionState()`,
+    //     the sign-in/out entry points      -> `AppRootViewModel+Auth.swift`
+    //     (`isSignedInNow()` asks the actor, not the possibly-lagging mirror)
+    //   - `filteredSongs`                   -> `AppRootViewModel+Search.swift`
+    //   - `loadCatalogue()`, `songDetail(id:)`, `songbooks()`, ... -> `AppRootViewModel+Catalog.swift`
+    //   - `recordRecentlyViewed(_:)`        -> `AppRootViewModel+Activity.swift`
+    //   - `loadAppStatus()`, `captchaRequired(for:)` -> `AppRootViewModel+Captcha.swift`
 }

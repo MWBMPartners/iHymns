@@ -71,18 +71,30 @@ public struct Endpoint: Sendable, Equatable {
     /// shape.
     public let httpBody: Data?
 
+    /// Whether a refusal from this endpoint should carry the server's machine
+    /// `reason` word (PR 3b, I2b, #2180). Defaults to `false`, which keeps
+    /// every existing call exactly as it was (a 409 or 403 is an opaque
+    /// `.server(status:, message: nil)`). The one-sign-in-per-device calls set
+    /// it to `true`, because the app must tell several refusals that share a
+    /// status apart ("this install was signed out" and "this sign-in cannot be
+    /// swapped" are both 403), and the contract is the status PLUS the reason
+    /// word, never the server's sentence (rule #35).
+    public let capturesRefusalReason: Bool
+
     public init(
         action: String,
         queryItems: [(name: String, value: String)] = [],
         requiresAuth: Bool = false,
         httpMethod: String = "GET",
-        httpBody: Data? = nil
+        httpBody: Data? = nil,
+        capturesRefusalReason: Bool = false
     ) {
         self.action = action
         self.queryItems = queryItems
         self.requiresAuth = requiresAuth
         self.httpMethod = httpMethod
         self.httpBody = httpBody
+        self.capturesRefusalReason = capturesRefusalReason
     }
 
     /// `Equatable` is hand-written (rather than synthesized) only because
@@ -93,6 +105,7 @@ public struct Endpoint: Sendable, Equatable {
             && lhs.requiresAuth == rhs.requiresAuth
             && lhs.httpMethod == rhs.httpMethod
             && lhs.httpBody == rhs.httpBody
+            && lhs.capturesRefusalReason == rhs.capturesRefusalReason
             && lhs.queryItems.elementsEqual(rhs.queryItems, by: { $0.name == $1.name && $0.value == $1.value })
     }
 }

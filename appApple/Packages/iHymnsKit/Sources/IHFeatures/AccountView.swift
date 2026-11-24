@@ -24,6 +24,22 @@
 // harmless one) that presents `AccountDeleteView` — its own re-auth-gated
 // confirmation flow — as a sheet, exactly mirroring how `isPresentingLogin`
 // already presents `LoginView` below.
+//
+// PR 3b (I2d, #2180) UPDATE — one sign-in per device. When the site has it
+// switched on, a "Your devices" section adds "Sign out everywhere" (always
+// asked about first, because it signs out every Apple device the person owns)
+// and a switch "Sign in automatically on my other Apple devices" (off cancels
+// every automatic sign-in key; on makes one). The section is drawn only from
+// what `AppRootViewModel.deviceSignInStatus()` says, never assumed. A failed
+// sign-out-everywhere says plainly that the OTHER devices were not signed out
+// and leaves this one signed in, mirroring the web Devices card.
+//
+// PR 3b (I5, #2180) UPDATE — when the site has the new account sync on, signing
+// out (either kind) first sends anything still waiting; if some changes could
+// not be sent, the view model throws `SignOutBlockedByUnsentChanges` and this
+// view ASKS: "Try again" (up to three times), "Sign out anyway" (an explicit
+// `discardUnsent: true`), or Cancel, which stays signed in. The view cannot
+// skip the question by accident: only that explicit flag does.
 import IHAPI
 import IHAuth
 import IHModels
@@ -38,15 +54,37 @@ public struct AccountView: View {
     @State private var isPresentingDeleteAccount = false
     @State private var isSigningOut = false
     @State private var errorMessage: String?
+    @State private var deviceStatus: DeviceSignInStatus?
+    @State private var isConfirmingSignOutEverywhere = false
+    @State private var isSigningOutEverywhere = false
+    @State private var isChangingAutomaticSignIn = false
+    @State private var unsentPrompt: UnsentPrompt?
+    @State private var unsentRetries = 0
+
+    /// What the "some changes have not reached your account" question is about.
+    private struct UnsentPrompt: Identifiable {
+        let id = UUID()
+        let everywhere: Bool
+        let unsent: UnsentChanges
+    }
 
     public init(rootViewModel: AppRootViewModel) {
         self.rootViewModel = rootViewModel
     }
 
+    /// Any of the three account actions is running: the others wait, so a sign-out and an
+    /// automatic-sign-in change can never run at the same moment.
+    private var isBusy: Bool { isSigningOut || isSigningOutEverywhere || isChangingAutomaticSignIn }
+
     public var body: some View {
         content
             .navigationTitle("Account")
-            .task { await rootViewModel.refreshCurrentUser() }
+            // `id:` re-runs this whenever signed-in-ness flips, so the device controls never keep
+            // the status from before a sign-in made from the sheet (or a sign-out).
+            .task(id: rootViewModel.sessionState.isSignedIn) {
+                await rootViewModel.refreshCurrentUser()
+                deviceStatus = await rootViewModel.deviceSignInStatus()
+            }
             .sheet(isPresented: $isPresentingLogin) {
                 LoginView(rootViewModel: rootViewModel)
             }
@@ -87,7 +125,11 @@ public struct AccountView: View {
                         Text("Sign Out")
                     }
                 }
-                .disabled(isSigningOut)
+                .disabled(isBusy)
+            }
+
+            if deviceStatus?.switchedOn == true {
+                devicesSection
             }
 
             // Deliberately its OWN `Section`, below (never beside) "Sign
@@ -105,6 +147,69 @@ public struct AccountView: View {
             } header: {
                 Text("Danger Zone")
             }
+        }
+        .confirmationDialog(
+            "Some changes have not reached your account",
+            isPresented: Binding(get: { unsentPrompt != nil }, set: { if !$0 { unsentPrompt = nil } }),
+            titleVisibility: .visible,
+            presenting: unsentPrompt
+        ) { prompt in
+            if unsentRetries < 3 {
+                Button("Try again") {
+                    unsentRetries += 1
+                    Task { await signOutAgain(prompt, discardUnsent: false) }
+                }
+            }
+            Button("Sign Out Anyway", role: .destructive) {
+                Task { await signOutAgain(prompt, discardUnsent: true) }
+            }
+            Button("Cancel", role: .cancel) { unsentRetries = 0 }
+        } message: { prompt in
+            Text(unsentMessage(prompt.unsent))
+        }
+    }
+
+    /// The "Your devices" section (PR 3b, I2d): drawn only when the site has
+    /// one sign-in per device switched on.
+    private var devicesSection: some View {
+        Section {
+            if deviceStatus?.canOfferAutomaticSignIn == true {
+                Toggle(
+                    "Sign in automatically on my other Apple devices",
+                    isOn: Binding(
+                        get: { deviceStatus?.keyHeld == true && deviceStatus?.automaticSignInOff == false },
+                        set: { newValue in Task { await setAutomaticSignIn(newValue) } }
+                    )
+                )
+                .disabled(isBusy)
+            }
+            Button(role: .destructive) {
+                // Never signs out directly: it signs out EVERY Apple device, so it is asked about first.
+                isConfirmingSignOutEverywhere = true
+            } label: {
+                if isSigningOutEverywhere {
+                    ProgressView()
+                } else {
+                    Text("Sign Out Everywhere")
+                }
+            }
+            .disabled(isBusy)
+            .confirmationDialog(
+                "Sign out everywhere?",
+                isPresented: $isConfirmingSignOutEverywhere,
+                titleVisibility: .visible
+            ) {
+                Button("Sign Out Everywhere", role: .destructive) {
+                    Task { await signOutEverywhere() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This signs you out on every device, including this one. You will need to sign in again on each.")
+            }
+        } header: {
+            Text("Your devices")
+        } footer: {
+            Text("Each device has its own sign-in. Automatic sign-in lets a new Apple device on your iCloud account sign in without asking. Turn it off to stop that.")
         }
     }
 
@@ -144,22 +249,98 @@ public struct AccountView: View {
             Label("Not Signed In", systemImage: "person.crop.circle")
         } description: {
             Text("Sign in to sync your favourites across devices.")
+            // Shown here too: after a sign-out the screen is this one, and a sign-out message must not vanish.
+            if let errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
+            }
         } actions: {
-            Button("Sign In") { isPresentingLogin = true }
+            Button("Sign In") {
+                errorMessage = nil
+                isPresentingLogin = true
+            }
                 .buttonStyle(.borderedProminent)
         }
     }
 
-    private func signOut() async {
+    /// Signs every device out. A failure leaves THIS device signed in and says
+    /// so: the other devices were not signed out, and the person can retry. Unsent
+    /// changes (account sync on) are asked about first, see this file's I5 note.
+    private func signOutEverywhere(discardUnsent: Bool = false) async {
+        errorMessage = nil
+        isSigningOutEverywhere = true
+        defer { isSigningOutEverywhere = false }
+        do {
+            try await rootViewModel.signOutEverywhere(discardUnsent: discardUnsent)
+        } catch let blocked as SignOutBlockedByUnsentChanges {
+            unsentPrompt = UnsentPrompt(everywhere: true, unsent: blocked.unsent)
+        } catch let error as SessionControllerError {
+            errorMessage = Self.message(for: error, everywhere: true)
+        } catch {
+            errorMessage = "Your other devices were not signed out. Check your connection and try again."
+        }
+    }
+
+    /// Flips automatic sign-in, then re-reads the status so the switch shows
+    /// what is really true (a failed change leaves it where it was).
+    private func setAutomaticSignIn(_ enabled: Bool) async {
+        errorMessage = nil
+        isChangingAutomaticSignIn = true
+        defer { isChangingAutomaticSignIn = false }
+        do {
+            try await rootViewModel.setAutomaticSignIn(enabled: enabled)
+        } catch {
+            errorMessage = "Could not change automatic sign-in. Check your connection and try again."
+        }
+        deviceStatus = await rootViewModel.deviceSignInStatus()
+    }
+
+    private func signOut(discardUnsent: Bool = false) async {
         errorMessage = nil
         isSigningOut = true
         defer { isSigningOut = false }
         do {
-            try await rootViewModel.signOut()
+            try await rootViewModel.signOut(discardUnsent: discardUnsent)
+        } catch let blocked as SignOutBlockedByUnsentChanges {
+            unsentPrompt = UnsentPrompt(everywhere: false, unsent: blocked.unsent)
+        } catch let error as SessionControllerError {
+            errorMessage = Self.message(for: error, everywhere: false)
         } catch let error as APIError {
             errorMessage = error.userFacingMessage
         } catch {
             errorMessage = "Something went wrong signing out. Please try again."
         }
+    }
+
+    /// The person answered the unsent-changes question: try again, or sign out anyway.
+    private func signOutAgain(_ prompt: UnsentPrompt, discardUnsent: Bool) async {
+        if prompt.everywhere {
+            await signOutEverywhere(discardUnsent: discardUnsent)
+        } else {
+            await signOut(discardUnsent: discardUnsent)
+        }
+    }
+
+    /// What to tell the person for each honest sign-out outcome. Chosen from the error CASE, never from a sentence.
+    private static func message(for error: SessionControllerError, everywhere: Bool) -> String {
+        switch error {
+        case .couldNotRecordSignOut:
+            everywhere
+                ? "Your sign-ins were ended, but this device could not save that. Tap Sign Out Everywhere again to finish."
+                : "This device could not save your sign-out, so you are still signed in here. Please try again."
+        case .signedOutButTokenNotRemoved:
+            everywhere
+                ? "You were signed out everywhere. This device could not clear its saved sign-in, but it will not be used."
+                : "You were signed out. This device could not clear its saved sign-in, but it will not be used."
+        }
+    }
+
+    /// The words for the "some changes have not reached your account" question.
+    private func unsentMessage(_ unsent: UnsentChanges) -> String {
+        if unsent.couldNotCount && unsent.total == 0 {
+            return "We could not check whether some changes are still waiting to be sent. Signing out now could lose them on this device."
+        }
+        let tail = unsent.couldNotCount ? " We could not check for others." : ""
+        return "\(unsent.total) change(s) could not be sent. Signing out now would lose them on this device.\(tail)"
     }
 }

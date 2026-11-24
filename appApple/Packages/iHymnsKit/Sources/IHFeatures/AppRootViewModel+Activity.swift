@@ -49,6 +49,11 @@ extension AppRootViewModel {
         recentlyViewedStore.record(entry)
         recentlyViewedSongs = recentlyViewedStore.load()
 
+        // PR 3b (I3): also tell the server, when signed in, so the view lands in
+        // the person's history on every device. Fire-and-forget (see
+        // `AppRootViewModel+ViewHistory.swift`): never awaited, never an error.
+        Task { await reportSongView(detail.songId) }
+
         // #1446 — the ONE write hook for the local "Your Activity"
         // dashboard's counters; see this file's header for why anchoring
         // it here (rather than a second, independent call site) is

@@ -53,15 +53,25 @@ extension Endpoint {
     ///   `Optional` stored properties, `AuthLoginRequestBody`'s own doc
     ///   comment below) sends a request body BYTE-IDENTICAL to before this
     ///   parameter existed.
+    /// - Parameter device: This install's details (install id, `"apple"`, a
+    ///   generic device name, the app version), added in PR 3b (I2b, #2180)
+    ///   so the server can give this device its own sign-in row. `nil` by
+    ///   default: the four keys are then left out and the body is
+    ///   byte-identical to before.
     /// - Throws: Only if `JSONEncoder` itself somehow fails encoding two
     ///   plain `String` fields (practically unreachable — no dates, no
     ///   non-conforming floats — but `Endpoint`'s factory surfaces `throws`
     ///   rather than force-trying, matching this package's general "no
     ///   silent force-unwraps of anything except developer-authored
     ///   literals" posture).
-    static func authLogin(username: String, password: String, captchaToken: String? = nil) throws -> Endpoint {
+    static func authLogin(
+        username: String,
+        password: String,
+        captchaToken: String? = nil,
+        device: DeviceSignInDetails? = nil
+    ) throws -> Endpoint {
         let body = try JSONEncoder().encode(
-            AuthLoginRequestBody(username: username, password: password, captchaToken: captchaToken)
+            AuthLoginRequestBody(username: username, password: password, captchaToken: captchaToken, device: device)
         )
         return Endpoint(action: "auth_login", httpMethod: "POST", httpBody: body)
     }
@@ -100,11 +110,11 @@ extension Endpoint {
     /// `?action=auth_email_login_verify` (email + 6-digit code mode) —
     /// exchanges the code emailed by `authEmailLoginRequest(email:)` for a
     /// bearer token, same `AuthResponse` shape `auth_login` returns. No auth
-    /// required.
+    /// required. `device`: see `authLogin`'s matching parameter (PR 3b, I2b).
     ///
     /// - Throws: Only if `JSONEncoder` fails (see `authLogin` above).
-    static func authEmailLoginVerify(email: String, code: String) throws -> Endpoint {
-        let body = try JSONEncoder().encode(AuthEmailLoginVerifyRequestBody(email: email, code: code, token: nil))
+    static func authEmailLoginVerify(email: String, code: String, device: DeviceSignInDetails? = nil) throws -> Endpoint {
+        let body = try JSONEncoder().encode(AuthEmailLoginVerifyRequestBody(email: email, code: code, token: nil, device: device))
         return Endpoint(action: "auth_email_login_verify", httpMethod: "POST", httpBody: body)
     }
 
@@ -122,7 +132,7 @@ extension Endpoint {
     ///
     /// - Throws: Only if `JSONEncoder` fails (see `authLogin` above).
     static func authEmailLoginVerify(token: String) throws -> Endpoint {
-        let body = try JSONEncoder().encode(AuthEmailLoginVerifyRequestBody(email: nil, code: nil, token: token))
+        let body = try JSONEncoder().encode(AuthEmailLoginVerifyRequestBody(email: nil, code: nil, token: token, device: nil))
         return Endpoint(action: "auth_email_login_verify", httpMethod: "POST", httpBody: body)
     }
 
@@ -192,11 +202,31 @@ private struct AuthLoginRequestBody: Encodable {
     let username: String
     let password: String
     let captchaToken: String?
+    // The four device keys (PR 3b, I2b): all `nil` when no `device` was given,
+    // so they are then left out of the JSON entirely.
+    let deviceInstallId: String?
+    let platform: String?
+    let deviceName: String?
+    let appVersion: String?
+
+    init(username: String, password: String, captchaToken: String?, device: DeviceSignInDetails?) {
+        self.username = username
+        self.password = password
+        self.captchaToken = captchaToken
+        self.deviceInstallId = device?.installId
+        self.platform = device?.platform
+        self.deviceName = device?.deviceName
+        self.appVersion = device?.appVersion
+    }
 
     private enum CodingKeys: String, CodingKey {
         case username
         case password
         case captchaToken = "captcha_token"
+        case deviceInstallId
+        case platform
+        case deviceName
+        case appVersion
     }
 }
 
@@ -224,4 +254,19 @@ private struct AuthEmailLoginVerifyRequestBody: Encodable {
     let email: String?
     let code: String?
     let token: String?
+    // The four device keys (PR 3b, I2b): left out when no `device` was given.
+    let deviceInstallId: String?
+    let platform: String?
+    let deviceName: String?
+    let appVersion: String?
+
+    init(email: String?, code: String?, token: String?, device: DeviceSignInDetails?) {
+        self.email = email
+        self.code = code
+        self.token = token
+        self.deviceInstallId = device?.installId
+        self.platform = device?.platform
+        self.deviceName = device?.deviceName
+        self.appVersion = device?.appVersion
+    }
 }

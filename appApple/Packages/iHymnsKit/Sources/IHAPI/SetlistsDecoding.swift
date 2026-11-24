@@ -37,6 +37,37 @@ extension APIClient {
         }
     }
 
+    /// Decodes a `user_setlists_sync` POST response body into a
+    /// `SetlistSyncResult` — the setlists plus the protocol-2 extras
+    /// (`syncedAt`, `tombstones`, `conflicts`).
+    ///
+    /// ELI5: "Read the server's answer to a sync, including the time stamp
+    /// to quote next time and any deletions or refusals."
+    ///
+    /// - Parameter data: The raw HTTP response body.
+    /// - Throws: `APIError.decoding` when `setlists` is missing or malformed.
+    ///   The three extras are optional: an older server, or a paused site's
+    ///   read-only answer (`syncedAt: null`), still decodes.
+    nonisolated public static func decodeSetlistSyncResult(from data: Data) throws -> SetlistSyncResult {
+        struct Envelope: Decodable {
+            let setlists: [Setlist]
+            let syncedAt: String?
+            let tombstones: [SetlistTombstone]?
+            let conflicts: [SetlistSyncConflict]?
+        }
+        do {
+            let envelope = try JSONDecoder().decode(Envelope.self, from: data)
+            return SetlistSyncResult(
+                setlists: envelope.setlists,
+                syncedAt: envelope.syncedAt,
+                tombstones: envelope.tombstones ?? [],
+                conflicts: envelope.conflicts ?? []
+            )
+        } catch {
+            throw APIError.decoding
+        }
+    }
+
     /// Decodes a `setlist_share` response body — `{"id": "...", "url": "..."}`.
     nonisolated public static func decodeShareSetlistResult(from data: Data) throws -> ShareSetlistResult {
         do {

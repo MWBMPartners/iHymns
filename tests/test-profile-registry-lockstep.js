@@ -24,8 +24,20 @@
  *   3. The snapshot. appApple/.../Resources/profile-schema.json must equal, byte
  *      for byte, what `php tools/dump-profile-schema.php` prints.
  *
+ * 4. The Apple mapping (PR 3b, step I4). The Apple app binds five of its own saved preferences to
+ *    registry ids (ProfileSyncMapping.swift). Section 4 reads that table from the Swift source
+ *    (comments removed, files found from the tree) and checks, against the registry: every id is
+ *    a real entry used by Apple, of a kind the binding can carry; every UserDefaults key is one the
+ *    app really stores the setting under (IHSettingsStore or an @AppStorage); the app's own
+ *    enum words equal the registry's allowed words; the app's default equals the registry default;
+ *    every entry the registry says Apple uses and syncs has a binding (otherwise the account would
+ *    accept a setting the app silently never applies); and the fields the Swift schema type decodes
+ *    all exist in the snapshot.
+ *
  * Mutation proofs are recorded in the C6 commit: a theme value added only in PHP,
- * and a hand edit to the snapshot, each turn this red.
+ * and a hand edit to the snapshot, each turn this red. Section 4 (I4): a changed UserDefaults key,
+ * a mistyped registry id, a platform removed from an entry, an enum word renamed in Swift, and the
+ * snapshot's bundling removed from Package.swift each turn it red.
  *
  * Usage: node tests/test-profile-registry-lockstep.js
  *
@@ -37,6 +49,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { appSwiftFiles, read as readSwift, stripSwift, callArguments } from './lib/swift-source.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.join(__dirname, '..');
@@ -187,7 +200,99 @@ check('the snapshot equals, byte for byte, what tools/dump-profile-schema.php pr
 check('the snapshot decodes to the same schema version', snap !== '' && JSON.parse(snap).schemaVersion === dump.schemaVersion);
 check('the snapshot holds no server-only field', !/"(storage|export|erase)"\s*:/.test(snap));
 const pkg = fs.readFileSync(path.join(REPO, 'appApple', 'Packages', 'iHymnsKit', 'Package.swift'), 'utf8');
-check('Package.swift excludes the snapshot, so SwiftPM does not warn about an unhandled file (until step I4 bundles it)', pkg.includes('Resources/profile-schema.json'));
+check('Package.swift bundles the snapshot as a resource (step I4), and no longer merely excludes it',
+    pkg.includes('.copy("Resources/profile-schema.json")') && !/exclude:\s*\[\s*"Resources\/profile-schema\.json"/.test(pkg));
+
+console.log('\n4 - the Apple mapping (step I4)');
+{
+    const files = appSwiftFiles();
+    const find = (suffix) => files.find((f) => f.endsWith(suffix));
+    const mappingFile = find('IHFeatures/ProfileSyncMapping.swift');
+    const settingsFile = find('IHFeatures/IHSettingsStore.swift');
+    const themeFile = find('IHDesign/IHAppearanceTheme.swift');
+    const cvdFile = find('IHDesign/IHCVDMode.swift');
+    const schemaFile = find('IHModels/ProfileSchema.swift');
+    check('found the mapping, settings store, theme, colour-vision and schema Swift files', !!(mappingFile && settingsFile && themeFile && cvdFile && schemaFile));
+
+    const code = Object.fromEntries(files.map((f) => [f, stripSwift(readSwift(f))]));
+    const mapping = code[mappingFile];
+
+    /* The binding table, from the source. */
+    const bindings = callArguments(mapping, 'ProfileSettingBinding').map((c) => ({
+        id: (/\bid\s*:\s*"([^"]+)"/.exec(c.args) || [])[1],
+        key: (/\bdefaultsKey\s*:\s*"([^"]+)"/.exec(c.args) || [])[1],
+        kind: (/\bkind\s*:\s*\.([A-Za-z]+)/.exec(c.args) || [])[1],
+    })).filter((b) => b.id && b.key && b.kind);
+    check('read the binding table (' + bindings.length + ' bindings)', bindings.length >= 5, JSON.stringify(bindings));
+
+    /* The UserDefaults keys the app really stores things under: IHSettingsStore's Keys, and every @AppStorage. */
+    const storedKeys = new Set();
+    for (const m of code[settingsFile].matchAll(/static\s+let\s+\w+\s*=\s*"([^"]+)"/g)) storedKeys.add(m[1]);
+    const appStorageDefaults = new Map();   /* key -> literal default found beside an @AppStorage */
+    for (const f of files) {
+        for (const m of code[f].matchAll(/@AppStorage\(\s*"([^"]+)"\s*\)[^\n]*?=\s*([^\s\n]+)/g)) { storedKeys.add(m[1]); appStorageDefaults.set(m[1], m[2]); }
+    }
+    check('collected the keys the app stores settings under (' + storedKeys.size + ')', storedKeys.size >= 8);
+
+    const kindToTypes = { bool: ['bool'], double: ['float'], string: ['enum', 'string'], cvd: ['enum'] };
+    const problems = [];
+    for (const b of bindings) {
+        const e = dump.entries.find((x) => x.id === b.id);
+        if (!e) { problems.push(b.id + ' is not a registry entry'); continue; }
+        if (!(e.platforms.includes('apple') || e.platforms.includes('all'))) problems.push(b.id + ' is not used by Apple (platforms ' + e.platforms.join(',') + ')');
+        if (e.scope !== 'account' || e.sync !== 'profile_sync') problems.push(b.id + ' is not an account profile_sync entry');
+        if (!(kindToTypes[b.kind] || []).includes(e.type)) problems.push(b.id + ': the binding kind "' + b.kind + '" cannot carry a registry "' + e.type + '"');
+        if (!storedKeys.has(b.key)) problems.push(b.id + ': "' + b.key + '" is not a key the app stores a setting under');
+    }
+    check('every binding is a real Apple registry entry, of a kind it can carry, under a key the app really uses', problems.length === 0, problems.join(' | '));
+
+    /* Every account profile_sync entry the registry names for Apple explicitly must be bound. */
+    const appleNamed = dump.entries.filter((e) => e.platforms.includes('apple') && e.scope === 'account' && e.sync === 'profile_sync' && e.type !== 'map' && e.type !== 'list' && e.type !== 'json');
+    const unbound = appleNamed.filter((e) => !bindings.some((b) => b.id === e.id));
+    check('every scalar entry the registry names for Apple has a binding (' + appleNamed.map((e) => e.id).join(', ') + ')', appleNamed.length >= 5 && unbound.length === 0, unbound.map((e) => e.id).join(', '));
+
+    /* The app's enum words equal the registry's allowed words. */
+    const enumWords = (src, name) => {
+        const m = new RegExp('enum\\s+' + name + '\\b[^{]*\\{([\\s\\S]*?)\\n\\}').exec(src);
+        if (!m) return null;
+        return [...m[1].matchAll(/^\s*case\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*=\s*"([^"]+)")?\s*$/gm)].map((x) => x[2] ?? x[1]);
+    };
+    const themeWords = enumWords(code[themeFile], 'IHAppearanceTheme');
+    const cvdWords = enumWords(code[cvdFile], 'IHCVDMode');
+    check('the app theme words equal the registry theme words', themeWords !== null && same([...themeWords].sort(), [...entry('appearance.theme').allowed].sort()), JSON.stringify(themeWords));
+    check('the app colour-vision words (without "none") equal the registry words', cvdWords !== null && same(cvdWords.filter((w) => w !== 'none').sort(), [...entry('appearance.cvd').allowed].sort()) && cvdWords.includes('none'), JSON.stringify(cvdWords));
+
+    /* The app's default equals the registry default, where an @AppStorage states one. */
+    const defaultProblems = [];
+    let comparedDefaults = 0;
+    for (const b of bindings) {
+        const lit = appStorageDefaults.get(b.key);
+        if (lit === undefined) continue;
+        const e = entry(b.id);
+        const want = e.default;
+        const got = lit === 'true' ? true : lit === 'false' ? false : (Number.isNaN(Number(lit)) ? lit : Number(lit));
+        comparedDefaults++;
+        if (got !== want) defaultProblems.push(b.id + ': the app says ' + lit + ', the registry says ' + JSON.stringify(want));
+    }
+    check('the app defaults equal the registry defaults (' + comparedDefaults + ' compared)', comparedDefaults >= 2 && defaultProblems.length === 0, defaultProblems.join(' | '));
+
+    /* The reason words the app acts on equal the server's constants (rule #35: status plus reason word, never prose). */
+    const reasonFile = find('IHAPI/ProfileSyncEndpoints.swift');
+    const reasonEnum = (/enum\s+ProfileSyncReason\b[\s\S]*?\n\}/.exec(code[reasonFile]) || [''])[0];
+    const swiftReasons = [...reasonEnum.matchAll(/\bcase\s+[A-Za-z]+\s*=\s*"([^"]+)"/g)].map((m) => m[1]);
+    const phpConst = (file, name) => (new RegExp("const\\s+" + name + "\\s*=\\s*'([^']+)'").exec(fs.readFileSync(path.join(PUB, 'includes', file), 'utf8')) || [])[1];
+    const serverReasons = [phpConst('profile_sync_gate.php', 'PROFILE_SYNC_DISABLED_REASON'), phpConst('profile_sync_gate.php', 'PROFILE_SYNC_NOT_READY_REASON'), phpConst('account_write_gate.php', 'ACCOUNT_WRITES_OFF_REASON')];
+    check('the reason words the app acts on equal the server constants (' + swiftReasons.join(', ') + ')', swiftReasons.length === 3 && same([...swiftReasons].sort(), [...serverReasons].sort()), JSON.stringify({ swiftReasons, serverReasons }));
+    const engineFile = find('IHFeatures/ProfileSyncEngine.swift');
+    check('the engine compares refusals against those cases, never typed-in text', !/message\s*==\s*"/.test(code[engineFile]) && /ProfileSyncReason\.paused\.rawValue/.test(code[engineFile]));
+
+    /* The Swift schema type decodes only fields the snapshot really has. */
+    const entryBody = (/struct\s+ProfileEntry\b[\s\S]*?\n\}/.exec(code[schemaFile]) || [''])[0];
+    const swiftFields = [...entryBody.matchAll(/^\s*public\s+let\s+([A-Za-z_][A-Za-z0-9_]*)\s*:/gm)].map((m) => m[1]);
+    const snapKeys = new Set(JSON.parse(snap).entries.flatMap((e) => Object.keys(e)));
+    const missingFields = swiftFields.filter((f) => !snapKeys.has(f));
+    check('every field the Swift entry type decodes exists in the snapshot (' + swiftFields.join(', ') + ')', swiftFields.length >= 10 && missingFields.length === 0, missingFields.join(', '));
+}
 
 console.log(failures === 0 ? '\nAll lockstep checks pass.' : `\n${failures} check(s) failed.`);
 process.exit(failures === 0 ? 0 : 1);

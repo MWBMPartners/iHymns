@@ -56,20 +56,51 @@ extension APIClient {
     /// both means this classifier already works correctly against BOTH the
     /// current server AND the planned one, with no dependency ordering
     /// between this native change and that server change.
-    nonisolated static func classifyMachineRefusal(httpStatus: Int, body: Data) -> APIError? {
-        guard httpStatus == 403 else { return nil }
+    ///
+    /// PR 3b (I2b, #2180): `capturingReason` (default `false`, so every
+    /// existing call and test is untouched) is set by endpoints whose
+    /// refusals the app must tell apart by their machine `reason` word, the
+    /// one-sign-in-per-device calls. When it is `true`, a refusal that the
+    /// generic `classify(...)` would turn into an opaque
+    /// `.server(status:, message: nil)` instead comes back as
+    /// `.server(status:, message: <reason>)`. Statuses that already have their
+    /// own case (401 unauthorized, 423, 429 rate limited, 503 maintenance) are
+    /// left to `classify`, so the app's existing handling of those is unchanged.
+    /// The reason is read from the same two places as the CAPTCHA word
+    /// (`error.reason` in the v2 envelope, a flat `reason` in v1) and only
+    /// when it is a short word of lower-case letters, digits and underscores,
+    /// so a server sentence can never be mistaken for one.
+    nonisolated static func classifyMachineRefusal(httpStatus: Int, body: Data, capturingReason: Bool = false) -> APIError? {
+        let captchaCandidate = httpStatus == 403
+        let reasonCandidate = capturingReason && httpStatus >= 400 && ![401, 423, 429, 503].contains(httpStatus)
+        guard captchaCandidate || reasonCandidate else { return nil }
         guard
             let object = try? JSONSerialization.jsonObject(with: body, options: [.fragmentsAllowed]),
             let dict = object as? [String: Any]
         else { return nil }
 
-        if let errorObject = dict["error"] as? [String: Any], Self.dictSignalsCaptchaRequired(errorObject) {
-            return .captchaRequired
+        if captchaCandidate {
+            if let errorObject = dict["error"] as? [String: Any], Self.dictSignalsCaptchaRequired(errorObject) {
+                return .captchaRequired
+            }
+            if Self.dictSignalsCaptchaRequired(dict) {
+                return .captchaRequired
+            }
         }
-        if Self.dictSignalsCaptchaRequired(dict) {
-            return .captchaRequired
+        if reasonCandidate {
+            let source = (dict["error"] as? [String: Any]) ?? dict
+            if let reason = source["reason"] as? String, Self.isReasonWord(reason) {
+                return .server(status: httpStatus, message: reason)
+            }
         }
         return nil
+    }
+
+    /// A machine reason word: 1 to 64 characters of lower-case letters, digits
+    /// and underscores (`enrol_key_invalid`, `install_signed_out`, ...).
+    nonisolated private static func isReasonWord(_ value: String) -> Bool {
+        guard (1...64).contains(value.count) else { return false }
+        return value.allSatisfy { $0.isASCII && (($0.isLetter && $0.isLowercase) || $0.isNumber || $0 == "_") }
     }
 
     /// True when EITHER `dict["code"]` OR `dict["reason"]` is the string

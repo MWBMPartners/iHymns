@@ -56,6 +56,58 @@ struct SetlistsEndpointTests {
         #expect(songs[0]["id"] as? String == "MP-1008")
     }
 
+    @Test("Endpoint.setlistsSync sends since and deleted when given, and always sends deleted (even empty) so the server sees protocol 2")
+    func buildsProtocol2SetlistsSyncEndpoint() throws {
+        let withBoth = try Endpoint.setlistsSync(
+            mode: .replace, setlists: [], since: "2026-11-24 09:30:00", deleted: ["slist-gone1", "slist-gone2"]
+        )
+        let bothJsonBody = try #require(withBoth.httpBody)
+        let bothJsonObject = try JSONSerialization.jsonObject(with: bothJsonBody)
+        let bothJson = try #require(bothJsonObject as? [String: Any])
+        #expect(bothJson["since"] as? String == "2026-11-24 09:30:00")
+        #expect(bothJson["deleted"] as? [String] == ["slist-gone1", "slist-gone2"])
+
+        // An EMPTY deleted list must still be present: the key's mere presence marks protocol 2.
+        let emptyDeleted = try Endpoint.setlistsSync(mode: .replace, setlists: [], since: nil, deleted: [])
+        let emptyJsonBody = try #require(emptyDeleted.httpBody)
+        let emptyJsonObject = try JSONSerialization.jsonObject(with: emptyJsonBody)
+        let emptyJson = try #require(emptyJsonObject as? [String: Any])
+        #expect((emptyJson["deleted"] as? [Any])?.isEmpty == true)
+        // No watermark yet: the key is left OUT, never sent as null.
+        #expect(emptyJson.keys.contains("since") == false)
+
+        // The old request (neither given) leaves both keys out.
+        let legacy = try Endpoint.setlistsSync(mode: .merge, setlists: [])
+        let legacyJsonBody = try #require(legacy.httpBody)
+        let legacyJsonObject = try JSONSerialization.jsonObject(with: legacyJsonBody)
+        let legacyJson = try #require(legacyJsonObject as? [String: Any])
+        #expect(legacyJson.keys.contains("deleted") == false)
+        #expect(legacyJson.keys.contains("since") == false)
+    }
+
+    @Test("decodeSetlistSyncResult reads syncedAt, tombstones and conflicts")
+    func decodesSetlistSyncResultExtras() throws {
+        let json = Data(#"""
+        { "setlists": [ { "id": "slist-a", "name": "Kept", "songs": [] } ],
+          "syncedAt": "2026-11-24 09:31:02", "truncated": false, "cap": null,
+          "tombstones": [ { "id": "slist-gone1", "deletedAt": "2026-11-23 18:00:00", "reason": "user" } ],
+          "conflicts": [ { "id": "slist-a", "reason": "newer_on_server", "serverUpdatedAt": "2026-11-24 09:30:59" } ] }
+        """#.utf8)
+        let result = try APIClient.decodeSetlistSyncResult(from: json)
+        #expect(result.setlists.map(\.id) == ["slist-a"])
+        #expect(result.syncedAt == "2026-11-24 09:31:02")
+        #expect(result.tombstones.map(\.id) == ["slist-gone1"])
+        #expect(result.conflicts.first?.reason == "newer_on_server")
+    }
+
+    @Test("decodeSetlistSyncResult tolerates a paused site's read-only answer (syncedAt null)")
+    func decodesReadOnlySetlistSyncResult() throws {
+        let json = Data(#"{ "setlists": [], "syncedAt": null, "tombstones": [], "conflicts": [], "readOnly": true }"#.utf8)
+        let result = try APIClient.decodeSetlistSyncResult(from: json)
+        #expect(result.syncedAt == nil)
+        #expect(result.setlists.isEmpty)
+    }
+
     @Test("Endpoint.shareSetlist(_:ownerId:existingShareId:) POSTs name/songs/owner/setlistId, and omits id when creating fresh")
     func buildsShareSetlistEndpointForCreate() throws {
         let songId = try #require(SongID(rawValue: "CP-0202"))
@@ -200,10 +252,14 @@ struct SetlistsNetworkedTests {
 
             let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession(), bearerToken: "test-token")
             let setlist = Setlist(id: "slist-abc123", name: "Evening Worship")
-            let setlists = try await client.syncSetlists([setlist], mode: .replace)
+            let result = try await client.syncSetlists([setlist], mode: .replace, since: nil, deleted: [])
 
             #expect(seenRequest.current?.httpMethod == "POST")
-            #expect(setlists.count == 1)
+            #expect(result.setlists.count == 1)
+            // An older-style answer with none of the protocol-2 extras still decodes.
+            #expect(result.syncedAt == nil)
+            #expect(result.tombstones.isEmpty)
+            #expect(result.conflicts.isEmpty)
         }
     }
 

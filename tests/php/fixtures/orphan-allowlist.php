@@ -568,9 +568,6 @@ return [
          * --------------------------------------------------------------- */
         'auth_device_code_request'    => '#1511 live-dormant; consumer = tvOS client, approve side already live',
         'auth_device_code_poll'       => '#1511 live-dormant; consumer = tvOS client, approve side already live',
-        'auth_device_enrol' => '#2185 deliberate API-first surface (PR 3 server step H5): the consumer is the Apple app, whose per-device sign-in client is step I2b and has not been written yet; dormant behind device_signin_channels',
-        'auth_enrol_key_create' => '#2185 deliberate API-first surface (PR 3 server step H5): the consumer is the Apple app, whose per-device sign-in client is step I2b and has not been written yet; dormant behind device_signin_channels',
-        'auth_enrol_key_redeem' => '#2185 deliberate API-first surface (PR 3 server step H5): the consumer is the Apple app, whose per-device sign-in client is step I2b and has not been written yet; dormant behind device_signin_channels',
         'service_control_token_mint'  => '#1511 live-dormant; documented dormant at api-docs.yaml:11097',
         'service_control_token_revoke'=> '#1511 live-dormant; documented dormant at api-docs.yaml:11097',
         /* #1791 collab-by-link — setlist_token_update / setlist_share_list /

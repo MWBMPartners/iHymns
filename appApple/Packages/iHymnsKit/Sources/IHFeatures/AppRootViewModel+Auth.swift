@@ -22,6 +22,7 @@
 // start issuing real, unmocked network requests).
 import Foundation
 import IHAPI
+import IHAuth
 import IHModels
 
 extension AppRootViewModel {
@@ -98,8 +99,21 @@ extension AppRootViewModel {
     ///   leaves the session (and therefore the local favourites cache)
     ///   UNTOUCHED, matching that method's own "never clear local state the
     ///   server hasn't confirmed" contract.
-    public func signOut() async throws {
-        try await sessionController.signOut()
+    ///
+    /// PR 3b (I5): with the account sync on, unsent changes are sent first and, if any remain,
+    /// this throws `SignOutBlockedByUnsentChanges` and clears nothing (see
+    /// `AppRootViewModel+SignOutCheck.swift`). `discardUnsent: true` is the person's explicit
+    /// "Sign out anyway". With the account sync off this is exactly the older sign-out.
+    public func signOut(discardUnsent: Bool = false) async throws {
+        try await ensureNothingUnsent(discardUnsent: discardUnsent)
+        do {
+            try await sessionController.signOut()
+        } catch SessionControllerError.signedOutButTokenNotRemoved {
+            // This device IS signed out (the controller finished everything else), so the cached
+            // account data must still be cleared; then tell the caller exactly what happened.
+            await resetLocalUserState()
+            throw SessionControllerError.signedOutButTokenNotRemoved
+        }
         await resetLocalUserState()
     }
 
@@ -142,7 +156,13 @@ extension AppRootViewModel {
     /// `loadSetlistsIfNeeded()` call (the next sign-in's `syncAfterSignIn()`)
     /// re-reads the now-empty cache rather than silently no-op'ing on its
     /// stale "already loaded" guard.
-    private func resetLocalUserState() async {
+    func resetLocalUserState() async {
+        // Set-list sync protocol 2 (#1661): forget this person's "last synced"
+        // reading BEFORE `currentUser` is cleared (it is the key), so the next
+        // account that signs in starts from a clean first sync.
+        if let userId = currentUser?.id { setlistSyncStateStore.clear(forUser: userId) }
+        profileSync.forget(userId: currentUser?.id)
+        setlistConflicts = []
         currentUser = nil
         favorites = []
         hasLoadedFavoritesFromCache = false
@@ -200,6 +220,9 @@ extension AppRootViewModel {
         await loadSetlistsIfNeeded()
         await flushPendingSetlistOps()
         await refreshSetlistsFromServer()
+        // PR 3b (I4): the shared settings (theme, colour-vision mode, text size, ...),
+        // when the site has the new account sync switched on. A no-op otherwise.
+        await syncProfileSettings()
     }
 
     /// Re-hydrates sign-in state from the Keychain, but only once per app
@@ -234,7 +257,9 @@ extension AppRootViewModel {
         // header explains why); failure is swallowed there, so this can
         // never itself fail or block the sign-in restore below.
         await loadAppStatus()
-        try? await sessionController.restoreFromStorage()
+        // PR 3b: tell the controller whether the site has "one sign-in per device"
+        // switched on (`false` when the read failed, which keeps every swap off).
+        try? await sessionController.restoreFromStorage(deviceSignInEnabled: appStatus?.deviceSignin ?? false)
         if await isSignedInNow() {
             await syncAfterSignIn()
         }

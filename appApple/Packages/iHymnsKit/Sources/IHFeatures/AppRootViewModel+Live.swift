@@ -52,8 +52,16 @@ extension AppRootViewModel {
     @MainActor
     public static func makeLive(environment: APIEnvironment) -> AppRootViewModel {
         let apiClient = APIClient(environment: environment)
-        let tokenStore = KeychainTokenStore()
-        let sessionController = SessionController(tokenStore: tokenStore, apiClient: apiClient)
+        // PR 3b (I2a, #2180): the device's OWN sign-in lives in a this-device-only
+        // Keychain item built by `AuthStorage.live()`, which is the one place the
+        // Keychain items and their per-platform settings are decided. The older
+        // apps' shared item is no longer saved over by this app.
+        let authStorage = AuthStorage.live()
+        let sessionController = SessionController(
+            tokenStore: authStorage.deviceTokenStore,
+            apiClient: apiClient,
+            deviceSignIn: authStorage.support
+        )
         // swiftlint:disable:next force_try
         let offlineStore = try! OfflineStore(path: offlineStorePath(), mediaCacheDirectory: mediaCacheDirectory())
         let liveFollowEngine = LiveFollowEngine(apiClient: apiClient)

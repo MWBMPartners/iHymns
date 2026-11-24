@@ -9,7 +9,8 @@
 // DETAILED: `?action=app_status` (`appWeb/public_html/api.php:~7195-7245`)
 // is a big, growing bag of dormant/optional flags (`maintenance`, `motd`,
 // `registrationMode`, `remoteFeatures`, …) — this package deliberately
-// models ONLY the `captcha` key (rule #44, "collect nothing the app acts on
+// models ONLY the `captcha` key (PR 3b added the two boolean flags
+// `deviceSignin` and `profileSync`) (rule #44, "collect nothing the app acts on
 // yet"; every other key here today is either PWA-only or has no native
 // consumer). `Decodable` silently ignores every key it doesn't declare a
 // property for, so this narrow model is forward-compatible with the server
@@ -41,8 +42,41 @@ public struct AppStatus: Decodable, Sendable, Equatable {
     /// JSON `null`) is what makes that decode to `nil` safely.
     public let captcha: CaptchaConfig?
 
-    public init(captcha: CaptchaConfig? = nil) {
+    /// Whether this site has switched on "one sign-in per device" (PR 3b,
+    /// I2b, #2180): the swap of the older shared sign-in, the automatic
+    /// sign-in key, and the web "Sign out everywhere". `app_status` emits it
+    /// as a true or false (`deviceSigninActiveHere()` in `api.php`). A MISSING
+    /// key reads as `false`, never an error, so an older server (or a site
+    /// where it is off) keeps the app on the legacy shared sign-in.
+    public let deviceSignin: Bool
+
+    /// Whether this site has switched on the new account sync for personal
+    /// data (PR 3b, I2b). Missing reads as `false`, for the same reason. The
+    /// Apple app uses it to decide whether sign-out must first ask about
+    /// unsent changes (step I5).
+    public let profileSync: Bool
+
+    public init(captcha: CaptchaConfig? = nil, deviceSignin: Bool = false, profileSync: Bool = false) {
         self.captcha = captcha
+        self.deviceSignin = deviceSignin
+        self.profileSync = profileSync
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case captcha
+        case deviceSignin
+        case profileSync
+    }
+
+    /// Hand-written only because the two new flags must default to `false`
+    /// when their key is absent: a synthesized decoder would throw on a
+    /// missing non-optional key. `captcha` keeps its original behaviour (an
+    /// absent key decodes to `nil`).
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.captcha = try container.decodeIfPresent(CaptchaConfig.self, forKey: .captcha)
+        self.deviceSignin = try container.decodeIfPresent(Bool.self, forKey: .deviceSignin) ?? false
+        self.profileSync = try container.decodeIfPresent(Bool.self, forKey: .profileSync) ?? false
     }
 }
 

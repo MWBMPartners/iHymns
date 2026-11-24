@@ -100,6 +100,119 @@ extension AppRootViewModelSetlistsTests {
         }
     }
 
+    // MARK: - Sync protocol 2 (#1661, #1675)
+
+    /// A throwaway store so a test never reads or writes the real `.standard` defaults.
+    private func throwawayStateStore() -> SetlistSyncStateStore {
+        let suite = "ih-setlist-sync-tests-\(UUID().uuidString)"
+        // swiftlint:disable:next force_unwrapping
+        return SetlistSyncStateStore(defaults: UserDefaults(suiteName: suite)!)
+    }
+
+    @Test("A delete is queued as a deleted id BEFORE the push, so the request can name it, and a successful push clears it")
+    func deleteIsQueuedBeforePushAndClearedOnSuccess() async throws {
+        try await MockTransportLock.shared.withLock { () async throws in
+            defer { MockURLProtocol.requestHandler = nil }
+            let viewModel = try await makeViewModel(setlistSyncStateStore: throwawayStateStore())
+            try await signIn(viewModel)
+
+            // Offline: the delete stays queued and is the id the next sync names.
+            MockURLProtocol.requestHandler = { request in
+                if Self.action(of: request) == "user_setlists_sync" { return (Self.response(status: 503), Data()) }
+                return (Self.response(status: 200), Data("{}".utf8))
+            }
+            let created = await viewModel.createSetlist(name: "Doomed")
+            await viewModel.deleteSetlist(created.id)
+            let actual1 = try await viewModel.offlineStore.pendingDeletedSetlistIds()
+            #expect(actual1 == [created.id])
+
+            // Back online: one successful push empties the whole queue, deletes included.
+            MockURLProtocol.requestHandler = { request in
+                if Self.action(of: request) == "user_setlists_sync" {
+                    return (Self.response(status: 200), Data(#"{"setlists":[],"syncedAt":"2026-11-24 09:30:00","tombstones":[],"conflicts":[]}"#.utf8))
+                }
+                return (Self.response(status: 200), Data("{}".utf8))
+            }
+            await viewModel.flushPendingSetlistOps()
+            let actual2 = try await viewModel.offlineStore.pendingDeletedSetlistIds().isEmpty
+            #expect(actual2)
+            let actual3 = try await viewModel.offlineStore.pendingSetlistOps().isEmpty
+            #expect(actual3)
+        }
+    }
+
+    @Test("A successful sync remembers syncedAt for this user, and keeps the old reading when the server sends none")
+    func syncRemembersSyncedAtPerUser() async throws {
+        try await MockTransportLock.shared.withLock { () async throws in
+            defer { MockURLProtocol.requestHandler = nil }
+            let store = throwawayStateStore()
+            let viewModel = try await makeViewModel(setlistSyncStateStore: store)
+            try await signIn(viewModel)
+            #expect(await viewModel.currentUser?.id == 1)
+
+            MockURLProtocol.requestHandler = { request in
+                if Self.action(of: request) == "user_setlists_sync" {
+                    return (Self.response(status: 200), Data(#"{"setlists":[],"syncedAt":"2026-11-24 10:00:00"}"#.utf8))
+                }
+                return (Self.response(status: 200), Data("{}".utf8))
+            }
+            _ = await viewModel.createSetlist(name: "One")
+            #expect(store.syncedAt(forUser: 1) == "2026-11-24 10:00:00")
+            #expect(store.syncedAt(forUser: 2) == nil)
+
+            // A paused site answers read-only with syncedAt null: the reading we hold must survive.
+            MockURLProtocol.requestHandler = { request in
+                if Self.action(of: request) == "user_setlists_sync" {
+                    return (Self.response(status: 200), Data(#"{"setlists":[],"syncedAt":null}"#.utf8))
+                }
+                return (Self.response(status: 200), Data("{}".utf8))
+            }
+            _ = await viewModel.createSetlist(name: "Two")
+            #expect(store.syncedAt(forUser: 1) == "2026-11-24 10:00:00")
+        }
+    }
+
+    @Test("Tombstoned setlists are dropped locally and conflicts are published")
+    func syncAbsorbsTombstonesAndConflicts() async throws {
+        try await MockTransportLock.shared.withLock { () async throws in
+            defer { MockURLProtocol.requestHandler = nil }
+            let viewModel = try await makeViewModel(setlistSyncStateStore: throwawayStateStore())
+            try await signIn(viewModel)
+
+            MockURLProtocol.requestHandler = { request in
+                if Self.action(of: request) == "user_setlists_sync" {
+                    return (Self.response(status: 200), Data(#"""
+                    {"setlists":[{"id":"slist-kept","name":"Kept","songs":[]}],
+                     "syncedAt":"2026-11-24 10:05:00",
+                     "tombstones":[{"id":"slist-elsewhere","deletedAt":"2026-11-24 10:00:00","reason":"user"}],
+                     "conflicts":[{"id":"slist-kept","reason":"newer_on_server","serverUpdatedAt":"2026-11-24 10:04:59"}]}
+                    """#.utf8))
+                }
+                return (Self.response(status: 200), Data("{}".utf8))
+            }
+            _ = await viewModel.createSetlist(name: "Anything")
+
+            #expect(await viewModel.setlists.map(\.id) == ["slist-kept"])
+            #expect(await viewModel.setlistConflicts.map(\.id) == ["slist-kept"])
+        }
+    }
+
+    @Test("signOut forgets the saved syncedAt for that user")
+    func signOutClearsSyncedAt() async throws {
+        try await MockTransportLock.shared.withLock { () async throws in
+            defer { MockURLProtocol.requestHandler = nil }
+            let store = throwawayStateStore()
+            let viewModel = try await makeViewModel(setlistSyncStateStore: store)
+            try await signIn(viewModel)
+            store.record("2026-11-24 10:00:00", forUser: 1)
+
+            MockURLProtocol.requestHandler = { _ in (Self.response(status: 200), Data()) }
+            try await viewModel.signOut()
+
+            #expect(store.syncedAt(forUser: 1) == nil)
+        }
+    }
+
     // MARK: - Sign-out
 
     @Test("signOut forgets every locally-cached setlist and clears the pending queue")

@@ -383,7 +383,7 @@ password store still signs in once.
 | H7 privacy page and its promise checks | a05ec47e | done |
 | Docs (design file, rule #55, wiki, `.OpenAI/`, `CHANGELOG.md`; no `WHATS-NEW.md` bullets) | the commit that adds this table | done |
 | Security review fixes (Opus review of the whole PR 3a branch) | see the table below | done |
-| Phase I (Apple app) | not started | not in this PR |
+| Phase I (Apple app) | see "Progress (PR 3b, the Apple side)" below | PR 3b, branch `claude/account-pr3b` |
 
 Deviations from the plan (PR 3a):
 - Owner decision B ("a device whose sign-in ran out must not sign itself back in with the key") is enforced on the SERVER, which the plan had left to the app. H4's ended sign-in rows (a device's own sign-in is ended, not deleted, and its name is blanked) are the "signed out" note; `apiTokenInstallSignInEnded()` reads them; redeem answers the same 401 `enrol_key_invalid` and enrol answers 403 `install_signed_out`. This needed no new column.
@@ -414,4 +414,40 @@ Follow-ups from the review (NOT done):
 - Finding 3's rule for a key made AFTER a device was signed out: the lost phone could receive it through iCloud Keychain, and a fresh install id bypasses the note anyway. The help text already says to remove a lost device from the iCloud account.
 
 Follow-ups (NOT done): the whole Apple phase (I1 to I6); the Opus review of H1, H3, H4, H5; the live two-device checks in section 5; the owner steps in section 6 (tick `device_signin_channels` per channel; production before the first TestFlight upload); the `WHATS-NEW.md` bullets once production is ticked.
+
+## Progress (PR 3b, the Apple side, branch `claude/account-pr3b`)
+
+Nothing here could be compiled or run in the sandbox (no Swift toolchain). Every step is checked by Node guards that
+read the Swift source (comments removed, files found from the tree, each shown red by a deliberate break) and by Swift
+tests that run in CI on macOS (`apple.yml`, `swift test`). Real keychain, iCloud and backup behaviour, and the whole of
+section 5 "On real devices", are still unchecked.
+
+| Step | Commit | Status |
+|---|---|---|
+| I1 set lists on sync protocol 2 | ecfb6a21 | done |
+| I2a keychain custody, by type | 8c94cbb5 | done, needs Opus review |
+| I2b API client for the five calls, device details on sign-ins, reason words | 95cd6879 | done, needs Opus review |
+| I2c the session decision tree | 45656b5d | done, needs Opus review |
+| I2d Account screen: Sign Out Everywhere, automatic sign-in switch | a9c811ea | done |
+| I3 song views and viewing history | 872bc5d4 | done |
+| I4 shared settings through `profile_sync` | 0267be55 | done |
+| I5 sign-out asks before losing unsent changes | 563b0ff8 | done |
+| I6 docs (rule #56, wiki, `.OpenAI/`, `CHANGELOG.md`, `apple-native-status.md`, this table) | the commit that adds this table | done |
+
+Deviations from the plan (PR 3b):
+- **Sign-out of an own sign-in now deletes this device's copy of the key** (plan item 5 said "never touch the key"). PR 3a's security review made the server cancel every key when a device's own sign-in ends, so the key in iCloud is dead; leaving it would make the next manual sign-in think a live key is held. Signing out of legacy mode still touches nothing and makes no server call.
+- **Song views are sent only while signed in** (I3). The server also takes anonymous views, but that would be a new silent usage report from the app and the app's analytics have their own consent switch. Owner question below.
+- **I4 uses a "compare with what was last agreed" notebook instead of a write hook**, because the Apple settings are written by SwiftUI `@AppStorage` properties that offer none. It makes the two web rules (never send back what came from the account; a waiting change is never overwritten) automatic. Five settings are bound: theme, colour-vision mode, text size, show chords, dyslexia-friendly reading. The sync runs after sign-in and at launch, when the app comes to the front, and (when called) a moment after a change; only the first three are wired to events today (`profileSettingsChanged()` exists for the settings screen to call).
+- **I5 is enforced in the view model**, not only the screen: `signOut(discardUnsent:)` and `signOutEverywhere(discardUnsent:)` throw `SignOutBlockedByUnsentChanges`, so no screen can skip the question. Sign out everywhere asks too (the plan only named sign-out).
+- `RootContainerView.swift` was at the 400-line budget, so its one scene-phase call now goes through `sceneBecameActive(_:)`; `AppRootViewModel.swift` shed pointer comments for the same reason.
+- `IHSettingsStore`/`SettingsViewModel` reload live when the account changes a setting (a notification), so a theme from the account does not wait for a relaunch.
+
+Not done / found, not fixed (PR 3b):
+- **The Apple set-list sync still clears a web-set expiry.** The app's `Setlist` has no `expiresAt`, and the server's upsert writes `ExpiresAt = VALUES(ExpiresAt)`, so an Apple sync of a set list that has an expiry set on the web removes the expiry. This was already true under protocol 1. Fix: carry `expiresAt` (and `plan`, which is already preserved when the key is absent) through the Apple model.
+- tvOS and watchOS: no key store, the shared token is still read so a TV that paired earlier swaps once. Whether tvOS syncs the keychain at all is device check 7.
+- The set-list `conflicts` are published (`setlistConflicts`) but no screen shows them yet.
+- Song history and most-viewed are readable from `AppRootViewModel` (`songHistory()`, `myMostViewed(period:)`) but no screen draws them yet.
+
+Open owner questions (PR 3b), none blocks:
+- **Should the app report anonymous song views too?** Recommendation: no, keep the signed-in-only default; the person's own history is account data and anonymous counts would need the app's analytics consent. Reply: "signed in only" or "anonymous too".
 

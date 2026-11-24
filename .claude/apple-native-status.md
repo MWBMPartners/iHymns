@@ -1,5 +1,10 @@
 # Apple Native Universal App — programme state record
 
+## 2026-11-24 — one sign-in per device, Apple side built (PR 3b, branch `claude/account-pr3b`, rule #56)
+
+Steps I1 to I6 of `.claude/account-profile-pr3-plan.md` are built, with Swift tests, but **nothing was compiled or run**: the sandbox has no Swift toolchain, so CI (`apple.yml`, macOS) is the first compile. Expect to fix compile errors there. The Node guards `tests/test-apple-*.js` read the source and passed. What a person can see: the Account screen has "Sign Out Everywhere" and "Sign in automatically on my other Apple devices" (only where the site has the switch on); signing out asks first if some changes did not reach the account (only where the new account sync is on); five settings follow the account. Still no app icon and no signing (#2100, #2101), so there is still no TestFlight build. Checks only a real device can do are in plan section 5.
+
+
 > **This is NOT the session handoff.** There is exactly ONE session handoff and it lives at
 > `.claude/sessions/<date>-HANDOFF.md`; read that first to find out where work stopped.
 > This file is narrower: the standing state of the **Apple native programme** — what shipped,

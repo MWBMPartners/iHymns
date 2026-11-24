@@ -3,7 +3,14 @@
 Short, lasting facts. Newest first within each section. Where this file and the newest handoff in
 `.claude/sessions/` disagree, the handoff wins. Fix this file when that happens.
 
-_Last updated: 2026-11-23._
+_Last updated: 2026-11-24._
+
+## Added 2026-11-24 (account rewrite part 3b: one sign-in per device, the Apple app)
+
+- **Part 3b is built on branch `claude/account-pr3b`** (not pushed): steps I1 to I6 of `.claude/account-profile-pr3-plan.md`. Rule #56 in `.claude/CLAUDE.md` has the shape. **Nothing was compiled** (no Swift toolchain in the sandbox): CI on macOS is the first compile, so expect compile fixes. Node guards `tests/test-apple-*.js` read the Swift source (helper `tests/lib/swift-source.js`).
+- **Traps:** the device token, install id and notebook MUST be `thisDeviceOnly` (not-synced alone is copied by backups); the shared token `app.ihymns.token` is read-only (`LegacySharedTokenReader`); write "signed out here" BEFORE deleting the token; sign-out of legacy mode makes NO server call; branch on status plus reason word via `DeviceSignInReason` / `ProfileSyncReason`, never on a sentence; every Swift file must stay at or under 400 lines (`appApple/Scripts/loc-budget.sh`), and `RootContainerView.swift` and `Package.swift` sit exactly on it.
+- **Decisions:** the app deletes its copy of the key on sign-out (the server cancels all keys when a device's own sign-in ends); song views are sent only while signed in (open owner question); sign-out asks before losing unsent changes, enforced in the view model (`signOut(discardUnsent:)`).
+- **Found, not fixed:** an Apple set-list sync clears a web-set expiry (the app's `Setlist` has no `expiresAt`); set-list conflicts, song history and most-viewed are readable but no screen draws them yet.
 
 ## Added 2026-11-24 (account rewrite part 3a: one sign-in per device, server side)
 

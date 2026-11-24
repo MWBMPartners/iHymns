@@ -159,12 +159,11 @@ let package = Package(
         // MARK: - IHModels (foundation layer — zero iHymnsKit deps)
         .target(
             name: "IHModels",
-            // profile-schema.json is a snapshot of the server's list of personal
-            // settings (includes/profile_registry.php, step C6 of the account/profile
-            // rewrite). Excluded for now so SwiftPM does not warn about an unhandled
-            // file; step I4 turns it into a bundled resource. A web-side test keeps it
-            // equal to the server's list (tests/test-profile-registry-lockstep.js).
-            exclude: ["Resources/profile-schema.json"],
+            // profile-schema.json is a snapshot of the server's list of personal settings
+            // (includes/profile_registry.php, account/profile rewrite step C6), bundled as a
+            // resource since step I4 so the app can read it with no network. A web-side test
+            // keeps it equal to the server's list (tests/test-profile-registry-lockstep.js).
+            resources: [.copy("Resources/profile-schema.json")],
             swiftSettings: sharedSwiftSettings
         ),
         .testTarget(
@@ -219,7 +218,7 @@ let package = Package(
             // #1398: `SessionController` now composes a real `APIClient` —
             // its tests need `IHAPI` directly (to construct one against a
             // mocked `URLSession`) and `IHAPITestSupport` for that mock.
-            dependencies: ["IHAuth", "IHAPI", "IHAPITestSupport"],
+            dependencies: ["IHAuth", "IHAPI", "IHModels", "IHAPITestSupport"],
             swiftSettings: sharedSwiftSettings
         ),
 

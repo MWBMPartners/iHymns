@@ -41,16 +41,39 @@ extension Endpoint {
     public static let userSetlists = Endpoint(action: "user_setlists", requiresAuth: true)
 
     /// `?action=user_setlists_sync` — reconciles `setlists` with the server
-    /// under `mode` (see `SetlistSyncMode`'s own doc comment).
+    /// under `mode` (see `SetlistSyncMode`'s own doc comment), using the
+    /// server's "protocol 2" rules (#1661, #1675).
     ///
     /// ELI5: "Here's the state of my setlists on this device — reconcile
-    /// that with the server."
+    /// that with the server. Here is the time the server last told me, and
+    /// here is the list of setlists I deleted on purpose."
+    ///
+    /// DETAILED: Sending the `deleted` key AT ALL — even as an empty list —
+    /// is what tells the server this app speaks protocol 2: from then on a
+    /// setlist is removed only when its id is named in `deleted` (a missing
+    /// setlist no longer means "deleted"), the old 50-setlist cut-off is gone
+    /// (a too-big request is refused with 413, never quietly trimmed), and
+    /// the server remembers each deletion so an old copy cannot bring it
+    /// back. `since` is the `syncedAt` reading the last successful sync
+    /// returned; with it the server refuses to overwrite a setlist that was
+    /// changed on another device in the meantime and reports it in
+    /// `conflicts`. Both parameters default to `nil` (the key is then left
+    /// out entirely, never sent as `null`), which is the old protocol-1
+    /// request — kept only so a test can build one; the app itself always
+    /// passes both (`tests/test-apple-setlist-protocol.js` checks that).
     ///
     /// - Throws: Only if `JSONEncoder` itself fails (same practically
     ///   -unreachable case `Endpoint.favoritesSync(mode:favorites:)`
     ///   documents — plain `String`/`Int`/array fields, no `Date`).
-    public static func setlistsSync(mode: SetlistSyncMode, setlists: [Setlist]) throws -> Endpoint {
-        let body = try JSONEncoder().encode(SetlistsSyncRequestBody(mode: mode.rawValue, setlists: setlists))
+    public static func setlistsSync(
+        mode: SetlistSyncMode,
+        setlists: [Setlist],
+        since: String? = nil,
+        deleted: [String]? = nil
+    ) throws -> Endpoint {
+        let body = try JSONEncoder().encode(
+            SetlistsSyncRequestBody(mode: mode.rawValue, setlists: setlists, since: since, deleted: deleted)
+        )
         return Endpoint(action: "user_setlists_sync", requiresAuth: true, httpMethod: "POST", httpBody: body)
     }
 
@@ -109,22 +132,27 @@ extension Endpoint {
 }
 
 /// `user_setlists_sync`'s `mode` field — mirrors `FavoritesSyncMode`'s
-/// shape, but with the OPPOSITE default meaning at the call-site level:
-/// unlike favourites (which only ever sends `.merge`, because a dedicated
-/// `favorites_remove` endpoint handles deletion), setlists have NO
-/// per-item delete endpoint — deleting a setlist is only possible by
-/// syncing the FULL remaining list under `.replace` (see
-/// `AppRootViewModel+Setlists.swift`'s `pushSetlistsToServer()`).
+/// shape. The app sends `.replace` on every edit (the device's whole current
+/// list is the truth for what to keep). Under protocol 2 `.replace` no longer
+/// deletes anything by absence: a deletion has to be named in the request's
+/// `deleted` list (see `Endpoint.setlistsSync(mode:setlists:since:deleted:)`).
 public enum SetlistSyncMode: String, Sendable {
     case merge
     case replace
 }
 
 /// The exact wire shape `user_setlists_sync`'s JSON body expects — a
-/// private implementation detail of `Endpoint.setlistsSync(mode:setlists:)`.
+/// private implementation detail of
+/// `Endpoint.setlistsSync(mode:setlists:since:deleted:)`. `since` and
+/// `deleted` are optional, and `JSONEncoder` leaves an absent optional OUT
+/// of the JSON (never a literal `null`) — which matters, because the server
+/// treats the mere presence of the `deleted` key as "this client speaks
+/// protocol 2" (`userSyncExplicitProtocol()` in `api.php`).
 private struct SetlistsSyncRequestBody: Encodable {
     let mode: String
     let setlists: [Setlist]
+    let since: String?
+    let deleted: [String]?
 }
 
 /// The exact wire shape `setlist_share`'s JSON body expects — a private

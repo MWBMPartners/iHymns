@@ -73,14 +73,15 @@ struct AppRootViewModelSetlistsTests {
     }
 
     @MainActor
-    func makeViewModel() throws -> AppRootViewModel {
+    func makeViewModel(setlistSyncStateStore: SetlistSyncStateStore = SetlistSyncStateStore()) throws -> AppRootViewModel {
         let apiClient = APIClient(environment: .dev, session: MockURLProtocol.makeSession(), retryBaseDelaySeconds: 0.001)
         let sessionController = SessionController(tokenStore: InMemoryTokenStore(), apiClient: apiClient)
         return AppRootViewModel(
             sessionController: sessionController,
             apiClient: apiClient,
             offlineStore: try OfflineStore(path: nil),
-            liveFollowEngine: LiveFollowEngine(apiClient: apiClient)
+            liveFollowEngine: LiveFollowEngine(apiClient: apiClient),
+            setlistSyncStateStore: setlistSyncStateStore
         )
     }
 
