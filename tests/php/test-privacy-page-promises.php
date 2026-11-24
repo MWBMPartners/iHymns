@@ -123,4 +123,38 @@ chk('the Settings page comment does not claim the server re-checks the typed wor
 $yaml = (string)file_get_contents($web . '/api-docs.yaml');
 chk('the OpenAPI limits sentence says the limits are per table', preg_match('/Limits, per table: at most 10,000 rows.*?and 32 MiB in all for the file/s', $yaml) === 1);
 
+echo "8. the signed-in devices paragraph (PR 3, H7)\n";
+/* Each sentence below is tied to the thing that makes it true. A reworded button, a changed lifetime or a switch that is no longer
+   off by default fails here instead of leaving the page quietly wrong. */
+require_once $web . '/includes/api_tokens.php';
+require_once $web . '/includes/device_signin_gate.php';
+require_once $repo . '/tests/php/lib/php_source_units.php';
+$devJs = (string)file_get_contents($web . '/js/modules/devices.js');
+$btn = [];
+foreach (['SIGN_OUT_EVERYWHERE_LABEL', 'TURN_OFF_AUTO_SIGN_IN_LABEL'] as $const) {
+    if (preg_match("/export const $const = '([^']+)';/", $devJs, $cm)) { $btn[$const] = $cm[1]; }
+}
+chk('both button words were found in devices.js', count($btn) === 2, json_encode($btn));
+foreach ($btn as $const => $label) {
+    chk("the privacy page uses the button word \"$label\" ($const) word for word", stripos($text, $label) !== false);
+    chk("...and the Settings page really has a button with that word", preg_match('/<button[^>]*>\s*(?:<i[^>]*><\/i>\s*)?' . preg_quote($label, '/') . '\s*<\/button>/', $settings) === 1);
+}
+$devTitle = preg_match('/id="settings-devices-card".*?<\/i>\s*(Signed-in devices)\s*<\/h2>/s', $settings, $dt) ? $dt[1] : '';
+chk('"Signed-in devices" is really the title of the Settings card the page sends people to, and the page says it', $devTitle === 'Signed-in devices' && stripos($text, 'under ' . $devTitle) !== false);
+$days = (int)(API_TOKEN_LIFETIME_SECONDS / 86400);
+chk("the page says a device's sign-in ends after $days days unused, the real lifetime", preg_match('/after ' . $days . ' days without being used/', $text) === 1);
+chk('...and the lifetime is also the figure the page says for an unused key (' . ACCOUNT_ENROL_KEY_LIFETIME_DAYS . ' days from last use)', preg_match('/lasts ' . ACCOUNT_ENROL_KEY_LIFETIME_DAYS . ' days from the last time it was used/', $text) === 1);
+chk('the page says this is "switched on for the site" and the switch really is off unless an admin ticks a channel', stripos($text, 'Once this is switched on for the site') !== false && DEVICE_SIGNIN_DEFAULT === 'none');
+$authSrc = (string)file_get_contents($web . '/manage/includes/auth.php');
+$units = phpSourceUnits($authSrc);
+foreach (['resetPassword', 'changeUserPassword', 'setUserActive'] as $fn) {
+    chk("the page says the key ends when the password is changed, reset or the account switched off: $fn() goes through the one door", isset($units[$fn]) && str_contains($units[$fn]['code'], 'apiTokenRevokeAllForUser('));
+}
+$apiTokensSrc = (string)file_get_contents($web . '/includes/api_tokens.php');
+$doorU = phpSourceUnits($apiTokensSrc)['apiTokenRevokeAllForUser']['code'] ?? '';
+chk('...and the one door cancels the automatic sign-in keys', str_contains($doorU, 'accountEnrolKeyRevokeAll('));
+$ds = (string)file_get_contents($web . '/includes/device_signin.php');
+chk('the page says a signed-out or run-out device does not sign itself back in: redeem checks for an ended sign-in', str_contains($ds, 'apiTokenInstallSignInEnded('));
+chk('the page says the key can only give a device a sign-in of its own: a key is never accepted as a bearer sign-in (the key core is not named by the readers)', !str_contains($apiTokensSrc, 'tblAccountEnrolKeys'));
+
 exit($fail === 0 ? 0 : 1);
