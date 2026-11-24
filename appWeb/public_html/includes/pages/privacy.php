@@ -152,8 +152,11 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 key in your iCloud Keychain, so a new Apple device of yours can get a sign-in of its own without you
                 typing your password again. That key cannot be used to sign in anywhere else: all it can do is give one
                 of your own devices a sign-in of its own. It lasts 180 days from the last time it was used, and you
-                can end it with Turn off in the same place. Signing out everywhere, changing or resetting your
-                password, or switching your account off also ends it. A device that was signed out, or whose sign-in
+                can end it with Turn off in the same place. Signing out any one of your devices, signing out
+                everywhere, changing or resetting your password, or switching your account off also ends it. (The
+                devices you did not sign out stay signed in, and a device that is still signed in can make a fresh key
+                for itself.) Whoever holds a live key could get a sign-in for your account, which is why ending it is
+                so easy. A device that was signed out, or whose sign-in
                 ended after 30 days unused, does not sign itself back in: you sign in again on it yourself.
                 (Until this is switched on for the site, your Apple devices share one sign-in, as they always did.)
             </p>

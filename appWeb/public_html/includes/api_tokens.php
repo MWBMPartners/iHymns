@@ -332,7 +332,8 @@ function apiTokenEndedStamp(): string
 /**
  * End the person's sign-ins whose stored hash is in `$hashes` (a sign-out). Own-only: every
  * statement is filtered by the person's id. A sign-in with an install id is ended and kept as a
- * marker; one without is deleted. Returns how many were ended or deleted.
+ * marker; one without is deleted. Ending a device's own sign-in also cancels the person's automatic
+ * sign-in keys (see the comment at the UPDATE). Returns how many were ended or deleted.
  *
  * @param string[] $hashes full sha256 hashes (64 lowercase hex); anything else is ignored
  */
@@ -357,8 +358,21 @@ function apiTokenSignOutHashes(\mysqli $db, int $userId, array $hashes): int
         }
         $up->bind_param('sis' . $types, $ended, $userId, $now, ...$hashes);
         $up->execute();
-        $n += $up->affected_rows;
+        $endedDeviceSignIns = max(0, $up->affected_rows);
+        $n += $endedDeviceSignIns;
         $up->close();
+        /* Security review findings 3 and 4 (owner decision 2026-11-23): signing out a DEVICE's own sign-in also
+           cancels the person's automatic sign-in keys. A key outlives the sign-out otherwise: a copy of it (a
+           lost phone, a restored backup, a synced keychain) would still be able to make a fresh sign-in for the
+           account. The person's other devices are NOT signed out; a device that is still signed in can simply
+           make a new key for itself. Only a sign-in tied to a device counts (the shared older-app sign-in and a
+           browser sign-in have no install id, so signing those out never touches the keys), which also keeps
+           this dormant until a new app has made device sign-ins. Turning something off is never switched off,
+           so this is not behind the per-site switch. Because every key that existed when the device was signed
+           out is cancelled here, the "signed out" note the expiry sweep keeps cannot be outlived by one. */
+        if ($endedDeviceSignIns > 0 && accountEnrolKeysReady($db)) {
+            accountEnrolKeyRevokeAll($db, $userId, null);
+        }
         /* Rows with an install id stay as ended markers (just ended above, or ended earlier); the rest go. */
         $del = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND DeviceInstallId IS NULL AND Token IN (' . $marks . ')');
         $del->bind_param('i' . $types, $userId, ...$hashes);

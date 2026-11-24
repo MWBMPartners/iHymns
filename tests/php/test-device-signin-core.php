@@ -354,6 +354,12 @@ $rdA = deviceSigninRedeem($db, $dev('install-DEAD-0001') + ['enrolKey' => $key2]
 chk('a fresh install redeems fine', $rdA['status'] === 200);
 $exp1 = $db->query("SELECT ExpiresAt FROM tblAccountEnrolKeys WHERE KeyHash = '$hk2'")->fetch_row()[0];
 apiTokenSignOutHashes($db, 1, [hash('sha256', $rdA['body']['token'])]);
+/* Security review findings 3+4: signing out a device's own sign-in cancels the person's keys. From here the ended-install note is
+   tested ON ITS OWN: a fresh key is made (from another device that is still signed in), so the only thing that can stop the signed-out
+   install is the note, not a dead key. */
+chk('(findings 3+4) signing the device out cancelled the key it could have used', $db->query("SELECT RevokedAt IS NOT NULL FROM tblAccountEnrolKeys WHERE KeyHash = '$hk2'")->fetch_row()[0] == 1);
+$key2 = deviceSigninKeyCreate($db, $u1, hash('sha256', $d1), [])['body']['enrolKey'];
+$hk2 = hash('sha256', $key2);
 $db->query("UPDATE tblAccountEnrolKeys SET ExpiresAt = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 DAY) WHERE KeyHash = '$hk2'");
 $expMid = $db->query("SELECT ExpiresAt FROM tblAccountEnrolKeys WHERE KeyHash = '$hk2'")->fetch_row()[0];
 $deadTry = deviceSigninRedeem($db, $dev('install-DEAD-0001') + ['enrolKey' => $key2]);
@@ -369,6 +375,8 @@ chk('...(person 2\'s ended row for that install does not stop person 1)', device
 /* a manual sign-in clears the block */
 $dead4 = apiTokenMint($db, 1, $dev('install-DEAD-0004'), 'password');
 apiTokenSignOutHashes($db, 1, [hash('sha256', $dead4)]);
+$key2 = deviceSigninKeyCreate($db, $u1, hash('sha256', $d1), [])['body']['enrolKey'];   /* (that sign-out cancelled the keys; a fresh one so the note is what is tested) */
+$hk2 = hash('sha256', $key2);
 $blocked = deviceSigninRedeem($db, $dev('install-DEAD-0004') + ['enrolKey' => $key2])['status'] === 401;
 apiTokenMint($db, 1, $dev('install-DEAD-0004'), 'password');   /* the person signs in by hand on that install */
 chk('a manual sign-in on a signed-out install clears the block (it replaced the marker)', $blocked && !apiTokenInstallSignInEnded($db, 1, 'install-DEAD-0004') && deviceSigninRedeem($db, $dev('install-DEAD-0004') + ['enrolKey' => $key2])['status'] === 200);
@@ -540,6 +548,53 @@ foreach ($slideSql as $site => $list) {
             && (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE Token = '$th' AND ExpiresAt > UTC_TIMESTAMP()")->fetch_row()[0] === 0);
     }
 }
+
+/* ====================================================================== part 5 (security review, findings 3 and 4) */
+echo "part 5: signing out one device cancels the person's automatic sign-in keys (owner decision 2026-11-23)\n";
+$db->query('DELETE FROM tblApiTokens'); $db->query('DELETE FROM tblAccountEnrolKeys');
+$live1 = fn() => (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE UserId = 1 AND ExpiresAt > UTC_TIMESTAMP()")->fetch_row()[0];
+$phoneTok = apiTokenMint($db, 1, $dev('install-PHONE-0001'), 'password');
+$padTok   = apiTokenMint($db, 1, $dev('install-IPAD-00001'), 'password');
+$kA = deviceSigninKeyCreate($db, $u1, hash('sha256', $phoneTok), [])['body']['enrolKey'];
+apiTokenSignOutHashes($db, 1, [hash('sha256', $phoneTok)]);
+chk('signing out the phone cancels the key (a copy of it can no longer make a sign-in)', deviceSigninRedeem($db, $dev('install-COPY-00001') + ['enrolKey' => $kA])['status'] === 401);
+chk('...the iPad is NOT signed out by it', $live1() === 1 && $rowOf($padTok) !== null && strtotime($rowOf($padTok)['ExpiresAt'] . ' UTC') > time());
+$kB = deviceSigninKeyCreate($db, $u1, hash('sha256', $padTok), []);
+chk('...and the iPad that is still signed in can simply make a new key, which works', $kB['status'] === 200 && deviceSigninRedeem($db, $dev('install-NEW-000001') + ['enrolKey' => $kB['body']['enrolKey']])['status'] === 200);
+/* the same through the real sign-out routes' shared door, by prefix, for a row with a prefix lookup (device_signout) */
+$kC = deviceSigninKeyCreate($db, $u1, hash('sha256', $padTok), [])['body']['enrolKey'];
+apiTokenSignOutHashes($db, 1, apiTokenHashesForDevicePrefix($db, 1, apiTokenDeviceId(hash('sha256', $padTok))));
+chk('a sign-out by device id (the Devices page) cancels the keys too', deviceSigninRedeem($db, $dev('install-COPY-00002') + ['enrolKey' => $kC])['status'] === 401);
+/* a browser sign-in and the shared older-app sign-in have no install id: signing them out leaves the keys alone */
+$padTok2 = apiTokenMint($db, 1, $dev('install-IPAD-00002'), 'password');
+$kD = deviceSigninKeyCreate($db, $u1, hash('sha256', $padTok2), [])['body']['enrolKey'];
+$browserTok = apiTokenMint($db, 1, ['platform' => 'web', 'deviceName' => 'Chrome on Mac'], 'password');
+$sharedTok  = apiTokenMint($db, 1, null, 'password');
+apiTokenSignOutHashes($db, 1, [hash('sha256', $browserTok), hash('sha256', $sharedTok)]);
+chk('signing out a browser or the shared older-app sign-in does NOT cancel the keys', deviceSigninRedeem($db, $dev('install-KEEP-00001') + ['enrolKey' => $kD])['status'] === 200);
+/* another person is never affected */
+$p2Tok = apiTokenMint($db, 2, $dev('install-BOBPH-0001'), 'password');
+$kBob = deviceSigninKeyCreate($db, $u2, hash('sha256', $p2Tok), [])['body']['enrolKey'];
+$p1Tok = apiTokenMint($db, 1, $dev('install-ANNPH-0001'), 'password');
+apiTokenSignOutHashes($db, 1, [hash('sha256', $p1Tok)]);
+chk('one person signing a device out never cancels another person\'s keys', deviceSigninRedeem($db, $dev('install-BOBPH-0002') + ['enrolKey' => $kBob])['status'] === 200);
+/* finding 3: the sweep keeps an ended note for 180 days; a key that existed when the device was signed out is dead, so the sweep cannot turn it back on */
+$db->query('DELETE FROM tblApiTokens'); $db->query('DELETE FROM tblAccountEnrolKeys');
+$lostTok = apiTokenMint($db, 1, $dev('install-LOST-00001'), 'password');
+$otherTok = apiTokenMint($db, 1, $dev('install-OTHER-0002'), 'password');
+$kLost = deviceSigninKeyCreate($db, $u1, hash('sha256', $lostTok), [])['body']['enrolKey'];
+apiTokenSignOutHashes($db, 1, [hash('sha256', $lostTok)]);
+$lh = hash('sha256', $lostTok);
+$db->query("UPDATE tblApiTokens SET ExpiresAt = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 181 DAY) WHERE Token = '$lh'");
+apiTokenSweepExpired($db);
+chk('the ended note is gone after 181 days (swept) ...', (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE Token = '$lh'")->fetch_row()[0] === 0);
+chk('... yet the lost phone cannot sign itself back in with the key it held: the key was cancelled when it was signed out (the sweep is safe)', deviceSigninRedeem($db, $dev('install-LOST-00001') + ['enrolKey' => $kLost])['status'] === 401);
+/* the source: both sign-out routes reach the cancelling door; the door itself cancels */
+$doorSrc = phpSourceUnits(code($web . '/includes/api_tokens.php'))['apiTokenSignOutHashes']['code'] ?? '';
+chk('apiTokenSignOutHashes() cancels the keys when it ends a device\'s own sign-in', str_contains($doorSrc, 'accountEnrolKeyRevokeAll(') && str_contains($doorSrc, '$endedDeviceSignIns > 0'));
+$lo = strpos($api, "case 'auth_logout':"); $dso = strpos($api, "case 'device_signout':");
+chk('auth_logout and device_signout both end sign-ins only through apiTokenSignOutHashes()',
+    $lo !== false && $dso !== false && str_contains(substr($api, $lo, 3500), 'apiTokenSignOutHashes(') && str_contains(substr($api, $dso, 6000), 'apiTokenSignOutHashes('));
 
 $db->query("DROP DATABASE IF EXISTS `{$name}`");
 echo $fail === 0 ? "\nALL PASS\n" : "\n$fail FAILED\n";

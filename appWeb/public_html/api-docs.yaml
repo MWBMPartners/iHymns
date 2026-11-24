@@ -4940,6 +4940,14 @@ paths:
         session, older registrations tied to no session). Other devices of the
         same person keep their notifications. Anywhere else the A6 rule above
         applies unchanged. The reply is the same either way.
+
+        **Automatic sign-in keys (PR 3a).** When the sign-in being ended is a
+        device's own (it was made with an install id), the person's automatic
+        sign-in keys are cancelled too, because a copy of a key outliving the
+        sign-out could make a fresh sign-in for the account. The person's OTHER
+        devices are not signed out; a device that is still signed in can make a
+        new key for itself. Signing out a browser, or the shared older-app
+        sign-in (no install id), does not touch the keys.
       security:
         - bearerAuth: []
       parameters:
@@ -5874,6 +5882,14 @@ paths:
         for an Apple session, older registrations tied to no session. The full
         hash of each removed sign-in is read before its row is deleted. Anywhere
         else the A6 rule above applies unchanged.
+
+        **Automatic sign-in keys (PR 3a).** When the sign-in being ended is a
+        device's own (it was made with an install id), the person's automatic
+        sign-in keys are cancelled too, because a copy of a key outliving the
+        sign-out could make a fresh sign-in for the account. The person's OTHER
+        devices are not signed out; a device that is still signed in can make a
+        new key for itself. Signing out a browser, or the shared older-app
+        sign-in (no install id), does not touch the keys.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -6046,7 +6062,11 @@ paths:
         There is ONE refusal answer, `401 enrol_key_invalid`, for every unusable key: unknown, run out,
         cancelled, wrong platform, a switched-off account, **and an install whose sign-in already ended**
         (signed out, or 30 days unused). That last rule is deliberate: a lost or signed-out device must
-        be signed in again by hand and can never sign itself back in with the key. The refusal never
+        be signed in again by hand and can never sign itself back in with the key.
+        Signing out any one device's own sign-in (or "sign out everywhere", a password change or reset, or
+        switching the account off) cancels the person's keys, so a copy of a key cannot outlive it. Whoever
+        holds a LIVE key could get a sign-in for the account, which is why "Turn off automatic sign-in"
+        (`auth_enrol_keys_revoke`) and sign out everywhere end it. The refusal never
         says which case it was. A malformed key is `400 malformed_enrol_key`.
 
         Never sets a cookie. Rate limit: 20 an hour per address (every try counts) and 10 an hour per

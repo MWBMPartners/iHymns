@@ -356,7 +356,7 @@ declare(strict_types=1);
             <div id="devices-everywhere" class="d-none mt-3 pt-3 border-top" data-devices-everywhere>
                 <div id="devices-keys-row" class="d-none mb-3">
                     <div class="d-flex align-items-center gap-2">
-                        <span class="small flex-grow-1">Automatic sign-in for new Apple devices is on.</span>
+                        <span class="small flex-grow-1">Automatic sign-in for new Apple devices is on. Signing out any one of your devices cancels the current key.</span>
                         <button type="button" class="btn btn-outline-secondary btn-sm flex-shrink-0" id="devices-keys-off-btn">Turn off</button>
                     </div>
                 </div>

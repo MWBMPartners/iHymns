@@ -61,6 +61,12 @@ check('a browser, an admin-page sign-in and a device-bound sign-in are never cal
     dev.deviceKindNote({ issuedVia: 'password', boundToDevice: false, platform: 'web' }, true) === ''
     && dev.deviceKindNote({ issuedVia: 'cross_surface', boundToDevice: false, platform: null }, true) === ''
     && dev.deviceKindNote({ issuedVia: 'password', boundToDevice: true, platform: 'apple' }, true) === '');
+check('the single-device sign-out question says the key is cancelled and the others stay signed in, only for a device\'s own sign-in on a site with the switch on',
+    /cancels the automatic sign-in key/.test(dev.signOutConfirmText('iPhone', { boundToDevice: true }, true))
+    && /other devices stay signed in/.test(dev.signOutConfirmText('iPhone', { boundToDevice: true }, true))
+    && dev.signOutConfirmText('iPhone', { boundToDevice: true }, false) === 'Sign out "iPhone"? It will need to sign in again.'
+    && dev.signOutConfirmText('Chrome', { boundToDevice: false }, true) === 'Sign out "Chrome"? It will need to sign in again.'
+    && dev.signOutConfirmText('x', undefined, true) === 'Sign out "x"? It will need to sign in again.');
 check('a browser sign-in with NO platform recorded is never called an older Apple app (the current row, or a browser-made name)',
     dev.deviceKindNote({ issuedVia: 'password', boundToDevice: false, platform: null, isCurrent: true }, true) === ''
     && dev.deviceKindNote({ issuedVia: 'password', boundToDevice: false, platform: null, deviceName: 'Chrome on Windows' }, true) === ''

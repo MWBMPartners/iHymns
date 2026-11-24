@@ -651,6 +651,25 @@ function renderRow(device, now) {
 }
 
 /**
+ * The question asked before one device is signed out. PURE. Where this site has device sign-in on and the row is a device's
+ * own sign-in, it also says the automatic sign-in key is cancelled (the server does that when a device's own sign-in is
+ * ended, PR 3a review findings 3 and 4) and that the other devices are not signed out. The sentence is only said where it
+ * is true: a browser, or the shared older-app sign-in, does not cancel the key.
+ *
+ * @param {string} label
+ * @param {{boundToDevice?:boolean}|undefined} device
+ * @param {boolean} deviceSigninOn
+ * @returns {string}
+ */
+export function signOutConfirmText(label, device, deviceSigninOn) {
+    const base = 'Sign out "' + label + '"? It will need to sign in again.';
+    if (deviceSigninOn === true && device?.boundToDevice === true) {
+        return base + ' This also cancels the automatic sign-in key, so no copy of it can sign this device back in. Your other devices stay signed in.';
+    }
+    return base;
+}
+
+/**
  * Handle a click on one row's "Sign out" button.
  *
  * @param {Element} btn
@@ -664,7 +683,7 @@ async function onSignOutClick(btn) {
 
     /* Destructive and irreversible from the user's point of view — that device
        has to sign in again — so it asks first. */
-    if (!window.confirm('Sign out "' + label + '"? It will need to sign in again.')) {
+    if (!window.confirm(signOutConfirmText(label, device, deviceSigninShown(window.iHymnsApp?.config)))) {
         return;
     }
 

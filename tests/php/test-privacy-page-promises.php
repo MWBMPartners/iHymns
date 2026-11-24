@@ -157,4 +157,26 @@ $ds = (string)file_get_contents($web . '/includes/device_signin.php');
 chk('the page says a signed-out or run-out device does not sign itself back in: redeem checks for an ended sign-in', str_contains($ds, 'apiTokenInstallSignInEnded('));
 chk('the page says the key can only give a device a sign-in of its own: a key is never accepted as a bearer sign-in (the key core is not named by the readers)', !str_contains($apiTokensSrc, 'tblAccountEnrolKeys'));
 
+/* PR 3a security review (findings 3 and 4): the page now promises that signing out ONE device cancels the key. Tie that sentence to the code. */
+$flat = static fn(string $t): string => (string)preg_replace('/\s+/', ' ', strip_tags($t));
+$textFlat = $flat($text);
+chk('the page says signing out any one device ends the key, and that the other devices stay signed in',
+    stripos($textFlat, 'Signing out any one of your devices') !== false && stripos($textFlat, 'The devices you did not sign out stay signed in') !== false);
+chk('the page says whoever holds a live key could get a sign-in for the account, and that Turn off / Sign out everywhere end it',
+    stripos($textFlat, 'Whoever holds a live key could get a sign-in for your account') !== false && stripos($textFlat, 'can end it with Turn off') !== false && stripos($textFlat, 'Signing out any one of your devices, signing out everywhere') !== false);
+$signOutDoor = phpSourceUnits($apiTokensSrc)['apiTokenSignOutHashes']['code'] ?? '';
+chk('...and that sentence is TRUE: ending a device\'s own sign-in (the one sign-out door) cancels the keys, for every route that signs one device out',
+    str_contains($signOutDoor, 'accountEnrolKeyRevokeAll(') && str_contains($signOutDoor, '$endedDeviceSignIns > 0')
+    && substr_count((string)file_get_contents($web . '/api.php'), 'apiTokenSignOutHashes(') >= 2);
+$apiSrc2 = (string)file_get_contents($web . '/api.php');
+chk('...and Turn off really calls the key revoke (auth_enrol_keys_revoke) and Sign out everywhere goes through the one revoke door',
+    str_contains(substr($apiSrc2, (int)strpos($apiSrc2, "case 'auth_enrol_keys_revoke':"), 1500), 'deviceSigninKeysRevoke(')
+    && str_contains((string)file_get_contents($web . '/includes/device_signin.php'), 'apiTokenRevokeAllForUser('));
+chk('the Settings keys row and the sign-out question say the same thing (the key is cancelled; other devices stay signed in)',
+    stripos((string)file_get_contents($web . '/includes/pages/settings.php'), 'Signing out any one of your devices cancels the current key') !== false
+    && stripos($devJs, 'This also cancels the automatic sign-in key') !== false && stripos($devJs, 'Your other devices stay signed in') !== false);
+$yamlFlat = (string)preg_replace('/\s+/', ' ', (string)file_get_contents($web . '/api-docs.yaml'));
+chk('the OpenAPI says the same, on both single-device sign-out routes and on redeem', substr_count($yamlFlat, 'automatic sign-in keys are cancelled too') >= 2
+    && stripos($yamlFlat, 'Whoever holds a LIVE key could get a sign-in for the account') !== false);
+
 exit($fail === 0 ? 0 : 1);
