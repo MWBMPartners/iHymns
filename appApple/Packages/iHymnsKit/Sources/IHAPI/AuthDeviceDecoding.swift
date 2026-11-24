@@ -18,6 +18,10 @@
 import Foundation
 import IHModels
 
+/// The `device` object inside an enrol or redeem answer (kept at file level so the
+/// decoding helper below is not nested too deeply).
+private struct DeviceSignInDevice: Decodable { let id: String? }
+
 extension APIClient {
     /// Swaps the older apps' shared sign-in (the client's CURRENT bearer token
     /// must be that token) for this device's own sign-in.
@@ -75,8 +79,7 @@ extension APIClient {
     /// Decodes an enrol or redeem answer: the `auth_login` shape plus the extras.
     nonisolated public static func decodeDeviceSignInResult(from data: Data) throws -> DeviceSignInResult {
         struct Extras: Decodable {
-            struct Device: Decodable { let id: String? }
-            let device: Device?
+            let device: DeviceSignInDevice?
             let expiresAt: String?
             let enrolKey: String?
             let enrolKeyExpiresAt: String?

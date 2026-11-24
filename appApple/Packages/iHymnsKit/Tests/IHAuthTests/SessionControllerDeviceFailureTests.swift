@@ -19,23 +19,23 @@ import IHAPITestSupport
 
 @Suite("SessionController device sign-in: failures", .serialized)
 struct SessionControllerDeviceFailureTests {
-    typealias D = DeviceTestData
+    typealias TestData = DeviceTestData
 
     @Test("Swap: if the NEW token cannot be saved, the swap is not recorded and the device falls back to legacy mode")
     func swapWithFailedSaveIsNotRecorded() async throws {
         try await MockTransportLock.shared.withLock { () async throws in
             defer { MockURLProtocol.requestHandler = nil }
-            let h = try await D.makeHarness(legacy: D.legacyToken)
-            await h.deviceStore.setFailing(saves: true)
-            D.route(h.log) { action in action == "auth_device_enrol" ? (200, D.signInOK()) : (200, D.meOK) }
+            let harness = try await TestData.makeHarness(legacy: TestData.legacyToken)
+            await harness.deviceStore.setFailing(saves: true)
+            TestData.route(harness.log) { action in action == "auth_device_enrol" ? (200, TestData.signInOK()) : (200, TestData.meOK) }
 
-            try await h.controller.restoreFromStorage(deviceSignInEnabled: true)
+            try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
 
-            #expect(await h.controller.state == .signedIn(token: D.legacyToken))
-            #expect(await h.controller.usingLegacyToken)
-            #expect(try await h.deviceStore.load() == nil)
+            #expect(await harness.controller.state == .signedIn(token: TestData.legacyToken))
+            #expect(await harness.controller.usingLegacyToken)
+            #expect(try await harness.deviceStore.load() == nil)
             // Not recorded as swapped, so the next launch tries the swap again.
-            #expect(await h.notebook.isLegacySwapped(hash: TokenFingerprint.sha256Hex(D.legacyToken)) == false)
+            #expect(await harness.notebook.isLegacySwapped(hash: TokenFingerprint.sha256Hex(TestData.legacyToken)) == false)
         }
     }
 
@@ -43,14 +43,14 @@ struct SessionControllerDeviceFailureTests {
     func signOutOrderIsMarkThenTokenThenKey() async throws {
         try await MockTransportLock.shared.withLock { () async throws in
             defer { MockURLProtocol.requestHandler = nil }
-            let h = try await D.makeHarness(key: D.key, ownToken: D.ownToken)
-            D.route(h.log) { _ in (200, D.meOK) }
-            try await h.controller.restoreFromStorage(deviceSignInEnabled: true)
-            h.ops.reset()
+            let harness = try await TestData.makeHarness(key: TestData.key, ownToken: TestData.ownToken)
+            TestData.route(harness.log) { _ in (200, TestData.meOK) }
+            try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
+            harness.ops.reset()
 
-            try await h.controller.signOut()
+            try await harness.controller.signOut()
 
-            #expect(h.ops.all == ["notebook.save", "device.delete", "key.delete"])
+            #expect(harness.ops.all == ["notebook.save", "device.delete", "key.delete"])
         }
     }
 
@@ -58,16 +58,16 @@ struct SessionControllerDeviceFailureTests {
     func signOutEverywhereOrder() async throws {
         try await MockTransportLock.shared.withLock { () async throws in
             defer { MockURLProtocol.requestHandler = nil }
-            let h = try await D.makeHarness(key: D.key, ownToken: D.ownToken)
-            D.route(h.log) { action in
-                action == "auth_signout_everywhere" ? (200, Data(#"{"tokensRevoked":2,"enrolKeysRevoked":1,"keptCurrent":false}"#.utf8)) : (200, D.meOK)
+            let harness = try await TestData.makeHarness(key: TestData.key, ownToken: TestData.ownToken)
+            TestData.route(harness.log) { action in
+                action == "auth_signout_everywhere" ? (200, Data(#"{"tokensRevoked":2,"enrolKeysRevoked":1,"keptCurrent":false}"#.utf8)) : (200, TestData.meOK)
             }
-            try await h.controller.restoreFromStorage(deviceSignInEnabled: true)
-            h.ops.reset()
+            try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
+            harness.ops.reset()
 
-            _ = try await h.controller.signOutEverywhere()
+            _ = try await harness.controller.signOutEverywhere()
 
-            #expect(h.ops.all == ["notebook.save", "device.delete", "key.delete"])
+            #expect(harness.ops.all == ["notebook.save", "device.delete", "key.delete"])
         }
     }
 
@@ -75,20 +75,20 @@ struct SessionControllerDeviceFailureTests {
     func legacySignOutFailsWhenMarkCannotBeSaved() async throws {
         try await MockTransportLock.shared.withLock { () async throws in
             defer { MockURLProtocol.requestHandler = nil }
-            let h = try await D.makeHarness(legacy: D.legacyToken, key: D.key)
-            await h.notebook.markKeyDead(hash: TokenFingerprint.sha256Hex(D.key))
-            D.route(h.log) { action in action == "auth_device_enrol" ? (409, D.refusal(409, "device_signin_not_ready")) : (200, D.meOK) }
-            try await h.controller.restoreFromStorage(deviceSignInEnabled: true)
-            #expect(await h.controller.usingLegacyToken)
-            h.log.reset()
-            await h.notebookStore.setFailing(saves: true)
+            let harness = try await TestData.makeHarness(legacy: TestData.legacyToken, key: TestData.key)
+            await harness.notebook.markKeyDead(hash: TokenFingerprint.sha256Hex(TestData.key))
+            TestData.route(harness.log) { action in action == "auth_device_enrol" ? (409, TestData.refusal(409, "device_signin_not_ready")) : (200, TestData.meOK) }
+            try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
+            #expect(await harness.controller.usingLegacyToken)
+            harness.log.reset()
+            await harness.notebookStore.setFailing(saves: true)
 
-            await #expect(throws: SessionControllerError.couldNotRecordSignOut) { try await h.controller.signOut() }
+            await #expect(throws: SessionControllerError.couldNotRecordSignOut) { try await harness.controller.signOut() }
 
-            #expect(await h.controller.state == .signedIn(token: D.legacyToken))
-            #expect(await h.controller.usingLegacyToken)
-            #expect(h.log.actions.isEmpty)
-            #expect(await h.notebook.record().signedOutHere == false)
+            #expect(await harness.controller.state == .signedIn(token: TestData.legacyToken))
+            #expect(await harness.controller.usingLegacyToken)
+            #expect(harness.log.actions.isEmpty)
+            #expect(await harness.notebook.record().signedOutHere == false)
         }
     }
 
@@ -96,22 +96,22 @@ struct SessionControllerDeviceFailureTests {
     func ownSignOutRetryAfterMarkFailure() async throws {
         try await MockTransportLock.shared.withLock { () async throws in
             defer { MockURLProtocol.requestHandler = nil }
-            let h = try await D.makeHarness(key: D.key, ownToken: D.ownToken)
-            D.route(h.log) { _ in (200, D.meOK) }
-            try await h.controller.restoreFromStorage(deviceSignInEnabled: true)
-            await h.notebookStore.setFailing(saves: true)
+            let harness = try await TestData.makeHarness(key: TestData.key, ownToken: TestData.ownToken)
+            TestData.route(harness.log) { _ in (200, TestData.meOK) }
+            try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
+            await harness.notebookStore.setFailing(saves: true)
 
-            await #expect(throws: SessionControllerError.couldNotRecordSignOut) { try await h.controller.signOut() }
-            #expect(await h.controller.state == .signedIn(token: D.ownToken))
-            #expect(try await h.deviceStore.load() == D.ownToken)
+            await #expect(throws: SessionControllerError.couldNotRecordSignOut) { try await harness.controller.signOut() }
+            #expect(await harness.controller.state == .signedIn(token: TestData.ownToken))
+            #expect(try await harness.deviceStore.load() == TestData.ownToken)
 
             // Second try: the server now says 401 (already ended), which counts as done.
-            await h.notebookStore.setFailing(saves: false)
-            D.route(h.log) { _ in (401, Data()) }
-            try await h.controller.signOut()
-            #expect(await h.controller.state == .signedOut)
-            #expect(try await h.deviceStore.load() == nil)
-            #expect(await h.notebook.record().signedOutHere)
+            await harness.notebookStore.setFailing(saves: false)
+            TestData.route(harness.log) { _ in (401, Data()) }
+            try await harness.controller.signOut()
+            #expect(await harness.controller.state == .signedOut)
+            #expect(try await harness.deviceStore.load() == nil)
+            #expect(await harness.notebook.record().signedOutHere)
         }
     }
 
@@ -119,16 +119,16 @@ struct SessionControllerDeviceFailureTests {
     func tokenDeleteFailureStillSignsOut() async throws {
         try await MockTransportLock.shared.withLock { () async throws in
             defer { MockURLProtocol.requestHandler = nil }
-            let h = try await D.makeHarness(key: D.key, ownToken: D.ownToken)
-            D.route(h.log) { _ in (200, D.meOK) }
-            try await h.controller.restoreFromStorage(deviceSignInEnabled: true)
-            await h.deviceStore.setFailing(deletes: true)
+            let harness = try await TestData.makeHarness(key: TestData.key, ownToken: TestData.ownToken)
+            TestData.route(harness.log) { _ in (200, TestData.meOK) }
+            try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
+            await harness.deviceStore.setFailing(deletes: true)
 
-            await #expect(throws: SessionControllerError.signedOutButTokenNotRemoved) { try await h.controller.signOut() }
+            await #expect(throws: SessionControllerError.signedOutButTokenNotRemoved) { try await harness.controller.signOut() }
 
-            #expect(await h.controller.state == .signedOut)
-            #expect(await h.notebook.record().signedOutHere)
-            #expect(try await h.keyStore.load() == nil) // the rest of the clean-up still ran
+            #expect(await harness.controller.state == .signedOut)
+            #expect(await harness.notebook.record().signedOutHere)
+            #expect(try await harness.keyStore.load() == nil) // the rest of the clean-up still ran
         }
     }
 
@@ -136,17 +136,17 @@ struct SessionControllerDeviceFailureTests {
     func signOutEverywhereTokenDeleteFailure() async throws {
         try await MockTransportLock.shared.withLock { () async throws in
             defer { MockURLProtocol.requestHandler = nil }
-            let h = try await D.makeHarness(key: D.key, ownToken: D.ownToken)
-            D.route(h.log) { action in
-                action == "auth_signout_everywhere" ? (200, Data(#"{"tokensRevoked":2,"enrolKeysRevoked":1,"keptCurrent":false}"#.utf8)) : (200, D.meOK)
+            let harness = try await TestData.makeHarness(key: TestData.key, ownToken: TestData.ownToken)
+            TestData.route(harness.log) { action in
+                action == "auth_signout_everywhere" ? (200, Data(#"{"tokensRevoked":2,"enrolKeysRevoked":1,"keptCurrent":false}"#.utf8)) : (200, TestData.meOK)
             }
-            try await h.controller.restoreFromStorage(deviceSignInEnabled: true)
-            await h.deviceStore.setFailing(deletes: true)
+            try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
+            await harness.deviceStore.setFailing(deletes: true)
 
-            await #expect(throws: SessionControllerError.signedOutButTokenNotRemoved) { _ = try await h.controller.signOutEverywhere() }
+            await #expect(throws: SessionControllerError.signedOutButTokenNotRemoved) { _ = try await harness.controller.signOutEverywhere() }
 
-            #expect(await h.controller.state == .signedOut)
-            #expect(await h.notebook.record().signedOutHere)
+            #expect(await harness.controller.state == .signedOut)
+            #expect(await harness.notebook.record().signedOutHere)
         }
     }
 
@@ -154,18 +154,18 @@ struct SessionControllerDeviceFailureTests {
     func signOutEverywhereMarkFailure() async throws {
         try await MockTransportLock.shared.withLock { () async throws in
             defer { MockURLProtocol.requestHandler = nil }
-            let h = try await D.makeHarness(key: D.key, ownToken: D.ownToken)
-            D.route(h.log) { action in
-                action == "auth_signout_everywhere" ? (200, Data(#"{"tokensRevoked":2,"enrolKeysRevoked":1,"keptCurrent":false}"#.utf8)) : (200, D.meOK)
+            let harness = try await TestData.makeHarness(key: TestData.key, ownToken: TestData.ownToken)
+            TestData.route(harness.log) { action in
+                action == "auth_signout_everywhere" ? (200, Data(#"{"tokensRevoked":2,"enrolKeysRevoked":1,"keptCurrent":false}"#.utf8)) : (200, TestData.meOK)
             }
-            try await h.controller.restoreFromStorage(deviceSignInEnabled: true)
-            await h.notebookStore.setFailing(saves: true)
+            try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
+            await harness.notebookStore.setFailing(saves: true)
 
-            await #expect(throws: SessionControllerError.couldNotRecordSignOut) { _ = try await h.controller.signOutEverywhere() }
+            await #expect(throws: SessionControllerError.couldNotRecordSignOut) { _ = try await harness.controller.signOutEverywhere() }
 
-            #expect(await h.controller.state == .signedIn(token: D.ownToken))
-            #expect(try await h.deviceStore.load() == D.ownToken)
-            #expect(try await h.keyStore.load() == D.key)
+            #expect(await harness.controller.state == .signedIn(token: TestData.ownToken))
+            #expect(try await harness.deviceStore.load() == TestData.ownToken)
+            #expect(try await harness.keyStore.load() == TestData.key)
         }
     }
 
@@ -173,23 +173,23 @@ struct SessionControllerDeviceFailureTests {
     func deadKeyFallsThroughToSharedSwap() async throws {
         try await MockTransportLock.shared.withLock { () async throws in
             defer { MockURLProtocol.requestHandler = nil }
-            let h = try await D.makeHarness(legacy: D.legacyToken, key: D.key)
-            D.route(h.log) { action in
+            let harness = try await TestData.makeHarness(legacy: TestData.legacyToken, key: TestData.key)
+            TestData.route(harness.log) { action in
                 switch action {
-                case "auth_enrol_key_redeem": return (401, D.refusal(401, "enrol_key_invalid"))
-                case "auth_device_enrol": return (200, D.signInOK(withKey: true))
-                default: return (200, D.meOK)
+                case "auth_enrol_key_redeem": return (401, TestData.refusal(401, "enrol_key_invalid"))
+                case "auth_device_enrol": return (200, TestData.signInOK(withKey: true))
+                default: return (200, TestData.meOK)
                 }
             }
 
-            try await h.controller.restoreFromStorage(deviceSignInEnabled: true)
+            try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
 
-            #expect(h.log.actions == ["auth_enrol_key_redeem", "auth_device_enrol"])
-            #expect(await h.notebook.isKeyDead(hash: TokenFingerprint.sha256Hex(D.key)))
-            #expect(await h.controller.state == .signedIn(token: D.newToken))
-            #expect(try await h.deviceStore.load() == D.newToken)
+            #expect(harness.log.actions == ["auth_enrol_key_redeem", "auth_device_enrol"])
+            #expect(await harness.notebook.isKeyDead(hash: TokenFingerprint.sha256Hex(TestData.key)))
+            #expect(await harness.controller.state == .signedIn(token: TestData.newToken))
+            #expect(try await harness.deviceStore.load() == TestData.newToken)
             // The swap asked for a new key, because the held one is dead.
-            #expect(try await h.keyStore.load() == D.newKey)
+            #expect(try await harness.keyStore.load() == TestData.newKey)
         }
     }
 }

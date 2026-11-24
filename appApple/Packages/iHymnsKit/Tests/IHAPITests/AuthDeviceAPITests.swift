@@ -227,8 +227,8 @@ struct AuthDeviceDecodingTests {
 
     @Test("app_status reads deviceSignin and profileSync, and a missing key means false")
     func appStatusFlags() throws {
-        let on = try APIClient.decodeAppStatus(from: Data(#"{"deviceSignin":true,"profileSync":true}"#.utf8))
-        #expect(on.deviceSignin && on.profileSync)
+        let enabled = try APIClient.decodeAppStatus(from: Data(#"{"deviceSignin":true,"profileSync":true}"#.utf8))
+        #expect(enabled.deviceSignin && enabled.profileSync)
         let missing = try APIClient.decodeAppStatus(from: Data(#"{"maintenance":false}"#.utf8))
         #expect(missing.deviceSignin == false && missing.profileSync == false)
         #expect(missing.captcha == nil)

@@ -92,7 +92,7 @@ struct DeviceCustodyTests {
     @Test("Each fingerprint list keeps at most ten, dropping the oldest, with no duplicates")
     func listsAreCapped() async {
         let state = DeviceSignInState(store: InMemoryTokenStore())
-        for i in 0..<12 { await state.markKeyDead(hash: "k\(i)") }
+        for index in 0..<12 { await state.markKeyDead(hash: "k\(index)") }
         let keys = await state.record().deadKeyHashes
         #expect(keys.count == 10)
         #expect(keys.first == "k2")
@@ -133,11 +133,11 @@ struct DeviceCustodyTests {
 
     @Test("The fingerprint is stable, 64 hex characters, and not the secret")
     func fingerprintShape() {
-        let a = TokenFingerprint.sha256Hex("secret-token")
-        #expect(a == TokenFingerprint.sha256Hex("secret-token"))
-        #expect(a != TokenFingerprint.sha256Hex("secret-token2"))
-        #expect(a.count == 64)
-        #expect(!a.contains("secret"))
+        let digest = TokenFingerprint.sha256Hex("secret-token")
+        #expect(digest == TokenFingerprint.sha256Hex("secret-token"))
+        #expect(digest != TokenFingerprint.sha256Hex("secret-token2"))
+        #expect(digest.count == 64)
+        #expect(!digest.contains("secret"))
         // The well-known SHA-256 of the empty string pins the algorithm.
         #expect(TokenFingerprint.sha256Hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
     }
@@ -149,9 +149,9 @@ struct DeviceCustodyTests {
         let store = InMemoryTokenStore()
         let state = DeviceSignInState(store: store)
         await withTaskGroup(of: Void.self) { group in
-            for i in 0..<8 {
-                group.addTask { await state.markKeyDead(hash: "k\(i)") }
-                group.addTask { await state.markLegacySwapped(hash: "s\(i)") }
+            for index in 0..<8 {
+                group.addTask { await state.markKeyDead(hash: "k\(index)") }
+                group.addTask { await state.markLegacySwapped(hash: "s\(index)") }
             }
             group.addTask { _ = try? await state.setSignedOutHere(true) }
             group.addTask { await state.setAutomaticSignInOff(true) }

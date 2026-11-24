@@ -37,11 +37,14 @@ struct ProfileBaselineEntry: Codable, Equatable, Sendable {
 /// ELI5: "Still to tell the account: set theme to dark."
 struct ProfileOutboxItem: Codable, Equatable, Sendable {
     /// `"set"` or `"delete"`.
-    let op: String
+    let operation: String
     let value: ProfileValue?
     /// A counter that goes up with every queued change, so "was this item changed
     /// while the request was in flight?" is a number comparison.
     let seq: Int
+
+    /// The stored name for `operation` stays `op`, so a queue saved by an earlier build still loads.
+    private enum CodingKeys: String, CodingKey { case operation = "op", value, seq }
 }
 
 /// Everything remembered for one person.

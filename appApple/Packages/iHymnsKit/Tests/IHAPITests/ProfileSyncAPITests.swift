@@ -31,8 +31,8 @@ struct ProfileSyncAPITests {
         let request = ProfileSyncRequest(
             schemaVersion: 2, appVersion: "1.2.3", cursor: 7,
             changes: [
-                ProfileSyncChange(section: "appearance", key: "theme", op: .set, value: .string("dark")),
-                ProfileSyncChange(section: "appearance", key: "cvd", op: .delete)
+                ProfileSyncChange(section: "appearance", key: "theme", operation: .set, value: .string("dark")),
+                ProfileSyncChange(section: "appearance", key: "cvd", operation: .delete)
             ]
         )
         let endpoint = try Endpoint.profileSyncSend(request)

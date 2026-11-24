@@ -207,10 +207,10 @@ actor ProfileSyncEngine {
                 continue
             }
             if let current, !entry.validate(current) { continue }       // a corrupt local value is never sent
-            let op = current == nil ? "delete" : "set"
-            if let queued = state.outbox[id], queued.op == op, queued.value == current { continue }
+            let operation = current == nil ? "delete" : "set"
+            if let queued = state.outbox[id], queued.operation == operation, queued.value == current { continue }
             state.seq += 1
-            state.outbox[id] = ProfileOutboxItem(op: op, value: current, seq: state.seq)
+            state.outbox[id] = ProfileOutboxItem(operation: operation, value: current, seq: state.seq)
         }
     }
 
@@ -243,7 +243,7 @@ actor ProfileSyncEngine {
             // The server has the changes: an item leaves the outbox only if it has not changed since it was sent.
             for item in batch where state.outbox[item.id]?.seq == item.seq {
                 state.outbox[item.id] = nil
-                state.baseline[item.id] = ProfileBaselineEntry(value: item.change.op == .set ? item.change.value : nil)
+                state.baseline[item.id] = ProfileBaselineEntry(value: item.change.operation == .set ? item.change.value : nil)
             }
             // A change the server will never accept as sent: do not keep retrying it (the value stays on the device).
             for rejection in reply.rejected where Self.permanentRejections.contains(rejection.reason) {
@@ -275,8 +275,8 @@ actor ProfileSyncEngine {
             let change = ProfileSyncChange(
                 section: binding.section,
                 key: binding.key,
-                op: item.op == "set" ? .set : .delete,
-                value: item.op == "set" ? item.value : nil
+                operation: item.operation == "set" ? .set : .delete,
+                value: item.operation == "set" ? item.value : nil
             )
             let length = ((try? JSONEncoder().encode(change))?.count ?? 100) + 1
             if !batch.isEmpty && (size + length > Self.maxBodyCharacters || batch.count >= batchLimit) { break }

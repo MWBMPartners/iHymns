@@ -76,129 +76,129 @@ struct ProfileSyncEngineTests {
 
     @Test("First sync: reads from 0 whatever the cursor, applies the account's values, and sends nothing it just received")
     func firstSyncAppliesAccountAndSendsNothingBack() async throws {
-        let h = try makeHarness()
-        h.server.queueRead(ProfileSyncReply(cursor: 5, changes: [
+        let harness = try makeHarness()
+        harness.server.queueRead(ProfileSyncReply(cursor: 5, changes: [
             change("appearance.theme", .string("dark"), version: 4),
             change("reading.textScale", .double(1.5), version: 5)
         ]))
 
-        let outcome = await h.engine.sync(userId: 1, transport: h.server.transport)
+        let outcome = await harness.engine.sync(userId: 1, transport: harness.server.transport)
 
         #expect(outcome == .done(changedLocal: true))
-        #expect(h.server.reads == [0])
-        #expect(h.defaults.string(forKey: "ihAppearanceTheme") == "dark")
-        #expect(h.defaults.double(forKey: "ihLyricsTextScale") == 1.5)
-        #expect(h.server.sends.isEmpty)               // what came FROM the account is never sent back
-        #expect(h.store.load(userId: 1).claimed)
-        #expect(h.store.load(userId: 1).cursor == 5)
+        #expect(harness.server.reads == [0])
+        #expect(harness.defaults.string(forKey: "ihAppearanceTheme") == "dark")
+        #expect(harness.defaults.double(forKey: "ihLyricsTextScale") == 1.5)
+        #expect(harness.server.sends.isEmpty)               // what came FROM the account is never sent back
+        #expect(harness.store.load(userId: 1).claimed)
+        #expect(harness.store.load(userId: 1).cursor == 5)
     }
 
     @Test("First sync claims a device value the account never heard of, but only where the entry allows claiming")
     func claimOnlyWhereAllowed() async throws {
-        let h = try makeHarness()
-        h.defaults.set("deuteranopia", forKey: "ihCvdMode")      // appearance.cvd: claim true
-        h.defaults.set(2.0, forKey: "ihLyricsTextScale")         // reading.textScale: claim false
+        let harness = try makeHarness()
+        harness.defaults.set("deuteranopia", forKey: "ihCvdMode")      // appearance.cvd: claim true
+        harness.defaults.set(2.0, forKey: "ihLyricsTextScale")         // reading.textScale: claim false
 
-        _ = await h.engine.sync(userId: 1, transport: h.server.transport)
+        _ = await harness.engine.sync(userId: 1, transport: harness.server.transport)
 
-        let sent = h.server.sends.flatMap(\.changes)
+        let sent = harness.server.sends.flatMap(\.changes)
         #expect(sent.map { $0.section + "." + $0.key } == ["appearance.cvd"])
         #expect(sent.first?.value == .string("deuteranopia"))
-        #expect(sent.first?.op == .set)
+        #expect(sent.first?.operation == .set)
     }
 
     @Test("A later change on the device is sent once, acknowledged, and not sent again")
     func localChangeIsSentOnce() async throws {
-        let h = try makeHarness()
-        _ = await h.engine.sync(userId: 1, transport: h.server.transport)     // first sync: nothing to send
-        h.defaults.set(true, forKey: "ihDyslexiaReadingModeEnabled")
+        let harness = try makeHarness()
+        _ = await harness.engine.sync(userId: 1, transport: harness.server.transport)     // first sync: nothing to send
+        harness.defaults.set(true, forKey: "ihDyslexiaReadingModeEnabled")
 
-        _ = await h.engine.sync(userId: 1, transport: h.server.transport)
-        #expect(h.server.sends.count == 1)
-        #expect(h.server.sends[0].changes.map(\.key) == ["dyslexia"])
-        #expect(h.server.sends[0].cursor == h.store.load(userId: 1).cursor)
-        #expect(h.store.load(userId: 1).outbox.isEmpty)
+        _ = await harness.engine.sync(userId: 1, transport: harness.server.transport)
+        #expect(harness.server.sends.count == 1)
+        #expect(harness.server.sends[0].changes.map(\.key) == ["dyslexia"])
+        #expect(harness.server.sends[0].cursor == harness.store.load(userId: 1).cursor)
+        #expect(harness.store.load(userId: 1).outbox.isEmpty)
 
-        _ = await h.engine.sync(userId: 1, transport: h.server.transport)
-        #expect(h.server.sends.count == 1)                                      // nothing left to send
+        _ = await harness.engine.sync(userId: 1, transport: harness.server.transport)
+        #expect(harness.server.sends.count == 1)                                      // nothing left to send
     }
 
     @Test("Removing a setting on the device sends a delete; colour vision 'none' reads as no setting")
     func deleteAndNone() async throws {
-        let h = try makeHarness()
-        h.defaults.set("tritanopia", forKey: "ihCvdMode")
-        _ = await h.engine.sync(userId: 1, transport: h.server.transport)       // claims and sends the set
-        h.defaults.set("none", forKey: "ihCvdMode")                              // the app's own word for "off"
+        let harness = try makeHarness()
+        harness.defaults.set("tritanopia", forKey: "ihCvdMode")
+        _ = await harness.engine.sync(userId: 1, transport: harness.server.transport)       // claims and sends the set
+        harness.defaults.set("none", forKey: "ihCvdMode")                              // the app's own word for "off"
 
-        _ = await h.engine.sync(userId: 1, transport: h.server.transport)
+        _ = await harness.engine.sync(userId: 1, transport: harness.server.transport)
 
-        let last = try #require(h.server.sends.last?.changes.first)
-        #expect(last.op == .delete)
+        let last = try #require(harness.server.sends.last?.changes.first)
+        #expect(last.operation == .delete)
         #expect(last.value == nil)
-        #expect(h.local.read(try #require(ProfileSettingBindings.binding(id: "appearance.cvd"))) == nil)
+        #expect(harness.local.read(try #require(ProfileSettingBindings.binding(id: "appearance.cvd"))) == nil)
     }
 
     @Test("A setting still waiting to be sent is not overwritten by a value read from the account")
     func outboxWinsOverAccount() async throws {
-        let h = try makeHarness()
-        h.server.onSend { _ in throw APIError.offline }                          // sending fails: the change stays queued
-        _ = await h.engine.sync(userId: 1, transport: h.server.transport)
-        h.defaults.set("light", forKey: "ihAppearanceTheme")
-        let failed = await h.engine.sync(userId: 1, transport: h.server.transport)
+        let harness = try makeHarness()
+        harness.server.onSend { _ in throw APIError.offline }                          // sending fails: the change stays queued
+        _ = await harness.engine.sync(userId: 1, transport: harness.server.transport)
+        harness.defaults.set("light", forKey: "ihAppearanceTheme")
+        let failed = await harness.engine.sync(userId: 1, transport: harness.server.transport)
         #expect(failed == .failed)
-        #expect(h.store.load(userId: 1).outbox["appearance.theme"] != nil)
+        #expect(harness.store.load(userId: 1).outbox["appearance.theme"] != nil)
 
-        h.server.queueRead(ProfileSyncReply(cursor: 9, changes: [change("appearance.theme", .string("dark"), version: 9)]))
-        h.server.onSend { ProfileSyncReply(cursor: $0.cursor) }
-        _ = await h.engine.sync(userId: 1, transport: h.server.transport)
+        harness.server.queueRead(ProfileSyncReply(cursor: 9, changes: [change("appearance.theme", .string("dark"), version: 9)]))
+        harness.server.onSend { ProfileSyncReply(cursor: $0.cursor) }
+        _ = await harness.engine.sync(userId: 1, transport: harness.server.transport)
 
-        #expect(h.defaults.string(forKey: "ihAppearanceTheme") == "light")       // the person's newer choice stayed
-        #expect(h.server.sends.last?.changes.first?.value == .string("light"))   // and it was sent
+        #expect(harness.defaults.string(forKey: "ihAppearanceTheme") == "light")       // the person's newer choice stayed
+        #expect(harness.server.sends.last?.changes.first?.value == .string("light"))   // and it was sent
     }
 
     @Test("An invalid value from the account, and a setting this build does not map, are left alone")
     func invalidAndUnmappedAreIgnored() async throws {
-        let h = try makeHarness()
-        h.server.queueRead(ProfileSyncReply(cursor: 3, changes: [
+        let harness = try makeHarness()
+        harness.server.queueRead(ProfileSyncReply(cursor: 3, changes: [
             change("appearance.theme", .string("neon"), version: 1),
             change("appearance.fontSize", .int(20), version: 2),
             change("reading.textScale", .double(99), version: 3)
         ]))
 
-        let outcome = await h.engine.sync(userId: 1, transport: h.server.transport)
+        let outcome = await harness.engine.sync(userId: 1, transport: harness.server.transport)
 
         #expect(outcome == .done(changedLocal: false))
-        #expect(h.defaults.object(forKey: "ihAppearanceTheme") == nil)
-        #expect(h.defaults.object(forKey: "ihLyricsTextScale") == nil)
-        #expect(h.store.load(userId: 1).cursor == 3)                              // the cursor still moves on
+        #expect(harness.defaults.object(forKey: "ihAppearanceTheme") == nil)
+        #expect(harness.defaults.object(forKey: "ihLyricsTextScale") == nil)
+        #expect(harness.store.load(userId: 1).cursor == 3)                              // the cursor still moves on
     }
 
     @Test("A removal on the account resets the setting on the device")
     func accountRemovalResets() async throws {
-        let h = try makeHarness()
-        h.defaults.set("dark", forKey: "ihAppearanceTheme")
-        h.server.queueRead(ProfileSyncReply(cursor: 2, changes: [change("appearance.theme", nil, version: 2, deleted: true)]))
+        let harness = try makeHarness()
+        harness.defaults.set("dark", forKey: "ihAppearanceTheme")
+        harness.server.queueRead(ProfileSyncReply(cursor: 2, changes: [change("appearance.theme", nil, version: 2, deleted: true)]))
 
-        let outcome = await h.engine.sync(userId: 1, transport: h.server.transport)
+        let outcome = await harness.engine.sync(userId: 1, transport: harness.server.transport)
 
         #expect(outcome == .done(changedLocal: true))
-        #expect(h.defaults.object(forKey: "ihAppearanceTheme") == nil)
+        #expect(harness.defaults.object(forKey: "ihAppearanceTheme") == nil)
     }
 
     @Test("A refusal the server will never accept drops the item and is not retried for ever")
     func permanentRejectionDropsItem() async throws {
-        let h = try makeHarness()
-        _ = await h.engine.sync(userId: 1, transport: h.server.transport)
-        h.defaults.set(false, forKey: "ihLyricsShowChords")                      // a real change from the unset baseline
-        h.server.onSend { ProfileSyncReply(cursor: $0.cursor, rejected: [ProfileSyncRejection(section: "reading", key: "showChords", reason: "invalid_value")]) }
+        let harness = try makeHarness()
+        _ = await harness.engine.sync(userId: 1, transport: harness.server.transport)
+        harness.defaults.set(false, forKey: "ihLyricsShowChords")                      // a real change from the unset baseline
+        harness.server.onSend { ProfileSyncReply(cursor: $0.cursor, rejected: [ProfileSyncRejection(section: "reading", key: "showChords", reason: "invalid_value")]) }
 
-        _ = await h.engine.sync(userId: 1, transport: h.server.transport)
-        let sendsAfterFirst = h.server.sends.count
-        _ = await h.engine.sync(userId: 1, transport: h.server.transport)
+        _ = await harness.engine.sync(userId: 1, transport: harness.server.transport)
+        let sendsAfterFirst = harness.server.sends.count
+        _ = await harness.engine.sync(userId: 1, transport: harness.server.transport)
 
         #expect(sendsAfterFirst == 1)
-        #expect(h.server.sends.count == sendsAfterFirst)
-        #expect(h.store.load(userId: 1).outbox.isEmpty)
+        #expect(harness.server.sends.count == sendsAfterFirst)
+        #expect(harness.store.load(userId: 1).outbox.isEmpty)
     }
 
     @Test("409 not switched on stops with .off; 409 saving paused keeps the outbox")
@@ -219,43 +219,43 @@ struct ProfileSyncEngineTests {
 
     @Test("A 413 halves the batch and a single change the server will never take is dropped")
     func tooBigHalvesThenDrops() async throws {
-        let h = try makeHarness()
-        h.defaults.set("dark", forKey: "ihAppearanceTheme")
-        h.defaults.set("deuteranopia", forKey: "ihCvdMode")
-        h.server.onSend { _ in throw APIError.server(status: 413, message: "too_many_changes") }
+        let harness = try makeHarness()
+        harness.defaults.set("dark", forKey: "ihAppearanceTheme")
+        harness.defaults.set("deuteranopia", forKey: "ihCvdMode")
+        harness.server.onSend { _ in throw APIError.server(status: 413, message: "too_many_changes") }
 
-        let outcome = await h.engine.sync(userId: 1, transport: h.server.transport)
+        let outcome = await harness.engine.sync(userId: 1, transport: harness.server.transport)
 
         #expect(outcome == .done(changedLocal: false))
-        #expect(h.server.sends.first?.changes.count == 2)                         // first the whole batch...
-        #expect(h.server.sends.contains { $0.changes.count == 1 })                 // ...then half...
-        #expect(h.store.load(userId: 1).outbox.isEmpty)                            // ...until each lone change was dropped
+        #expect(harness.server.sends.first?.changes.count == 2)                         // first the whole batch...
+        #expect(harness.server.sends.contains { $0.changes.count == 1 })                 // ...then half...
+        #expect(harness.store.load(userId: 1).outbox.isEmpty)                            // ...until each lone change was dropped
     }
 
     @Test("Each person has their own notebook: one person's waiting changes are never sent as another's")
     func notebooksArePerPerson() async throws {
-        let h = try makeHarness()
-        _ = await h.engine.sync(userId: 1, transport: h.server.transport)
-        h.server.onSend { _ in throw APIError.offline }
-        h.defaults.set("dark", forKey: "ihAppearanceTheme")
-        _ = await h.engine.sync(userId: 1, transport: h.server.transport)
-        #expect(h.store.load(userId: 1).outbox["appearance.theme"] != nil)
-        #expect(h.store.load(userId: 2).outbox.isEmpty)
-        h.store.clear(userId: 1)
-        #expect(h.store.load(userId: 1) == ProfileSyncState())
+        let harness = try makeHarness()
+        _ = await harness.engine.sync(userId: 1, transport: harness.server.transport)
+        harness.server.onSend { _ in throw APIError.offline }
+        harness.defaults.set("dark", forKey: "ihAppearanceTheme")
+        _ = await harness.engine.sync(userId: 1, transport: harness.server.transport)
+        #expect(harness.store.load(userId: 1).outbox["appearance.theme"] != nil)
+        #expect(harness.store.load(userId: 2).outbox.isEmpty)
+        harness.store.clear(userId: 1)
+        #expect(harness.store.load(userId: 1) == ProfileSyncState())
     }
 
     @Test("A second sync while one is running does nothing")
     func oneAtATime() async throws {
-        let h = try makeHarness()
+        let harness = try makeHarness()
         let gate = AsyncGate()
         let slow = ProfileSyncTransport(
             read: { cursor in await gate.wait(); return ProfileSyncReply(cursor: cursor) },
             send: { ProfileSyncReply(cursor: $0.cursor) }
         )
-        async let first = h.engine.sync(userId: 1, transport: slow)
+        async let first = harness.engine.sync(userId: 1, transport: slow)
         while !(await gate.hasWaiter) { await Task.yield() }                     // the first sync is now inside its read
-        let second = await h.engine.sync(userId: 1, transport: h.server.transport)
+        let second = await harness.engine.sync(userId: 1, transport: harness.server.transport)
         await gate.open()
         #expect(second == .busy)
         #expect(await first == .done(changedLocal: false))

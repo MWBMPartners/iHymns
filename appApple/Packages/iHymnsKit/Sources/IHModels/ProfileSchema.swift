@@ -63,10 +63,10 @@ public enum ProfileValue: Sendable, Equatable, Codable {
     /// not tell them apart, and the server stores the number either way).
     public static func == (lhs: ProfileValue, rhs: ProfileValue) -> Bool {
         switch (lhs, rhs) {
-        case (.bool(let a), .bool(let b)): return a == b
-        case (.string(let a), .string(let b)): return a == b
+        case (.bool(let left), .bool(let right)): return left == right
+        case (.string(let left), .string(let right)): return left == right
         default:
-            if let a = lhs.number, let b = rhs.number { return a == b }
+            if let left = lhs.number, let right = rhs.number { return left == right }
             return false
         }
     }
@@ -112,22 +112,23 @@ public struct ProfileEntry: Sendable, Equatable, Decodable {
             if case .bool = value { return true }
             return false
         case "int":
-            guard case .int(let v) = value, let lo = min, let hi = max else { return false }
+            guard case .int(let whole) = value, let lower = min, let upper = max else { return false }
             let stepValue = Int(step ?? 1)
-            let origin = Int(from ?? lo)
-            return Double(v) >= lo && Double(v) <= hi && stepValue >= 1 && (v - origin) % stepValue == 0
+            let origin = Int(from ?? lower)
+            return Double(whole) >= lower && Double(whole) <= upper && stepValue >= 1
+                && (whole - origin) % stepValue == 0
         case "float":
-            guard let v = value.number, v.isFinite, let lo = min, let hi = max else { return false }
-            return v >= lo && v <= hi
+            guard let number = value.number, number.isFinite, let lower = min, let upper = max else { return false }
+            return number >= lower && number <= upper
         case "enum":
-            guard case .string(let v) = value else { return false }
-            return allowed?.contains(v) == true
+            guard case .string(let text) = value else { return false }
+            return allowed?.contains(text) == true
         case "string":
-            guard case .string(let v) = value, !v.isEmpty else { return false }
-            if let maxLength, v.count > maxLength { return false }
+            guard case .string(let text) = value, !text.isEmpty else { return false }
+            if let maxLength, text.count > maxLength { return false }
             if let pattern {
-                guard let range = v.range(of: pattern, options: .regularExpression) else { return false }
-                return range == v.startIndex..<v.endIndex
+                guard let range = text.range(of: pattern, options: .regularExpression) else { return false }
+                return range == text.startIndex..<text.endIndex
             }
             return true
         default:

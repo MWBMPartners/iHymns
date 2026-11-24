@@ -56,26 +56,26 @@ public struct ProfileSyncChange: Sendable, Equatable, Encodable {
 
     public let section: String
     public let key: String
-    public let op: Operation
+    public let operation: Operation
     /// The new value for `.set`; `nil` for `.delete`.
     public let value: ProfileValue?
 
-    public init(section: String, key: String, op: Operation, value: ProfileValue? = nil) {
+    public init(section: String, key: String, operation: Operation, value: ProfileValue? = nil) {
         self.section = section
         self.key = key
-        self.op = op
+        self.operation = operation
         self.value = value
     }
 
-    private enum CodingKeys: String, CodingKey { case section, key, op, value }
+    private enum CodingKeys: String, CodingKey { case section, key, operation = "op", value }
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(section, forKey: .section)
         try container.encode(key, forKey: .key)
-        try container.encode(op.rawValue, forKey: .op)
+        try container.encode(operation.rawValue, forKey: .operation)
         // `value` only for a set: a delete carries none (the server would refuse a null set).
-        if op == .set, let value { try container.encode(value, forKey: .value) }
+        if operation == .set, let value { try container.encode(value, forKey: .value) }
     }
 }
 
