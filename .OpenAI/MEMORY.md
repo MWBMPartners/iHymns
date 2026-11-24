@@ -5,16 +5,20 @@ Short, lasting facts. Newest first within each section. Where this file and the 
 
 _Last updated: 2026-11-24._
 
+## Added 2026-11-24 (layout audit)
+
+- Layout fixes are merged (#2209): shared classes in `admin.css`, guards `tests/test-form-row-alignment.js` and `tests/test-admin-narrow-layout.js` (they read PHP only), measuring scripts in `tools/layout-audit/`. Not measured: high-contrast theme, JavaScript-built markup, the v2 editor.
+
 ## Added 2026-11-24 (account rewrite part 3b: one sign-in per device, the Apple app)
 
-- **Part 3b is built on branch `claude/account-pr3b`** (not pushed): steps I1 to I6 of `.claude/account-profile-pr3-plan.md`. Rule #56 in `.claude/CLAUDE.md` has the shape. **Nothing was compiled** (no Swift toolchain in the sandbox): CI on macOS is the first compile, so expect compile fixes. Node guards `tests/test-apple-*.js` read the Swift source (helper `tests/lib/swift-source.js`).
+- **Part 3b is merged (#2206).** Swift compiled and its tests passed in macOS CI after several fix rounds; no real-device check yet. Steps I1 to I6 of `.claude/account-profile-pr3-plan.md`. Rule #56 in `.claude/CLAUDE.md` has the shape. The sandbox has no Swift toolchain, so CI on macOS is where Swift is compiled. Node guards `tests/test-apple-*.js` read the Swift source (helper `tests/lib/swift-source.js`).
 - **Traps:** the device token, install id and notebook MUST be `thisDeviceOnly` (not-synced alone is copied by backups); the shared token `app.ihymns.token` is read-only (`LegacySharedTokenReader`); write "signed out here" BEFORE deleting the token; sign-out of legacy mode makes NO server call; branch on status plus reason word via `DeviceSignInReason` / `ProfileSyncReason`, never on a sentence; every Swift file must stay at or under 400 lines (`appApple/Scripts/loc-budget.sh`), and `RootContainerView.swift` and `Package.swift` sit exactly on it.
 - **Decisions:** the app deletes its copy of the key on sign-out (the server cancels all keys when a device's own sign-in ends); song views are sent only while signed in (open owner question); sign-out asks before losing unsent changes, enforced in the view model (`signOut(discardUnsent:)`).
-- **Found, not fixed:** an Apple set-list sync clears a web-set expiry (the app's `Setlist` has no `expiresAt`); set-list conflicts, song history and most-viewed are readable but no screen draws them yet.
+- **Found, not fixed (#2207):** an Apple set-list sync clears a web-set expiry (the app's `Setlist` has no `expiresAt`); set-list conflicts, song history and most-viewed are readable but no screen draws them yet.
 
 ## Added 2026-11-24 (account rewrite part 3a: one sign-in per device, server side)
 
-- **Part 3a is built on branch `claude/account-pr3a`** (not merged when this was written): the server side only; no Apple code yet. Rule #55 in `.claude/CLAUDE.md` has the shape; the plan and its progress table are in `.claude/account-profile-pr3-plan.md`; the reusable design (for SIGNula.id and ClearList) is `.claude/analysis/per-device-sign-in-design.md`.
+- **Part 3a is merged (#2205)**: the server side only; no Apple code yet. Rule #55 in `.claude/CLAUDE.md` has the shape; the plan and its progress table are in `.claude/account-profile-pr3-plan.md`; the reusable design (for SIGNula.id and ClearList) is `.claude/analysis/per-device-sign-in-design.md`.
 - **Owner decisions:** the automatic sign-in key is on by default for Apple devices when the switch is on, and can be turned off; a device whose sign-in was signed out or ran out must NOT sign itself back in (enforced on the server with the "ended note" rows, not left to the app); everything sits behind `device_signin_channels` (default none).
 - **Trap:** the expiry sweep must keep an install-bound ended row for 180 days (`apiTokenSweepExpired()`; `appWeb/.sql/cleanup.php` mirrors it). A sweep that deletes the row when it expires turns the key back on.
 - **No `WHATS-NEW.md` bullets yet**; they are added when production is ticked. The Apple phase (I1 to I6) is not started.
