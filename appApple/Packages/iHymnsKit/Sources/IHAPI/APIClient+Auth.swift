@@ -38,9 +38,15 @@ extension APIClient {
     /// subsequent authenticated call carries it. `captchaToken`: `nil`
     /// default (#947/#340 native scaffold) — see
     /// `Endpoint.authLogin(username:password:captchaToken:)`'s own doc
-    /// comment.
-    public func authLogin(username: String, password: String, captchaToken: String? = nil) async throws -> AuthSession {
-        let endpoint = try Endpoint.authLogin(username: username, password: password, captchaToken: captchaToken)
+    /// comment. `device`: this install's details (PR 3b, I2b, #2180), `nil`
+    /// by default; see `DeviceSignInDetails`.
+    public func authLogin(
+        username: String,
+        password: String,
+        captchaToken: String? = nil,
+        device: DeviceSignInDetails? = nil
+    ) async throws -> AuthSession {
+        let endpoint = try Endpoint.authLogin(username: username, password: password, captchaToken: captchaToken, device: device)
         let data = try await performOnce(endpoint)
         return try Self.decodeAuthSession(from: data)
     }
@@ -105,8 +111,11 @@ extension APIClient {
     /// bearer token, same shape `authLogin(username:password:)` returns.
     ///
     /// ELI5: "Here's the code you emailed me — log me in."
-    public func authEmailLoginVerify(email: String, code: String) async throws -> AuthSession {
-        let endpoint = try Endpoint.authEmailLoginVerify(email: email, code: code)
+    ///
+    /// - Parameter device: This install's details (PR 3b, I2b, #2180): see
+    ///   `DeviceSignInDetails`. `nil` by default (the body is then unchanged).
+    public func authEmailLoginVerify(email: String, code: String, device: DeviceSignInDetails? = nil) async throws -> AuthSession {
+        let endpoint = try Endpoint.authEmailLoginVerify(email: email, code: code, device: device)
         let data = try await performOnce(endpoint)
         return try Self.decodeAuthSession(from: data)
     }

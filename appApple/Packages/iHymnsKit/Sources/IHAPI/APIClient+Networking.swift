@@ -173,7 +173,11 @@ extension APIClient {
             // 403, in which case the generic, body-blind `classify(...)`
             // below never even runs (its own `default:` branch would have
             // folded this into an opaque `.server(status: 403, message: nil)`).
-            if let apiError = Self.classifyMachineRefusal(httpStatus: http.statusCode, body: data)
+            if let apiError = Self.classifyMachineRefusal(
+                httpStatus: http.statusCode,
+                body: data,
+                capturingReason: endpoint.capturesRefusalReason
+            )
                 ?? Self.classify(httpStatus: http.statusCode, retryAfterSeconds: Self.retryAfterSeconds(from: http)) {
                 throw apiError
             }
