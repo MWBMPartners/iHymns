@@ -376,6 +376,37 @@ function apiTokenSignOutHashes(\mysqli $db, int $userId, array $hashes): int
 }
 
 /**
+ * The housekeeping sweep for sign-in rows (PR 3, H5/H7). Returns how many rows it deleted.
+ *
+ * ELI5: expired sign-ins used to be deleted the moment they expired. A sign-in that belongs to one
+ * device is now ALSO the small "this device was signed out / ran out" note that stops the device
+ * signing itself back in with its automatic key (owner's rule, 2026-11-23). So those rows are kept
+ * for API_TOKEN_ENDED_KEEP_DAYS days after they end, and only then deleted. Rows that belong to no
+ * device (the shared older-app sign-in) go as soon as they expire, as before.
+ *
+ * Detailed: an install-bound row that ended at T is removed once T is older than the keep window;
+ * the key's own life is the same length, so by then the key could not have been used anyway. The
+ * old one-line sweep in cleanup.php (a standalone script that cannot load this file, rule #41)
+ * mirrors this SQL; tests/php/test-device-signin-core.php checks the two agree.
+ */
+function apiTokenSweepExpired(\mysqli $db): int
+{
+    $now = gmdate('Y-m-d H:i:s');
+    if (!apiTokensFoundationColumnsExist($db)) {
+        $st = $db->prepare('DELETE FROM tblApiTokens WHERE ExpiresAt < ?');
+        $st->bind_param('s', $now);
+    } else {
+        $oldest = gmdate('Y-m-d H:i:s', time() - API_TOKEN_ENDED_KEEP_DAYS * 86400);
+        $st = $db->prepare('DELETE FROM tblApiTokens WHERE (DeviceInstallId IS NULL AND ExpiresAt < ?) OR (DeviceInstallId IS NOT NULL AND ExpiresAt < ?)');
+        $st->bind_param('ss', $now, $oldest);
+    }
+    $st->execute();
+    $n = max(0, $st->affected_rows);
+    $st->close();
+    return $n;
+}
+
+/**
  * Has this install had its sign-in ended (signed out, or run out after 30 days unused), with no
  * live sign-in since? True means: the person must sign in again on this install. A brand-new
  * install (no row at all) is false.
@@ -773,6 +804,27 @@ function apiTokenDeviceId(string $tokenHash): string
 }
 
 /**
+ * The sign-in token a request put in its `Authorization: Bearer ...` header, or null. HEADER ONLY:
+ * the `ihymns_auth` cookie is never looked at (PR 3 step H5).
+ *
+ * ELI5: a browser that is signed in carries a cookie automatically; a native app carries the token
+ * in a header it adds itself. The actions that hand out a device's own sign-in must only ever answer
+ * the second kind, so a web page (or an attacker's page riding the cookie) can never mint an app
+ * sign-in. This is also the ONE place the "what a bearer token looks like" pattern lives
+ * (`Bearer` + 64 hex characters), so apiTokenResolveBearerUser() and the device actions cannot
+ * disagree about it. An automatic sign-in key (`ihek1_...`) can never match it.
+ *
+ * Reads `HTTP_AUTHORIZATION`, then `REDIRECT_HTTP_AUTHORIZATION` (some CGI/FastCGI set-ups rename it).
+ *
+ * @return ?string the 64 lowercase-or-uppercase hex characters as sent, or null when absent/malformed
+ */
+function apiTokenBearerHeaderValue(): ?string
+{
+    $hdr = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+    return preg_match('/^Bearer\s+([a-f0-9]{64})$/i', $hdr, $m) === 1 ? $m[1] : null;
+}
+
+/**
  * Resolve an `Authorization: Bearer <token>` header (native curator apps —
  * `.claude/api-coverage-2026-08-28.md` §3 X1/X3, Batch 2) into a user row,
  * or null when no Bearer header is present or the token doesn't verify.
@@ -820,11 +872,10 @@ function apiTokenDeviceId(string $tokenHash): string
  */
 function apiTokenResolveBearerUser(\mysqli $db): ?array
 {
-    $hdr = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
-    if (!preg_match('/^Bearer\s+([a-f0-9]{64})$/i', $hdr, $m)) {
+    $token = apiTokenBearerHeaderValue();
+    if ($token === null) {
         return null;
     }
-    $token = $m[1];
 
     try {
         $hashedToken = hash('sha256', $token);

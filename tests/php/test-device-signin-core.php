@@ -17,6 +17,8 @@ declare(strict_types=1);
  *  Part 1 (H1): the install id travels with every sign-in route, and one device keeps one row.
  *  Part 2 (H3): the automatic sign-in key core (made once, stored only as a hash, capped, refused for
  *          every unusable case, never a sign-in token).
+ *  Part 3 (H5): the five actions, every row of the status table, the shared sign-in survives a swap,
+ *          the owner's rule (a signed-out or run-out install cannot sign itself back in), api.php wiring.
  *
  *   IHYMNS_TEST_DSN="host=127.0.0.1;port=3307;user=root;pass=" php tests/php/test-device-signin-core.php
  *
@@ -29,6 +31,7 @@ $_SERVER['SCRIPT_FILENAME'] = 'test';
 require_once $web . '/includes/api_tokens.php';
 require_once $web . '/includes/apns.php';
 require_once $web . '/includes/account_enrol_keys.php';
+require_once $web . '/includes/device_signin.php';
 require_once $repo . '/tests/php/lib/php_source_units.php';
 
 $fail = 0;
@@ -239,6 +242,239 @@ sort($naming);
 $notCore = fn($n) => !str_starts_with($n, 'manage/setup') && !str_starts_with($n, 'manage/includes/migration') && !str_starts_with($n, 'includes/account_export') && !str_starts_with($n, 'includes/account_lifecycle');
 chk('the key table is named in code only by its core (the migration list, export and erasure maps excluded), listing: ' . implode(', ', $naming),
     array_values(array_filter($naming, $notCore)) === ['includes/account_enrol_keys.php']);
+
+
+/* ====================================================================== part 3 (H5) */
+echo "part 3 (H5): the actions\n";
+$db->query('DELETE FROM tblApiTokens'); $db->query('DELETE FROM tblAccountEnrolKeys'); $db->query('DELETE FROM tblApnsTokens');
+$u1 = ['Id' => 1]; $u2 = ['Id' => 2];
+$live = fn(int $u) => (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE UserId = $u AND ExpiresAt > UTC_TIMESTAMP()")->fetch_row()[0];
+$rowOf = fn(string $raw) => $db->query("SELECT * FROM tblApiTokens WHERE Token = '" . hash('sha256', $raw) . "'")->fetch_assoc();
+$dev = fn(string $install, array $extra = []) => array_merge(['deviceInstallId' => $install, 'platform' => 'apple', 'deviceName' => 'iPhone', 'appVersion' => '1.2.3'], $extra);
+
+/* --- enrol --- */
+$shared = apiTokenMint($db, 1, null, 'password');                     /* the shared older-app sign-in: no install id, no platform */
+$sharedHash = hash('sha256', $shared);
+$e1 = deviceSigninEnrol($db, $u1, $sharedHash, $dev('install-ENROL-0001'));
+chk('enrol 200: a new sign-in, a device id, and (by default) an automatic sign-in key', $e1['status'] === 200 && preg_match('/^[a-f0-9]{64}$/', (string)($e1['body']['token'] ?? '')) === 1 && strlen((string)($e1['body']['device']['id'] ?? '')) === 16 && accountEnrolKeyShapeOk($e1['body']['enrolKey'] ?? null) && isset($e1['body']['enrolKeyExpiresAt']), json_encode($e1['body']));
+$r1 = $rowOf($e1['body']['token']);
+chk('the new sign-in is tied to the install, how-made is "enrol", and carries the platform and name', $r1['DeviceInstallId'] === 'install-ENROL-0001' && $r1['IssuedVia'] === 'enrol' && $r1['Platform'] === 'apple' && $r1['DeviceName'] === 'iPhone');
+chk('the shared sign-in STILL works after the swap (older app copies keep working)', $rowOf($shared) !== null && strtotime($rowOf($shared)['ExpiresAt'] . ' UTC') > time() && $live(1) === 2);
+chk('the key is stored only as a hash', (int)$db->query('SELECT COUNT(*) FROM tblAccountEnrolKeys WHERE KeyHash = \'' . hash('sha256', $e1['body']['enrolKey']) . '\'')->fetch_row()[0] === 1);
+$eNoKey = deviceSigninEnrol($db, $u1, $sharedHash, $dev('install-ENROL-0002') + ['createEnrolKey' => false]);
+chk('createEnrolKey:false gives a sign-in and no key', $eNoKey['status'] === 200 && !isset($eNoKey['body']['enrolKey']));
+chk('400 invalid_install_id (missing, short, wrong type)', deviceSigninEnrol($db, $u1, $sharedHash, ['platform' => 'apple'])['body']['reason'] === 'invalid_install_id' && deviceSigninEnrol($db, $u1, $sharedHash, $dev('short'))['status'] === 400 && deviceSigninEnrol($db, $u1, $sharedHash, $dev('x') + ['deviceInstallId' => 123456789])['status'] === 400);
+chk('400 invalid_platform (missing, web, nonsense)', deviceSigninEnrol($db, $u1, $sharedHash, ['deviceInstallId' => 'install-ENROL-0003'])['body']['reason'] === 'invalid_platform' && deviceSigninEnrol($db, $u1, $sharedHash, $dev('install-ENROL-0003', ['platform' => 'web']))['body']['reason'] === 'invalid_platform' && deviceSigninEnrol($db, $u1, $sharedHash, $dev('install-ENROL-0003', ['platform' => 'toaster']))['status'] === 400);
+$ownHash = hash('sha256', $e1['body']['token']);
+$again = deviceSigninEnrol($db, $u1, $ownHash, $dev('install-ENROL-0001'));
+chk('409 already_enrolled: a device that already has its own sign-in asks again', $again['status'] === 409 && $again['body']['reason'] === 'already_enrolled');
+$mis = deviceSigninEnrol($db, $u1, $ownHash, $dev('install-OTHER-0009'));
+chk('403 install_mismatch: a token for one install may not make a token for another', $mis['status'] === 403 && $mis['body']['reason'] === 'install_mismatch');
+$webTok = apiTokenMint($db, 1, ['platform' => 'web', 'deviceName' => 'Chrome'], 'password');
+$xs  = apiTokenMint($db, 1, null, 'cross_surface');
+chk('403 not_a_shared_app_sign_in: a browser sign-in and the admin cross-surface sign-in cannot be swapped',
+    deviceSigninEnrol($db, $u1, hash('sha256', $webTok), $dev('install-ENROL-0004'))['body']['reason'] === 'not_a_shared_app_sign_in'
+    && deviceSigninEnrol($db, $u1, hash('sha256', $xs), $dev('install-ENROL-0004'))['status'] === 403);
+$liveBefore = $live(1);
+chk('401 when the caller\'s sign-in is not live', deviceSigninEnrol($db, $u1, hash('sha256', 'not-a-live-token'), $dev('install-ENROL-0005'))['status'] === 401);
+chk('a refused enrol makes no sign-in', $live(1) === $liveBefore);
+
+/* the owner's rule: a signed-out install may not be enrolled again */
+apiTokenSignOutHashes($db, 1, [$ownHash]);
+$so = deviceSigninEnrol($db, $u1, $sharedHash, $dev('install-ENROL-0001'));
+chk('403 install_signed_out: an install that was signed out cannot be enrolled again from the shared sign-in', $so['status'] === 403 && $so['body']['reason'] === 'install_signed_out');
+
+/* --- key create --- */
+$d1 = apiTokenMint($db, 1, $dev('install-KEYS-0001'), 'password');
+$kc = deviceSigninKeyCreate($db, $u1, hash('sha256', $d1), []);
+chk('key create 200 from a device\'s own sign-in: the key (once) and its end date', $kc['status'] === 200 && accountEnrolKeyShapeOk($kc['body']['enrolKey'] ?? null) && isset($kc['body']['expiresAt']));
+$kcShared = deviceSigninKeyCreate($db, $u1, $sharedHash, []);
+chk('403 device_token_required: the shared sign-in cannot make a key', $kcShared['status'] === 403 && $kcShared['body']['reason'] === 'device_token_required');
+$dAnd = apiTokenMint($db, 1, $dev('install-KEYS-0002', ['platform' => 'android']), 'password');
+$kcAnd = deviceSigninKeyCreate($db, $u1, hash('sha256', $dAnd), []);
+chk('403 enrol_key_platform_unsupported: only Apple holds keys today', $kcAnd['status'] === 403 && $kcAnd['body']['reason'] === 'enrol_key_platform_unsupported');
+chk('401 for a dead sign-in', deviceSigninKeyCreate($db, $u1, hash('sha256', 'nope'), [])['status'] === 401);
+
+/* --- redeem --- */
+$key = $kc['body']['enrolKey'];
+$expBefore = $db->query('SELECT ExpiresAt FROM tblAccountEnrolKeys WHERE KeyHash = \'' . hash('sha256', $key) . '\'')->fetch_row()[0];
+$rd = deviceSigninRedeem($db, $dev('install-REDEEM-001') + ['enrolKey' => $key]);
+chk('redeem 200: a new sign-in for the person the key belongs to, and NO new key', $rd['status'] === 200 && $rd['userId'] === 1 && preg_match('/^[a-f0-9]{64}$/', (string)$rd['body']['token']) === 1 && !isset($rd['body']['enrolKey']), json_encode($rd['body']));
+$rr = $rowOf($rd['body']['token']);
+chk('the redeemed sign-in is tied to the install and marked "enrol"', $rr['DeviceInstallId'] === 'install-REDEEM-001' && $rr['IssuedVia'] === 'enrol' && $rr['UserId'] == 1);
+$rd2 = deviceSigninRedeem($db, $dev('install-REDEEM-001') + ['enrolKey' => $key]);
+chk('redeeming again on the SAME install replaces its sign-in (one row for the install)', $rd2['status'] === 200 && (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE UserId = 1 AND DeviceInstallId = 'install-REDEEM-001' AND ExpiresAt > UTC_TIMESTAMP()")->fetch_row()[0] === 1 && $rowOf($rd['body']['token']) === null);
+chk('a key redeemed for person 1 never gives a sign-in to person 2', (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE UserId = 2")->fetch_row()[0] === 0);
+chk('400 malformed_enrol_key (wrong shape, a plain bearer token, empty)', deviceSigninRedeem($db, $dev('install-REDEEM-002') + ['enrolKey' => 'ihek1_short'])['body']['reason'] === 'malformed_enrol_key' && deviceSigninRedeem($db, $dev('install-REDEEM-002') + ['enrolKey' => $shared])['status'] === 400 && deviceSigninRedeem($db, $dev('install-REDEEM-002'))['status'] === 400);
+chk('400 invalid_install_id and invalid_platform on redeem', deviceSigninRedeem($db, ['enrolKey' => $key, 'platform' => 'apple'])['body']['reason'] === 'invalid_install_id' && deviceSigninRedeem($db, ['enrolKey' => $key, 'deviceInstallId' => 'install-REDEEM-002'])['body']['reason'] === 'invalid_platform' && deviceSigninRedeem($db, $dev('install-REDEEM-002', ['platform' => 'web']) + ['enrolKey' => $key])['status'] === 400);
+$one = 'enrol_key_invalid';
+$bad = [];
+$bad['unknown']   = deviceSigninRedeem($db, $dev('install-REDEEM-003') + ['enrolKey' => 'ihek1_' . str_repeat('1', 64)]);
+$bad['platform']  = deviceSigninRedeem($db, $dev('install-REDEEM-003', ['platform' => 'android']) + ['enrolKey' => $key]);
+$hk = hash('sha256', $key);
+$db->query("UPDATE tblAccountEnrolKeys SET ExpiresAt = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY) WHERE KeyHash = '$hk'");
+$bad['expired']   = deviceSigninRedeem($db, $dev('install-REDEEM-003') + ['enrolKey' => $key]);
+$db->query("UPDATE tblAccountEnrolKeys SET ExpiresAt = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 100 DAY), RevokedAt = UTC_TIMESTAMP() WHERE KeyHash = '$hk'");
+$bad['cancelled'] = deviceSigninRedeem($db, $dev('install-REDEEM-003') + ['enrolKey' => $key]);
+$db->query("UPDATE tblAccountEnrolKeys SET RevokedAt = NULL WHERE KeyHash = '$hk'");
+$db->query('UPDATE tblUsers SET IsActive = 0 WHERE Id = 1');
+$bad['inactive']  = deviceSigninRedeem($db, $dev('install-REDEEM-003') + ['enrolKey' => $key]);
+$db->query('UPDATE tblUsers SET IsActive = 1 WHERE Id = 1');
+$allSame = true; foreach ($bad as $n => $b) { if ($b['status'] !== 401 || $b['body'] !== $bad['unknown']['body'] || ($b['body']['reason'] ?? '') !== $one) { $allSame = false; echo "      ($n answered " . json_encode($b) . ")\n"; } }
+chk('401 enrol_key_invalid is ONE answer for unknown, wrong platform, expired, cancelled and switched-off account (identical bodies)', $allSame && count($bad) === 5);
+chk('no refusal made a sign-in for the install it asked about', (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE DeviceInstallId = 'install-REDEEM-003'")->fetch_row()[0] === 0);
+
+/* the owner's rule on redeem */
+$key2 = deviceSigninKeyCreate($db, $u1, hash('sha256', $d1), [])['body']['enrolKey'];
+$hk2 = hash('sha256', $key2);
+$rdA = deviceSigninRedeem($db, $dev('install-DEAD-0001') + ['enrolKey' => $key2]);
+chk('a fresh install redeems fine', $rdA['status'] === 200);
+$exp1 = $db->query("SELECT ExpiresAt FROM tblAccountEnrolKeys WHERE KeyHash = '$hk2'")->fetch_row()[0];
+apiTokenSignOutHashes($db, 1, [hash('sha256', $rdA['body']['token'])]);
+$db->query("UPDATE tblAccountEnrolKeys SET ExpiresAt = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 7 DAY) WHERE KeyHash = '$hk2'");
+$expMid = $db->query("SELECT ExpiresAt FROM tblAccountEnrolKeys WHERE KeyHash = '$hk2'")->fetch_row()[0];
+$deadTry = deviceSigninRedeem($db, $dev('install-DEAD-0001') + ['enrolKey' => $key2]);
+chk('an install that was SIGNED OUT cannot sign itself back in with the key: the same one 401 enrol_key_invalid', $deadTry['status'] === 401 && $deadTry['body'] === $bad['unknown']['body']);
+chk('...and the refusal did not extend the key', $db->query("SELECT ExpiresAt FROM tblAccountEnrolKeys WHERE KeyHash = '$hk2'")->fetch_row()[0] === $expMid);
+/* 30 days unused: the row simply ran out (the ended stamp is what the sweep leaves) */
+$ranOut = apiTokenMint($db, 1, $dev('install-DEAD-0002'), 'password');
+$db->query("UPDATE tblApiTokens SET ExpiresAt = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 DAY) WHERE Token = '" . hash('sha256', $ranOut) . "'");
+chk('an install whose sign-in RAN OUT (30 days unused) is refused the same way', deviceSigninRedeem($db, $dev('install-DEAD-0002') + ['enrolKey' => $key2])['status'] === 401);
+chk('a different install, and a different person\'s ended install, are not blocked by it', deviceSigninRedeem($db, $dev('install-DEAD-0003') + ['enrolKey' => $key2])['status'] === 200);
+$db->query("UPDATE tblApiTokens SET UserId = 2 WHERE Token = '" . hash('sha256', $ranOut) . "'");
+chk('...(person 2\'s ended row for that install does not stop person 1)', deviceSigninRedeem($db, $dev('install-DEAD-0002') + ['enrolKey' => $key2])['status'] === 200);
+/* a manual sign-in clears the block */
+$dead4 = apiTokenMint($db, 1, $dev('install-DEAD-0004'), 'password');
+apiTokenSignOutHashes($db, 1, [hash('sha256', $dead4)]);
+$blocked = deviceSigninRedeem($db, $dev('install-DEAD-0004') + ['enrolKey' => $key2])['status'] === 401;
+apiTokenMint($db, 1, $dev('install-DEAD-0004'), 'password');   /* the person signs in by hand on that install */
+chk('a manual sign-in on a signed-out install clears the block (it replaced the marker)', $blocked && !apiTokenInstallSignInEnded($db, 1, 'install-DEAD-0004') && deviceSigninRedeem($db, $dev('install-DEAD-0004') + ['enrolKey' => $key2])['status'] === 200);
+
+/* rate limit hooks */
+$expPre = $db->query("SELECT ExpiresAt FROM tblAccountEnrolKeys WHERE KeyHash = '$hk2'")->fetch_row()[0];
+$denied = deviceSigninRedeem($db, $dev('install-RATE-00001') + ['enrolKey' => $key2], ['allowPerson' => fn(int $u) => false]);
+chk('429 when the per-person limit says no, with no sign-in made and the key not extended', $denied['status'] === 429 && (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE DeviceInstallId = 'install-RATE-00001'")->fetch_row()[0] === 0 && $db->query("SELECT ExpiresAt FROM tblAccountEnrolKeys WHERE KeyHash = '$hk2'")->fetch_row()[0] === $expPre);
+$recorded = [];
+deviceSigninRedeem($db, $dev('install-RATE-00002') + ['enrolKey' => $key2], ['allowPerson' => fn(int $u) => true, 'recordPerson' => function (int $u) use (&$recorded) { $recorded[] = $u; }]);
+chk('the per-person hit is recorded only for a sign-in actually made, for the right person', $recorded === [1]);
+
+/* a password reset kills the key (the one door) */
+$key3 = deviceSigninKeyCreate($db, $u1, hash('sha256', $d1), [])['body']['enrolKey'];
+chk('before the reset the key works', deviceSigninRedeem($db, $dev('install-RESET-0001') + ['enrolKey' => $key3])['status'] === 200);
+apiTokenRevokeAllForUser($db, 1, null, 'password_reset');
+chk('after a password reset (all sign-ins ended) the key stops working', deviceSigninRedeem($db, $dev('install-RESET-0002') + ['enrolKey' => $key3])['status'] === 401 && deviceSigninRedeem($db, $dev('install-RESET-0002') + ['enrolKey' => $key2])['status'] === 401);
+chk('the reset left no live sign-in for her', $live(1) === 0);
+
+/* revoke keys, sign out everywhere */
+$kk = deviceSigninKeyCreate($db, $u2, hash('sha256', apiTokenMint($db, 2, $dev('install-TWO-00001'), 'password')), []);
+$rv = deviceSigninKeysRevoke($db, 2);
+chk('"turn off automatic sign-in" cancels the person\'s keys and says how many', $rv['status'] === 200 && $rv['body'] === ['revoked' => 1] && deviceSigninRedeem($db, $dev('install-TWO-00002') + ['enrolKey' => $kk['body']['enrolKey']])['status'] === 401);
+$so1 = hash('sha256', apiTokenMint($db, 2, $dev('install-TWO-00003'), 'password'));
+$so2 = hash('sha256', apiTokenMint($db, 2, null, 'password'));
+accountEnrolKeyMint($db, 2, 'apple');
+$se = deviceSigninSignOutEverywhere($db, 2, $so1, true);
+chk('sign out everywhere keeping the current one: others ended, keys cancelled, the caller still live', $se['status'] === 200 && $se['body']['keptCurrent'] === true && $se['body']['enrolKeysRevoked'] === 1 && $se['body']['tokensRevoked'] >= 2 && (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE Token = '$so1' AND ExpiresAt > UTC_TIMESTAMP()")->fetch_row()[0] === 1 && $live(2) === 1, json_encode($se['body']));
+$se2 = deviceSigninSignOutEverywhere($db, 2, $so1, false);
+chk('sign out everywhere keeping none ends the caller too', $se2['body']['keptCurrent'] === false && $live(2) === 0);
+
+/* not ready (a database without the foundation objects) */
+$db2name = 'ihymns_t3a_empty';
+$db->query("DROP DATABASE IF EXISTS `{$db2name}`");
+$db->query("CREATE DATABASE `{$db2name}`");
+$empty = new mysqli($hh, $us, $pw, $db2name, $pt);
+chk('409 device_signin_not_ready on a database without the foundation objects (enrol, key create, redeem)',
+    deviceSigninEnrol($empty, $u1, $sharedHash, $dev('install-NOTREADY-1'))['body']['reason'] === 'device_signin_not_ready'
+    && deviceSigninKeyCreate($empty, $u1, $sharedHash, [])['status'] === 409
+    && deviceSigninRedeem($empty, $dev('install-NOTREADY-1') + ['enrolKey' => $key])['status'] === 409);
+$empty->close();
+$db->query("DROP DATABASE IF EXISTS `{$db2name}`");
+
+/* never the cookie: the header-only reader */
+unset($_SERVER['HTTP_AUTHORIZATION'], $_SERVER['REDIRECT_HTTP_AUTHORIZATION']);
+$_COOKIE['ihymns_auth'] = str_repeat('a', 64);
+chk('apiTokenBearerHeaderValue() ignores the browser cookie', apiTokenBearerHeaderValue() === null);
+$_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . str_repeat('b', 64);
+chk('...reads a well-formed header, and refuses a key or junk', apiTokenBearerHeaderValue() === str_repeat('b', 64));
+$_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ihek1_' . str_repeat('b', 64);
+chk('...a key in the header is not a bearer token', apiTokenBearerHeaderValue() === null);
+unset($_SERVER['HTTP_AUTHORIZATION'], $_COOKIE['ihymns_auth']);
+
+/* api.php wiring, derived from the tree */
+$apiUnits2 = phpSourceUnits(code($web . '/api.php'));
+$cases = ['auth_device_enrol', 'auth_enrol_key_create', 'auth_enrol_key_redeem', 'auth_enrol_keys_revoke', 'auth_signout_everywhere'];
+$wire = [];
+foreach ($cases as $c) { $wire[$c] = $apiUnits2["case '$c'"] ?? null; }
+chk('all five cases exist in api.php', count(array_filter($wire)) === 5);
+$wiring = [];
+foreach ($wire as $c => $u) {
+    if ($u === null) { continue; }
+    $codeV = $u['code']; $strV = implode(' ', $u['strings']);
+    if (!str_contains($codeV, 'validateCsrfRequest(null)')) { $wiring[] = "$c: no validateCsrfRequest(null)"; }
+    if (!str_contains($codeV, "'POST'")) { $wiring[] = "$c: no POST check"; }
+    if (str_contains($codeV, 'setAuthTokenCookie(')) { $wiring[] = "$c: sets the cookie"; }
+    if (!str_contains($codeV, 'checkRateLimit(') || !str_contains($codeV, 'recordRateLimitHit(')) { $wiring[] = "$c: rate limit not paired"; }
+    if (!str_contains($codeV, 'logActivity(')) { $wiring[] = "$c: no log line"; }
+}
+chk('every action checks POST, the same-origin header, has a paired rate limit, logs, and never sets the sign-in cookie', $wiring === [], implode('; ', $wiring));
+foreach (['auth_device_enrol', 'auth_enrol_key_create'] as $c) {
+    $cv = $wire[$c]['code'] ?? '';
+    $pH = strpos($cv, 'apiTokenBearerHeaderValue('); $pA = strpos($cv, 'getAuthenticatedUser(');
+    chk("$c requires the Authorization HEADER (answers 400 before it even looks at a cookie sign-in)", $pH !== false && $pA !== false && $pH < $pA && str_contains(implode(' ', $wire[$c]['strings']), 'bearer_required'));
+}
+chk('auth_enrol_key_redeem asks for no sign-in', !str_contains($wire['auth_enrol_key_redeem']['code'] ?? '', 'getAuthenticatedUser('));
+chk('enrol, key create and redeem ask the per-site switch and the readiness check; revoke keys and sign out everywhere never do (signing out is never switched off)',
+    str_contains($wire['auth_device_enrol']['code'], 'deviceSigninEnabledHere()') && str_contains($wire['auth_device_enrol']['code'], 'deviceSigninActiveHere(')
+    && str_contains($wire['auth_enrol_key_create']['code'], 'deviceSigninEnabledHere()') && str_contains($wire['auth_enrol_key_redeem']['code'], 'deviceSigninEnabledHere()')
+    && !str_contains($wire['auth_enrol_keys_revoke']['code'], 'deviceSigninEnabledHere') && !str_contains($wire['auth_signout_everywhere']['code'], 'deviceSigninEnabledHere'));
+$leak = [];
+foreach ($wire as $c => $u) {
+    if ($u === null) { continue; }
+    if (preg_match_all('/logActivity\(([^;]*);/s', $u['code'], $mm)) {
+        foreach ($mm[1] as $args) {
+            $a = str_replace("isset(\$out['enrolKey'])", '', $args);
+            if (preg_match('/\$dsHeader|\$token\b|\[.token.\]|\[.enrolKey.\]|\$key\b/', $a)) { $leak[] = $c; }
+        }
+    }
+}
+chk('no log line carries a token or a key (only a short device tag, a count or a reason word)', $leak === [], implode(', ', $leak));
+
+/* ---- the housekeeping sweep keeps a device's "signed out" note (owner's rule needs it) ---- */
+echo "part 3b (H5/H7): the sweep\n";
+$db->query("DELETE FROM tblApiTokens");
+$db->query("DELETE FROM tblAccountEnrolKeys");
+$ago = fn(int $days) => gmdate('Y-m-d H:i:s', time() - $days * 86400);
+$sh = fn(string $t) => hash('sha256', $t);
+foreach ([
+    ['sw-shared-old',   null,                 $ago(1)],     /* shared sign-in, expired yesterday: goes */
+    ['sw-shared-live',  null,                 gmdate('Y-m-d H:i:s', time() + 86400)],
+    ['sw-dev-recent',   'install-SWEEP-0001', $ago(40)],    /* device sign-in ended 40 days ago: kept (the note) */
+    ['sw-dev-ancient',  'install-SWEEP-0002', $ago(200)],   /* ended 200 days ago: goes */
+] as [$t, $inst, $exp]) {
+    $h = $sh($t);
+    $st = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt, DeviceInstallId) VALUES (?, 1, ?, ?)');
+    $st->bind_param('sss', $h, $exp, $inst);
+    $st->execute();
+}
+$left = array_column($db->query("SELECT Token FROM tblApiTokens")->fetch_all(MYSQLI_ASSOC), 'Token');
+$n = apiTokenSweepExpired($db);
+$after = array_column($db->query("SELECT Token FROM tblApiTokens")->fetch_all(MYSQLI_ASSOC), 'Token');
+chk('the sweep deletes an expired shared sign-in and a device note older than the keep window, and reports 2', $n === 2 && !in_array($sh('sw-shared-old'), $after, true) && !in_array($sh('sw-dev-ancient'), $after, true));
+chk('...but keeps a live sign-in and a recent device note', in_array($sh('sw-shared-live'), $after, true) && in_array($sh('sw-dev-recent'), $after, true));
+chk('...so an install that ran out 40 days ago still cannot redeem its key', apiTokenInstallSignInEnded($db, 1, 'install-SWEEP-0001'));
+$k = accountEnrolKeyMint($db, 1, 'apple');   /* live */
+$k2 = accountEnrolKeyMint($db, 1, 'apple');
+$db->query("UPDATE tblAccountEnrolKeys SET ExpiresAt = '" . $ago(31) . "' WHERE KeyHash = '" . accountEnrolKeyHash($k['key']) . "'");
+$k3 = accountEnrolKeyMint($db, 1, 'apple');
+$db->query("UPDATE tblAccountEnrolKeys SET RevokedAt = '" . $ago(31) . "' WHERE KeyHash = '" . accountEnrolKeyHash($k3['key']) . "'");
+$k4 = accountEnrolKeyMint($db, 1, 'apple');
+$db->query("UPDATE tblAccountEnrolKeys SET RevokedAt = '" . $ago(2) . "' WHERE KeyHash = '" . accountEnrolKeyHash($k4['key']) . "'");
+chk('the key sweep deletes keys ended over 30 days ago (ran out or cancelled) and nothing else', accountEnrolKeysSweep($db) === 2
+    && (int)$db->query('SELECT COUNT(*) FROM tblAccountEnrolKeys')->fetch_row()[0] === 2);
+$cleanup = code($repo . '/appWeb/.sql/cleanup.php');
+chk('the standalone cleanup script uses the same keep windows and the same rule (180 days for a device note, 30 for keys)',
+    str_contains($cleanup, '180 * 86400') && API_TOKEN_ENDED_KEEP_DAYS === 180 && str_contains($cleanup, 'DeviceInstallId IS NOT NULL AND ExpiresAt < ?')
+    && str_contains($cleanup, 'time() - 30 * 86400') && str_contains(code($web . '/includes/account_enrol_keys.php'), 'time() - 30 * 86400'));
+chk('the admin sweep action in api.php goes through the shared sweep, not a bare delete', str_contains($api, 'apiTokenSweepExpired($db)') && !preg_match('/DELETE FROM tblApiTokens WHERE ExpiresAt/', $api));
 
 $db->query("DROP DATABASE IF EXISTS `{$name}`");
 echo $fail === 0 ? "\nALL PASS\n" : "\n$fail FAILED\n";

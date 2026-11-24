@@ -82,7 +82,9 @@ foreach ($it as $f) {
     foreach (phpSourceUnits($src) as $unit => $u) {
         foreach ($u['sqlOnly'] as $q) {
             if (isBulkTokenWrite($q)) { $bulk[] = "$rel#$unit"; }
-            if (isKeyTableWrite($q))  { $keyWrites[] = "$rel#$unit"; }
+            /* The standalone cleanup cron cannot load the core (rule #41), so its one housekeeping DELETE of
+               long-ended keys is the single named exception; any other kind of write there still counts. */
+            if (isKeyTableWrite($q) && !($rel === 'appWeb/.sql/cleanup.php' && preg_match('/^\s*DELETE\s+FROM\s+tblAccountEnrolKeys\s+WHERE\s+ExpiresAt\s*<\s*\?\s+OR\s+\(RevokedAt\s+IS\s+NOT\s+NULL\s+AND\s+RevokedAt\s*<\s*\?\)\s*$/i', $q))) { $keyWrites[] = "$rel#$unit"; }
         }
         if ($unit !== 'apiTokenRevokeAllForUser' && $unit !== '(file scope)' && str_contains($u['code'], 'apiTokenRevokeAllForUser(')) { $doorCallers[] = "$rel#$unit"; }
     }

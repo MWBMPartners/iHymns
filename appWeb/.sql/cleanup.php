@@ -93,15 +93,40 @@ $totalDeleted = 0;
 
 /* 1. Expired API tokens */
 try {
-    $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE ExpiresAt < ?');
-    $stmt->bind_param('s', $now);
-    $stmt->execute();
+    /* PR 3: a sign-in that belongs to one device (has a DeviceInstallId) is kept for 180 days after it
+       ends, as the "this device was signed out" note. 180 = API_TOKEN_ENDED_KEEP_DAYS in
+       includes/api_tokens.php (same duplication reason as the QR figure below: this script cannot
+       load that file, rule #41). A database without the column falls back to the plain sweep. */
+    try {
+        $oldest = gmdate('Y-m-d H:i:s', time() - 180 * 86400);
+        $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE (DeviceInstallId IS NULL AND ExpiresAt < ?) OR (DeviceInstallId IS NOT NULL AND ExpiresAt < ?)');
+        $stmt->bind_param('ss', $now, $oldest);
+        $stmt->execute();
+    } catch (\mysqli_sql_exception $e) {
+        $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE ExpiresAt < ?');
+        $stmt->bind_param('s', $now);
+        $stmt->execute();
+    }
     $count = $stmt->affected_rows;
     echo "tblApiTokens:          $count expired token(s) deleted\n";
     $totalDeleted += $count;
     $stmt->close();
 } catch (\mysqli_sql_exception $e) {
     echo "tblApiTokens:          ERROR — " . $e->getMessage() . "\n";
+}
+
+/* 1b. Automatic sign-in keys that ended (ran out or were cancelled) over 30 days ago (PR 3). */
+try {
+    $keyCut = gmdate('Y-m-d H:i:s', time() - 30 * 86400);
+    $stmt = $db->prepare('DELETE FROM tblAccountEnrolKeys WHERE ExpiresAt < ? OR (RevokedAt IS NOT NULL AND RevokedAt < ?)');
+    $stmt->bind_param('ss', $keyCut, $keyCut);
+    $stmt->execute();
+    $count = $stmt->affected_rows;
+    echo "tblAccountEnrolKeys:   $count ended key(s) deleted\n";
+    $totalDeleted += $count;
+    $stmt->close();
+} catch (\mysqli_sql_exception $e) {
+    echo "tblAccountEnrolKeys:   skipped (table not there yet)\n";
 }
 
 /* 2. Expired or used email login tokens */

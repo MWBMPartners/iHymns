@@ -20,8 +20,8 @@ declare(strict_types=1);
  *     row. The only one allowed is inside apiTokenMint() in includes/api_tokens.php.
  *  2. Every call to apiTokenMint() is found and must pass a literal "how it was
  *     made" word from the one vocabulary; the vocabulary words in use are
- *     derived, and the one still reserved for step H1 ("enrol") is the only
- *     one allowed to be unused.
+ *     derived, and every word must be used by some route ("enrol" is used by the
+ *     device sign-in core since PR 3 step H5).
  *  3. The maker is CALLED against a pretend database: 64 hex characters, only the
  *     hash stored, 30 days, the new columns written only when they exist, an
  *     unknown word stored as NULL, details written only when given.
@@ -79,7 +79,15 @@ chk('and EVERY insert in that file sits inside apiTokenMint()', count(array_filt
 echo "2. every sign-in route calls the maker with a word from the vocabulary\n";
 $used = [];
 $calls = 0;
-foreach ([$web . '/api.php', $web . '/manage/includes/auth.php'] as $file) {
+/* The files are found from the tree (rule #34), not from a typed list: every .php under appWeb/ that names the maker. */
+$mintFiles = [];
+foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($repo . '/appWeb', FilesystemIterator::SKIP_DOTS)) as $f) {
+    $pth = $f->getPathname();
+    if (!$f->isFile() || substr($pth, -4) !== '.php' || str_contains($pth, 'private_html/lib/')) { continue; }
+    if (strpos((string)file_get_contents($pth), 'apiTokenMint(') !== false) { $mintFiles[] = $pth; }
+}
+chk('the tree scan found the known callers (api.php, the login helpers, the device sign-in core)', count(array_filter($mintFiles, fn($m) => preg_match('#/(api|auth|device_signin)\.php$#', $m))) >= 3, implode(', ', array_map('basename', $mintFiles)));
+foreach ($mintFiles as $file) {
     $src = (string)file_get_contents($file);
     $code = '';
     foreach (token_get_all($src) as $t) {
@@ -99,7 +107,6 @@ foreach ([$web . '/api.php', $web . '/manage/includes/auth.php'] as $file) {
 }
 chk("the six sign-in routes were found ($calls calls)", $calls >= 6);
 foreach (API_TOKEN_ISSUED_VIA as $word) {
-    if ($word === 'enrol') { continue; }   /* reserved for step H5 (flipped there) */
     chk("the word '$word' is used by a route (or the vocabulary has a dead word)", isset($used[$word]));
 }
 

@@ -252,3 +252,22 @@ function accountEnrolKeysSummary(\mysqli $db, int $userId): array
     $st->close();
     return $out;
 }
+
+/**
+ * Housekeeping: delete keys that ended (ran out, or were cancelled) more than 30 days ago. A live
+ * key is never touched. Returns how many rows went. (The standalone cleanup script mirrors this
+ * SQL because it cannot load this file; the device sign-in test checks they agree.)
+ */
+function accountEnrolKeysSweep(\mysqli $db): int
+{
+    if (!accountEnrolKeysReady($db)) {
+        return 0;
+    }
+    $cut = gmdate('Y-m-d H:i:s', time() - 30 * 86400);
+    $st = $db->prepare('DELETE FROM tblAccountEnrolKeys WHERE ExpiresAt < ? OR (RevokedAt IS NOT NULL AND RevokedAt < ?)');
+    $st->bind_param('ss', $cut, $cut);
+    $st->execute();
+    $n = max(0, $st->affected_rows);
+    $st->close();
+    return $n;
+}

@@ -126,7 +126,7 @@ function deviceSigninActiveHere(?\mysqli $db = null): bool
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'api_tokens.php';
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'account_enrol_keys.php';
         $db = $db ?? getDbMysqli();
-        return apiTokensFoundationColumnsExist($db) && accountEnrolKeysReady($db);
+        return apiTokensFoundationColumnsExist($db) && apiTokensDeviceMetaColumnsExist($db) && accountEnrolKeysReady($db);
     } catch (\Throwable $_e) {
         return false;
     }
