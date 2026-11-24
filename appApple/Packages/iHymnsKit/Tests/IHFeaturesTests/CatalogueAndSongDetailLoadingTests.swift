@@ -243,8 +243,13 @@ struct CatalogueAndSongDetailLoadingTests {
         try await MockTransportLock.shared.withLock { () async throws in
             let fixture = try ContractFixtures.songDetail()
             let callCount = LockedCounter()
-            MockURLProtocol.requestHandler = { _ in
-                callCount.increment()
+            MockURLProtocol.requestHandler = { request in
+                // The app now also reports each song view (song_view, sent in the
+                // background, signed in or not). That report is not a fetch of the
+                // song, and it can land after the counts are read, so it is left
+                // out of the count: this test is about the three FETCHES only.
+                let isViewReport = request.url?.query?.contains("song_view") ?? false
+                if !isViewReport { callCount.increment() }
                 return (Self.response(status: 200), fixture)
             }
             defer { MockURLProtocol.requestHandler = nil }
