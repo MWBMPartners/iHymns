@@ -256,6 +256,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    call sites — never a per-handler copy of the decision. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_sync.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_sync_gate.php'; /* PR 2a: the per-site switch for the new account behaviour (off by default) */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_signin_gate.php'; /* PR 3 H2: the per-site switch for one sign-in per device (off by default) */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_history_provenance.php'; /* PR 2a: what a view is stamped with, and which views count */
 /* #1671 F5 — the ONE namespaced user-preference store. `user_settings` used to
    be a whole-blob replace, which cannot survive a second product sharing this
@@ -3901,10 +3902,13 @@ if ($action !== null) {
                 $signedOutPlatform = $authedUser
                     ? apiTokenSessionPlatform($db, (int)$authedUser['Id'], $tokenHash, false)
                     : null;
-                $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE Token = ?');
-                $stmt->bind_param('s', $tokenHash);
-                $stmt->execute();
-                $stmt->close();
+                /* PR 3 H4/H5: through the door that ends a sign-in. A device's own sign-in (one with an
+                   install id) is kept as an ended marker, so the server can refuse to sign that install
+                   back in by its automatic key; a shared/older-app sign-in is deleted as before. A token
+                   that no longer names a live person has nothing to end (the sweep removes the row). */
+                if ($authedUser) {
+                    apiTokenSignOutHashes($db, (int)$authedUser['Id'], [$tokenHash]);
+                }
 
                 /* #1429 Audit-B F3b (strategy §3.2 "push tokens deleted on
                    sign-out/410") — a signed-out user's APNs/Live Activity
@@ -3928,7 +3932,7 @@ if ($action !== null) {
                             (int)$authedUser['Id'],
                             [$tokenHash],
                             apiTokenSessionOwnsApplePush($signedOutPlatform),
-                            profileSyncEnabledHere()
+                            apnsPerSessionHere()   /* H2: either switch (device sign-in OR the account sync) ties push to one sign-in */
                         );
                     } catch (\Throwable $e) {
                         error_log('[api/auth_logout] apns token cleanup failed: ' . $e->getMessage());
@@ -5548,7 +5552,7 @@ if ($action !== null) {
                way as auth_login/auth_apple above (never required, best-
                effort, never blocks sign-in). */
             $deviceMeta = apiTokenDeviceMetaFromBody($body);
-            $loginResult = completeEmailLogin($verified['email'], $verified['userId'], $deviceMeta['deviceName'], $deviceMeta['platform'], $deviceMeta['appVersion']);
+            $loginResult = completeEmailLogin($verified['email'], $verified['userId'], $deviceMeta['deviceName'], $deviceMeta['platform'], $deviceMeta['appVersion'], $deviceMeta['deviceInstallId']);   /* H1: the install id travels with this sign-in too */
 
             /* Cross-subdomain auth cookie (#390) — completeEmailLogin()
                issues a 30-day token in tblApiTokens; mirror that lifetime
@@ -6170,7 +6174,7 @@ if ($action !== null) {
                 /* Graceful empty list (mirrors auth_providers_list's own
                    degrade-to-empty convention above) rather than an error
                    for a read-only lookup. */
-                sendJson(['devices' => []]);
+                sendJson(['devices' => [], 'enrolKeys' => []]);
                 break;
             }
 
@@ -6178,9 +6182,13 @@ if ($action !== null) {
             $currentHash  = $currentToken !== null ? hash('sha256', $currentToken) : '';
 
             $now = gmdate('Y-m-d H:i:s');
+            /* PR 3 H5: how each sign-in was made and whether it belongs to one device, when the
+               foundation columns exist. Never the install id itself. */
+            $dlFoundation = apiTokensFoundationColumnsExist($db);
             $stmt = $db->prepare(
-                'SELECT Token, DeviceName, Platform, AppVersion, LastSeenAt, CreatedAt, ExpiresAt
-                   FROM tblApiTokens WHERE UserId = ? AND ExpiresAt > ?
+                'SELECT Token, DeviceName, Platform, AppVersion, LastSeenAt, CreatedAt, ExpiresAt'
+                . ($dlFoundation ? ', IssuedVia, (DeviceInstallId IS NOT NULL) AS BoundToDevice' : '')
+                . ' FROM tblApiTokens WHERE UserId = ? AND ExpiresAt > ?
                   ORDER BY COALESCE(LastSeenAt, CreatedAt) DESC'
             );
             $stmt->bind_param('is', $userId, $now);
@@ -6199,10 +6207,164 @@ if ($action !== null) {
                     'createdAt'  => $row['CreatedAt'],
                     'expiresAt'  => $row['ExpiresAt'],
                     'isCurrent'  => ($currentHash !== '' && hash_equals($tokenHash, $currentHash)),
+                    'issuedVia'  => $row['IssuedVia'] ?? null,
+                    'boundToDevice' => isset($row['BoundToDevice']) ? ((int)$row['BoundToDevice'] === 1) : false,
                 ];
             }, $rows);
 
-            sendJson(['devices' => $devices]);
+            /* PR 3 H5: the person's live automatic sign-in keys (platform and dates only, never the key). */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'account_enrol_keys.php';
+            sendJson(['devices' => $devices, 'enrolKeys' => accountEnrolKeysSummary($db, $userId)]);
+            break;
+        }
+
+        /* =================================================================
+         * ONE SIGN-IN PER DEVICE (PR 3 step H5, epic #2180)
+         * Plan: .claude/account-profile-pr3-plan.md; rules live in
+         * includes/device_signin.php (these cases only check the request and
+         * answer with what that file returns). None of them ever sets a cookie.
+         * Status codes + `reason` words are the contract (rule #35); see the
+         * table in api-docs.yaml.
+         * ================================================================= */
+
+        /* A device holding the SHARED sign-in swaps it for its own (and, unless it says no, makes the
+           automatic sign-in key). The Authorization HEADER is required: a browser cookie must never
+           be able to mint an app token. */
+        case 'auth_device_enrol': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_signin.php';
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            if (!validateCsrfRequest(null)) { sendJson(['error' => 'Cross-origin request rejected.', 'reason' => 'csrf'], 403); break; }
+            $dsHeader = apiTokenBearerHeaderValue();
+            if ($dsHeader === null) { sendJson(['error' => 'A bearer sign-in header is required.', 'reason' => 'bearer_required'], 400); break; }
+            /* Security review finding 1: a request stamped by a browser can never be a native app asking for its own sign-in. */
+            if (deviceSigninRequestLooksLikeBrowser($_SERVER)) { $bx = deviceSigninBrowserRefusal(); sendJson($bx['body'], $bx['status']); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.', 'reason' => 'not_authenticated'], 401); break; }
+            $userId = (int)$authUser['Id'];
+            $db = getDbMysqli();
+            if (!deviceSigninEnabledHere()) { sendJson(deviceSigninDisabledBody(), 409); break; }
+            if (!deviceSigninActiveHere($db)) { sendJson(deviceSigninNotReadyBody(), 409); break; }
+            /* #1636 two-part rule: the check READS, the record WRITES, same per-person bucket. */
+            checkRateLimit('auth_device_enrol', '', 10, 3600, true, $userId);
+            recordRateLimitHit('auth_device_enrol', rateLimitKey('', $userId));
+            $ans = deviceSigninEnrol($db, $authUser, hash('sha256', $dsHeader), $body);
+            if ($ans['status'] === 200) {
+                $userRow = _authAppleFetchActiveUser($db, $userId);
+                $out = $ans['body'];
+                $out['user'] = apiAuthSuccessPayload((string)$out['token'], $userId, (string)$userRow['Username'], (string)$userRow['DisplayName'], (string)$userRow['Role'], $userRow['AvatarService'] ?? null)['user'];
+                /* The log line carries a short hash tag of the NEW sign-in, never a token or a key. */
+                logActivity('auth.device_enrol', 'user', (string)$userId, ['device' => $out['device']['id'], 'key_made' => isset($out['enrolKey'])], 'success', $userId);
+                sendJson($out);
+            } else {
+                logActivity('auth.device_enrol', 'user', (string)$userId, ['reason' => (string)($ans['body']['reason'] ?? '')], 'failure', $userId);
+                sendJson($ans['body'], $ans['status']);
+            }
+            break;
+        }
+
+        /* A device that already has its own sign-in makes (another) automatic sign-in key. */
+        case 'auth_enrol_key_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_signin.php';
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            if (!validateCsrfRequest(null)) { sendJson(['error' => 'Cross-origin request rejected.', 'reason' => 'csrf'], 403); break; }
+            $dsHeader = apiTokenBearerHeaderValue();
+            if ($dsHeader === null) { sendJson(['error' => 'A bearer sign-in header is required.', 'reason' => 'bearer_required'], 400); break; }
+            /* Security review finding 1: a request stamped by a browser can never be a native app asking for its own sign-in. */
+            if (deviceSigninRequestLooksLikeBrowser($_SERVER)) { $bx = deviceSigninBrowserRefusal(); sendJson($bx['body'], $bx['status']); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.', 'reason' => 'not_authenticated'], 401); break; }
+            $userId = (int)$authUser['Id'];
+            $db = getDbMysqli();
+            if (!deviceSigninEnabledHere()) { sendJson(deviceSigninDisabledBody(), 409); break; }
+            if (!deviceSigninActiveHere($db)) { sendJson(deviceSigninNotReadyBody(), 409); break; }
+            checkRateLimit('auth_enrol_key_create', '', 5, 3600, true, $userId);
+            recordRateLimitHit('auth_enrol_key_create', rateLimitKey('', $userId));
+            $ans = deviceSigninKeyCreate($db, $authUser, hash('sha256', $dsHeader), $body);
+            logActivity('auth.enrol_key_create', 'user', (string)$userId, $ans['status'] === 200 ? ['made' => true] : ['reason' => (string)($ans['body']['reason'] ?? '')], $ans['status'] === 200 ? 'success' : 'failure', $userId);
+            sendJson($ans['body'], $ans['status']);
+            break;
+        }
+
+        /* A brand-new device with NO sign-in swaps the automatic sign-in key for its own sign-in. */
+        case 'auth_enrol_key_redeem': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_signin.php';
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            if (!validateCsrfRequest(null)) { sendJson(['error' => 'Cross-origin request rejected.', 'reason' => 'csrf'], 403); break; }
+            $db = getDbMysqli();
+            if (!deviceSigninEnabledHere()) { sendJson(deviceSigninDisabledBody(), 409); break; }
+            if (!deviceSigninActiveHere($db)) { sendJson(deviceSigninNotReadyBody(), 409); break; }
+            /* 20 an hour per ADDRESS before the key is looked at (every try counts, so guessing is capped);
+               10 an hour per PERSON once the key has named one (recorded only when a sign-in is made). */
+            $redeemIp = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+            checkRateLimit('auth_enrol_key_redeem', $redeemIp, 20, 3600, true, null);
+            recordRateLimitHit('auth_enrol_key_redeem', rateLimitKey($redeemIp, null));
+            $ans = deviceSigninRedeem($db, $body, [
+                'allowPerson'  => static fn(int $uid): bool => checkRateLimit('auth_enrol_key_redeem_person', '', 10, 3600, false, $uid),
+                'recordPerson' => static function (int $uid): void { recordRateLimitHit('auth_enrol_key_redeem_person', rateLimitKey('', $uid)); },
+            ]);
+            if ($ans['status'] === 200) {
+                $userId = (int)$ans['userId'];
+                $userRow = _authAppleFetchActiveUser($db, $userId);
+                $out = $ans['body'];
+                $out['user'] = apiAuthSuccessPayload((string)$out['token'], $userId, (string)$userRow['Username'], (string)$userRow['DisplayName'], (string)$userRow['Role'], $userRow['AvatarService'] ?? null)['user'];
+                logActivity('auth.enrol_key_redeem', 'user', (string)$userId, ['device' => $out['device']['id']], 'success', $userId);
+                sendJson($out);
+            } else {
+                /* No person is known on a refusal, and the log never learns which key was tried. */
+                logActivity('auth.enrol_key_redeem', 'user', '', ['reason' => (string)($ans['body']['reason'] ?? '')], 'failure');
+                sendJson($ans['body'], $ans['status']);
+            }
+            break;
+        }
+
+        /* "Turn off automatic sign-in": cancel every key the person holds. Never switched off. */
+        case 'auth_enrol_keys_revoke': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_signin.php';
+            if (!validateCsrfRequest(null)) { sendJson(['error' => 'Cross-origin request rejected.', 'reason' => 'csrf'], 403); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.', 'reason' => 'not_authenticated'], 401); break; }
+            $userId = (int)$authUser['Id'];
+            checkRateLimit('auth_enrol_keys_revoke', '', 10, 3600, true, $userId);
+            recordRateLimitHit('auth_enrol_keys_revoke', rateLimitKey('', $userId));
+            $ans = deviceSigninKeysRevoke(getDbMysqli(), $userId);
+            logActivity('auth.enrol_keys_revoke', 'user', (string)$userId, ['revoked' => $ans['body']['revoked']], 'success', $userId);
+            sendJson($ans['body'], $ans['status']);
+            break;
+        }
+
+        /* Sign out everywhere. Works with a cookie or a header sign-in (the web button uses the cookie);
+           never switched off. `keepCurrent: true` keeps the sign-in that asked. */
+        case 'auth_signout_everywhere': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_signin.php';
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            if (!validateCsrfRequest(null)) { sendJson(['error' => 'Cross-origin request rejected.', 'reason' => 'csrf'], 403); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.', 'reason' => 'not_authenticated'], 401); break; }
+            $userId = (int)$authUser['Id'];
+            checkRateLimit('auth_signout_everywhere', '', 10, 3600, true, $userId);
+            recordRateLimitHit('auth_signout_everywhere', rateLimitKey('', $userId));
+            $dsToken = getAuthBearerToken();
+            $keepCurrent = ($body['keepCurrent'] ?? false) === true;
+            $ans = deviceSigninSignOutEverywhere(getDbMysqli(), $userId, $dsToken !== null ? hash('sha256', $dsToken) : null, $keepCurrent);
+            logActivity('auth.signout_everywhere', 'user', (string)$userId, ['tokens' => $ans['body']['tokensRevoked'], 'keys' => $ans['body']['enrolKeysRevoked'], 'kept_current' => $ans['body']['keptCurrent']], 'success', $userId);
+            if (!$ans['body']['keptCurrent']) {
+                clearAuthTokenCookie();   /* this browser is signed out too (clearing is not setting) */
+            }
+            sendJson($ans['body'], $ans['status']);
             break;
         }
 
@@ -6265,12 +6427,12 @@ if ($action !== null) {
             $signedOutPlatform = apiTokenSessionPlatform($db, $userId, $deviceId, true);
             /* G4 (PR 2a): the FULL hashes for this prefix, read BEFORE the rows are deleted, so the
                push registrations tied to exactly these sign-ins can be removed afterwards. */
-            $signedOutHashes = profileSyncEnabledHere() ? apiTokenHashesForDevicePrefix($db, $userId, $deviceId) : [];
-            $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token LIKE CONCAT(?, "%")');
-            $stmt->bind_param('is', $userId, $deviceId);
-            $stmt->execute();
-            $revoked = $stmt->affected_rows > 0;
-            $stmt->close();
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';   /* apnsPerSessionHere() */
+            $deviceHashes = apiTokenHashesForDevicePrefix($db, $userId, $deviceId);
+            $signedOutHashes = apnsPerSessionHere() ? $deviceHashes : [];
+            /* PR 3 H4/H5: the door that ends sign-ins (own-only: the person's id is in every statement).
+               A device's own sign-in is kept as an ended marker; a shared one is deleted as before. */
+            $revoked = apiTokenSignOutHashes($db, $userId, $deviceHashes) > 0;
 
             logActivity('auth.device_signout', 'user', (string)$userId, ['found' => $revoked], $revoked ? 'success' : 'failure', $userId);
 
@@ -6290,7 +6452,7 @@ if ($action !== null) {
                     $userId,
                     $signedOutHashes,
                     apiTokenSessionOwnsApplePush($signedOutPlatform),
-                    profileSyncEnabledHere()
+                    apnsPerSessionHere()
                 );
             } catch (\Throwable $e) {
                 error_log('[api/device_signout] apns token cleanup failed: ' . $e->getMessage());
@@ -6517,7 +6679,7 @@ if ($action !== null) {
                    token, or the column not there yet: the previous statement. */
                 $apnsBearer = getAuthBearerToken();
                 $apnsSessionHash = ($apnsBearer !== null && $apnsBearer !== '') ? hash('sha256', $apnsBearer) : null;
-                if ($apnsSessionHash !== null && profileSyncEnabledHere() && apnsTokenHashReady($db)) {
+                if ($apnsSessionHash !== null && apnsPerSessionHere() && apnsTokenHashReady($db)) {
                     $ins = $db->prepare(
                         'INSERT INTO tblApnsTokens (Kind, UserId, SessionId, PushToken, ApnsEnv, ExpiresAt, ApiTokenHash)
                          VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -8524,6 +8686,16 @@ if ($action !== null) {
                 'appleSiwaServicesId' => $appleWebEnabledForStatus
                     ? (string)(getAppSetting('apple_siwa_services_id', '') ?? '')
                     : null,
+                /* PR 3 H2 — the two per-site switches a native app needs to know about, as plain
+                   booleans (false when off, when it cannot be read, or when the database is not
+                   ready). An app that does not know these keys reads them as false, so an older app
+                   is unaffected. `deviceSignin`: one sign-in per device (swap, automatic sign-in key);
+                   `profileSync`: the account's new small-item sync (and the sign-out clearing). */
+                'deviceSignin'        => deviceSigninActiveHere($db),
+                'profileSync'         => (static function () use ($db): bool {
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_sync.php';
+                    return profileSyncActiveHere($db);
+                })(),
             ] + $intAppsStatusPayload + $captchaStatusPayload);
 
             /* #1725/#1730 — the gateway refresh happens AFTER the response is
@@ -8854,10 +9026,13 @@ if ($action !== null) {
             /* Invalidate all OTHER tokens (keep the current one) */
             $currentToken = getAuthBearerToken();
             $currentTokenHash = hash('sha256', $currentToken);
-            $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token != ?');
-            $stmt->bind_param('is', $authUserId, $currentTokenHash);
-            $stmt->execute();
-            $stmt->close();
+            /* PR 3 H4: the ONE door. It keeps this sign-in, but ALWAYS cancels the automatic sign-in keys
+               (a key left alive would sign the other devices straight back in) and removes the push
+               registrations tied to the other sign-ins. */
+            /* Review finding 7: where push is tied to a sign-in, also remove the registrations tied to none (they predate the
+               tie and may belong to a device the person wanted gone); the app re-registers on its next open. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+            apiTokenRevokeAllForUser($db, $authUserId, $currentTokenHash, 'password_change', apnsPerSessionHere());
 
             sendJson(['ok' => true, 'message' => 'Password changed successfully.']);
             break;
@@ -9408,7 +9583,9 @@ if ($action !== null) {
                device name. Guarded by tests/php/test-api-token-device-meta.php. */
             /* C3 (epic #2180): through the ONE token maker. `null` meta = no-device-meta
                (the reason is the paragraph above). */
-            $token       = apiTokenMint($db, (int)$userId, null, 'device_code', $expiresAtTs);
+            /* H1: only the install id is passed (NOT device details: the guard above stays), so a TV that pairs again
+               replaces its own earlier sign-in instead of adding a row. A missing/bad id is simply ignored. */
+            $token       = apiTokenMint($db, (int)$userId, null, 'device_code', $expiresAtTs, apiTokenCleanInstallId($body['deviceInstallId'] ?? null));
             setAuthTokenCookie($token, $expiresAtTs);
             $updLogin = $db->prepare('UPDATE tblUsers SET LastLoginAt = NOW(), LoginCount = LoginCount + 1 WHERE Id = ?');
             $updLogin->bind_param('i', $userId);
@@ -12844,12 +13021,11 @@ if ($action !== null) {
             $db = getDbMysqli();
             $now = gmdate('Y-m-d H:i:s');
 
-            /* Expired API tokens */
-            $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE ExpiresAt < ?');
-            $stmt->bind_param('s', $now);
-            $stmt->execute();
-            $deletedApiTokens = $stmt->affected_rows;
-            $stmt->close();
+            /* Expired API tokens (PR 3: a device's ended sign-in is kept as a marker for a while; and
+               automatic sign-in keys that ended over 30 days ago go too). */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
+            $deletedApiTokens = apiTokenSweepExpired($db);
+            accountEnrolKeysSweep($db);
 
             /* Expired or used email login tokens */
             $stmt = $db->prepare('DELETE FROM tblEmailLoginTokens WHERE ExpiresAt < ? OR Used = 1');
@@ -28967,11 +29143,16 @@ function slideAuthTokenExpiry(string $rawToken): void
            getAuthenticatedUser() itself once the extra per-request query is
            judged worth it — deliberately NOT done here. */
         $hasDeviceMetaCols = function_exists('apiTokensDeviceMetaColumnsExist') && apiTokensDeviceMetaColumnsExist($db);
+        /* Security review finding 2: only a sign-in that is STILL live may be renewed (`ExpiresAt > now`,
+           inside the same UPDATE so there is no gap). A sign-out sets the expiry to a second ago; without
+           this, a renewal that was already in flight would write a fresh 30 days over that ended row and
+           bring the sign-in back to life. */
+        $nowStr = gmdate('Y-m-d H:i:s');
         $sql = $hasDeviceMetaCols
-            ? 'UPDATE tblApiTokens SET ExpiresAt = ?, LastSeenAt = UTC_TIMESTAMP() WHERE Token = ? AND ExpiresAt < ?'
-            : 'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ?';
+            ? 'UPDATE tblApiTokens SET ExpiresAt = ?, LastSeenAt = UTC_TIMESTAMP() WHERE Token = ? AND ExpiresAt < ? AND ExpiresAt > ?'
+            : 'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ? AND ExpiresAt > ?';
         $stmt = $db->prepare($sql);
-        $stmt->bind_param('sss', $newExpiresAt, $hashedToken, $threshold);
+        $stmt->bind_param('ssss', $newExpiresAt, $hashedToken, $threshold, $nowStr);
         $stmt->execute();
         $bumped = $stmt->affected_rows > 0;
         $stmt->close();

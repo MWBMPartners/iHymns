@@ -347,6 +347,26 @@ declare(strict_types=1);
                 <i class="fa-solid fa-arrows-rotate me-1" aria-hidden="true"></i>
                 Refresh
             </button>
+
+            <!-- PR 3 H6 (one sign-in per device). Hidden until devices.js sees that this site has
+                 device sign-in switched on (config.deviceSignin.enabled); with it off the card is exactly
+                 what it was. The two button names are kept in js/modules/devices.js
+                 (SIGN_OUT_EVERYWHERE_LABEL, TURN_OFF_AUTO_SIGN_IN_LABEL) and the privacy page names them
+                 word for word (guard: tests/php/test-privacy-page-promises.php). -->
+            <div id="devices-everywhere" class="d-none mt-3 pt-3 border-top" data-devices-everywhere>
+                <div id="devices-keys-row" class="d-none mb-3">
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="small flex-grow-1">Automatic sign-in for new Apple devices is on. Signing out any one of your devices cancels the current key.</span>
+                        <button type="button" class="btn btn-outline-secondary btn-sm flex-shrink-0" id="devices-keys-off-btn">Turn off</button>
+                    </div>
+                </div>
+                <button type="button" class="btn btn-outline-danger btn-sm" id="devices-everywhere-btn">
+                    <i class="fa-solid fa-right-from-bracket me-1" aria-hidden="true"></i>Sign out everywhere
+                </button>
+                <p class="text-muted small mt-2 mb-0">
+                    Signs out every device on your account, including this one. Each will need to sign in again.
+                </p>
+            </div>
         </div>
     </div>
 

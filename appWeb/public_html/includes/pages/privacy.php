@@ -33,7 +33,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
     </h1>
 
     <p class="text-muted small mb-4">
-        Last updated: 23 November 2026
+        Last updated: 24 November 2026
     </p>
 
     <!-- Overview -->
@@ -142,6 +142,23 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 expires) your data is set aside in the browser instead, and given back when you sign in again; if
                 someone else signs in first, it is kept away from them (one person&rsquo;s set-aside copy is kept at a
                 time). If you then sign out on purpose, that set-aside copy is deleted as well.
+            </p>
+            <p>
+                <strong>Signed-in devices.</strong> Once this is switched on for the site, each device you sign in on
+                (each Apple device included) gets its own sign-in, so signing out of one does not sign out the others.
+                In Settings, under Signed-in devices, you can see your devices, sign any one of them out, or choose
+                Sign out everywhere to end every sign-in at once, this browser included. A device&rsquo;s sign-in ends
+                by itself after 30 days without being used. If you use the Apple app, it can keep an automatic sign-in
+                key in your iCloud Keychain, so a new Apple device of yours can get a sign-in of its own without you
+                typing your password again. That key cannot be used to sign in anywhere else: all it can do is give one
+                of your own devices a sign-in of its own. It lasts 180 days from the last time it was used, and you
+                can end it with Turn off in the same place. Signing out any one of your devices, signing out
+                everywhere, changing or resetting your password, or switching your account off also ends it. (The
+                devices you did not sign out stay signed in, and a device that is still signed in can make a fresh key
+                for itself.) Whoever holds a live key could get a sign-in for your account, which is why ending it is
+                so easy. A device that was signed out, or whose sign-in
+                ended after 30 days unused, does not sign itself back in: you sign in again on it yourself.
+                (Until this is switched on for the site, your Apple devices share one sign-in, as they always did.)
             </p>
 
             <h3 class="small fw-bold mt-3">2.3 Server Logs &amp; Security Data</h3>

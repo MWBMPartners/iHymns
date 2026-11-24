@@ -204,6 +204,7 @@ $checkFor = [
     'tblSongHistory'        => ['songHistoryProvenanceReady'],
     'tblApnsTokens'         => ['apnsTokenHashReady'],
     'tblApiTokens'          => ['apiTokensFoundationColumnsExist'],
+    'tblAccountEnrolKeys'   => ['accountEnrolKeysReady'],   /* PR 3 H3 */
 ];
 $objects = [];
 foreach ($newTables as $t) {

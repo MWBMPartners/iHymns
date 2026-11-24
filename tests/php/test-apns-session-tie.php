@@ -56,14 +56,16 @@ foreach ($it as $f) {
         }
     }
 }
-chk('exactly one delete-everything-for-a-person statement exists, and it is the legacy rule inside apnsDeleteForSessions()', $blanket === ['includes/apns.php#apnsDeleteForSessions'], implode('; ', $blanket));
+sort($blanket);
+chk('exactly two delete-everything-for-a-person statements exist: the legacy rule inside apnsDeleteForSessions() and the sign-out-everywhere door apiTokenRevokeAllForUser() (PR 3 H4, which ends every sign-in at once)',
+    $blanket === ['includes/api_tokens.php#apiTokenRevokeAllForUser', 'includes/apns.php#apnsDeleteForSessions'], implode('; ', $blanket));
 
 echo "the callers\n";
 $api = phpSourceUnits((string)file_get_contents($web . '/api.php'));
 foreach (['auth_logout', 'device_signout'] as $case) {
     $c = $api["case '$case'"]['code'] ?? '';
     chk("$case ends push registrations only through apnsDeleteForSessions()", str_contains($c, 'apnsDeleteForSessions(') && !str_contains(implode(' ', $api["case '$case'"]['strings'] ?? []), 'DELETE FROM tblApnsTokens'));
-    chk("$case passes the per-session rule only when the switch is on (profileSyncEnabledHere())", (bool)preg_match('/apnsDeleteForSessions\([^;]*profileSyncEnabledHere\(\)\s*\)/', $c));
+    chk("$case passes the per-session rule when EITHER switch is on (apnsPerSessionHere())", (bool)preg_match('/apnsDeleteForSessions\([^;]*apnsPerSessionHere\(\)\s*\)/', $c));
     chk("$case still passes the A6 answer (apiTokenSessionOwnsApplePush) for registrations tied to no session", (bool)preg_match('/apnsDeleteForSessions\([^;]*apiTokenSessionOwnsApplePush\(/', $c));
 }
 $ds = $api["case 'device_signout'"]['code'] ?? '';
@@ -71,14 +73,56 @@ $pRead = strpos($ds, 'apiTokenHashesForDevicePrefix(');
 $pDel  = strpos($ds, 'DELETE FROM tblApiTokens');
 $pDel  = $pDel === false ? strpos(implode(' ', $api["case 'device_signout'"]['strings'] ?? []), 'DELETE FROM tblApiTokens') : $pDel;
 $dsStr = implode("\n", $api["case 'device_signout'"]['strings'] ?? []);
-chk('device_signout reads the full hashes for its prefix BEFORE it deletes the sign-in rows', $pRead !== false && str_contains($dsStr, 'DELETE FROM tblApiTokens') && $pRead < strpos($ds, '@SQL:DELETE:tblApiTokens@'), 'read at ' . var_export($pRead, true));
+$pEnd = strpos($ds, 'apiTokenSignOutHashes(');
+chk('device_signout reads the full hashes for its prefix BEFORE it ends the sign-in rows (PR 3 H4: through apiTokenSignOutHashes(), no raw delete left in the case)', $pRead !== false && $pEnd !== false && $pRead < $pEnd && !str_contains($dsStr, 'DELETE FROM tblApiTokens'), 'read at ' . var_export($pRead, true) . ', end at ' . var_export($pEnd, true));
 $ar = $api["case 'apns_register'"]['code'] ?? '';
-chk('apns_register stores the session hash only with the switch on, a session token and the column there', (bool)preg_match('/\$apnsSessionHash\s*!==\s*null\s*&&\s*profileSyncEnabledHere\(\)\s*&&\s*apnsTokenHashReady\(\$db\)/', $ar));
+chk('apns_register stores the session hash only when either switch is on (apnsPerSessionHere()), a session token and the column there', (bool)preg_match('/\$apnsSessionHash\s*!==\s*null\s*&&\s*apnsPerSessionHere\(\)\s*&&\s*apnsTokenHashReady\(\$db\)/', $ar));
 chk('...and updates it when an existing registration is re-registered', str_contains(implode(' ', $api["case 'apns_register'"]['strings'] ?? []), 'ApiTokenHash = VALUES(ApiTokenHash)'));
 chk('...and the older statement forgets a previous tie (ApiTokenHash = NULL) whenever the column exists, so a re-registration cannot stay tied to another session',
     (bool)preg_match('/\$forgetTie\s*=\s*apnsTokenHashReady\(\$db\)\s*\?/', $ar) && str_contains(implode(' ', $api["case 'apns_register'"]['strings'] ?? []), ', ApiTokenHash = NULL'));
 chk('...and still has the old statement for everything else', str_contains(implode(' ', $api["case 'apns_register'"]['strings'] ?? []), 'INSERT INTO tblApnsTokens (Kind, UserId, SessionId, PushToken, ApnsEnv, ExpiresAt)'));
 chk('the hash is of the session token, the same value the sign-in table stores', (bool)preg_match("/\\\$apnsSessionHash\s*=\s*\(.*?\)\s*\?\s*hash\(\s*'sha256'\s*,\s*\\\$apnsBearer\s*\)/", $ar));
+
+
+/* ---- PR 3 H2: ONE answer to "tie push to one sign-in?", asked everywhere, derived from the tree ---- */
+echo "one per-session answer, found from the tree\n";
+$calls = []; $inserts = []; $badCalls = []; $badInserts = []; $oldSwitch = [];
+$it2 = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($web, FilesystemIterator::SKIP_DOTS));
+foreach ($it2 as $f) {
+    if (!$f->isFile() || substr($f->getFilename(), -4) !== '.php') { continue; }
+    $src = (string)file_get_contents($f->getPathname());
+    if (stripos($src, 'apnsDeleteForSessions') === false && stripos($src, 'tblApnsTokens') === false) { continue; }
+    $rel = substr($f->getPathname(), strlen($web) + 1);
+    foreach (phpSourceUnits($src) as $unit => $u) {
+        if ($unit === 'apnsDeleteForSessions') { continue; }
+        if (preg_match_all('/apnsDeleteForSessions\(([^;]*);/s', $u['code'], $mm)) {
+            foreach ($mm[0] as $callText) {
+                $calls[] = "$rel#$unit";
+                if (!str_contains($callText, 'apnsPerSessionHere()')) { $badCalls[] = "$rel#$unit"; }
+            }
+        }
+        foreach ($u['strings'] as $q) {
+            if (preg_match('/INSERT\s+INTO\s+tblApnsTokens\b[^;]*ApiTokenHash/is', $q)) {
+                $inserts[] = "$rel#$unit";
+                if (!str_contains($u['code'], 'apnsPerSessionHere()')) { $badInserts[] = "$rel#$unit"; }
+            }
+        }
+        if (preg_match('/\bprofileSyncEnabledHere\(\)/', $u['code']) && (str_contains($u['code'], 'apnsDeleteForSessions(') || preg_match('/ApiTokenHash/', implode(' ', $u['strings'])))) {
+            $oldSwitch[] = "$rel#$unit";
+        }
+    }
+}
+chk('the scan found the callers and the tied insert (' . count($calls) . ' delete calls, ' . count($inserts) . ' tied inserts)', count($calls) >= 2 && count($inserts) >= 1);
+chk('every apnsDeleteForSessions() call passes apnsPerSessionHere(), none a single switch', $badCalls === [], implode('; ', $badCalls));
+chk('every insert that writes ApiTokenHash sits in a function/case that asks apnsPerSessionHere()', $badInserts === [], implode('; ', $badInserts));
+chk('no push-tie site still asks profileSyncEnabledHere() on its own', $oldSwitch === [], implode('; ', $oldSwitch));
+require_once $web . '/includes/apns.php';
+$yes = static fn(string $k, string $d): string => 'alpha';
+$no  = static fn(string $k, string $d): string => 'none';
+$boomR = static function (string $k, string $d): string { throw new \RuntimeException('database down'); };
+chk('truth table: sync only, device only, both, neither', apnsPerSessionHere($yes, $no, 'alpha') && apnsPerSessionHere($no, $yes, 'alpha') && apnsPerSessionHere($yes, $yes, 'alpha') && !apnsPerSessionHere($no, $no, 'alpha'));
+chk('...a switch ticked for another channel does not count', !apnsPerSessionHere($yes, $yes, 'production'));
+chk('...an unreadable switch is "no" (the previous rule applies)', !apnsPerSessionHere($boomR, $boomR, 'alpha') && apnsPerSessionHere($boomR, $yes, 'alpha'));
 
 /* ---- pure shape of the hashes helper ---- */
 require_once $web . '/includes/api_tokens.php';

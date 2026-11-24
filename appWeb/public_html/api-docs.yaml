@@ -4555,6 +4555,17 @@ paths:
                     endpoint (auth_register, auth_forgot_password,
                     auth_email_login_request, song_request_submit); a missing or
                     invalid token there returns the same 403 documented below.
+                deviceInstallId:
+                  type: string
+                  pattern: '^[A-Za-z0-9\-]{8,64}$'
+                  description: >-
+                    OPTIONAL (PR 3, step H1). A random id the app makes once per install.
+                    When present, signing in again on the same install REPLACES that
+                    person's earlier sign-in for that install, so the devices list shows
+                    one row per device. A malformed value is ignored, never an error. The
+                    same optional field (with `deviceName`, `platform`, `appVersion`) is
+                    accepted by `auth_register`, `auth_apple`, `auth_email_login_verify`
+                    and `auth_device_code_poll`.
       responses:
         "200":
           description: Login successful
@@ -4929,6 +4940,14 @@ paths:
         session, older registrations tied to no session). Other devices of the
         same person keep their notifications. Anywhere else the A6 rule above
         applies unchanged. The reply is the same either way.
+
+        **Automatic sign-in keys (PR 3a).** When the sign-in being ended is a
+        device's own (it was made with an install id), the person's automatic
+        sign-in keys are cancelled too, because a copy of a key outliving the
+        sign-out could make a fresh sign-in for the account. The person's OTHER
+        devices are not signed out; a device that is still signed in can make a
+        new key for itself. Signing out a browser, or the shared older-app
+        sign-in (no install id), does not touch the keys.
       security:
         - bearerAuth: []
       parameters:
@@ -5143,7 +5162,17 @@ paths:
       description: |
         Change the authenticated user's password. Requires the current password
         for verification. All other active tokens are invalidated after a
-        successful change (the current token remains valid).
+        successful change (the current token remains valid). From PR 3 the same
+        change also cancels every automatic sign-in key the person holds and
+        removes the Apple push registrations tied to the other sign-ins, so
+        no other device can sign itself back in. (A password reset, an admin
+        password change and switching an account off do the same, ending every
+        sign-in.)
+
+        Known limit: the current sign-in is kept, so if the caller is the SHARED older-app sign-in (no install
+        id), every Apple device still holding that shared sign-in stays signed in, and could enrol again. Where
+        push is tied to a sign-in, push registrations tied to no sign-in are also removed (they predate the tie);
+        the app registers again the next time it opens.
       security:
         - bearerAuth: []
       parameters:
@@ -5817,6 +5846,18 @@ paths:
                         createdAt:  { type: string, format: date-time }
                         expiresAt:  { type: string, format: date-time }
                         isCurrent:  { type: boolean, description: True for the token this request itself authenticated with. }
+                        issuedVia:  { type: string, nullable: true, description: "How this sign-in was made (password, apple, email, device_code, cross_surface, enrol, ...). Null before the foundation migration or for older rows." }
+                        boundToDevice: { type: boolean, description: "True when the sign-in belongs to ONE device (the app sent an install id). False for the shared older-app sign-in and for browsers. The install id itself is never returned." }
+                  enrolKeys:
+                    type: array
+                    description: "The person's live automatic sign-in keys: platform and dates only, never the key or its hash. Empty when there are none or the foundation migration has not run."
+                    items:
+                      type: object
+                      properties:
+                        platform:   { type: string }
+                        createdAt:  { type: string, format: date-time }
+                        lastUsedAt: { type: string, format: date-time, nullable: true }
+                        expiresAt:  { type: string, format: date-time }
         "401":
           description: Not authenticated
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -5846,6 +5887,14 @@ paths:
         for an Apple session, older registrations tied to no session. The full
         hash of each removed sign-in is read before its row is deleted. Anywhere
         else the A6 rule above applies unchanged.
+
+        **Automatic sign-in keys (PR 3a).** When the sign-in being ended is a
+        device's own (it was made with an install id), the person's automatic
+        sign-in keys are cancelled too, because a copy of a key outliving the
+        sign-out could make a fresh sign-in for the account. The person's OTHER
+        devices are not signed out; a device that is still signed in can make a
+        new key for itself. Signing out a browser, or the shared older-app
+        sign-in (no install id), does not touch the keys.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -5888,6 +5937,278 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "405":
           description: POST method required
+
+  /api.php?action=auth_device_enrol:
+    post:
+      operationId: authDeviceEnrol
+      tags: [Authentication]
+      summary: Swap the shared older-app sign-in for this device's own (PR 3)
+      description: |
+        A native app that still holds the SHARED sign-in (the one every copy of the app on a person's
+        devices used to share) asks for a sign-in of its own. The reply is a new sign-in tied to the
+        app's install id (`IssuedVia = enrol`) and, unless the request says `createEnrolKey: false` and
+        the platform may hold one (Apple today), an automatic sign-in key, shown **once**. The caller's
+        own (shared) sign-in is **not** revoked, so older copies of the app keep working.
+
+        **The `Authorization: Bearer` header is required.** The browser cookie is never accepted here
+        (`400 bearer_required` otherwise). A request stamped by a web browser (it carries `Sec-Fetch-Site`,
+        `Sec-Fetch-Mode`, `Sec-Fetch-Dest` or `Origin`, which a page cannot remove) is refused with `403
+        browser_request`, and the website's own sign-ins are stored with platform `web` and refused with
+        `403 not_a_shared_app_sign_in`; so a script running in a web page cannot turn the browser's sign-in
+        into an app sign-in. A native app sends none of those headers. This action never sets a cookie. Same-origin header required (rule #29). Rate limit: 10 an hour per person.
+
+        Switched on per channel (`device_signin_channels`, default none); while off, `409
+        device_signin_disabled`. Status codes and `reason` words are the contract, not the sentence.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_device_enrol] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceInstallId, platform]
+              properties:
+                deviceInstallId: { type: string, description: "A random id the app makes once (16 to 64 characters)." }
+                platform:        { type: string, enum: [apple, android], description: "The app's platform. `web` is refused." }
+                deviceName:      { type: string }
+                appVersion:      { type: string }
+                createEnrolKey:  { type: boolean, default: true, description: "False to skip the automatic sign-in key." }
+      responses:
+        "200":
+          description: A new sign-in for this device
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:     { type: string, description: "The new sign-in token. Shown once." }
+                  user:      { type: object }
+                  device:    { type: object, properties: { id: { type: string } } }
+                  expiresAt: { type: string, format: date-time }
+                  enrolKey:  { type: string, description: "Present only when a key was made. Shown once; keep it in the synced keychain, never log it." }
+                  enrolKeyExpiresAt: { type: string, format: date-time }
+        "400":
+          description: "`bearer_required`, `invalid_install_id` or `invalid_platform`"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "401":
+          description: "`not_authenticated` (no live sign-in at all) or `token_dead` (the bearer sign-in is not live)"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "403":
+          description: "`csrf`, `browser_request` (the request carries browser-only headers), `install_mismatch` (the sign-in belongs to another install), `not_a_shared_app_sign_in` (a browser or admin-page sign-in), or `install_signed_out` (this install was signed out and must sign in by hand)"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "409":
+          description: "`device_signin_disabled`, `device_signin_not_ready` or `already_enrolled`"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "429":
+          description: "Rate limited. The status is the contract: the shared limiter's body carries only `error`, no `reason`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=auth_enrol_key_create:
+    post:
+      operationId: authEnrolKeyCreate
+      tags: [Authentication]
+      summary: Make an automatic sign-in key from a device's own sign-in (PR 3)
+      description: |
+        For a device that signed in by hand (so it holds only its own sign-in). Returns the key **once**.
+        The caller must hold a sign-in tied to an install (`403 device_token_required` for the shared one,
+        or every old copy of the app could make keys) on a platform that may hold keys (`403
+        enrol_key_platform_unsupported`). A person keeps at most 5 live keys per platform (the oldest goes).
+        `Authorization: Bearer` header required (`400 bearer_required`); a request carrying browser-only
+        headers is refused (`403 browser_request`, as for `auth_device_enrol`). Rate limit: 5 an hour per person.
+        Switched on per channel like `auth_device_enrol`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_enrol_key_create] }
+      responses:
+        "200":
+          description: The key (shown once) and when it ends
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enrolKey:  { type: string }
+                  expiresAt: { type: string, format: date-time }
+        "400":
+          description: "`bearer_required`"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "401":
+          description: "`not_authenticated` (no live sign-in), or `token_dead` (the bearer sign-in is not live)"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "403":
+          description: "`csrf`, `browser_request`, `device_token_required` or `enrol_key_platform_unsupported`"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "409":
+          description: "`device_signin_disabled` or `device_signin_not_ready`"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "429":
+          description: "Rate limited. The status is the contract: the shared limiter's body carries only `error`, no `reason`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=auth_enrol_key_redeem:
+    post:
+      operationId: authEnrolKeyRedeem
+      tags: [Authentication]
+      summary: Swap an automatic sign-in key for this device's own sign-in (PR 3)
+      description: |
+        For a brand-new device with NO sign-in: the key is the proof. The reply is a new sign-in tied to
+        the install id and **no new key**. The key's life is extended by 180 days when a sign-in is made.
+
+        There is ONE refusal answer, `401 enrol_key_invalid`, for every unusable key: unknown, run out,
+        cancelled, wrong platform, a switched-off account, **and an install whose sign-in already ended**
+        (signed out, or 30 days unused). That last rule is deliberate: a lost or signed-out device must
+        be signed in again by hand and can never sign itself back in with the key.
+        Signing out any one device's own sign-in (or "sign out everywhere", a password change or reset, or
+        switching the account off) cancels the person's keys, so a copy of a key cannot outlive it. Whoever
+        holds a LIVE key could get a sign-in for the account, which is why "Turn off automatic sign-in"
+        (`auth_enrol_keys_revoke`) and sign out everywhere end it. The refusal never
+        says which case it was. A malformed key is `400 malformed_enrol_key`.
+
+        Never sets a cookie. Rate limit: 20 an hour per address (every try counts) and 10 an hour per
+        person once the key has named one. Switched on per channel like `auth_device_enrol`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_enrol_key_redeem] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enrolKey, deviceInstallId, platform]
+              properties:
+                enrolKey:        { type: string, description: "`ihek1_` followed by 64 hex characters." }
+                deviceInstallId: { type: string }
+                platform:        { type: string, enum: [apple, android], description: "Only `apple` can hold a key today. `android` passes the request check (it is a real app platform) but no key can exist for it, so it is answered `401 enrol_key_invalid`, not `400 invalid_platform`. `web` is refused `400 invalid_platform`." }
+                deviceName:      { type: string }
+                appVersion:      { type: string }
+      responses:
+        "200":
+          description: A new sign-in for this device
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:     { type: string, description: "Shown once." }
+                  user:      { type: object }
+                  device:    { type: object, properties: { id: { type: string } } }
+                  expiresAt: { type: string, format: date-time }
+        "400":
+          description: "`malformed_enrol_key`, `invalid_install_id` or `invalid_platform`"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "401":
+          description: "`enrol_key_invalid` (one answer for every unusable key)"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "403":
+          description: "`csrf`"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "409":
+          description: "`device_signin_disabled` or `device_signin_not_ready`"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "429":
+          description: "Rate limited: per address (body has only `error`) or per person once the key named one (body adds the reason `rate_limited`). The status is the contract."
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+
+  /api.php?action=auth_enrol_keys_revoke:
+    post:
+      operationId: authEnrolKeysRevoke
+      tags: [Authentication]
+      summary: Turn off automatic sign-in (cancel every key the person holds) (PR 3)
+      description: |
+        Cancels all of the caller's automatic sign-in keys. Device sign-ins already made are not
+        affected. Own-only; never switched off by the per-channel setting (turning something off is
+        never blocked). Same-origin header required. Rate limit: 10 an hour per person.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_enrol_keys_revoke] }
+      responses:
+        "200":
+          description: How many live keys were cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked: { type: integer }
+        "401":
+          description: "`not_authenticated` (no live sign-in), or `token_dead` (the bearer sign-in is not live)"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "403":
+          description: "`csrf`"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "429":
+          description: "Rate limited. The status is the contract: the shared limiter's body carries only `error`, no `reason`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=auth_signout_everywhere:
+    post:
+      operationId: authSignoutEverywhere
+      tags: [Authentication]
+      summary: Sign out everywhere (PR 3)
+      description: |
+        Ends every sign-in the person has, cancels every automatic sign-in key and removes the person's
+        Apple push registrations, in one transaction, through the one shared function that password
+        changes and resets also use. With `keepCurrent: true` the sign-in that asked stays (keys and
+        other devices still go). A sign-in tied to one device is kept as a small "ended" note so that
+        device cannot sign itself back in with a key; it is not listed and cannot be used.
+
+        Works with a cookie or a bearer sign-in (the web Devices page uses the cookie). Unless
+        `keepCurrent` is true, the browser's own cookie is cleared too. Never switched off by the
+        per-channel setting. Same-origin header required. Rate limit: 10 an hour per person.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_signout_everywhere] }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                keepCurrent: { type: boolean, default: false }
+      responses:
+        "200":
+          description: What was ended
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokensRevoked:    { type: integer }
+                  enrolKeysRevoked: { type: integer }
+                  keptCurrent:      { type: boolean }
+        "401":
+          description: "`not_authenticated` (a client treats this as already signed out)"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "403":
+          description: "`csrf`"
+          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+        "429":
+          description: "Rate limited. The status is the contract: the shared limiter's body carries only `error`, no `reason`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   /api.php?action=device_rename:
     post:
@@ -6114,6 +6435,25 @@ paths:
                       native app's bundle id (used as the SIWA client id)
                       is.
                     example: app.ihymns.web
+                  deviceSignin:
+                    type: boolean
+                    description: >-
+                      PR 3 step H2. True only when "a sign-in for each device" is switched on for THIS
+                      site (the per-channel setting on `manage/configuration.php`) AND the database
+                      objects it needs exist. False by default, when it cannot be read, and when the
+                      database is not ready. While false an app must keep using the sign-in it already
+                      has and must not call `auth_device_enrol`, `auth_enrol_key_create` or
+                      `auth_enrol_key_redeem` (they would answer 409 `device_signin_disabled`).
+                      An older client that does not know this key reads it as false.
+                    example: false
+                  profileSync:
+                    type: boolean
+                    description: >-
+                      PR 3 step H2. True only when the account's new small-item sync
+                      (`profile_sync`) is switched on for THIS site AND its table exists. Apps use it to
+                      decide whether signing out should first send, then clear, local personal data.
+                      False by default; an older client that does not know this key reads it as false.
+                    example: false
                   remoteFeatures:
                     type: object
                     description: >-
@@ -28383,6 +28723,12 @@ components:
           description: Human-readable error message
           example: Something went wrong.
 
+    ReasonError:
+      type: object
+      description: "A refusal with a stable `reason` word. Clients branch on the HTTP status and this word, never on the `error` sentence."
+      properties:
+        error:  { type: string }
+        reason: { type: string }
     ApiError:
       type: object
       description: >-

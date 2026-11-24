@@ -162,6 +162,7 @@ enforceMaintenanceForPublicSite();
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'search_visibility.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'cross_site_sync.php'; /* #2143 — per-channel switch for the settings sync */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_sync.php'; /* account/profile rewrite PR 2a — the new-account-behaviour switch + "table exists" check */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_signin_gate.php'; /* PR 3 H2 — the one-sign-in-per-device switch (deviceSigninActiveHere() loads its helpers only when ticked) */
 $searchEngineHidden = !searchEngineVisibleHere();
 searchVisibilityEmitNoindexHeader();
 
@@ -2226,6 +2227,8 @@ if (!empty($breadcrumbItems)) {
             /* Account/profile rewrite PR 2a: true only when this channel's switch is ticked AND the
                new table exists. Off by default, so nothing changes until an admin ticks a channel. */
             'profileSync'     => ['enabled' => profileSyncActiveHere()],
+            /* PR 3 H2: true only when this channel's switch is ticked AND the database objects exist. Off by default. */
+            'deviceSignin'    => ['enabled' => deviceSigninActiveHere()],
             'analytics'       => [
                 'hasGa4'       => !empty(APP_CONFIG['analytics']['google_analytics_id']),
                 'hasClarity'   => !empty(APP_CONFIG['analytics']['clarity_id']),

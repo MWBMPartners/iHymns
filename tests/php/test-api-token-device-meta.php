@@ -115,6 +115,15 @@ ok('caps at 120 code points',       mb_strlen((string)apiTokenCleanDeviceName($l
 ok('keeps a normal name intact',    apiTokenCleanDeviceName("Lance's iPhone") === "Lance's iPhone");
 
 /* ========================================================================
+ * (C2) PR 3 H1 - the install id rides along with the other device details
+ * ===================================================================== */
+echo "\n(C2) apiTokenDeviceMetaFromBody() and the install id:\n";
+$im = apiTokenDeviceMetaFromBody(['deviceName' => 'X', 'platform' => 'apple', 'appVersion' => '1.0', 'deviceInstallId' => 'abcd-1234-efgh']);
+ok('a good install id comes back with the other details', $im['deviceInstallId'] === 'abcd-1234-efgh' && $im['platform'] === 'apple');
+ok('a body with no install id yields null (old apps unchanged)', apiTokenDeviceMetaFromBody(['platform' => 'apple'])['deviceInstallId'] === null);
+ok('a bad install id yields null, never an error', apiTokenDeviceMetaFromBody(['deviceInstallId' => "bad id\n"])['deviceInstallId'] === null && apiTokenDeviceMetaFromBody(['deviceInstallId' => 12345678])['deviceInstallId'] === null);
+
+/* ========================================================================
  * (D) TOKEN-MINT COVERAGE — every mint writes metadata or states why not
  * ===================================================================== */
 echo "\n(D) token-mint coverage (tree-derived):\n";

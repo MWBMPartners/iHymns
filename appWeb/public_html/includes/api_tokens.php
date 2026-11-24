@@ -58,6 +58,7 @@ declare(strict_types=1);
    transaction_fatal.php, which loads nothing else (song_relocate.php, its old
    home, also loads the database layer). */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'transaction_fatal.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'account_enrol_keys.php';   /* PR 3 H4: the one revoke-everything door also cancels the keys */
 
 /** How many leading hex chars of a token's sha256 identify it to the
  *  client — see the file header for the collision-safety reasoning. Chosen
@@ -188,6 +189,61 @@ function apiTokenCleanInstallId(mixed $raw): ?string
 }
 
 /**
+ * How long a second sign-in for the same install waits for the first to finish, in seconds. The turn-taking is
+ * best-effort: a sign-in must never fail because of it, so after this wait it carries on without the lock.
+ * A test may set IHYMNS_TEST_MINT_LOCK_WAIT to a smaller number.
+ */
+function apiTokenMintLockWait(): int
+{
+    return defined('IHYMNS_TEST_MINT_LOCK_WAIT') ? max(0, (int)IHYMNS_TEST_MINT_LOCK_WAIT) : 5;
+}
+
+/**
+ * Take the turn for "make a sign-in for this person on this install" (PR 3a security review, finding 5).
+ *
+ * ELI5: if an app taps "sign in" twice, or two routes answer at once, both sign-ins would be written and each
+ * would then delete the other as "the old one", leaving nothing. A named lock makes the second wait until the
+ * first has written its sign-in and removed the older ones. The lock name is a short fingerprint of the person and
+ * install; it is held on this database connection until released (it works inside or outside a transaction, and
+ * the caller's transaction is not touched). Returns the lock name to hand back to apiTokenMintLockRelease(), or
+ * null when the lock could not be had (the sign-in then carries on, as it did before this lock existed).
+ *
+ * @link https://dev.mysql.com/doc/refman/8.0/en/locking-functions.html#function_get-lock
+ */
+function apiTokenMintLockAcquire(\mysqli $db, int $userId, string $installId): ?string
+{
+    $name = 'ihymns_mint:' . md5($userId . '|' . $installId);
+    try {
+        $wait = apiTokenMintLockWait();
+        $st = $db->prepare('SELECT GET_LOCK(?, ?)');
+        $st->bind_param('si', $name, $wait);
+        $st->execute();
+        $got = (int)($st->get_result()->fetch_row()[0] ?? 0);
+        $st->close();
+        return $got === 1 ? $name : null;
+    } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* an error that ended the caller's transaction must reach it */
+        error_log('[api_tokens/mintLock] ' . $e->getMessage());
+        return null;
+    }
+}
+
+/** Give the turn back. Never throws (a failed release only means the lock goes when the connection closes). */
+function apiTokenMintLockRelease(\mysqli $db, string $lockName): void
+{
+    try {
+        $st = $db->prepare('SELECT RELEASE_LOCK(?)');
+        $st->bind_param('s', $lockName);
+        $st->execute();
+        $st->get_result()?->free();
+        $st->close();
+    } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }
+        error_log('[api_tokens/mintLock] release: ' . $e->getMessage());
+    }
+}
+
+/**
  * Make ONE sign-in token. THE only place that inserts into tblApiTokens.
  *
  * @param \mysqli     $db
@@ -195,29 +251,52 @@ function apiTokenCleanInstallId(mixed $raw): ?string
  * @param ?array      $meta        device details, or null for none (see the header)
  * @param string      $issuedVia   one of API_TOKEN_ISSUED_VIA
  * @param int|null    $expiresAtTs OUT: the Unix time the token expires at
+ * @param string|null $installId   the device's install id when the caller has it apart from `$meta`
+ *                                 (the emailed-link route has no `$meta`; PR 3 step H1). Wins over
+ *                                 `$meta['deviceInstallId']`. Pass it by NAME to skip `$expiresAtTs`:
+ *                                 `apiTokenMint($db, $uid, null, 'email', installId: $id)`.
  * @return string the RAW token (64 hex characters). Returned once; only its hash is stored.
  */
-function apiTokenMint(\mysqli $db, int $uid, ?array $meta, string $issuedVia, ?int &$expiresAtTs = null): string
+function apiTokenMint(\mysqli $db, int $uid, ?array $meta, string $issuedVia, ?int &$expiresAtTs = null, ?string $installId = null): string
 {
     $token       = bin2hex(random_bytes(32));
     $tokenHash   = hash('sha256', $token);
     $expiresAtTs = time() + API_TOKEN_LIFETIME_SECONDS;
     $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
 
-    if (apiTokensFoundationColumnsExist($db)) {
-        $via = in_array($issuedVia, API_TOKEN_ISSUED_VIA, true) ? $issuedVia : null;
-        if ($via === null) {
-            error_log('[api_tokens/mint] unknown issuedVia "' . $issuedVia . '" stored as NULL');
+    $lockName = null;
+    try {
+        if (apiTokensFoundationColumnsExist($db)) {
+            $via = in_array($issuedVia, API_TOKEN_ISSUED_VIA, true) ? $issuedVia : null;
+            if ($via === null) {
+                error_log('[api_tokens/mint] unknown issuedVia "' . $issuedVia . '" stored as NULL');
+            }
+            /* H1: an explicit install id wins; both go through the same cleaner, so a bad one is dropped, never a failed sign-in. */
+            $installId = apiTokenCleanInstallId($installId ?? ($meta['deviceInstallId'] ?? null));
+            /* Security review finding 5: two sign-ins for the SAME person on the SAME install must take turns.
+               Without this, both could insert, then each read "the other one" and delete it, leaving the device
+               with no sign-in at all. The turn is a named lock that covers the insert AND the replacement. */
+            if ($installId !== null) {
+                $lockName = apiTokenMintLockAcquire($db, $uid, $installId);
+            }
+            $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt, IssuedVia, DeviceInstallId) VALUES (?, ?, ?, ?, ?)');
+            $stmt->bind_param('sisss', $tokenHash, $uid, $expiresAt, $via, $installId);
+        } else {
+            $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
+            $stmt->bind_param('sis', $tokenHash, $uid, $expiresAt);
         }
-        $installId = apiTokenCleanInstallId($meta['deviceInstallId'] ?? null);
-        $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt, IssuedVia, DeviceInstallId) VALUES (?, ?, ?, ?, ?)');
-        $stmt->bind_param('sisss', $tokenHash, $uid, $expiresAt, $via, $installId);
-    } else {
-        $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-        $stmt->bind_param('sis', $tokenHash, $uid, $expiresAt);
+        $stmt->execute();
+        $stmt->close();
+
+        /* H1: one device keeps one row. Only when the install id was recorded (so only when the columns exist). */
+        if (isset($installId) && $installId !== null) {
+            apiTokenReplaceSameInstall($db, $uid, $installId, $tokenHash);
+        }
+    } finally {
+        if ($lockName !== null) {
+            apiTokenMintLockRelease($db, $lockName);
+        }
     }
-    $stmt->execute();
-    $stmt->close();
 
     if ($meta !== null) {
         apiTokenDeviceMetaStore(
@@ -229,6 +308,313 @@ function apiTokenMint(\mysqli $db, int $uid, ?array $meta, string $issuedVia, ?i
         );
     }
     return $token;
+}
+
+/**
+ * One device keeps one sign-in row (PR 3, step H1).
+ *
+ * ELI5: when an app signs in again on the same install (a second password sign-in, a swap of the
+ * shared token for its own, an emailed link), the sign-in it made last time is no longer needed. This
+ * deletes that older sign-in so the devices list shows ONE row per device, and hands the older
+ * sign-in's notification registrations over to the new one so notifications keep arriving.
+ *
+ * Detailed:
+ *  - Scoped by BOTH the person AND the install id. Another person who happens to hold the same install
+ *    id is never touched (an install id is never trusted across people). A sign-in with NO install id
+ *    (the shared older-app token) is never matched, because `DeviceInstallId = ?` cannot match NULL.
+ *  - Runs inside the caller's transaction when there is one (the emailed-link route), so the new row
+ *    and the removal of the old one stand or fall together.
+ *  - The push rows are re-tied BEFORE the old rows go, and only when the push column exists.
+ *  - No rotation on a timer: a lost reply would leave the device holding a dead token.
+ *
+ * @param string $newHash sha256 of the token just made (kept)
+ * @return int how many older sign-ins were removed
+ */
+function apiTokenReplaceSameInstall(\mysqli $db, int $userId, string $installId, string $newHash): int
+{
+    if (!apiTokensFoundationColumnsExist($db)) {
+        return 0;
+    }
+    $st = $db->prepare('SELECT Token FROM tblApiTokens WHERE UserId = ? AND DeviceInstallId = ? AND Token <> ?');
+    $st->bind_param('iss', $userId, $installId, $newHash);
+    $st->execute();
+    $old = array_map(static fn($r) => (string)$r[0], $st->get_result()->fetch_all(MYSQLI_NUM));
+    $st->close();
+    if ($old === []) {
+        return 0;
+    }
+    $marks = implode(',', array_fill(0, count($old), '?'));
+    $types = str_repeat('s', count($old));
+    /* Move the older sign-ins' notification registrations to the new sign-in first. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'apns.php';   /* apnsTokenHashReady() */
+    if (apnsTokenHashReady($db)) {
+        $mv = $db->prepare('UPDATE tblApnsTokens SET ApiTokenHash = ? WHERE UserId = ? AND ApiTokenHash IN (' . $marks . ')');
+        $mv->bind_param('si' . $types, $newHash, $userId, ...$old);
+        $mv->execute();
+        $mv->close();
+    }
+    $del = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND DeviceInstallId = ? AND Token IN (' . $marks . ')');
+    $del->bind_param('is' . $types, $userId, $installId, ...$old);
+    $del->execute();
+    $removed = $del->affected_rows;
+    $del->close();
+    return $removed;
+}
+
+/* ======================================================================
+ * THE ONE DOOR TO "END SIGN-INS" (PR 3 step H4, epic #2180)
+ * ======================================================================
+ *
+ * ELI5
+ * ----
+ * Four places used to delete a person's sign-ins by hand (changing a password, resetting it,
+ * switching the account off, and the new "sign out everywhere"). None of them knew about the
+ * automatic sign-in keys or the notification registrations. Now there is ONE function for
+ * "end everything" and ONE for "end these particular sign-ins", and a test forbids any other
+ * place from doing it. The same door is used for signing one device out.
+ *
+ * Detailed
+ * --------
+ *  - A sign-in that has a recorded INSTALL ID is not deleted: it is ENDED (its expiry is set to
+ *    a second ago, and the device's name, version and last-seen are blanked). The row stays as
+ *    a small "this install was signed out" marker for API_TOKEN_ENDED_KEEP_DAYS days. That marker
+ *    is what lets the server refuse to sign an install back in by its automatic key after it was
+ *    signed out or its 30 days ran out (owner decision 2026-11-23, plan question B): see
+ *    apiTokenInstallSignInEnded(). Nothing can sign in with an ended row (every check requires
+ *    `ExpiresAt > now`), it is not listed on the devices page, and a NEW sign-in on the same install
+ *    replaces it (apiTokenReplaceSameInstall()). A sign-in with no install id (the shared older-app
+ *    sign-in, every old app) is deleted exactly as before.
+ *  - Only the housekeeping sweep (api.php, step H7) removes ended markers, and only after they are
+ *    API_TOKEN_ENDED_KEEP_DAYS old (the same length as an automatic sign-in key's life).
+ */
+
+/** How long an ended sign-in is remembered as "this install was signed out" (days). Same as a key's life. */
+const API_TOKEN_ENDED_KEEP_DAYS = ACCOUNT_ENROL_KEY_LIFETIME_DAYS;
+
+/**
+ * The most sign-ins apiTokenSignOutHashes() will end in one call. One device is one row, and a device-id prefix match
+ * is capped at 10 rows, so 20 is generous; anything bigger is "end everything" and belongs to apiTokenRevokeAllForUser().
+ */
+const API_TOKEN_SIGNOUT_MAX_HASHES = 20;
+
+/** The expiry stamped on an ended sign-in: one second ago, so every `ExpiresAt > now` check refuses it. */
+function apiTokenEndedStamp(): string
+{
+    return gmdate('Y-m-d H:i:s', time() - 1);
+}
+
+/**
+ * End the person's sign-ins whose stored hash is in `$hashes` (a sign-out). Own-only: every
+ * statement is filtered by the person's id. A sign-in with an install id is ended and kept as a
+ * marker; one without is deleted. Ending a device's own sign-in also cancels the person's automatic
+ * sign-in keys (see the comment at the UPDATE). Returns how many were ended or deleted.
+ *
+ * @param string[] $hashes full sha256 hashes (64 lowercase hex); anything else is ignored
+ */
+function apiTokenSignOutHashes(\mysqli $db, int $userId, array $hashes): int
+{
+    $hashes = array_values(array_unique(array_filter($hashes, static fn($h) => is_string($h) && preg_match('/^[a-f0-9]{64}$/', $h) === 1)));
+    if ($hashes === []) {
+        return 0;
+    }
+    /* Security review finding 6: this is the door for signing out a FEW named sign-ins (one device, or one prefix
+       match). Handing it "every sign-in this person has" would be a second way to end everything, one that
+       skips the bulk door's work (the keys, the push rows). So a long list is refused instead of quietly done. */
+    if (count($hashes) > API_TOKEN_SIGNOUT_MAX_HASHES) {
+        throw new \InvalidArgumentException('apiTokenSignOutHashes() ends a few named sign-ins; to end everything use apiTokenRevokeAllForUser().');
+    }
+    $marks = implode(',', array_fill(0, count($hashes), '?'));
+    $types = str_repeat('s', count($hashes));
+    $n = 0;
+    if (apiTokensFoundationColumnsExist($db)) {
+        $now = gmdate('Y-m-d H:i:s');
+        $ended = apiTokenEndedStamp();
+        if (apiTokensDeviceMetaColumnsExist($db)) {
+            $up = $db->prepare('UPDATE tblApiTokens SET ExpiresAt = ?, DeviceName = NULL, AppVersion = NULL, LastSeenAt = NULL
+                                 WHERE UserId = ? AND DeviceInstallId IS NOT NULL AND ExpiresAt > ? AND Token IN (' . $marks . ')');
+        } else {
+            $up = $db->prepare('UPDATE tblApiTokens SET ExpiresAt = ?
+                                 WHERE UserId = ? AND DeviceInstallId IS NOT NULL AND ExpiresAt > ? AND Token IN (' . $marks . ')');
+        }
+        $up->bind_param('sis' . $types, $ended, $userId, $now, ...$hashes);
+        $up->execute();
+        $endedDeviceSignIns = max(0, $up->affected_rows);
+        $n += $endedDeviceSignIns;
+        $up->close();
+        /* Security review findings 3 and 4 (owner decision 2026-11-23): signing out a DEVICE's own sign-in also
+           cancels the person's automatic sign-in keys. A key outlives the sign-out otherwise: a copy of it (a
+           lost phone, a restored backup, a synced keychain) would still be able to make a fresh sign-in for the
+           account. The person's other devices are NOT signed out; a device that is still signed in can simply
+           make a new key for itself. Only a sign-in tied to a device counts (the shared older-app sign-in and a
+           browser sign-in have no install id, so signing those out never touches the keys), which also keeps
+           this dormant until a new app has made device sign-ins. Turning something off is never switched off,
+           so this is not behind the per-site switch. Because every key that existed when the device was signed
+           out is cancelled here, the "signed out" note the expiry sweep keeps cannot be outlived by one. */
+        if ($endedDeviceSignIns > 0 && accountEnrolKeysReady($db)) {
+            accountEnrolKeyRevokeAll($db, $userId, null);
+        }
+        /* Rows with an install id stay as ended markers (just ended above, or ended earlier); the rest go. */
+        $del = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND DeviceInstallId IS NULL AND Token IN (' . $marks . ')');
+        $del->bind_param('i' . $types, $userId, ...$hashes);
+        $del->execute();
+        $n += $del->affected_rows;
+        $del->close();
+        return $n;
+    }
+    $del = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token IN (' . $marks . ')');
+    $del->bind_param('i' . $types, $userId, ...$hashes);
+    $del->execute();
+    $n = $del->affected_rows;
+    $del->close();
+    return $n;
+}
+
+/**
+ * The housekeeping sweep for sign-in rows (PR 3, H5/H7). Returns how many rows it deleted.
+ *
+ * ELI5: expired sign-ins used to be deleted the moment they expired. A sign-in that belongs to one
+ * device is now ALSO the small "this device was signed out / ran out" note that stops the device
+ * signing itself back in with its automatic key (owner's rule, 2026-11-23). So those rows are kept
+ * for API_TOKEN_ENDED_KEEP_DAYS days after they end, and only then deleted. Rows that belong to no
+ * device (the shared older-app sign-in) go as soon as they expire, as before.
+ *
+ * Detailed: an install-bound row that ended at T is removed once T is older than the keep window;
+ * the key's own life is the same length, so by then the key could not have been used anyway. The
+ * old one-line sweep in cleanup.php (a standalone script that cannot load this file, rule #41)
+ * mirrors this SQL; tests/php/test-device-signin-core.php checks the two agree.
+ */
+function apiTokenSweepExpired(\mysqli $db): int
+{
+    $now = gmdate('Y-m-d H:i:s');
+    if (!apiTokensFoundationColumnsExist($db)) {
+        $st = $db->prepare('DELETE FROM tblApiTokens WHERE ExpiresAt < ?');
+        $st->bind_param('s', $now);
+    } else {
+        $oldest = gmdate('Y-m-d H:i:s', time() - API_TOKEN_ENDED_KEEP_DAYS * 86400);
+        $st = $db->prepare('DELETE FROM tblApiTokens WHERE (DeviceInstallId IS NULL AND ExpiresAt < ?) OR (DeviceInstallId IS NOT NULL AND ExpiresAt < ?)');
+        $st->bind_param('ss', $now, $oldest);
+    }
+    $st->execute();
+    $n = max(0, $st->affected_rows);
+    $st->close();
+    return $n;
+}
+
+/**
+ * Has this install had its sign-in ended (signed out, or run out after 30 days unused), with no
+ * live sign-in since? True means: the person must sign in again on this install. A brand-new
+ * install (no row at all) is false.
+ *
+ * @return bool true only when an ended marker exists for (person, install) and no live row does
+ */
+function apiTokenInstallSignInEnded(\mysqli $db, int $userId, string $installId): bool
+{
+    if (!apiTokensFoundationColumnsExist($db) || apiTokenCleanInstallId($installId) === null) {
+        return false;
+    }
+    $now = gmdate('Y-m-d H:i:s');
+    $st = $db->prepare(
+        'SELECT SUM(ExpiresAt <= ?) AS ended, SUM(ExpiresAt > ?) AS live
+           FROM tblApiTokens WHERE UserId = ? AND DeviceInstallId = ?'
+    );
+    $st->bind_param('ssis', $now, $now, $userId, $installId);
+    $st->execute();
+    $row = $st->get_result()->fetch_row();
+    $st->close();
+    return (int)($row[0] ?? 0) > 0 && (int)($row[1] ?? 0) === 0;
+}
+
+/**
+ * END EVERYTHING for a person (PR 3 step H4). THE ONLY place that bulk-ends a person's sign-ins.
+ *
+ * Used by: "sign out everywhere", password change (keeping the current sign-in), password reset,
+ * changing a password as an admin, and switching an account off. In ONE transaction it:
+ *  1. ends every sign-in except `$keepHash` (see the section header: install-bound ones are kept as
+ *     ended markers, others deleted);
+ *  2. cancels the person's automatic sign-in keys (all platforms; never kept, even when a current
+ *     sign-in is kept, because a key left alive would sign the other devices straight back in);
+ *  3. removes the person's Apple push registrations: all of them when nothing is kept, otherwise only
+ *     those tied to a DIFFERENT sign-in (a registration tied to no sign-in is left alone, because it
+ *     may be the kept device's own). Web push subscriptions are not touched: they were never tied
+ *     to a sign-in.
+ * Each part is behind its own "is the table/column there" check, so an install that has not run the
+ * foundation migration still ends its sign-ins exactly as before.
+ *
+ * @param ?string $keepHash sha256 of the one sign-in to keep (the caller's own), or null for none
+ * @param string  $why      a short word saying why (e.g. 'password_change'); kept for callers' own audit lines
+ * @param bool    $dropUntiedPush when a sign-in is kept, ALSO remove the Apple push registrations that are tied to
+ *                                no sign-in (PR 3a review, finding 7). A password change passes true on a site where
+ *                                push is tied to a sign-in: such a row predates the tie and may belong to a device the
+ *                                person just wanted gone. The kept device's own row is tied (it registers under its own
+ *                                sign-in) or is made again the next time the app opens. Ignored when nothing is kept
+ *                                (everything of the person's already goes).
+ * @return array{tokens:int, enrolKeys:int, push:int} how many of each were ended/cancelled/removed
+ * @throws \Throwable the transaction is rolled back and the error passed on
+ */
+function apiTokenRevokeAllForUser(\mysqli $db, int $userId, ?string $keepHash, string $why, bool $dropUntiedPush = false): array
+{
+    $keep = ($keepHash !== null && preg_match('/^[a-f0-9]{64}$/', $keepHash) === 1) ? $keepHash : '';
+    $out = ['tokens' => 0, 'enrolKeys' => 0, 'push' => 0];
+    $db->begin_transaction();
+    try {
+        $now = gmdate('Y-m-d H:i:s');
+        /* 1. the sign-ins. First count the live ones (the number the caller reports), then end them. */
+        $c = $db->prepare('SELECT COUNT(*) FROM tblApiTokens WHERE UserId = ? AND ExpiresAt > ? AND Token <> ?');
+        $c->bind_param('iss', $userId, $now, $keep);
+        $c->execute();
+        $out['tokens'] = (int)($c->get_result()->fetch_row()[0] ?? 0);
+        $c->close();
+        if (apiTokensFoundationColumnsExist($db)) {
+            $ended = apiTokenEndedStamp();
+            if (apiTokensDeviceMetaColumnsExist($db)) {
+                $up = $db->prepare('UPDATE tblApiTokens SET ExpiresAt = ?, DeviceName = NULL, AppVersion = NULL, LastSeenAt = NULL
+                                     WHERE UserId = ? AND DeviceInstallId IS NOT NULL AND ExpiresAt > ? AND Token <> ?');
+            } else {
+                $up = $db->prepare('UPDATE tblApiTokens SET ExpiresAt = ?
+                                     WHERE UserId = ? AND DeviceInstallId IS NOT NULL AND ExpiresAt > ? AND Token <> ?');
+            }
+            $up->bind_param('siss', $ended, $userId, $now, $keep);
+            $up->execute();
+            $up->close();
+            $del = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND DeviceInstallId IS NULL AND Token <> ?');
+            $del->bind_param('is', $userId, $keep);
+            $del->execute();
+            $del->close();
+        } else {
+            $del = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token <> ?');
+            $del->bind_param('is', $userId, $keep);
+            $del->execute();
+            $del->close();
+        }
+        /* 2. the automatic sign-in keys. */
+        if (accountEnrolKeysReady($db)) {
+            $out['enrolKeys'] = accountEnrolKeyRevokeAll($db, $userId, null);
+        }
+        /* 3. the Apple push registrations. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'apns.php';   /* apnsTokensTableExists(), apnsTokenHashReady() */
+        if (apnsTokensTableExists($db)) {
+            if ($keep === '') {
+                $pd = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
+                $pd->bind_param('i', $userId);
+                $pd->execute();
+                $out['push'] = max(0, $pd->affected_rows);
+                $pd->close();
+            } elseif (apnsTokenHashReady($db)) {
+                $pd = $db->prepare($dropUntiedPush
+                    ? 'DELETE FROM tblApnsTokens WHERE UserId = ? AND (ApiTokenHash IS NULL OR ApiTokenHash <> ?)'
+                    : 'DELETE FROM tblApnsTokens WHERE UserId = ? AND ApiTokenHash IS NOT NULL AND ApiTokenHash <> ?');
+                $pd->bind_param('is', $userId, $keep);
+                $pd->execute();
+                $out['push'] = max(0, $pd->affected_rows);
+                $pd->close();
+            }
+        }
+        $db->commit();
+    } catch (\Throwable $e) {
+        try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
+        throw $e;
+    }
+    return $out;
 }
 
 /**
@@ -323,7 +709,7 @@ function apiTokenHashesForDevicePrefix(\mysqli $db, int $userId, string $deviceP
  *
  * @param mixed $body The decoded JSON request body (or a non-array, e.g.
  *                     when json_decode() failed).
- * @return array{deviceName:?string,platform:?string,appVersion:?string}
+ * @return array{deviceName:?string,platform:?string,appVersion:?string,deviceInstallId:?string}
  */
 function apiTokenDeviceMetaFromBody(mixed $body): array
 {
@@ -349,7 +735,9 @@ function apiTokenDeviceMetaFromBody(mixed $body): array
         $appVersion = ($trimmed !== '' && preg_match('/^[A-Za-z0-9.\-]{1,20}$/', $trimmed)) ? $trimmed : null;
     }
 
-    return ['deviceName' => $deviceName, 'platform' => $platform, 'appVersion' => $appVersion];
+    /* H1: the install id rides along with the other details. Anything malformed is dropped, never a failed sign-in. */
+    return ['deviceName' => $deviceName, 'platform' => $platform, 'appVersion' => $appVersion,
+            'deviceInstallId' => apiTokenCleanInstallId($body['deviceInstallId'] ?? null)];
 }
 
 /**
@@ -518,6 +906,27 @@ function apiTokenDeviceId(string $tokenHash): string
 }
 
 /**
+ * The sign-in token a request put in its `Authorization: Bearer ...` header, or null. HEADER ONLY:
+ * the `ihymns_auth` cookie is never looked at (PR 3 step H5).
+ *
+ * ELI5: a browser that is signed in carries a cookie automatically; a native app carries the token
+ * in a header it adds itself. The actions that hand out a device's own sign-in must only ever answer
+ * the second kind, so a web page (or an attacker's page riding the cookie) can never mint an app
+ * sign-in. This is also the ONE place the "what a bearer token looks like" pattern lives
+ * (`Bearer` + 64 hex characters), so apiTokenResolveBearerUser() and the device actions cannot
+ * disagree about it. An automatic sign-in key (`ihek1_...`) can never match it.
+ *
+ * Reads `HTTP_AUTHORIZATION`, then `REDIRECT_HTTP_AUTHORIZATION` (some CGI/FastCGI set-ups rename it).
+ *
+ * @return ?string the 64 lowercase-or-uppercase hex characters as sent, or null when absent/malformed
+ */
+function apiTokenBearerHeaderValue(): ?string
+{
+    $hdr = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+    return preg_match('/^Bearer\s+([a-f0-9]{64})$/i', $hdr, $m) === 1 ? $m[1] : null;
+}
+
+/**
  * Resolve an `Authorization: Bearer <token>` header (native curator apps —
  * `.claude/api-coverage-2026-08-28.md` §3 X1/X3, Batch 2) into a user row,
  * or null when no Bearer header is present or the token doesn't verify.
@@ -565,11 +974,10 @@ function apiTokenDeviceId(string $tokenHash): string
  */
 function apiTokenResolveBearerUser(\mysqli $db): ?array
 {
-    $hdr = (string)($_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
-    if (!preg_match('/^Bearer\s+([a-f0-9]{64})$/i', $hdr, $m)) {
+    $token = apiTokenBearerHeaderValue();
+    if ($token === null) {
         return null;
     }
-    $token = $m[1];
 
     try {
         $hashedToken = hash('sha256', $token);

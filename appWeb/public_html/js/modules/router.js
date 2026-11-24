@@ -31,6 +31,7 @@ import {
     STORAGE_SEARCH_HISTORY,
     STORAGE_RECENT_SONGBOOKS,
     EVT_AUTH_CHANGED,
+    WEB_DEVICE_DETAILS,
 } from '../constants.js';
 
 /**
@@ -1406,7 +1407,7 @@ export class Router {
                     'Content-Type': 'application/json',
                     'X-Requested-With': 'XMLHttpRequest',
                 },
-                body: JSON.stringify({ token }),
+                body: JSON.stringify({ token, ...WEB_DEVICE_DETAILS }),
             });
 
             const data = await res.json();

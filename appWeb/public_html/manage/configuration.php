@@ -1276,6 +1276,45 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_profile_sync] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_device_signin') {
+            /* Per-channel switch for ONE SIGN-IN PER DEVICE (account/profile rewrite PR 3, H2):
+               each Apple device swaps the shared sign-in for its own, can be signed out alone, and
+               may keep an automatic sign-in key in iCloud Keychain. ONE setting, the ticked subset of
+               {alpha,beta,production} it is ON for, stored as CSV like the cards above (shared shape,
+               rule #22). OFF by default: no row means 'none', so deploying changes nothing. An empty
+               tick-set stores the literal 'none' (never ''), because setAppSetting() reads '' as
+               "unset". The page's CSRF check and the manage_configuration entitlement above already
+               cover this action. Requires device_signin_gate.php for the key (rule #35). */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_signin_gate.php';
+            try {
+                /* Posted field name is deliberately DIFFERENT from the settings-key literal,
+                   so a tree-wide scan for that quoted key finds it in exactly one file. */
+                $postedDsChans = (array)($_POST['device_signin_ch'] ?? []);
+                $validDsChans  = ['alpha', 'beta', 'production'];
+                $dsChansOut    = [];
+                foreach ($postedDsChans as $c) {
+                    $c = trim((string)$c);
+                    if (in_array($c, $validDsChans, true) && !in_array($c, $dsChansOut, true)) {
+                        $dsChansOut[] = $c;
+                    }
+                }
+                $dsCsv = $dsChansOut === [] ? 'none' : implode(',', $dsChansOut);
+                $saveSetting($db, DEVICE_SIGNIN_SETTING_KEY, $dsCsv);
+                if (function_exists('logActivity')) {
+                    logActivity('app_setting.update', 'app_setting', DEVICE_SIGNIN_SETTING_KEY,
+                        ['channels' => $dsCsv], 'success');
+                }
+                $dsNameFor = static fn(string $c): string => $c === 'alpha' ? 'Alpha (dev)' : ucfirst($c);
+                $dsOnNames  = array_map($dsNameFor, $dsChansOut);
+                $dsOffNames = array_map($dsNameFor, array_diff($validDsChans, $dsChansOut));
+                $saveSuccess = 'Saved. A sign-in for each device is on for: '
+                    . ($dsOnNames === [] ? 'none' : implode(', ', $dsOnNames))
+                    . '. Off: ' . ($dsOffNames === [] ? 'none' : implode(', ', $dsOffNames))
+                    . '. A site that is off carries on exactly as before.';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_device_signin] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         } elseif ($action === 'save_account_writes') {
             /* Per-channel switch for WRITING into real accounts (account/profile
                rewrite C1, decision O3): the emergency brake that stops a test
@@ -1401,6 +1440,13 @@ $crossSyncChannels = ihymns_parse_channels_csv(
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'profile_sync_gate.php';
 $profileSyncChannels = ihymns_parse_channels_csv(
     (string)(getAppSetting(PROFILE_SYNC_SETTING_KEY, PROFILE_SYNC_DEFAULT) ?? PROFILE_SYNC_DEFAULT)
+);
+
+/* One sign-in per device (account/profile rewrite PR 3 H2) — read through the SAME constant and parse the
+   runtime switch uses, so this card can never disagree with what actually happens. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_signin_gate.php';
+$deviceSigninChannels = ihymns_parse_channels_csv(
+    (string)(getAppSetting(DEVICE_SIGNIN_SETTING_KEY, DEVICE_SIGNIN_DEFAULT) ?? DEVICE_SIGNIN_DEFAULT)
 );
 
 /* Account writes (account/profile rewrite C1) — read through the SAME constant and parse the
@@ -1873,6 +1919,61 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <button type="submit" class="btn btn-primary">
                     <i aria-hidden="true" class="bi bi-save me-1"></i>Save account behaviour switch
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         ONE SIGN-IN PER DEVICE — per-channel switch (account/profile rewrite PR 3 H2)
+         =========================== -->
+    <div class="card bg-body-tertiary border-secondary mb-4" id="device-signin">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i aria-hidden="true" class="bi bi-phone me-2"></i>A sign-in for each device
+            </h2>
+            <span class="badge <?= $deviceSigninChannels === [] ? 'bg-secondary' : 'bg-success' ?>">
+                <?= $deviceSigninChannels === [] ? 'Off everywhere' : 'On for ' . count($deviceSigninChannels) . ' of 3 sites' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-2">
+                When this is on for a site, each Apple device a person uses gets its own sign-in in place of
+                the one they all shared. One device can then be signed out without touching the others, and
+                the web gets a &ldquo;Sign out everywhere&rdquo; button. A person can also let their other Apple
+                devices sign in by themselves, using a key kept in their iCloud Keychain; they can turn that off.
+            </p>
+            <p class="small text-secondary mb-3">
+                All three sites share one set of accounts, so please run the
+                <strong>Account and profile foundation</strong> card on the database page first.
+                Until it has been run, ticking a site here changes nothing. Un-ticking a site stops new
+                device sign-ins and keys on that site straight away; apps simply carry on with the sign-in
+                they already have. <strong>Tick Production before the first TestFlight or App Store upload</strong>
+                (App Review uses Production). Off by default.
+            </p>
+            <form method="post">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_device_signin">
+                <div class="mb-2">
+                    <label class="form-label mb-1" id="device-signin-channels-label">Switched on for</label>
+                    <div class="d-flex flex-column gap-2" role="group" aria-labelledby="device-signin-channels-label">
+                        <?php foreach (['production' => 'Production (ihymns.app)', 'beta' => 'Beta (beta.ihymns.app)', 'alpha' => 'Alpha &mdash; dev (dev.ihymns.app)'] as $dsOpt => $dsLabel): ?>
+                            <div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" role="switch" name="device_signin_ch[]"
+                                       value="<?= $dsOpt ?>" id="ds_ch_<?= $dsOpt ?>"<?= in_array($dsOpt, $deviceSigninChannels, true) ? ' checked' : '' ?>>
+                                <label class="form-check-label" for="ds_ch_<?= $dsOpt ?>">
+                                    <?= $dsLabel /* fixed, safe strings from the loop above: no user input */ ?>
+                                    <?php if ($dsOpt === $envCurrent): ?><span class="badge bg-info text-dark ms-1">this site</span><?php endif; ?>
+                                </label>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    <div class="form-text">
+                        Suggested order: dev, then beta, test with a real Apple device, then Production last.
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i aria-hidden="true" class="bi bi-save me-1"></i>Save device sign-in switch
                 </button>
             </form>
         </div>

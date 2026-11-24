@@ -403,6 +403,16 @@ operator action (an un-run migration, or schema drift). It never falls back to a
 - **Delete** — Settings → Your data → *Delete my account*. The person gives a password (or an emailed code) and types `DELETE`; the page posts to `account_delete`, which is the same erasure the apps use. A paused site (409 `account_writes_off_here`) is explained in plain words. Both export and web deletion are NOT behind the account sync switch.
 - **Sign out** — where the new account sync is switched on, signing out sends what is waiting, asks if anything still has not reached the account (try again / sign out anyway / stay signed in), then clears this browser's personal data. Display settings stay. Where the switch is off, sign-out is unchanged. Code: `js/modules/sign-out-guard.js`, `clearPersonalDataAtSignOut()` in `js/modules/account-data-owner.js`.
 
+### One sign-in per device (account rewrite PR 3a, server side)
+
+Each device can hold its own sign-in, so one device signs out without touching the others. It is **off until an admin ticks a channel** under `device_signin_channels` on `/manage/configuration` (default none; fails closed).
+
+- **How it works:** an app that still holds the shared older sign-in calls `auth_device_enrol` and gets one of its own (tied to a random install id the app makes once) and, unless it asks not to, an automatic sign-in key (`ihek1_` + 64 hex, shown once, only its hash stored, 180 days from last use, at most 5 live per person and platform) to keep in iCloud Keychain. A new device with no sign-in calls `auth_enrol_key_redeem`. A device that signed in by hand can call `auth_enrol_key_create`. The shared sign-in is never revoked by a swap, so older app copies keep working.
+- **Signing out:** one device (`device_signout`, `auth_logout`) or everywhere (`auth_signout_everywhere`, also the web button *Settings > Signed-in devices > Sign out everywhere*). Sign out everywhere, a password change or reset, an admin password change and switching an account off all go through one function, which also cancels the keys and removes the Apple push registrations. *Turn off* (`auth_enrol_keys_revoke`) cancels only the keys.
+- **A device that was signed out, or ran out after 30 days unused, can not sign itself back in with its key.** Its ended sign-in is kept as a small note (name blanked, expiry in the past) for 180 days; the key swap answers the same `401 enrol_key_invalid` for it as for any unusable key.
+- **Answers are by HTTP status plus a `reason` word:** 400 `bearer_required` / `invalid_install_id` / `invalid_platform` / `malformed_enrol_key`; 401 (`enrol_key_invalid`); 403 `csrf` / `install_mismatch` / `not_a_shared_app_sign_in` / `install_signed_out` / `device_token_required` / `enrol_key_platform_unsupported`; 409 `device_signin_disabled` / `device_signin_not_ready` / `already_enrolled`; 429. The enrol and key-create actions need the `Authorization` header (a browser cookie can never mint an app sign-in), and none of the actions sets a cookie.
+- Full status table: `api-docs.yaml`; design to copy to other projects: `.claude/analysis/per-device-sign-in-design.md`. The Apple app side is not built yet.
+
 ### Key files
 
 | File | Role |

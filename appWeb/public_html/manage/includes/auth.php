@@ -313,11 +313,17 @@ function adoptApiTokenSession(): bool
             $nowTs    = time();
             $newCapTs = $nowTs + 30 * 86400;
             if ($capTs && ($newCapTs - $capTs) >= 86400) {
+                /* Security review finding 2: only a sign-in that is STILL live may be renewed. Without
+                   `ExpiresAt > now`, a renewal that was already under way when the person signed out
+                   (a sign-out sets the expiry to a second ago) would write a fresh 30 days over the
+                   ended row and bring the sign-in back to life. The check is part of the same UPDATE,
+                   so there is no gap between "is it live?" and "renew it". */
                 $stmt = $db->prepare(
-                    'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ?'
+                    'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ? AND ExpiresAt > ?'
                 );
                 $newCap = gmdate('Y-m-d H:i:s', $newCapTs);
-                $stmt->bind_param('sss', $newCap, $hashedToken, $newCap);
+                $nowStr = gmdate('Y-m-d H:i:s', $nowTs);
+                $stmt->bind_param('ssss', $newCap, $hashedToken, $newCap, $nowStr);
                 $stmt->execute();
                 $stmt->close();
             }
@@ -1134,11 +1140,10 @@ function resetPassword(string $token, string $newPassword): bool
     $stmt->execute();
     $stmt->close();
 
-    /* Invalidate all API tokens for this user (force re-login) */
-    $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
-    $stmt->bind_param('i', $resetUserId);
-    $stmt->execute();
-    $stmt->close();
+    /* Invalidate all API tokens for this user (force re-login). PR 3 H4: through the ONE door, which
+       also cancels their automatic sign-in keys and Apple push registrations. */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
+    apiTokenRevokeAllForUser($db, $resetUserId, null, 'password_reset');
 
     /* Audit (#535). Note PasswordHash itself never goes into Details
        per the privacy contract in project-rules.md §10. */
@@ -1426,11 +1431,9 @@ function changeUserPassword(int $userId, string $newPassword): bool
     $stmt->execute();
     $stmt->close();
 
-    /* Invalidate all API tokens (force re-login) */
-    $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
-    $stmt->bind_param('i', $userId);
-    $stmt->execute();
-    $stmt->close();
+    /* Invalidate all API tokens (force re-login). PR 3 H4: the ONE door (also cancels automatic sign-in keys + push). */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
+    apiTokenRevokeAllForUser($db, $userId, null, 'password_change_admin');
 
     /* Session-fixation defence (#531) — if the password change applies
        to the current /manage/ session, rotate the PHP session ID
@@ -1656,10 +1659,9 @@ function setUserActive(int $userId, bool $isActive): bool
 
     /* If deactivating, invalidate all their tokens */
     if (!$isActive) {
-        $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
-        $stmt->bind_param('i', $userId);
-        $stmt->execute();
-        $stmt->close();
+        /* PR 3 H4: the ONE door (also cancels automatic sign-in keys + push). */
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
+        apiTokenRevokeAllForUser($db, $userId, null, 'deactivated');
 
         /* #1698 — end any Live Follow session this user is HOSTING. The auth
            lock already stops them broadcasting further, but a session left
@@ -2105,9 +2107,11 @@ function verifyEmailLoginCode(string $email, string $code): ?array
  *                                 null).
  * @param string|null $platform    #1409 OPTIONAL 'apple'|'android'|'web'.
  * @param string|null $appVersion  #1409 OPTIONAL client app version string.
+ * @param string|null $installId   PR 3 step H1: OPTIONAL install id; mints inside the login transaction so
+ *                                 the same install's older sign-in is replaced atomically.
  * @return array{token: string, user: array} Bearer token and user info
  */
-function completeEmailLogin(string $email, ?int $userId, ?string $deviceName = null, ?string $platform = null, ?string $appVersion = null): array
+function completeEmailLogin(string $email, ?int $userId, ?string $deviceName = null, ?string $platform = null, ?string $appVersion = null, ?string $installId = null): array
 {
     $db = getDbMysqli();
 
@@ -2121,7 +2125,7 @@ function completeEmailLogin(string $email, ?int $userId, ?string $deviceName = n
        no-ops but the explicit null-guard still prevents the crash.) */
     $db->begin_transaction();
     try {
-        $result = _completeEmailLoginTxn($db, $email, $userId);
+        $result = _completeEmailLoginTxn($db, $email, $userId, $installId);
         $db->commit();
     } catch (\Throwable $e) {
         try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
@@ -2150,7 +2154,7 @@ function completeEmailLogin(string $email, ?int $userId, ?string $deviceName = n
  *
  * @return array{token: string, user: array}
  */
-function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId): array
+function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId, ?string $installId = null): array
 {
     if ($userId === null) {
         /* Create a new user from the email address */
@@ -2251,7 +2255,9 @@ function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId): array
        does not write it itself. */
     /* C3 (epic #2180): through the ONE token maker; `null` meta because the caller
        writes the device details after this transaction (see above). */
-    $token = apiTokenMint($db, (int)$userId, null, 'email');
+    /* H1: the install id (when the app sent one) is recorded here, inside this transaction; a named
+       argument skips the by-reference expiry. */
+    $token = apiTokenMint($db, (int)$userId, null, 'email', installId: $installId);
 
     return [
         'token' => $token,

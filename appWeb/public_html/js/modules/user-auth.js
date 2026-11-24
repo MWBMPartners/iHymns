@@ -17,7 +17,7 @@ import { userHasEntitlement } from './entitlements.js';
 import { offlineQueue } from './offline-queue.js';
 import {
     STORAGE_AUTH_TOKEN, STORAGE_AUTH_USER, EVT_AUTH_CHANGED,
-    STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT, STORAGE_STASH_PREFIX,
+    STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT, STORAGE_STASH_PREFIX, WEB_DEVICE_DETAILS,
 } from '../constants.js';
 import { performAppleSignIn } from './apple-signin.js';
 import { reconcileDataOwner, recordDataOwner, protectOnUnplannedSignOut, clearPersonalDataAtSignOut, removeStash } from './account-data-owner.js';
@@ -356,7 +356,7 @@ export class UserAuth {
      *                     verificationEmailProvider?: string }>}
      */
     async register(username, password, displayName, email = '') {
-        const payload = { username, password, display_name: displayName };
+        const payload = { username, password, display_name: displayName, ...WEB_DEVICE_DETAILS };   /* a browser says it is the web (rule #55) */
         if (email) payload.email = email;
         /* #947/#340 — attach the solved CAPTCHA token when the registration
            form is gated. this._captchaWidgets.registration is only truthy
@@ -393,7 +393,7 @@ export class UserAuth {
      * @returns {Promise<{ success: boolean, error?: string }>}
      */
     async login(username, password) {
-        const payload = { username, password };
+        const payload = { username, password, ...WEB_DEVICE_DETAILS };   /* a browser says it is the web (rule #55) */
         /* #947/#340 — see register() above. */
         if (this._captchaWidgets?.login) {
             payload[CAPTCHA_BODY_KEY] = this._captchaWidgets.login.getToken();
@@ -418,20 +418,29 @@ export class UserAuth {
      * of the person's personal data, but only after sending whatever is waiting and, if something still has not reached
      * the account, asking first (see sign-out-guard.js). Where it is off, this is exactly what it always was.
      *
-     * @returns {Promise<{signedOut: boolean}>} signedOut false = the person chose to stay signed in; nothing was changed
+     * PR 3 H6: `logout({ everywhere: true })` is "Sign out everywhere". It asks the same unsent-changes question first,
+     * then asks the server to end every sign-in the person has (and cancel their automatic sign-in keys). It goes on to sign
+     * this browser out only when the server answered 200 (done) or 401 (this sign-in was already dead, so it is signed out
+     * anyway). If the server could not be reached, or answered 5xx, 403 (the same-origin check) or 429, the person STAYS
+     * signed in and is told the other devices were NOT signed out; nothing is cleared. The decision is on the HTTP status
+     * only (rule #35), never on the server's sentence.
+     *
+     * @param {{everywhere?: boolean}} [opts]
+     * @returns {Promise<{signedOut: boolean, failed?: boolean, status?: number}>} signedOut false = the person chose to stay
+     *   signed in (nothing was changed), or `failed` is true = a sign out everywhere could not be done (nothing was changed)
      */
-    async logout() {
+    async logout(opts = {}) {
         /* A second click while the first is still asking must not open a second question (or clear twice). */
         if (this._signOutInProgress) return { signedOut: false };
         this._signOutInProgress = true;
         try {
-            return await this._logoutOnce();
+            return await this._logoutOnce(opts);
         } finally {
             this._signOutInProgress = false;
         }
     }
 
-    async _logoutOnce() {
+    async _logoutOnce({ everywhere = false } = {}) {
         const guarded = signOutGuardActive(this.app);
         /* Who is signing out, read BEFORE anything is sent: if the sign-in is refused while the changes are going out, the
            person is signed out by that and getUser() is empty afterwards, but their data has been set aside under this id. */
@@ -439,17 +448,37 @@ export class UserAuth {
         if (guarded && this.isLoggedIn()) {
             if ((await confirmSignOut(this.app, { uid })) !== 'go') return { signedOut: false };
         }
-        try {
-            await apiFetch(`${this.app.config.apiUrl}?action=auth_logout`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
-                    ...this.authHeaders(),
-                },
-            });
-        } catch {
-            /* Non-critical — clear local creds regardless */
+        if (everywhere) {
+            /* Sign out everywhere: the other devices are only really signed out if the server says so. */
+            let status = 0;
+            try {
+                const res = await apiFetch(`${this.app.config.apiUrl}?action=auth_signout_everywhere`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        ...this.authHeaders(),
+                    },
+                    body: JSON.stringify({}),
+                });
+                status = res.status;
+            } catch {
+                status = 0;   /* the network is down */
+            }
+            if (status !== 200 && status !== 401) return { signedOut: false, failed: true, status };
+        } else {
+            try {
+                await apiFetch(`${this.app.config.apiUrl}?action=auth_logout`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        ...this.authHeaders(),
+                    },
+                });
+            } catch {
+                /* Non-critical — clear local creds regardless */
+            }
         }
 
         /* Cleared BEFORE the sign-in is forgotten, so the pages that redraw on the sign-out announcement already see an empty browser. */
@@ -1537,7 +1566,7 @@ export class UserAuth {
             const r = await apiFetch(`${this.app.config.apiUrl}?action=auth_email_login_verify`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body: JSON.stringify({ token }),
+                body: JSON.stringify({ token, ...WEB_DEVICE_DETAILS }),
             });
             const data = await r.json().catch(() => ({}));
             if (r.ok && data.token && data.user) {
@@ -2404,7 +2433,7 @@ export class UserAuth {
                         'Content-Type': 'application/json',
                         'X-Requested-With': 'XMLHttpRequest',
                     },
-                    body: JSON.stringify({ email: emailLoginAddress, code }),
+                    body: JSON.stringify({ email: emailLoginAddress, code, ...WEB_DEVICE_DETAILS }),
                 });
 
                 const data = await res.json();
