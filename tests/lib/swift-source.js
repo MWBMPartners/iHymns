@@ -172,6 +172,19 @@ export function callArguments(code, name) {
     return out;
 }
 
+/**
+ * The text between the braces that open at `openIndex` (which must point at a `{`), balanced, in already-stripped
+ * code. Returns {start, end, text} (offsets of the braces) or null.
+ */
+export function braceBlock(code, openIndex) {
+    let depth = 0;
+    for (let i = openIndex; i < code.length; i++) {
+        if (code[i] === '{') depth++;
+        else if (code[i] === '}') { depth--; if (depth === 0) return { start: openIndex, end: i, text: code.slice(openIndex + 1, i) }; }
+    }
+    return null;
+}
+
 /** Throws if the helpers above cannot do their job. Run by each guard before trusting them. */
 export function selfTest() {
     const fail = (m) => { throw new Error('swift-source self-test: ' + m); };
@@ -190,6 +203,8 @@ export function selfTest() {
     if (!f.includes('x // inside')) fail('a multi-line string lost its content');
     const calls = callArguments('foo(a, bar(b), c)\nfunc foo(x: Int) {}', 'foo');
     if (calls.length !== 1 || calls[0].args !== 'a, bar(b), c') fail('callArguments mis-sliced: ' + JSON.stringify(calls));
+    const bb = braceBlock('x { a { b } c } y', 2);
+    if (!bb || bb.text.trim() !== 'a { b } c') fail('braceBlock mis-sliced: ' + JSON.stringify(bb));
     let threw = false;
     try { callArguments('foo(a, (b', 'foo'); } catch { threw = true; }
     if (!threw) fail('an unbalanced call was not caught');

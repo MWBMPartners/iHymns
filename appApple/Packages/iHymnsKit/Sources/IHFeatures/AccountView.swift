@@ -24,6 +24,15 @@
 // harmless one) that presents `AccountDeleteView` — its own re-auth-gated
 // confirmation flow — as a sheet, exactly mirroring how `isPresentingLogin`
 // already presents `LoginView` below.
+//
+// PR 3b (I2d, #2180) UPDATE — one sign-in per device. When the site has it
+// switched on, a "Your devices" section adds "Sign out everywhere" (always
+// asked about first, because it signs out every Apple device the person owns)
+// and a switch "Sign in automatically on my other Apple devices" (off cancels
+// every automatic sign-in key; on makes one). The section is drawn only from
+// what `AppRootViewModel.deviceSignInStatus()` says, never assumed. A failed
+// sign-out-everywhere says plainly that the OTHER devices were not signed out
+// and leaves this one signed in, mirroring the web Devices card.
 import IHAPI
 import IHAuth
 import IHModels
@@ -38,6 +47,10 @@ public struct AccountView: View {
     @State private var isPresentingDeleteAccount = false
     @State private var isSigningOut = false
     @State private var errorMessage: String?
+    @State private var deviceStatus: DeviceSignInStatus?
+    @State private var isConfirmingSignOutEverywhere = false
+    @State private var isSigningOutEverywhere = false
+    @State private var isChangingAutomaticSignIn = false
 
     public init(rootViewModel: AppRootViewModel) {
         self.rootViewModel = rootViewModel
@@ -46,7 +59,10 @@ public struct AccountView: View {
     public var body: some View {
         content
             .navigationTitle("Account")
-            .task { await rootViewModel.refreshCurrentUser() }
+            .task {
+                await rootViewModel.refreshCurrentUser()
+                deviceStatus = await rootViewModel.deviceSignInStatus()
+            }
             .sheet(isPresented: $isPresentingLogin) {
                 LoginView(rootViewModel: rootViewModel)
             }
@@ -90,6 +106,10 @@ public struct AccountView: View {
                 .disabled(isSigningOut)
             }
 
+            if deviceStatus?.switchedOn == true {
+                devicesSection
+            }
+
             // Deliberately its OWN `Section`, below (never beside) "Sign
             // Out" — an irreversible, whole-account deletion must read as
             // categorically more serious than a harmless sign-out.
@@ -105,6 +125,50 @@ public struct AccountView: View {
             } header: {
                 Text("Danger Zone")
             }
+        }
+    }
+
+    /// The "Your devices" section (PR 3b, I2d): drawn only when the site has
+    /// one sign-in per device switched on.
+    private var devicesSection: some View {
+        Section {
+            if deviceStatus?.canOfferAutomaticSignIn == true {
+                Toggle(
+                    "Sign in automatically on my other Apple devices",
+                    isOn: Binding(
+                        get: { deviceStatus?.keyHeld == true && deviceStatus?.automaticSignInOff == false },
+                        set: { newValue in Task { await setAutomaticSignIn(newValue) } }
+                    )
+                )
+                .disabled(isChangingAutomaticSignIn)
+            }
+            Button(role: .destructive) {
+                // Never signs out directly: it signs out EVERY Apple device, so it is asked about first.
+                isConfirmingSignOutEverywhere = true
+            } label: {
+                if isSigningOutEverywhere {
+                    ProgressView()
+                } else {
+                    Text("Sign Out Everywhere")
+                }
+            }
+            .disabled(isSigningOutEverywhere)
+            .confirmationDialog(
+                "Sign out everywhere?",
+                isPresented: $isConfirmingSignOutEverywhere,
+                titleVisibility: .visible
+            ) {
+                Button("Sign Out Everywhere", role: .destructive) {
+                    Task { await signOutEverywhere() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This signs you out on every device, including this one. You will need to sign in again on each.")
+            }
+        } header: {
+            Text("Your devices")
+        } footer: {
+            Text("Each device has its own sign-in. Automatic sign-in lets a new Apple device on your iCloud account sign in without asking. Turn it off to stop that.")
         }
     }
 
@@ -148,6 +212,33 @@ public struct AccountView: View {
             Button("Sign In") { isPresentingLogin = true }
                 .buttonStyle(.borderedProminent)
         }
+    }
+
+    /// Signs every device out. A failure leaves THIS device signed in and says
+    /// so: the other devices were not signed out, and the person can retry.
+    private func signOutEverywhere() async {
+        errorMessage = nil
+        isSigningOutEverywhere = true
+        defer { isSigningOutEverywhere = false }
+        do {
+            try await rootViewModel.signOutEverywhere()
+        } catch {
+            errorMessage = "Your other devices were not signed out. Check your connection and try again."
+        }
+    }
+
+    /// Flips automatic sign-in, then re-reads the status so the switch shows
+    /// what is really true (a failed change leaves it where it was).
+    private func setAutomaticSignIn(_ enabled: Bool) async {
+        errorMessage = nil
+        isChangingAutomaticSignIn = true
+        defer { isChangingAutomaticSignIn = false }
+        do {
+            try await rootViewModel.setAutomaticSignIn(enabled: enabled)
+        } catch {
+            errorMessage = "Could not change automatic sign-in. Check your connection and try again."
+        }
+        deviceStatus = await rootViewModel.deviceSignInStatus()
     }
 
     private func signOut() async {
