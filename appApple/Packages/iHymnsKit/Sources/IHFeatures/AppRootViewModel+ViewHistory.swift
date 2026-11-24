@@ -5,18 +5,19 @@
 // up in their history on every device and the website), and reads that history
 // back.
 //
-// DETAILED: PR 3b step I3 (#2180). The three calls are thin pass-throughs to
-// `APIClient`, in the same "every screen talks to the engines through the one
-// root view model" shape as the other `AppRootViewModel+*.swift` files. Two
-// decisions worth knowing:
-//   - A view is reported ONLY while signed in. The server also accepts
-//     anonymous views (they feed site-wide popularity), but sending them from
-//     the app would be a new, silent usage report this app has never made, and
-//     the app's analytics have their own consent switch (`IHAnalyticsService`).
-//     A signed-in person's own history is account data, which they have chosen
-//     to keep on the server. If the owner wants anonymous counts too, that is
-//     an owner decision to add later (it would also need an optional-auth
-//     endpoint, since `Endpoint.requiresAuth` is all-or-nothing today).
+// DETAILED: PR 3b step I3 (#2180), widened by the owner on 2026-11-24. The
+// three calls are thin pass-throughs to `APIClient`, in the same "every screen
+// talks to the engines through the one root view model" shape as the other
+// `AppRootViewModel+*.swift` files. Two decisions worth knowing:
+//   - A view is reported whether or not anyone is signed in, like the website.
+//     Signed in, it carries the sign-in and lands in that person's own history.
+//     Signed out, it carries no sign-in and no person at all, only this
+//     install's random id (`device_id`), which the server uses to limit how
+//     fast one device can report and does not keep with the view. Song views
+//     are not the analytics events (`IHAnalyticsService`): they feed the site's
+//     popular list, as the website's do, so the analytics consent switch does
+//     not apply to them. The call uses `Endpoint.optionalAuth` (send the
+//     sign-in if there is one), because `requiresAuth` is all-or-nothing.
 //   - Reporting is fire-and-forget: a failure, a 429 ("too many views") or no
 //     connection is ignored on purpose. A missed view costs one line of
 //     history; it must never show an error or slow a song down.
@@ -25,13 +26,17 @@ import IHAPI
 import IHModels
 
 extension AppRootViewModel {
-    /// Reports one view of `songId` to the server, if signed in. Every failure is ignored.
+    /// Reports one view of `songId` to the server, signed in or not. Every failure is ignored.
     ///
-    /// ELI5: "Tell the server I opened this song, if I am signed in; if that fails, never mind."
+    /// ELI5: "Tell the server I opened this song; if that fails, never mind."
     func reportSongView(_ songId: SongID) async {
-        guard sessionState.isSignedIn else { return }
+        // Signed out: send this install's random id for the server's per-device limit. Signed in: the person is the key.
+        var deviceId: String?
+        if !sessionState.isSignedIn {
+            deviceId = await sessionController.installIdIfAvailable()
+        }
         // Ignored on purpose: see this file's header (429, offline, maintenance are all fine to drop).
-        try? await apiClient.songView(songId: songId)
+        try? await apiClient.songView(songId: songId, deviceId: deviceId)
     }
 
     /// The signed-in person's recently viewed songs, newest first. Empty while

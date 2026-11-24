@@ -1,8 +1,8 @@
 // AppRootViewModelViewHistoryTests.swift
 // IHFeaturesTests
 //
-// ELI5: Checks the app tells the server about a song view only when signed in,
-// ignores every failure, and reads the history back (or gets nothing when it
+// ELI5: Checks the app tells the server about a song view whether or not anyone
+// is signed in, ignores every failure, and reads the history back (or gets nothing when it
 // is not available).
 //
 // DETAILED: PR 3b step I3 (#2180). `reportSongView(_:)` is called directly
@@ -57,13 +57,17 @@ struct AppRootViewModelViewHistoryTests {
         for _ in 0..<200 where !viewModel.sessionState.isSignedIn { await Task.yield() }
     }
 
-    @Test("A view is reported while signed in, as an authenticated song_view POST")
+    @Test("A view is reported while signed in, as a song_view POST carrying the sign-in")
     func reportsWhileSignedIn() async throws {
         try await MockTransportLock.shared.withLock { () async throws in
             defer { MockURLProtocol.requestHandler = nil }
             let counter = LockedCounter()
+            let authorized = LockedCounter()
             MockURLProtocol.requestHandler = { request in
-                if Self.action(of: request) == "song_view" { counter.increment() }
+                if Self.action(of: request) == "song_view" {
+                    counter.increment()
+                    if request.value(forHTTPHeaderField: "Authorization") == "Bearer t" { authorized.increment() }
+                }
                 return (Self.response(status: 200), Data(#"{"ok":true}"#.utf8))
             }
             let viewModel = try await makeViewModel()
@@ -73,21 +77,46 @@ struct AppRootViewModelViewHistoryTests {
             await viewModel.reportSongView(songId)
 
             #expect(counter.current == 1)
+            #expect(authorized.current == 1)
         }
     }
 
-    @Test("Nothing is reported while signed out")
-    func silentWhileSignedOut() async throws {
+    @Test("A view is reported while signed out too, with no Authorization header")
+    func reportsWhileSignedOut() async throws {
         try await MockTransportLock.shared.withLock { () async throws in
             defer { MockURLProtocol.requestHandler = nil }
             let counter = LockedCounter()
-            MockURLProtocol.requestHandler = { _ in counter.increment(); return (Self.response(status: 200), Data()) }
+            let withAuthorization = LockedCounter()
+            MockURLProtocol.requestHandler = { request in
+                if Self.action(of: request) == "song_view" {
+                    counter.increment()
+                    if request.value(forHTTPHeaderField: "Authorization") != nil { withAuthorization.increment() }
+                }
+                return (Self.response(status: 200), Data(#"{"ok":true}"#.utf8))
+            }
             let viewModel = try await makeViewModel()
             let songId = try #require(SongID(rawValue: "MP-1008"))
 
             await viewModel.reportSongView(songId)
 
-            #expect(counter.current == 0)
+            #expect(counter.current == 1)
+            #expect(withAuthorization.current == 0)
+        }
+    }
+
+    @Test("A signed-out failure (429, offline) is ignored and never thrown")
+    func signedOutFailuresAreIgnored() async throws {
+        try await MockTransportLock.shared.withLock { () async throws in
+            defer { MockURLProtocol.requestHandler = nil }
+            let viewModel = try await makeViewModel()
+            let songId = try #require(SongID(rawValue: "MP-1008"))
+
+            MockURLProtocol.requestHandler = { _ in (Self.response(status: 429), Data()) }
+            await viewModel.reportSongView(songId)
+            MockURLProtocol.requestHandler = { _ in (Self.response(status: 503), Data()) }
+            await viewModel.reportSongView(songId)
+            // Reaching here without a throw is the assertion: `reportSongView` has no `throws`.
+            #expect(await viewModel.sessionState.isSignedIn == false)
         }
     }
 

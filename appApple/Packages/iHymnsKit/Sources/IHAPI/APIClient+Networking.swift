@@ -128,7 +128,7 @@ extension APIClient {
             let request = Self.makeURLRequest(
                 for: endpoint,
                 in: environment,
-                bearerToken: endpoint.requiresAuth ? bearerToken : nil,
+                bearerToken: endpoint.requiresAuth || endpoint.optionalAuth ? bearerToken : nil,
                 presenceToken: servicePresenceToken
             )
 

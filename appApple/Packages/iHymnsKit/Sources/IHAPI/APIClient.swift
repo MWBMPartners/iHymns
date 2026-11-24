@@ -217,7 +217,7 @@ public actor APIClient {
         // that never sends this keeps receiving legacy bare payloads.
         request.setValue("2", forHTTPHeaderField: "X-API-Version")
 
-        if endpoint.requiresAuth, let bearerToken {
+        if endpoint.requiresAuth || endpoint.optionalAuth, let bearerToken {
             request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
         }
 
