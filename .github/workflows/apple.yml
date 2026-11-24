@@ -46,6 +46,18 @@ concurrency:
 
 jobs:
   build:
+    # Owner decision 2026-11-24: run the Apple build on GitHub only while it is
+    # FREE, and make it a local run when GitHub would charge for it.
+    #   * Public repository  -> macOS minutes are not billed, so it runs on every
+    #     appApple pull request as before.
+    #   * Private repository -> macOS minutes cost 10 times as much, so the job is
+    #     skipped on pull requests; the owner's local check
+    #     (.claude/apple-local-builds-plan.md) is the gate instead.
+    #   * Starting it by hand (workflow_dispatch) always works either way.
+    # `github.event.repository.private` is GitHub's own answer, read at run time,
+    # so nothing needs editing if the repository's visibility ever changes.
+    # A skipped job reports as skipped, and this check is not a required check.
+    if: ${{ github.event.repository.private == false || github.event_name == 'workflow_dispatch' }}
     runs-on: macos-26
     timeout-minutes: 40
     steps:
