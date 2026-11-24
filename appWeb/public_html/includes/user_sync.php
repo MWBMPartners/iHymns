@@ -475,8 +475,8 @@ if (!function_exists('userSyncSetlistRowUnchanged')) {
      * the write path's preserve semantics:
      *   - Name / SongsJson byte-compare soundly (MEDIUMTEXT stores exactly the
      *     bytes our own two funnels encoded — same encoder both sides).
-     *   - ExpiresAt only when the column is live (else the write never touches
-     *     it), compared as 19-char-or-null.
+     *   - ExpiresAt only when the column is live AND the client sent the key
+     *     (else the write never touches it), compared as 19-char-or-null.
      *   - Plan only when the client STATED one ($planProvided = array_key_exists
      *     'plan'); compared through the canonical encode∘decode fold, NEVER by
      *     bytes — SlotsJson is a JSON column MySQL re-normalises, so a byte
@@ -491,7 +491,9 @@ if (!function_exists('userSyncSetlistRowUnchanged')) {
      * @param array<string,mixed> $srv          the stored row (SELECT snapshot)
      * @param string              $name         the incoming, already-trimmed name
      * @param string              $songsJson    the incoming encoded songs
-     * @param bool                $expiryReady  is the ExpiresAt column live?
+     * @param bool                $expiryReady  true only when the column is live AND the
+     *                                          client STATED expiresAt (#2207: an absent key is
+     *                                          "no opinion", so the expiry is not compared)
      * @param ?string             $expiresAt    the incoming expiry (19-char/null)
      * @param bool                $planProvided did the client state a plan key?
      * @param ?string             $planJson     the incoming encoded plan

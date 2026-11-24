@@ -4471,6 +4471,45 @@ if ($action !== null) {
                 }
             }
 
+            /* #2207 — THE SAME "PRESENT vs ABSENT" RULE, NOW FOR EXPIRY.
+               ------------------------------------------------------------------
+               ELI5: if the app told us about the expiry date we save what it
+               said (an empty value clears it); if it never mentioned expiry we
+               leave the saved date alone.
+
+               The statements above write `ExpiresAt = VALUES(ExpiresAt)`, which
+               is right for a client that sends the key (the web always does) but
+               wrong for one that does not know the field exists (the Apple app's
+               set list has no expiry): its sync would wipe an expiry set on the
+               web. So when the column is live and a row has NO `expiresAt` key
+               we use these two twins, whose INSERT leaves ExpiresAt out (a brand
+               new row then gets the column default, NULL) and whose UPDATE part
+               never touches it. COALESCE is deliberately NOT used: it would make
+               an expiry impossible to clear, the same trap as the plan above. */
+            $upsertKeepExpiry     = null;
+            $upsertPlanKeepExpiry = null;
+            if ($expiryReady) {
+                $upsertKeepExpiry = $db->prepare(
+                    'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt)
+                     VALUES (?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                        Name      = VALUES(Name),
+                        SongsJson = VALUES(SongsJson),
+                        UpdatedAt = VALUES(UpdatedAt)'
+                );
+                if ($slotsReady) {
+                    $upsertPlanKeepExpiry = $db->prepare(
+                        'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt, SlotsJson)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE
+                            Name      = VALUES(Name),
+                            SongsJson = VALUES(SongsJson),
+                            UpdatedAt = VALUES(UpdatedAt),
+                            SlotsJson = VALUES(SlotsJson)'
+                    );
+                }
+            }
+
             $resurrectionsRefused = 0;
 
             /* #1675 — index the snapshot taken above (zero extra queries) so the
@@ -4537,6 +4576,10 @@ if ($action !== null) {
                    is deliberate — reading a malformed value as an expiry
                    could delete a set list the user never dated. */
                 $expiresAt = $expiryReady ? userSyncParseTimestamp($list['expiresAt'] ?? null) : null;
+                /* #2207 — presence of the key, not its value: `expiresAt: null`
+                   means "clear it", a missing key means "no opinion, keep what
+                   is stored". Only meaningful when the column exists. */
+                $expiryStated = $expiryReady && array_key_exists('expiresAt', $list);
 
                 /* #301/#1671 F4 — see the $upsertPlan doc-block above for why
                    this is array_key_exists() and not isset(). `plan: null` is a
@@ -4566,7 +4609,7 @@ if ($action !== null) {
                        guard below into a conflict factory), and it makes a
                        post-conflict converged push settle silently (§3.5). */
                     if (userSyncSetlistRowUnchanged(
-                            $srv, $name, $songsJson, $expiryReady, $expiresAt,
+                            $srv, $name, $songsJson, $expiryStated, $expiresAt,
                             $planStatement, $planJson)) {
                         $payloadIds[] = $setlistId;
                         continue;
@@ -4598,18 +4641,29 @@ if ($action !== null) {
                        is why tests/php/test-setlist-templates.php asserts the
                        lengths against the placeholder counts in these very
                        statements rather than trusting the reading. */
-                    if ($expiryReady) {
+                    if ($expiryStated) {
                         $upsertPlan->bind_param('isssssss',
                             $userId, $setlistId, $name, $songsJson, $createdAt, $now, $expiresAt, $planJson);
+                        $upsertPlan->execute();
+                    } elseif ($expiryReady) {
+                        /* #2207 — expiry not mentioned: keep the stored one. */
+                        $upsertPlanKeepExpiry->bind_param('issssss',
+                            $userId, $setlistId, $name, $songsJson, $createdAt, $now, $planJson);
+                        $upsertPlanKeepExpiry->execute();
                     } else {
                         $upsertPlan->bind_param('issssss',
                             $userId, $setlistId, $name, $songsJson, $createdAt, $now, $planJson);
+                        $upsertPlan->execute();
                     }
-                    $upsertPlan->execute();
-                } elseif ($expiryReady) {
+                } elseif ($expiryStated) {
                     $upsert->bind_param('issssss',
                         $userId, $setlistId, $name, $songsJson, $createdAt, $now, $expiresAt);
                     $upsert->execute();
+                } elseif ($expiryReady) {
+                    /* #2207 — expiry not mentioned: keep the stored one. */
+                    $upsertKeepExpiry->bind_param('isssss',
+                        $userId, $setlistId, $name, $songsJson, $createdAt, $now);
+                    $upsertKeepExpiry->execute();
                 } else {
                     $upsert->bind_param('isssss',
                         $userId, $setlistId, $name, $songsJson, $createdAt, $now);
@@ -4624,6 +4678,8 @@ if ($action !== null) {
             /* #301/#1671 F4 — only prepared when the column exists, so the
                null check is the schema gate showing through, not defensiveness. */
             if ($upsertPlan !== null) { $upsertPlan->close(); }
+            if ($upsertKeepExpiry !== null) { $upsertKeepExpiry->close(); }
+            if ($upsertPlanKeepExpiry !== null) { $upsertPlanKeepExpiry->close(); }
 
             /* Authoritative replace (WS-F #1018, guarded #1649): server rows
                absent from the payload MAY represent a user deletion — but only
