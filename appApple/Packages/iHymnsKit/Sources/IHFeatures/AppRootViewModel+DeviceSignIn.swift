@@ -42,7 +42,13 @@ extension AppRootViewModel {
     /// first, and if any remain this throws `SignOutBlockedByUnsentChanges` before anything is done.
     public func signOutEverywhere(discardUnsent: Bool = false) async throws {
         try await ensureNothingUnsent(discardUnsent: discardUnsent)
-        try await sessionController.signOutEverywhere()
+        do {
+            try await sessionController.signOutEverywhere()
+        } catch SessionControllerError.signedOutButTokenNotRemoved {
+            // Signed out everywhere, this device included: clear the cached data, then say what happened.
+            await resetLocalUserState()
+            throw SessionControllerError.signedOutButTokenNotRemoved
+        }
         await resetLocalUserState()
     }
 

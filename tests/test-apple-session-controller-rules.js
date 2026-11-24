@@ -26,11 +26,17 @@
  *      `setSignedOutHere(true)` and deletes the device token (`tokenStore.delete`), the mark comes first.
  *   2. `signOut`'s `if usingLegacyToken { ... }` block comes before the server revoke and itself contains
  *      no `apiClient.auth...` call.
- *   3. No `.save(` call anywhere in app code takes the shared token (a variable named `legacy`).
+ *   3. No `.save(` call anywhere in app code takes the shared token. The names that hold the shared token are
+ *      FOUND, not typed: whatever is bound from `legacyReader.load()`, plus any local copy of it and any
+ *      function parameter it is passed into (followed through calls until nothing new turns up), so renaming
+ *      the variable cannot slip past the rule.
  *   4. Every `DeviceSignInReason` raw value is a reason word in device_signin.php, and every place the app
  *      compares a refusal against a reason (`status == N && message == DeviceSignInReason.x.rawValue`) uses
  *      the status the server gives that word; no app code compares an error `message` against a bare string.
  *   5. Self-tests: each rule is run on a deliberately broken copy and must report a problem.
+ *
+ * (Second pass: rule 3 no longer depends on the variable being called `legacy`; the "mark" order mutation now
+ * targets the rewritten signOut, and an unmarked delete anywhere is caught.)
  *
  * Mutations tried when this was written (each turned it red, then was restored): in signOut, deleting the
  * token before marking signed out; adding an `authLogout` call to the legacy-mode block; saving the shared
@@ -41,7 +47,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { appSwiftFiles, read, stripSwift, selfTest, REPO } from './lib/swift-source.js';
+import { appSwiftFiles, read, stripSwift, callArguments, selfTest, REPO } from './lib/swift-source.js';
 
 selfTest();
 
@@ -90,6 +96,54 @@ function functions(code) {
     return out;
 }
 
+/** Split `text` on commas that are not inside (), [] or {}. */
+function splitTopLevel(text) {
+    const parts = []; let depth = 0; let cur = '';
+    for (const ch of text) {
+        if ('([{'.includes(ch)) depth++;
+        else if (')]}'.includes(ch)) depth--;
+        if (ch === ',' && depth === 0) { parts.push(cur); cur = ''; } else cur += ch;
+    }
+    if (cur.trim()) parts.push(cur);
+    return parts;
+}
+
+/**
+ * Every name, in ONE file, that can hold the shared (older-app) sign-in: bound from `legacyReader.load()`, copied
+ * to another local, or received as a parameter by a function of the same file that is called with one of these
+ * names. Found from the code. (Per file on purpose: a name like `token` is everywhere, so following the shared
+ * token into other files' functions would flag every ordinary token. The shared token is only ever read, and
+ * handed on, inside the launch file; the reader file check in the custody guard covers where it is read.)
+ */
+function sharedTokenNames(code) {
+    const tainted = new Set();
+    for (const m of code.matchAll(/\b(?:let|var)\s+([A-Za-z_]\w*)\s*=\s*(?:try\??\s+)?(?:await\s+)?[\w.]*legacyReader\s*\.\s*load\s*\(/g)) tainted.add(m[1]);
+    if (tainted.size === 0) return tainted;
+    const decls = [];
+    for (const m of code.matchAll(/\bfunc\s+([A-Za-z_]\w*)\s*(?:<[^>]*>)?\s*\(/g)) {
+        let depth = 1; let i = m.index + m[0].length; const start = i;
+        while (i < code.length && depth > 0) { if (code[i] === '(') depth++; else if (code[i] === ')') depth--; i++; }
+        const names = splitTopLevel(code.slice(start, i - 1)).map((p) => (/^\s*(?:[A-Za-z_]\w*\s+)?([A-Za-z_]\w*)\s*:/.exec(p) || [])[1] ?? null);
+        decls.push({ name: m[1], names });
+    }
+    const has = (text) => [...tainted].some((n) => new RegExp('\\b' + n + '\\b').test(text));
+    for (let changed = true; changed;) {
+        changed = false;
+        for (const m of code.matchAll(/\b(?:let|var)\s+([A-Za-z_]\w*)\s*=\s*([^\n]+)/g)) {
+            if (!tainted.has(m[1]) && has(m[2])) { tainted.add(m[1]); changed = true; }
+        }
+        for (const d of decls) {
+            for (const c of callArguments(code, d.name)) {
+                splitTopLevel(c.args).forEach((arg, i) => {
+                    const pn = d.names[i];
+                    if (pn && has(arg) && !tainted.has(pn)) { tainted.add(pn); changed = true; }
+                });
+            }
+        }
+    }
+    return tainted;
+}
+
 /** Judge a map of {file: strippedCode (strings kept)} against the server's reason table. PURE. */
 function judge(map, serverReasons) {
     const problems = [];
@@ -133,9 +187,17 @@ function judge(map, serverReasons) {
     }
 
     // ---- rule 3: the shared token is never saved anywhere ----
+    let readerFiles = 0;
     for (const [f, code] of map) {
-        if (/\.save\s*\(\s*legacy\b/.test(code)) problems.push(f.split('/').pop() + ': saves the shared (legacy) token into a store');
+        const sharedNames = sharedTokenNames(code);
+        if (sharedNames.size === 0) continue;
+        readerFiles++;
+        for (const c of callArguments(code, 'save')) {
+            const hit = [...sharedNames].find((n) => new RegExp('\\b' + n + '\\b').test(c.args));
+            if (hit) problems.push(f.split('/').pop() + ': saves the shared (legacy) token (`' + hit + '`) into a store');
+        }
     }
+    if (readerFiles === 0) problems.push('could not find where the shared sign-in is read (legacyReader.load()), so rule 3 cannot be judged');
 
     // ---- rule 4: reason words ----
     const enumFile = [...map].find(([, code]) => /\benum\s+DeviceSignInReason\b/.test(code));
@@ -186,16 +248,26 @@ function mutated(rel, fn) {
     return m;
 }
 check('self-test: deleting the token before marking signed out is caught', judge(mutated('IHAuth/SessionController.swift', (c) =>
-    c.replace(/await markSignedOutHere\(\)(\s*)try await tokenStore\.delete\(\)/, 'try await tokenStore.delete()$1await markSignedOutHere()')), serverReasons).length > 0);
+    c.replace(/try await markSignedOutHere\(\)\s*\n\s*var tokenLeftBehind = false/, 'do { try await tokenStore.delete() } catch {}\n        try await markSignedOutHere()\n        var tokenLeftBehind = false')), serverReasons).length > 0);
+check('self-test: dropping the mark from the own-sign-in sign-out is caught', judge(mutated('IHAuth/SessionController.swift', (c) =>
+    c.replace(/\n {8}try await markSignedOutHere\(\)\n/, '\n')), serverReasons).length > 0);
+check('self-test: dropping the mark from sign-out-everywhere is caught', judge(mutated('IHAuth/SessionController+DeviceSignIn.swift', (c) =>
+    c.replace(/\n {8}try await markSignedOutHere\(\)\n/, '\n')), serverReasons).length > 0);
 check('self-test: a server call inside the legacy-mode sign-out block is caught', judge(mutated('IHAuth/SessionController.swift', (c) =>
     c.replace(/if usingLegacyToken \{/, 'if usingLegacyToken {\n            try? await apiClient.authLogout()')), serverReasons).length > 0);
-check('self-test: saving the shared token is caught', judge(mutated('IHAuth/SessionController+DeviceSignIn.swift', (c) =>
-    c + '\nfunc oops(legacy: String, tokenStore: any TokenStoring) async { try? await tokenStore.save(legacy) }\n'), serverReasons).length > 0);
+check('self-test: saving the shared token is caught', judge(mutated('IHAuth/SessionController+Launch.swift', (c) =>
+    c + '\nfunc oops(reader: LegacyTokenReading, tokenStore: any TokenStoring) async { let sh = try? await reader.legacyReader.load(); try? await tokenStore.save(sh) }\n'), serverReasons).length > 0);
+check('self-test: saving the shared token is caught even when the variable has another name', judge(mutated('IHAuth/SessionController+Launch.swift', (c) =>
+    c.replace(/\blegacy\b/g, 'sharedTok').replace('usingLegacyToken = true\n', 'usingLegacyToken = true\n        try? await tokenStore.save(sharedTok)\n')), serverReasons).length > 0);
+check('self-test: a renamed variable alone does not trip rule 3 (no false alarm)', judge(mutated('IHAuth/SessionController+Launch.swift', (c) =>
+    c.replace(/\blegacy\b/g, 'sharedTok')), serverReasons).length === 0);
+check('self-test: the shared token copied into a new local and saved is caught', judge(mutated('IHAuth/SessionController+Launch.swift', (c) =>
+    c.replace('usingLegacyToken = true\n', 'usingLegacyToken = true\n        let copy = legacy\n        try? await tokenStore.save(copy)\n')), serverReasons).length > 0);
 check('self-test: a renamed reason word in the enum is caught', judge(mutated('IHAuth/DeviceSignInReason.swift', (c) =>
     c.replace('"install_signed_out"', '"install_signed_gone"')), serverReasons).length > 0);
-check('self-test: a wrong expected status is caught', judge(mutated('IHAuth/SessionController+DeviceSignIn.swift', (c) =>
+check('self-test: a wrong expected status is caught', judge(mutated('IHAuth/SessionController+Launch.swift', (c) =>
     c.replace('status == 403 && message ==', 'status == 409 && message ==')), serverReasons).length > 0);
-check('self-test: matching an error message against a typed-in string is caught', judge(mutated('IHAuth/SessionController+DeviceSignIn.swift', (c) =>
+check('self-test: matching an error message against a typed-in string is caught', judge(mutated('IHAuth/SessionController+Launch.swift', (c) =>
     c + '\nfunc oops2(message: String?) -> Bool { message == "install_signed_out" }\n'), serverReasons).length > 0);
 check('self-test: a server that stops sending the word is caught', judge(map, new Map([...serverReasons].filter(([w]) => w !== 'install_signed_out'))).length > 0);
 check('self-test: a comment that mentions a server call in the legacy block does not trip the rule', (() => {

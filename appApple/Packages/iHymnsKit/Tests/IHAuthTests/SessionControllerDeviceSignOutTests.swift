@@ -30,7 +30,7 @@ struct SessionControllerDeviceSignOutTests {
         try await MockTransportLock.shared.withLock { () async throws in
             defer { MockURLProtocol.requestHandler = nil }
             let h = try await D.makeHarness()
-            await h.notebook.setSignedOutHere(true)
+            try await h.notebook.setSignedOutHere(true)
             D.route(h.log) { action in
                 action == "auth_enrol_key_create" ? (200, Data(#"{"enrolKey":"\#(D.newKey)","expiresAt":"2027-05-23 09:00:00"}"#.utf8)) : (200, D.signInOK(token: D.ownToken))
             }

@@ -86,11 +86,23 @@ public struct DeviceSignInRecord: Codable, Sendable, Equatable {
 /// The notebook itself, over any `TokenStoring` slot (a this-device-only
 /// Keychain item in the app, an in-memory one in tests). An actor so two
 /// quick updates can never overwrite each other.
+///
+/// DETAILED: The record is kept IN MEMORY once read, and every change is made
+/// to that in-memory copy with no `await` between reading it and writing it
+/// back, so two changes in flight (an actor can run another call while one is
+/// waiting on the Keychain) can never both start from the same old value and
+/// lose one of the two. Only AFTER the in-memory change is the new value sent
+/// to the store. `setSignedOutHere` reports a failed save (a sign-out that
+/// could not be remembered must not go ahead); the other changes are best
+/// effort, because losing one of those means a harmless retry next launch.
 public actor DeviceSignInState {
     /// How many fingerprints each list keeps.
     static let listLimit = 10
 
     private let store: any TokenStoring
+
+    /// The notebook as last read or written. `nil` until first needed.
+    private var memory: DeviceSignInRecord?
 
     public init(store: any TokenStoring) {
         self.store = store
@@ -100,41 +112,33 @@ public actor DeviceSignInState {
     /// empty notebook (never an error: a missing notebook just means "nothing
     /// has happened here yet").
     public func record() async -> DeviceSignInRecord {
-        guard
-            let text = try? await store.load(),
-            let data = text.data(using: .utf8),
-            let decoded = try? JSONDecoder().decode(DeviceSignInRecord.self, from: data)
-        else { return DeviceSignInRecord() }
-        return decoded
+        await loadIfNeeded()
+        return memory ?? DeviceSignInRecord()
     }
 
     /// Marks this device as signed out here (`true`) or clears the mark
     /// (`false`, only ever from a manual sign-in).
-    public func setSignedOutHere(_ value: Bool) async {
-        var current = await record()
-        current.signedOutHere = value
-        await write(current)
+    ///
+    /// - Throws: if the notebook could not be saved. The in-memory value is put
+    ///   back to what the store holds, so a failed "signed out here" is not
+    ///   believed by this running copy of the app either.
+    public func setSignedOutHere(_ value: Bool) async throws {
+        try await change { $0.signedOutHere = value }
     }
 
     /// Records the person's choice about automatic sign-in on this device.
     public func setAutomaticSignInOff(_ value: Bool) async {
-        var current = await record()
-        current.automaticSignInOff = value
-        await write(current)
+        try? await change { $0.automaticSignInOff = value }
     }
 
     /// Remembers that the shared token with this fingerprint was swapped.
     public func markLegacySwapped(hash: String) async {
-        var current = await record()
-        current.swappedLegacyHashes = Self.appending(hash, to: current.swappedLegacyHashes)
-        await write(current)
+        try? await change { $0.swappedLegacyHashes = Self.appending(hash, to: $0.swappedLegacyHashes) }
     }
 
     /// Remembers that the automatic sign-in key with this fingerprint is dead.
     public func markKeyDead(hash: String) async {
-        var current = await record()
-        current.deadKeyHashes = Self.appending(hash, to: current.deadKeyHashes)
-        await write(current)
+        try? await change { $0.deadKeyHashes = Self.appending(hash, to: $0.deadKeyHashes) }
     }
 
     public func isLegacySwapped(hash: String) async -> Bool {
@@ -153,14 +157,44 @@ public actor DeviceSignInState {
         return next
     }
 
-    /// Saves the notebook. A failed write is swallowed on purpose: losing a
-    /// note means a harmless retry next launch, whereas throwing here would
-    /// make a sign-out or a swap fail over bookkeeping.
-    private func write(_ value: DeviceSignInRecord) async {
-        guard
-            let data = try? JSONEncoder().encode(value),
-            let text = String(data: data, encoding: .utf8)
-        else { return }
-        try? await store.save(text)
+    /// Reads the store into `memory` the first time it is needed. A store that
+    /// cannot be read is not cached (so a later call tries again), and reads as
+    /// an empty notebook meanwhile.
+    private func loadIfNeeded() async {
+        guard memory == nil else { return }
+        let loaded: DeviceSignInRecord
+        do {
+            let text = try await store.load()
+            if let text, let data = text.data(using: .utf8), let decoded = try? JSONDecoder().decode(DeviceSignInRecord.self, from: data) {
+                loaded = decoded
+            } else {
+                loaded = DeviceSignInRecord()
+            }
+        } catch {
+            return
+        }
+        // Another call may have filled `memory` while this one waited: theirs is newer, keep it.
+        if memory == nil { memory = loaded }
     }
+
+    /// Applies `edit` to the in-memory notebook, then saves it. Everything up to
+    /// and including the in-memory write happens with no `await`, which is what
+    /// keeps two changes from overwriting each other.
+    private func change(_ edit: (inout DeviceSignInRecord) -> Void) async throws {
+        await loadIfNeeded()
+        var next = memory ?? DeviceSignInRecord() // no await from here...
+        edit(&next)
+        memory = next                              // ...to here
+        do {
+            let data = try JSONEncoder().encode(next)
+            guard let text = String(data: data, encoding: .utf8) else { throw NotebookSaveError.encoding }
+            try await store.save(text)
+        } catch {
+            // The change did not reach the store: forget the in-memory copy so it is read again, and say so.
+            memory = nil
+            throw error
+        }
+    }
+
+    private enum NotebookSaveError: Error { case encoding }
 }

@@ -22,6 +22,7 @@
 // start issuing real, unmocked network requests).
 import Foundation
 import IHAPI
+import IHAuth
 import IHModels
 
 extension AppRootViewModel {
@@ -105,7 +106,14 @@ extension AppRootViewModel {
     /// "Sign out anyway". With the account sync off this is exactly the older sign-out.
     public func signOut(discardUnsent: Bool = false) async throws {
         try await ensureNothingUnsent(discardUnsent: discardUnsent)
-        try await sessionController.signOut()
+        do {
+            try await sessionController.signOut()
+        } catch SessionControllerError.signedOutButTokenNotRemoved {
+            // This device IS signed out (the controller finished everything else), so the cached
+            // account data must still be cleared; then tell the caller exactly what happened.
+            await resetLocalUserState()
+            throw SessionControllerError.signedOutButTokenNotRemoved
+        }
         await resetLocalUserState()
     }
 

@@ -274,7 +274,9 @@ public actor SessionController {
         // server call (revoking it would sign out every other Apple device)
         // and never touches the shared item: this device just forgets it.
         if usingLegacyToken {
-            await markSignedOutHere()
+            // Written FIRST and allowed to fail: if "signed out here" cannot be saved, nothing
+            // is changed and this throws, rather than forgetting a sign-out.
+            try await markSignedOutHere()
             usingLegacyToken = false
             await apiClient.updateBearerToken(nil)
             setState(.signedOut)
@@ -290,14 +292,19 @@ public actor SessionController {
 
         // Order matters (PR 3b): remember "signed out here" BEFORE deleting the
         // token, so a crash in between can never leave a device that signs
-        // itself back in on the next launch.
-        await markSignedOutHere()
-        try await tokenStore.delete()
+        // itself back in on the next launch. If it cannot be saved this throws and
+        // the token stays; trying again works (the server then answers 401 = done).
+        try await markSignedOutHere()
+        // The server has ended this sign-in, so a failed delete must not stop the
+        // device being signed out: finish the rest, then say so.
+        var tokenLeftBehind = false
+        do { try await tokenStore.delete() } catch { tokenLeftBehind = true }
         // The server cancels the person's automatic sign-in keys when a device's
         // own sign-in ends, so this device's copy of the key is dead: drop it.
         await deleteKeyCopy()
         await apiClient.updateBearerToken(nil)
         setState(.signedOut)
+        if tokenLeftBehind { throw SessionControllerError.signedOutButTokenNotRemoved }
     }
 
     /// Permanently deletes the CURRENTLY signed-in account server-side
@@ -345,9 +352,10 @@ public actor SessionController {
 
         // PR 3b: nothing of this account may sign back in here (flag first, then
         // the token, then the key). The shared item is left alone: the server
-        // already deleted that token with the account.
-        await markSignedOutHere()
-        if !usingLegacyToken { try await tokenStore.delete() }
+        // already deleted that token with the account. The account is gone, so a
+        // token or mark that cannot be cleaned up is dead anyway: not worth failing over.
+        try? await markSignedOutHere()
+        if !usingLegacyToken { try? await tokenStore.delete() }
         await deleteKeyCopy()
         usingLegacyToken = false
         await apiClient.updateBearerToken(nil)

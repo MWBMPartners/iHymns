@@ -80,7 +80,7 @@ struct SessionControllerDeviceSignInTests {
         try await MockTransportLock.shared.withLock { () async throws in
             defer { MockURLProtocol.requestHandler = nil }
             let h = try await D.makeHarness(legacy: D.legacyToken, key: D.key)
-            await h.notebook.setSignedOutHere(true)
+            try await h.notebook.setSignedOutHere(true)
             D.route(h.log) { _ in (200, D.signInOK()) }
 
             try await h.controller.restoreFromStorage(deviceSignInEnabled: true)

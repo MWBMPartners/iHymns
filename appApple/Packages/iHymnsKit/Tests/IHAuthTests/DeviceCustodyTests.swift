@@ -66,19 +66,19 @@ struct DeviceCustodyTests {
     }
 
     @Test("signedOutHere is set by a sign-out and cleared only when told to")
-    func signedOutMark() async {
+    func signedOutMark() async throws {
         let state = DeviceSignInState(store: InMemoryTokenStore())
-        await state.setSignedOutHere(true)
+        try await state.setSignedOutHere(true)
         #expect(await state.record().signedOutHere)
-        await state.setSignedOutHere(false)
+        try await state.setSignedOutHere(false)
         #expect(await state.record().signedOutHere == false)
     }
 
     @Test("Notes are remembered across a relaunch (a new actor over the same store)")
-    func notesSurviveRelaunch() async {
+    func notesSurviveRelaunch() async throws {
         let store = InMemoryTokenStore()
         let first = DeviceSignInState(store: store)
-        await first.setSignedOutHere(true)
+        try await first.setSignedOutHere(true)
         await first.markLegacySwapped(hash: "aaa")
         await first.markKeyDead(hash: "bbb")
 
@@ -140,5 +140,42 @@ struct DeviceCustodyTests {
         #expect(!a.contains("secret"))
         // The well-known SHA-256 of the empty string pins the algorithm.
         #expect(TokenFingerprint.sha256Hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    }
+
+    // MARK: Review fixes: changes in flight never lose each other, and a failed save is reported
+
+    @Test("Many changes made at the same moment are ALL kept (none overwrites another)")
+    func simultaneousChangesAreAllKept() async throws {
+        let store = InMemoryTokenStore()
+        let state = DeviceSignInState(store: store)
+        await withTaskGroup(of: Void.self) { group in
+            for i in 0..<8 {
+                group.addTask { await state.markKeyDead(hash: "k\(i)") }
+                group.addTask { await state.markLegacySwapped(hash: "s\(i)") }
+            }
+            group.addTask { _ = try? await state.setSignedOutHere(true) }
+            group.addTask { await state.setAutomaticSignInOff(true) }
+        }
+        let record = await state.record()
+        #expect(Set(record.deadKeyHashes) == Set((0..<8).map { "k\($0)" }))
+        #expect(Set(record.swappedLegacyHashes) == Set((0..<8).map { "s\($0)" }))
+        #expect(record.signedOutHere)
+        #expect(record.automaticSignInOff)
+        // And what was kept in memory is what reached the store.
+        #expect(await DeviceSignInState(store: store).record() == record)
+    }
+
+    @Test("setSignedOutHere THROWS when the notebook cannot be saved, and the running copy does not believe it either")
+    func failedSignedOutSaveIsReported() async throws {
+        let store = InMemoryTokenStore()
+        let state = DeviceSignInState(store: store)
+        await store.setFailing(saves: true)
+        await #expect(throws: InMemoryTokenStore.Failure.self) { try await state.setSignedOutHere(true) }
+        #expect(await state.record().signedOutHere == false)
+
+        await store.setFailing(saves: false)
+        try await state.setSignedOutHere(true)
+        #expect(await state.record().signedOutHere)
+        #expect(await DeviceSignInState(store: store).record().signedOutHere)
     }
 }

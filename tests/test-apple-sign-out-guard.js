@@ -132,7 +132,9 @@ const mut = (src, from, to) => { const out = src.replace(from, to); if (out === 
 const with_ = (key, fn) => ({ ...sources, [key]: fn(sources[key]) });
 check('self-test: an uncounted queue is caught', judge(with_('check', (c) => mut(c, /\(try\? await offlineStore\.pendingSetlistOps\(\)\.count\) \?\? 0/, '0'))).length > 0);
 check('self-test: a missing early return is caught', judge(with_('check', (c) => mut(c, /guard appStatus\?\.profileSync == true[^\n]*\n/, '\n'))).length > 0);
-check('self-test: a check placed after the controller call is caught', judge(with_('vmAll', (c) => mut(c, /try await ensureNothingUnsent\(discardUnsent: discardUnsent\)\n(\s*)try await sessionController\.signOut\(\)/, 'try await sessionController.signOut()\n$1try await ensureNothingUnsent(discardUnsent: discardUnsent)'))).length > 0);
+check('self-test: a check placed after the controller call is caught', judge(with_('vmAll', (c) =>
+    mut(mut(c, /try await ensureNothingUnsent\(discardUnsent: discardUnsent\)(\s*)do \{(\s*)try await sessionController\.signOut\(\)/, 'do {$2try await sessionController.signOut()'),
+        /\n        await resetLocalUserState\(\)\n    \}/, '\n        try await ensureNothingUnsent(discardUnsent: discardUnsent)\n        await resetLocalUserState()\n    }'))).length > 0);
 check('self-test: a screen that signs out through the controller is caught', (() => {
     const all = new Map(code); all.set('IHFeatures/SomeView.swift', 'func tapped() async { try? await viewModel.sessionController.signOut() }');
     return judge({ ...sources, all }).length > 0;

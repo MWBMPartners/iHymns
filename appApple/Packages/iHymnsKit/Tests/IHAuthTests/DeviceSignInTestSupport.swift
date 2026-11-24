@@ -55,8 +55,12 @@ struct DeviceHarness {
     let controller: SessionController
     let deviceStore: InMemoryTokenStore
     let keyStore: InMemoryTokenStore
+    /// The store under `notebook`, so a test can make saving the notebook fail.
+    let notebookStore: InMemoryTokenStore
     let notebook: DeviceSignInState
     let log: RequestLog
+    /// Every save and delete on the three stores above, in order ("device.delete", "notebook.save", ...).
+    let ops: OperationLog
 }
 
 enum DeviceTestData {
@@ -94,11 +98,14 @@ enum DeviceTestData {
         plain: Bool = false
     ) async throws -> DeviceHarness {
         let apiClient = APIClient(environment: .dev, session: MockURLProtocol.makeSession(), retryBaseDelaySeconds: 0.001)
-        let deviceStore = InMemoryTokenStore()
-        let keyStore = InMemoryTokenStore()
-        let notebook = DeviceSignInState(store: InMemoryTokenStore())
+        let ops = OperationLog()
+        let deviceStore = InMemoryTokenStore(name: "device", log: ops)
+        let keyStore = InMemoryTokenStore(name: "key", log: ops)
+        let notebookStore = InMemoryTokenStore(name: "notebook", log: ops)
+        let notebook = DeviceSignInState(store: notebookStore)
         if let ownToken { try await deviceStore.save(ownToken) }
         if let key { try await keyStore.save(key) }
+        ops.reset() // setting the scene is not part of what a test checks
         let support: DeviceSignInSupport? = plain ? nil : DeviceSignInSupport(
             enrolKeyStore: supportsKeys ? keyStore : nil,
             legacyReader: FakeLegacyReader(token: legacy),
@@ -106,7 +113,7 @@ enum DeviceTestData {
             signInState: notebook
         )
         let controller = SessionController(tokenStore: deviceStore, apiClient: apiClient, deviceSignIn: support)
-        return DeviceHarness(controller: controller, deviceStore: deviceStore, keyStore: keyStore, notebook: notebook, log: RequestLog())
+        return DeviceHarness(controller: controller, deviceStore: deviceStore, keyStore: keyStore, notebookStore: notebookStore, notebook: notebook, log: RequestLog(), ops: ops)
     }
 
     /// Installs a handler that records each request, then answers by action.
