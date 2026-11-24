@@ -4,6 +4,8 @@ Written 2026-11-23 against `origin/alpha` 1.4.1, after PR 1 (#2182) was merged. 
 
 ## Progress (PR 2a, branch `claude/account-pr2a`)
 
+Status 2026-11-24: merged as #2197.
+
 | Step | Commit | Status |
 |---|---|---|
 | 2a-1 the switch | c9316d73 | done |
@@ -33,6 +35,8 @@ Deviations from the plan (PR 2a):
 - Docs: `api-docs.yaml` named the `song_view` field `songId`; the server reads `song_id`. Corrected.
 
 ## Progress (PR 2b, branch `claude/account-pr2b`)
+
+Status 2026-11-24: merged as #2201.
 
 | Step | Commit | Status |
 |---|---|---|
@@ -85,6 +89,8 @@ Follow-ups recorded from this work (NOT done):
 - The bridge copies a delete as the empty text on the old shelf; an old app reads that as "reset to default".
 
 ## Progress (PR 2c, branch `claude/account-pr2c`)
+
+Status 2026-11-24: merged as #2204.
 
 | Step | Commit | Status |
 |---|---|---|

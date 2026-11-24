@@ -37,11 +37,11 @@ iPadOS, tvOS, in Swift) and an Android app (which also covers Amazon Fire device
 PHP 8.4 and 8.5 are supported; 8.6 is prepared and checked as advisory in CI (rule #53 in
 `.claude/CLAUDE.md`, plan `.claude/php86-readiness-plan.md`).
 
-## Where things stand (2026-11-23)
+## Where things stand (2026-11-24)
 
 Version 1.4.1. Cross-site settings sync was rebuilt and is off by default (rule #52). PHP 8.6 is
 prepared with an advisory CI check (rule #53). The account and profile rewrite (epic #2180) has part 1
-and part 2a (#2197, dormant) and part 2b (#2201) merged; part 2c (export, web delete, sign-out clearing, privacy page; branch `claude/account-pr2c`) is built and awaiting review; part 3a (one sign-in per device, server side; #2205, rule #55) is merged; part 3b (the Apple app side, steps I1 to I6; branch `claude/account-pr3b`, rule #56) is built but was never compiled (no Swift toolchain in the sandbox) and awaits CI on macOS and review. The handoff has the details and the owner's decisions.
+and parts 2a (#2197), 2b (#2201), 2c (#2204), 3a (#2205, rule #55) and 3b (#2206, the Apple app, rule #56) merged, all still switched off. The Apple code was compiled and tested in macOS CI but has not been tried on a real device. The layout audit fixes (#2203, #2209) are merged. The handoff has the details and the owner's decisions.
 
 ## The channels
 

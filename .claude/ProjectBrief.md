@@ -1,5 +1,18 @@
 # 📋 iHymns — Project Brief
 
+## 📌 Current state — 2026-11-24 (newest; older sections below are history)
+
+- **Version 1.4.1** on `alpha`. No open pull requests.
+- **Account rewrite (epic #2180) is fully merged** and still switched off: parts 2a (#2197), 2b (#2201), 2c
+  (#2204), 3a (#2205, one sign-in per device on the server) and 3b (#2206, the Apple app; compiled and tested
+  in macOS CI, **not tried on a real device**). Next for the owner: run the foundation card, then tick
+  `profile_sync_channels` and `device_signin_channels` per channel. Plans: `.claude/account-profile-pr2-plan.md`,
+  `.claude/account-profile-pr3-plan.md`.
+- Layout audit fixes merged (#2209, plus #2208); guards `test-form-row-alignment.js` and
+  `test-admin-narrow-layout.js`, measuring scripts in `tools/layout-audit/`.
+- Open: #2207 (Apple set-list sync wipes a web-set expiry), #2186 follow-ups, #2143 rollout.
+- Full queue and owner to-do list: `.claude/sessions/2026-11-24-HANDOFF.md`.
+
 ## 📌 Current state — 2026-11-23 (newest; older sections below are history)
 
 - **Version 1.4.1** on `alpha` (patch release minted by #2194). No open pull requests.

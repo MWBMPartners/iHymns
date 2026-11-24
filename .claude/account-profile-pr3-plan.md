@@ -371,6 +371,8 @@ password store still signs in once.
 
 ## Progress (PR 3a, the server side, branch `claude/account-pr3a`)
 
+Status 2026-11-24: merged as #2205.
+
 | Step | Commit | Status |
 |---|---|---|
 | Plan and reusable design | 0a43110b | done |
@@ -416,6 +418,8 @@ Follow-ups from the review (NOT done):
 Follow-ups (NOT done): the whole Apple phase (I1 to I6); the Opus review of H1, H3, H4, H5; the live two-device checks in section 5; the owner steps in section 6 (tick `device_signin_channels` per channel; production before the first TestFlight upload); the `WHATS-NEW.md` bullets once production is ticked.
 
 ## Progress (PR 3b, the Apple side, branch `claude/account-pr3b`)
+
+Status 2026-11-24: merged as #2206. Swift compiled and the Swift tests passed in macOS CI after several fix rounds (the note below that nothing could be compiled is about the sandbox, not CI). **Still not tried on a real device** (section 5). The expiry-wipe finding is now issue #2207.
 
 Nothing here could be compiled or run in the sandbox (no Swift toolchain). Every step is checked by Node guards that
 read the Swift source (comments removed, files found from the tree, each shown red by a deliberate break) and by Swift
