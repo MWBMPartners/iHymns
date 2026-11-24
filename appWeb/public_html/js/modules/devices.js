@@ -325,6 +325,13 @@ export function deviceKindNote(device, deviceSigninOn) {
     if (deviceSigninOn !== true) return '';
     if (via === 'enrol') return 'Added automatically';
     const platform = typeof device?.platform === 'string' ? device.platform.trim() : '';
+    /* A sign-in made in a browser is never "an older Apple app", even when its platform was not recorded
+       (older browser sign-ins, and ones from a browser the server could not name, are stored with none).
+       Two signs say "browser": this page is itself running in a browser, so the row marked "current" is a
+       browser one; and a name the server made from a browser's own User-Agent ("Chrome on Windows"). */
+    if (device?.isCurrent === true) return '';
+    const name = typeof device?.deviceName === 'string' ? device.deviceName.trim() : '';
+    if (/^(Chrome|Safari|Firefox|Edge|Opera|Samsung Internet)\b/.test(name)) return '';
     if (device?.boundToDevice === false && via !== 'cross_surface' && platform !== 'web' && (platform === 'apple' || platform === '')) {
         return 'Older app version, may be shared by several of your Apple devices';
     }

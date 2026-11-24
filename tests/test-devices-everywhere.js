@@ -61,6 +61,11 @@ check('a browser, an admin-page sign-in and a device-bound sign-in are never cal
     dev.deviceKindNote({ issuedVia: 'password', boundToDevice: false, platform: 'web' }, true) === ''
     && dev.deviceKindNote({ issuedVia: 'cross_surface', boundToDevice: false, platform: null }, true) === ''
     && dev.deviceKindNote({ issuedVia: 'password', boundToDevice: true, platform: 'apple' }, true) === '');
+check('a browser sign-in with NO platform recorded is never called an older Apple app (the current row, or a browser-made name)',
+    dev.deviceKindNote({ issuedVia: 'password', boundToDevice: false, platform: null, isCurrent: true }, true) === ''
+    && dev.deviceKindNote({ issuedVia: 'password', boundToDevice: false, platform: null, deviceName: 'Chrome on Windows' }, true) === ''
+    && dev.deviceKindNote({ issuedVia: 'password', boundToDevice: false, platform: null, deviceName: 'Safari on iPhone' }, true) === ''
+    && /^Older app version/.test(dev.deviceKindNote({ issuedVia: 'password', boundToDevice: false, platform: null, deviceName: null }, true)));
 check('every failure sentence of "Sign out everywhere" says the person is still signed in and the others were not signed out',
     [0, 403, 429, 500, 503].every((s) => /still signed in/.test(dev.signOutEverywhereFailureMessage(s)) && /other devices were not signed out/.test(dev.signOutEverywhereFailureMessage(s))));
 check('the messages are chosen by status, not by any server sentence (the function takes only a number)', dev.signOutEverywhereFailureMessage.length === 1 && dev.keysOffFailureMessage.length === 1);

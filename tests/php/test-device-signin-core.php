@@ -279,6 +279,29 @@ $liveBefore = $live(1);
 chk('401 when the caller\'s sign-in is not live', deviceSigninEnrol($db, $u1, hash('sha256', 'not-a-live-token'), $dev('install-ENROL-0005'))['status'] === 401);
 chk('a refused enrol makes no sign-in', $live(1) === $liveBefore);
 
+/* --- security review finding 1: a browser sign-in must not pass for the shared older-app sign-in --- */
+chk('a request carrying any browser-only header is recognised as a browser (Sec-Fetch-Site, -Mode, -Dest, Origin)',
+    deviceSigninRequestLooksLikeBrowser(['HTTP_SEC_FETCH_SITE' => 'same-origin'])
+    && deviceSigninRequestLooksLikeBrowser(['HTTP_SEC_FETCH_MODE' => 'cors'])
+    && deviceSigninRequestLooksLikeBrowser(['HTTP_SEC_FETCH_DEST' => 'empty'])
+    && deviceSigninRequestLooksLikeBrowser(['HTTP_ORIGIN' => 'https://ihymns.app']));
+chk('a native app request (an app User-Agent, a bearer header, the same-origin marker) is NOT taken for a browser; empty headers do not count',
+    !deviceSigninRequestLooksLikeBrowser(['HTTP_USER_AGENT' => 'iHymns/1.0 CFNetwork/1494 Darwin/23', 'HTTP_AUTHORIZATION' => 'Bearer x', 'HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest'])
+    && !deviceSigninRequestLooksLikeBrowser([]) && !deviceSigninRequestLooksLikeBrowser(['HTTP_ORIGIN' => '', 'HTTP_SEC_FETCH_SITE' => '  ']));
+chk('the browser refusal is 403 browser_request', deviceSigninBrowserRefusal()['status'] === 403 && deviceSigninBrowserRefusal()['body']['reason'] === 'browser_request');
+foreach (['auth_device_enrol', 'auth_enrol_key_create'] as $act) {
+    $at = strpos($api, "case '$act':");
+    $blk = $at === false ? '' : substr($api, $at, 2600);
+    $pBrowser = strpos($blk, 'deviceSigninRequestLooksLikeBrowser($_SERVER)');
+    $pAuth = strpos($blk, 'getAuthenticatedUser()');
+    chk("api.php $act refuses a browser-stamped request, before it looks at who is signed in", $pBrowser !== false && $pAuth !== false && $pBrowser < $pAuth && str_contains($blk, 'deviceSigninBrowserRefusal()'));
+}
+/* A browser sign-in made before the web client said "web" (no platform recorded) is a NULL-platform row that looks exactly like the
+   shared older-app sign-in. The core cannot tell them apart, which is WHY the request-level check above exists: say so out loud. */
+$nullBrowser = apiTokenMint($db, 1, null, 'password');
+chk('(documenting the gap the header check closes) the core alone would swap a NULL-platform sign-in, so the request-level browser check is what protects it',
+    deviceSigninEnrol($db, $u1, hash('sha256', $nullBrowser), $dev('install-NULLPL-0001'))['status'] === 200);
+
 /* the owner's rule: a signed-out install may not be enrolled again */
 apiTokenSignOutHashes($db, 1, [$ownHash]);
 $so = deviceSigninEnrol($db, $u1, $sharedHash, $dev('install-ENROL-0001'));

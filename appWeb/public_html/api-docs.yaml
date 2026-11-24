@@ -5929,9 +5929,12 @@ paths:
         the platform may hold one (Apple today), an automatic sign-in key, shown **once**. The caller's
         own (shared) sign-in is **not** revoked, so older copies of the app keep working.
 
-        **The `Authorization: Bearer` header is required.** The browser cookie is never accepted here, so a
-        web page can never mint an app sign-in (`400 bearer_required` otherwise). This action never sets a
-        cookie. Same-origin header required (rule #29). Rate limit: 10 an hour per person.
+        **The `Authorization: Bearer` header is required.** The browser cookie is never accepted here
+        (`400 bearer_required` otherwise). A request stamped by a web browser (it carries `Sec-Fetch-Site`,
+        `Sec-Fetch-Mode`, `Sec-Fetch-Dest` or `Origin`, which a page cannot remove) is refused with `403
+        browser_request`, and the website's own sign-ins are stored with platform `web` and refused with
+        `403 not_a_shared_app_sign_in`; so a script running in a web page cannot turn the browser's sign-in
+        into an app sign-in. A native app sends none of those headers. This action never sets a cookie. Same-origin header required (rule #29). Rate limit: 10 an hour per person.
 
         Switched on per channel (`device_signin_channels`, default none); while off, `409
         device_signin_disabled`. Status codes and `reason` words are the contract, not the sentence.
@@ -5976,7 +5979,7 @@ paths:
           description: Not authenticated (the sign-in is dead)
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "403":
-          description: "`csrf`, `install_mismatch` (the sign-in belongs to another install), `not_a_shared_app_sign_in` (a browser or admin-page sign-in), or `install_signed_out` (this install was signed out and must sign in by hand)"
+          description: "`csrf`, `browser_request` (the request carries browser-only headers), `install_mismatch` (the sign-in belongs to another install), `not_a_shared_app_sign_in` (a browser or admin-page sign-in), or `install_signed_out` (this install was signed out and must sign in by hand)"
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "409":
           description: "`device_signin_disabled`, `device_signin_not_ready` or `already_enrolled`"
@@ -5995,7 +5998,8 @@ paths:
         The caller must hold a sign-in tied to an install (`403 device_token_required` for the shared one,
         or every old copy of the app could make keys) on a platform that may hold keys (`403
         enrol_key_platform_unsupported`). A person keeps at most 5 live keys per platform (the oldest goes).
-        `Authorization: Bearer` header required (`400 bearer_required`). Rate limit: 5 an hour per person.
+        `Authorization: Bearer` header required (`400 bearer_required`); a request carrying browser-only
+        headers is refused (`403 browser_request`, as for `auth_device_enrol`). Rate limit: 5 an hour per person.
         Switched on per channel like `auth_device_enrol`.
       security:
         - bearerAuth: []
@@ -6021,7 +6025,7 @@ paths:
           description: Not authenticated
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "403":
-          description: "`csrf`, `device_token_required` or `enrol_key_platform_unsupported`"
+          description: "`csrf`, `browser_request`, `device_token_required` or `enrol_key_platform_unsupported`"
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "409":
           description: "`device_signin_disabled` or `device_signin_not_ready`"

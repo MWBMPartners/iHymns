@@ -17,7 +17,7 @@ import { userHasEntitlement } from './entitlements.js';
 import { offlineQueue } from './offline-queue.js';
 import {
     STORAGE_AUTH_TOKEN, STORAGE_AUTH_USER, EVT_AUTH_CHANGED,
-    STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT, STORAGE_STASH_PREFIX,
+    STORAGE_SETLISTS_SYNCED_AT, STORAGE_FAVORITES_SYNCED_AT, STORAGE_STASH_PREFIX, WEB_DEVICE_DETAILS,
 } from '../constants.js';
 import { performAppleSignIn } from './apple-signin.js';
 import { reconcileDataOwner, recordDataOwner, protectOnUnplannedSignOut, clearPersonalDataAtSignOut, removeStash } from './account-data-owner.js';
@@ -356,7 +356,7 @@ export class UserAuth {
      *                     verificationEmailProvider?: string }>}
      */
     async register(username, password, displayName, email = '') {
-        const payload = { username, password, display_name: displayName };
+        const payload = { username, password, display_name: displayName, ...WEB_DEVICE_DETAILS };   /* a browser says it is the web (rule #55) */
         if (email) payload.email = email;
         /* #947/#340 — attach the solved CAPTCHA token when the registration
            form is gated. this._captchaWidgets.registration is only truthy
@@ -393,7 +393,7 @@ export class UserAuth {
      * @returns {Promise<{ success: boolean, error?: string }>}
      */
     async login(username, password) {
-        const payload = { username, password };
+        const payload = { username, password, ...WEB_DEVICE_DETAILS };   /* a browser says it is the web (rule #55) */
         /* #947/#340 — see register() above. */
         if (this._captchaWidgets?.login) {
             payload[CAPTCHA_BODY_KEY] = this._captchaWidgets.login.getToken();
@@ -1566,7 +1566,7 @@ export class UserAuth {
             const r = await apiFetch(`${this.app.config.apiUrl}?action=auth_email_login_verify`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body: JSON.stringify({ token }),
+                body: JSON.stringify({ token, ...WEB_DEVICE_DETAILS }),
             });
             const data = await r.json().catch(() => ({}));
             if (r.ok && data.token && data.user) {
@@ -2433,7 +2433,7 @@ export class UserAuth {
                         'Content-Type': 'application/json',
                         'X-Requested-With': 'XMLHttpRequest',
                     },
-                    body: JSON.stringify({ email: emailLoginAddress, code }),
+                    body: JSON.stringify({ email: emailLoginAddress, code, ...WEB_DEVICE_DETAILS }),
                 });
 
                 const data = await res.json();

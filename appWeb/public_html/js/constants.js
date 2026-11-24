@@ -11,6 +11,15 @@
 /* ── localStorage Keys ─────────────────────────────────────────────────── */
 
 /* Core data */
+/**
+ * The device details every BROWSER sign-in must send (login, register, emailed link or code, Apple on the web).
+ * ELI5: a browser says "I am the web" so the server never mistakes its sign-in for an Apple app's, and the
+ * "give this device its own sign-in" actions refuse it. Native apps send their own platform instead.
+ * A guard (tests/test-web-signin-platform.js) finds every browser sign-in call from the tree and fails if one
+ * leaves this out. Rule #55.
+ */
+export const WEB_DEVICE_DETAILS = Object.freeze({ platform: 'web' });
+
 export const STORAGE_FAVORITES      = 'ihymns_favorites';
 export const STORAGE_SETLISTS       = 'ihymns_setlists';
 export const STORAGE_HISTORY        = 'ihymns_history';

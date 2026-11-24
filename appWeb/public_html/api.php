@@ -6239,6 +6239,8 @@ if ($action !== null) {
             if (!validateCsrfRequest(null)) { sendJson(['error' => 'Cross-origin request rejected.', 'reason' => 'csrf'], 403); break; }
             $dsHeader = apiTokenBearerHeaderValue();
             if ($dsHeader === null) { sendJson(['error' => 'A bearer sign-in header is required.', 'reason' => 'bearer_required'], 400); break; }
+            /* Security review finding 1: a request stamped by a browser can never be a native app asking for its own sign-in. */
+            if (deviceSigninRequestLooksLikeBrowser($_SERVER)) { $bx = deviceSigninBrowserRefusal(); sendJson($bx['body'], $bx['status']); break; }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
             $userId = (int)$authUser['Id'];
@@ -6273,6 +6275,8 @@ if ($action !== null) {
             if (!validateCsrfRequest(null)) { sendJson(['error' => 'Cross-origin request rejected.', 'reason' => 'csrf'], 403); break; }
             $dsHeader = apiTokenBearerHeaderValue();
             if ($dsHeader === null) { sendJson(['error' => 'A bearer sign-in header is required.', 'reason' => 'bearer_required'], 400); break; }
+            /* Security review finding 1: a request stamped by a browser can never be a native app asking for its own sign-in. */
+            if (deviceSigninRequestLooksLikeBrowser($_SERVER)) { $bx = deviceSigninBrowserRefusal(); sendJson($bx['body'], $bx['status']); break; }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
             $userId = (int)$authUser['Id'];

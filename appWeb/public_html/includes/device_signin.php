@@ -32,8 +32,8 @@ declare(strict_types=1);
  * here and `sendJson()` the answer. The status codes and `reason` words are the contract (rule #35):
  *
  *   enrol:   200; 400 invalid_install_id | invalid_platform; 403 install_mismatch |
- *            not_a_shared_app_sign_in | install_signed_out; 409 already_enrolled | device_signin_not_ready
- *   key:     200; 403 device_token_required | enrol_key_platform_unsupported; 409 not_ready
+ *            not_a_shared_app_sign_in | install_signed_out | browser_request; 409 already_enrolled | device_signin_not_ready
+ *   key:     200; 403 device_token_required | enrol_key_platform_unsupported | browser_request; 409 not_ready
  *   redeem:  200; 400 malformed_enrol_key | invalid_install_id | invalid_platform;
  *            401 enrol_key_invalid (ONE answer for unknown, expired, cancelled, wrong platform,
  *            switched-off account AND an install that was signed out: the caller cannot tell which);
@@ -99,6 +99,38 @@ function deviceSigninParseDevice(mixed $body): array
         return ['ok' => false, 'status' => 400, 'reason' => 'invalid_platform'];
     }
     return ['ok' => true, 'meta' => $meta, 'installId' => $meta['deviceInstallId'], 'platform' => $meta['platform']];
+}
+
+/**
+ * Does this request look like it came from a web BROWSER rather than a native app? PURE.
+ *
+ * ELI5: a browser stamps its own requests with headers a web page cannot remove or fake
+ * (`Sec-Fetch-Site`, `Sec-Fetch-Mode`, `Sec-Fetch-Dest`, and `Origin` on a POST). A native app's network
+ * code (Apple's URLSession) sends none of them. The two actions that hand a device its own sign-in refuse
+ * anything carrying them, so a script running inside a web page can never use the browser's stored
+ * sign-in to get an app sign-in and a 180-day key, even for a browser sign-in made before the web app
+ * started saying `platform: 'web'` (those are stored with no platform for up to 30 days).
+ *
+ * Detailed: this is the belt to the platform word's braces (PR 3a security review, finding 1).
+ * `$server` is `$_SERVER` (or a test array). A header counts as present when it is a non-empty string.
+ *
+ * @param array<string,mixed> $server
+ * @link https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Sec-Fetch-Site  (forbidden request headers: a page cannot set them)
+ */
+function deviceSigninRequestLooksLikeBrowser(array $server): bool
+{
+    foreach (['HTTP_SEC_FETCH_SITE', 'HTTP_SEC_FETCH_MODE', 'HTTP_SEC_FETCH_DEST', 'HTTP_ORIGIN'] as $h) {
+        if (isset($server[$h]) && is_string($server[$h]) && trim($server[$h]) !== '') {
+            return true;
+        }
+    }
+    return false;
+}
+
+/** The refusal for a request that looks like it came from a browser (403 `browser_request`). */
+function deviceSigninBrowserRefusal(): array
+{
+    return deviceSigninRefusal(403, 'browser_request', 'A web browser cannot make a device sign-in.');
 }
 
 /** A short, log-safe tag for a sign-in (the first characters of its stored hash, never the token). */
