@@ -239,7 +239,9 @@ extension AppRootViewModel {
         // header explains why); failure is swallowed there, so this can
         // never itself fail or block the sign-in restore below.
         await loadAppStatus()
-        try? await sessionController.restoreFromStorage()
+        // PR 3b: tell the controller whether the site has "one sign-in per device"
+        // switched on (`false` when the read failed, which keeps every swap off).
+        try? await sessionController.restoreFromStorage(deviceSignInEnabled: appStatus?.deviceSignin ?? false)
         if await isSignedInNow() {
             await syncAfterSignIn()
         }

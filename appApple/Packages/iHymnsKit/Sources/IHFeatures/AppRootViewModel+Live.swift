@@ -57,7 +57,11 @@ extension AppRootViewModel {
         // Keychain items and their per-platform settings are decided. The older
         // apps' shared item is no longer saved over by this app.
         let authStorage = AuthStorage.live()
-        let sessionController = SessionController(tokenStore: authStorage.deviceTokenStore, apiClient: apiClient)
+        let sessionController = SessionController(
+            tokenStore: authStorage.deviceTokenStore,
+            apiClient: apiClient,
+            deviceSignIn: authStorage.support
+        )
         // swiftlint:disable:next force_try
         let offlineStore = try! OfflineStore(path: offlineStorePath(), mediaCacheDirectory: mediaCacheDirectory())
         let liveFollowEngine = LiveFollowEngine(apiClient: apiClient)

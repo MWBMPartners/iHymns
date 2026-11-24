@@ -53,11 +53,33 @@ public struct DeviceSignInRecord: Codable, Sendable, Equatable {
     public var signedOutHere: Bool
     public var swappedLegacyHashes: [String]
     public var deadKeyHashes: [String]
+    /// Whether the person turned "sign in automatically on my other Apple
+    /// devices" OFF on this device. When true, a manual sign-in does not make
+    /// a new automatic sign-in key. Added in I2c; an older stored notebook
+    /// without it reads as `false`.
+    public var automaticSignInOff: Bool
 
-    public init(signedOutHere: Bool = false, swappedLegacyHashes: [String] = [], deadKeyHashes: [String] = []) {
+    public init(
+        signedOutHere: Bool = false,
+        swappedLegacyHashes: [String] = [],
+        deadKeyHashes: [String] = [],
+        automaticSignInOff: Bool = false
+    ) {
         self.signedOutHere = signedOutHere
         self.swappedLegacyHashes = swappedLegacyHashes
         self.deadKeyHashes = deadKeyHashes
+        self.automaticSignInOff = automaticSignInOff
+    }
+
+    /// Hand-written so a notebook saved before `automaticSignInOff` existed
+    /// still decodes (a synthesized decoder would throw on the missing key and
+    /// the whole notebook would read as empty, forgetting "signed out here").
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.signedOutHere = try container.decodeIfPresent(Bool.self, forKey: .signedOutHere) ?? false
+        self.swappedLegacyHashes = try container.decodeIfPresent([String].self, forKey: .swappedLegacyHashes) ?? []
+        self.deadKeyHashes = try container.decodeIfPresent([String].self, forKey: .deadKeyHashes) ?? []
+        self.automaticSignInOff = try container.decodeIfPresent(Bool.self, forKey: .automaticSignInOff) ?? false
     }
 }
 
@@ -91,6 +113,13 @@ public actor DeviceSignInState {
     public func setSignedOutHere(_ value: Bool) async {
         var current = await record()
         current.signedOutHere = value
+        await write(current)
+    }
+
+    /// Records the person's choice about automatic sign-in on this device.
+    public func setAutomaticSignInOff(_ value: Bool) async {
+        var current = await record()
+        current.automaticSignInOff = value
         await write(current)
     }
 

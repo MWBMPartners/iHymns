@@ -152,6 +152,11 @@ public final class AppRootViewModel {
     /// that file for the full design).
     public internal(set) var captchaConfig: CaptchaConfig?
 
+    /// The whole `app_status` answer from launch (`nil` until read, or when
+    /// the read failed). Today it supplies the site's `deviceSignin` and
+    /// `profileSync` switches (PR 3b); `captchaConfig` above is the same read.
+    public internal(set) var appStatus: AppStatus?
+
     /// Every favourited song this device knows about, most-recently-added
     /// first — an OFFLINE-FIRST mirror of `IHPersistence.OfflineStore`'s
     /// `favorite` table (#181), NOT a `LoadState`-gated network read: it's

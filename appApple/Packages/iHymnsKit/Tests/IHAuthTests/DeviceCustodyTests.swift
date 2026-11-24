@@ -112,6 +112,25 @@ struct DeviceCustodyTests {
         #expect(await DeviceSignInState(store: store).record() == DeviceSignInRecord())
     }
 
+    @Test("A notebook saved before automaticSignInOff existed still decodes and keeps signed out here")
+    func olderNotebookStillDecodes() async throws {
+        let store = InMemoryTokenStore()
+        try await store.save(#"{"signedOutHere":true,"swappedLegacyHashes":["a"],"deadKeyHashes":[]}"#)
+        let record = await DeviceSignInState(store: store).record()
+        #expect(record.signedOutHere)
+        #expect(record.swappedLegacyHashes == ["a"])
+        #expect(record.automaticSignInOff == false)
+    }
+
+    @Test("The automatic sign-in choice is remembered")
+    func automaticSignInChoice() async {
+        let state = DeviceSignInState(store: InMemoryTokenStore())
+        await state.setAutomaticSignInOff(true)
+        #expect(await state.record().automaticSignInOff)
+        await state.setAutomaticSignInOff(false)
+        #expect(await state.record().automaticSignInOff == false)
+    }
+
     @Test("The fingerprint is stable, 64 hex characters, and not the secret")
     func fingerprintShape() {
         let a = TokenFingerprint.sha256Hex("secret-token")

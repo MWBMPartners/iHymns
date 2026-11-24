@@ -219,7 +219,7 @@ let package = Package(
             // #1398: `SessionController` now composes a real `APIClient` —
             // its tests need `IHAPI` directly (to construct one against a
             // mocked `URLSession`) and `IHAPITestSupport` for that mock.
-            dependencies: ["IHAuth", "IHAPI", "IHAPITestSupport"],
+            dependencies: ["IHAuth", "IHAPI", "IHModels", "IHAPITestSupport"],
             swiftSettings: sharedSwiftSettings
         ),
 

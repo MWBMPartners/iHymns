@@ -41,7 +41,11 @@ extension AppRootViewModel {
     /// show, and if so, do I know how to draw it?"
     func loadAppStatus() async {
         CaptchaChallengeRegistry.register(TurnstileCaptchaProvider())
-        captchaConfig = try? await apiClient.appStatus().captcha
+        // PR 3b: keep the whole answer, not just `captcha`, because the site's
+        // `deviceSignin` / `profileSync` switches come from the same read.
+        let status = try? await apiClient.appStatus()
+        appStatus = status
+        captchaConfig = status?.captcha
     }
 
     /// Is `form` (a `CaptchaConfig.loginFormKey`/`.emailLoginFormKey` value)

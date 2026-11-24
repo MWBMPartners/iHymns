@@ -35,6 +35,17 @@
 // funnels through. `userId` is `.private`; the token/username are NEVER
 // logged, at any level (strategy §4). `restoreFromStorage()`'s 401
 // self-heal (an INVOLUNTARY sign-out) additionally logs an `.error`.
+//
+// PR 3b (I2c, #2180) UPDATE — one sign-in per device. Built with a
+// `DeviceSignInSupport`, this controller gives each device its OWN sign-in:
+// it can swap the older apps' shared sign-in for one (`auth_device_enrol`), use
+// an automatic sign-in key from iCloud Keychain on a brand-new device
+// (`auth_enrol_key_redeem`), remembers "signed out here" so a signed-out device
+// never signs itself back in, and can sign out everywhere. That logic lives in
+// `SessionController+DeviceSignIn.swift`; this file keeps the core. Built
+// WITHOUT support (`deviceSignIn: nil`, the default), it behaves exactly as it
+// did before: one token store, no swapping, no extra calls. Design:
+// `.claude/analysis/per-device-sign-in-design.md`.
 import Foundation
 import IHAPI
 import IHLog
@@ -63,13 +74,36 @@ public enum SessionState: Sendable, Equatable {
 /// password" or "sign out," and it keeps every part of the app that's
 /// watching in sync.
 public actor SessionController {
-    private let tokenStore: any TokenStoring
+    /// Where the signed-in token lives. With device sign-in support this is the
+    /// this-device-only store holding THIS device's own token; the older apps'
+    /// shared token is never kept here (it is only read, by the reader in
+    /// `deviceSignIn`). `internal` (not `private`) so the sibling extension
+    /// file can use it.
+    let tokenStore: any TokenStoring
 
     /// The shared network client — used to call `auth_login`/`auth_logout`
     /// AND kept in sync via `updateBearerToken(_:)` so every OTHER call this
     /// same client makes (catalogue reads, future authenticated writes)
     /// carries the right token the moment this actor knows about one.
-    private let apiClient: APIClient
+    let apiClient: APIClient
+
+    /// Everything needed to give this device its own sign-in, or `nil` for the
+    /// plain older behaviour (see this file's PR 3b note).
+    let deviceSignIn: DeviceSignInSupport?
+
+    /// The site's "one sign-in per device" switch as the app last saw it
+    /// (`app_status.deviceSignin`), handed in by `restoreFromStorage`. `false`
+    /// until told, which keeps every swap and key call switched off.
+    var deviceSignInEnabled = false
+
+    /// True while the current token is the older apps' SHARED sign-in held in
+    /// memory only (the "legacy mode" of a swap that could not happen). It is
+    /// never copied into any store, and signing out of it makes no server call
+    /// (revoking it would sign out every other device).
+    var usingLegacyToken = false
+
+    /// Guards `restoreFromStorage`: one swap at a time inside the actor.
+    var isRestoring = false
 
     /// The live authentication state. Mutated only by this actor's own
     /// methods below, so every read is guaranteed to be the true current
@@ -102,77 +136,19 @@ public actor SessionController {
     /// `setState`, which does run isolated).
     nonisolated public let stateUpdates: AsyncStream<SessionState>
 
-    public init(tokenStore: any TokenStoring, apiClient: APIClient) {
+    public init(tokenStore: any TokenStoring, apiClient: APIClient, deviceSignIn: DeviceSignInSupport? = nil) {
         self.tokenStore = tokenStore
         self.apiClient = apiClient
+        self.deviceSignIn = deviceSignIn
         let (stream, continuation) = AsyncStream.makeStream(of: SessionState.self)
         self.stateUpdates = stream
         self.continuation = continuation
     }
 
-    /// Re-hydrates `state` from whatever token (if any) is already in
-    /// storage — called once at app launch, before the first screen
-    /// renders, so a returning signed-in user never sees a sign-in prompt
-    /// flash.
-    ///
-    /// ELI5: "Check the safe — were we already signed in? And if so, is
-    /// that pass still good?"
-    ///
-    /// DETAILED (native login/account UI task, completing #1398's noted
-    /// gap): this used to trust a stored token unconditionally — correct as
-    /// far as it went, but a token can go bad between app launches (revoked
-    /// from another device, expired past its 30-day window, the account
-    /// disabled) with no local signal that it happened. This now validates
-    /// via a lightweight `?action=auth_me` round trip before publishing
-    /// `.signedIn`:
-    ///   - No stored token at all → `.signedOut`, no network call (nothing
-    ///     to validate).
-    ///   - `auth_me` succeeds → the token is genuinely still good →
-    ///     `.signedIn(token:)`.
-    ///   - `auth_me` throws `.unauthorized` → the token is DEFINITIVELY dead
-    ///     server-side → self-heal by clearing the local copy too (mirrors
-    ///     `signOut()`'s "already revoked, nothing left to do" handling)
-    ///     rather than leaving the app claiming a signed-in state that will
-    ///     401 on the very next authenticated call.
-    ///   - `auth_me` throws anything else (`.offline`/`.maintenance`/
-    ///     `.rateLimited`/`.server`/`.decoding`) → fail OPEN: still publish
-    ///     `.signedIn(token:)`. A network blip or a maintenance window at
-    ///     the exact moment the app launches says nothing about whether the
-    ///     token itself is good, and this codebase's whole posture toward
-    ///     transient failures is "never punitive" (mirrors `.claude/CLAUDE.md`
-    ///     rule #17's 503-maintenance handling, and #1010's "DB down = a
-    ///     graceful degrade, never lost state") — bouncing a legitimate,
-    ///     still-signed-in user to a sign-in screen just because launch
-    ///     raced a connectivity hiccup would be a strictly worse experience
-    ///     than briefly trusting a token that turns out, moments later, to
-    ///     still be perfectly valid.
-    public func restoreFromStorage() async throws {
-        guard let token = try await tokenStore.load() else {
-            setState(.signedOut)
-            return
-        }
-
-        await apiClient.updateBearerToken(token)
-        do {
-            // Captured (rather than the original `_ = try await ...`
-            // discard) so the `.notice` transition log below can carry the
-            // signed-in user's numeric id — #1505, strategy §2.2.
-            let user = try await apiClient.authMe()
-            setState(.signedIn(token: token), userId: user.id)
-        } catch APIError.unauthorized {
-            try? await tokenStore.delete()
-            await apiClient.updateBearerToken(nil)
-            // Unlike `signOut()`'s benign `.unauthorized` handling (a
-            // deliberate sign-out that finds nothing left to revoke), THIS
-            // is involuntary — the app is about to silently drop a user who
-            // believed they were still signed in: "a 401 forces sign-out"
-            // (strategy §2.2), logged `.error` not `.notice`.
-            IHLog.auth.error("session: stored token rejected (401) on restore — forcing sign-out")
-            setState(.signedOut)
-        } catch {
-            setState(.signedIn(token: token))
-        }
-    }
+    // `restoreFromStorage(deviceSignInEnabled:)` lives in
+    // `SessionController+DeviceSignIn.swift` (PR 3b, I2c): it grew the
+    // device-token / key / shared-sign-in decision tree, and keeping it beside
+    // that code keeps this file under the repo's LOC budget.
 
     /// Signs in with a username/password pair: exchanges them for a bearer
     /// token via `?action=auth_login`, then persists/publishes it exactly
@@ -200,7 +176,9 @@ public actor SessionController {
     ///   future sign-in screen) maps these to user-facing copy the same way
     ///   `AppRootViewModel` maps catalogue-read failures (#1399).
     public func signIn(username: String, password: String, captchaToken: String? = nil) async throws {
-        let session = try await apiClient.authLogin(username: username, password: password, captchaToken: captchaToken)
+        // PR 3b (I2c): carry this install's details so the server gives this device its own row.
+        let device = await currentDeviceDetails()
+        let session = try await apiClient.authLogin(username: username, password: password, captchaToken: captchaToken, device: device)
         // Private `userId:` overload (#1505) — this call site already
         // knows who just signed in, for the `.notice` transition log.
         try await signIn(token: session.token, userId: session.user.id)
@@ -222,7 +200,8 @@ public actor SessionController {
     ///   `.maintenance` for a transient failure, ...) — same "don't swallow
     ///   or reinterpret" contract as `signIn(username:password:)`.
     public func signIn(email: String, code: String) async throws {
-        let session = try await apiClient.authEmailLoginVerify(email: email, code: code)
+        let device = await currentDeviceDetails()
+        let session = try await apiClient.authEmailLoginVerify(email: email, code: code, device: device)
         // See `signIn(username:password:)`'s matching comment above.
         try await signIn(token: session.token, userId: session.user.id)
     }
@@ -255,7 +234,11 @@ public actor SessionController {
     private func signIn(token: String, userId: Int?) async throws {
         try await tokenStore.save(token)
         await apiClient.updateBearerToken(token)
+        usingLegacyToken = false
         setState(.signedIn(token: token), userId: userId)
+        // PR 3b (I2c): a person signing in by hand clears "signed out here", and
+        // (if automatic sign-in is on) this device offers its key to the others.
+        await afterManualSignIn()
     }
 
     /// Clears the stored token and transitions to `.signedOut` — but ONLY
@@ -287,16 +270,32 @@ public actor SessionController {
     public func signOut() async throws {
         guard case .signedIn = state else { return }
 
+        // PR 3b (I2c): signing out of the older apps' SHARED sign-in makes NO
+        // server call (revoking it would sign out every other Apple device)
+        // and never touches the shared item: this device just forgets it.
+        if usingLegacyToken {
+            await markSignedOutHere()
+            usingLegacyToken = false
+            await apiClient.updateBearerToken(nil)
+            setState(.signedOut)
+            return
+        }
+
         do {
             try await apiClient.authLogout()
         } catch APIError.unauthorized {
-            // Already invalid/revoked server-side — treat as "the server
-            // half is already done" and fall through to clear our local
-            // copy too, rather than stranding the user signed-in-locally
-            // with a token that can never work again.
+            // Already invalid/revoked server-side — treat as "the server half is
+            // already done" and fall through to clear our local copy too.
         }
 
+        // Order matters (PR 3b): remember "signed out here" BEFORE deleting the
+        // token, so a crash in between can never leave a device that signs
+        // itself back in on the next launch.
+        await markSignedOutHere()
         try await tokenStore.delete()
+        // The server cancels the person's automatic sign-in keys when a device's
+        // own sign-in ends, so this device's copy of the key is dead: drop it.
+        await deleteKeyCopy()
         await apiClient.updateBearerToken(nil)
         setState(.signedOut)
     }
@@ -344,7 +343,13 @@ public actor SessionController {
 
         try await apiClient.accountDelete(reauth: reauth)
 
-        try await tokenStore.delete()
+        // PR 3b: nothing of this account may sign back in here (flag first, then
+        // the token, then the key). The shared item is left alone: the server
+        // already deleted that token with the account.
+        await markSignedOutHere()
+        if !usingLegacyToken { try await tokenStore.delete() }
+        await deleteKeyCopy()
+        usingLegacyToken = false
         await apiClient.updateBearerToken(nil)
         setState(.signedOut)
     }
@@ -366,7 +371,7 @@ public actor SessionController {
     /// signed-out→signed-in transition, when known (`nil` otherwise, per
     /// `signIn(token:userId:)`'s doc comment); ignored on the way out
     /// (`.signedIn` never stored one to look back up here).
-    private func setState(_ newState: SessionState, userId: Int? = nil) {
+    func setState(_ newState: SessionState, userId: Int? = nil) {
         let wasSignedIn = state.isSignedIn
         state = newState
         continuation.yield(newState)

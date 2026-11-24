@@ -27,12 +27,12 @@
 // the build red instead of shipping.
 import Foundation
 
-/// Everything the session controller stores about signing in, bundled.
+/// The extras the session controller needs, beyond the device-token store, to
+/// give this device its own sign-in. Handing `nil` to the controller instead
+/// keeps it in its plain, older shape (one token store, no swapping).
 ///
-/// ELI5: A tray holding the five Keychain items.
-public struct AuthStorage: Sendable {
-    /// This device's own sign-in token (this-device-only).
-    public let deviceTokenStore: any TokenStoring
+/// ELI5: The shared-sign-in window, the install id, the notebook, and the key.
+public struct DeviceSignInSupport: Sendable {
     /// The automatic sign-in key (synced), or `nil` where iCloud Keychain is not used.
     public let enrolKeyStore: (any TokenStoring)?
     /// Read-only view of the older apps' shared sign-in.
@@ -43,17 +43,30 @@ public struct AuthStorage: Sendable {
     public let signInState: DeviceSignInState
 
     public init(
-        deviceTokenStore: any TokenStoring,
         enrolKeyStore: (any TokenStoring)? = nil,
         legacyReader: any LegacyTokenReading,
         deviceIdentity: any DeviceIdentityProviding,
         signInState: DeviceSignInState
     ) {
-        self.deviceTokenStore = deviceTokenStore
         self.enrolKeyStore = enrolKeyStore
         self.legacyReader = legacyReader
         self.deviceIdentity = deviceIdentity
         self.signInState = signInState
+    }
+}
+
+/// Everything the session controller stores about signing in, bundled.
+///
+/// ELI5: A tray holding the five Keychain items.
+public struct AuthStorage: Sendable {
+    /// This device's own sign-in token (this-device-only).
+    public let deviceTokenStore: any TokenStoring
+    /// Everything else the controller needs to swap, redeem and remember.
+    public let support: DeviceSignInSupport
+
+    public init(deviceTokenStore: any TokenStoring, support: DeviceSignInSupport) {
+        self.deviceTokenStore = deviceTokenStore
+        self.support = support
     }
 
     /// The real Keychain-backed tray, with the right settings per platform.
@@ -70,10 +83,12 @@ public struct AuthStorage: Sendable {
         #endif
         return AuthStorage(
             deviceTokenStore: deviceToken,
-            enrolKeyStore: enrolKey,
-            legacyReader: LegacySharedTokenReader(),
-            deviceIdentity: DeviceIdentity(store: installId),
-            signInState: DeviceSignInState(store: deviceState)
+            support: DeviceSignInSupport(
+                enrolKeyStore: enrolKey,
+                legacyReader: LegacySharedTokenReader(),
+                deviceIdentity: DeviceIdentity(store: installId),
+                signInState: DeviceSignInState(store: deviceState)
+            )
         )
     }
 }
