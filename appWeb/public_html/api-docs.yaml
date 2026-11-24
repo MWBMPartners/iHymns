@@ -3459,8 +3459,12 @@ paths:
 
         ### Optional expiry (#1661)
         Each setlist may carry `expiresAt` (UTC, `YYYY-MM-DD HH:MM:SS`).
-        `null`/absent means **never expires**, which is the default and what
-        every pre-existing setlist has. The SERVER converts an expired
+        `null` means **never expires**, which is the default and what every
+        pre-existing setlist has. On a sync write the KEY decides (#2207):
+        `expiresAt` present (even as `null`) is the truth for that setlist and
+        `null` CLEARS a stored expiry; `expiresAt` omitted means "this client
+        knows nothing about expiry" and the stored expiry is KEPT (a new
+        setlist then simply has none). The same rule `plan` follows. The SERVER converts an expired
         setlist into a tombstone (`reason: "expired"`) lazily, on the next
         read or sync — clients render `expiresAt` for display only and must
         not delete on expiry themselves.
@@ -3532,8 +3536,10 @@ paths:
                         nullable: true
                         description: >
                           #1661 — optional expiry, UTC 'YYYY-MM-DD HH:MM:SS'.
-                          null/absent = never expires. Round-trips through
-                          this upsert, so sending null CLEARS an expiry.
+                          null = never expires. Presence of the key is what
+                          counts (#2207): sending null CLEARS a stored expiry,
+                          omitting the key KEEPS the stored expiry (a new
+                          setlist then has none).
                       songs:
                         type: array
                         maxItems: 200
