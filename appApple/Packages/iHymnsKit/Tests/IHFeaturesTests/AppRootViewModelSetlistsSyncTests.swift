@@ -123,7 +123,8 @@ extension AppRootViewModelSetlistsTests {
             }
             let created = await viewModel.createSetlist(name: "Doomed")
             await viewModel.deleteSetlist(created.id)
-            #expect(try await viewModel.offlineStore.pendingDeletedSetlistIds() == [created.id])
+            let actual1 = try await viewModel.offlineStore.pendingDeletedSetlistIds()
+            #expect(actual1 == [created.id])
 
             // Back online: one successful push empties the whole queue, deletes included.
             MockURLProtocol.requestHandler = { request in
@@ -133,8 +134,10 @@ extension AppRootViewModelSetlistsTests {
                 return (Self.response(status: 200), Data("{}".utf8))
             }
             await viewModel.flushPendingSetlistOps()
-            #expect(try await viewModel.offlineStore.pendingDeletedSetlistIds().isEmpty)
-            #expect(try await viewModel.offlineStore.pendingSetlistOps().isEmpty)
+            let actual2 = try await viewModel.offlineStore.pendingDeletedSetlistIds().isEmpty
+            #expect(actual2)
+            let actual3 = try await viewModel.offlineStore.pendingSetlistOps().isEmpty
+            #expect(actual3)
         }
     }
 

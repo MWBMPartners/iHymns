@@ -41,9 +41,11 @@ struct SessionControllerDeviceSignOutTests {
             try await harness.controller.signIn(username: "jane", password: "pw")
 
             #expect(await harness.controller.state == .signedIn(token: TestData.ownToken))
-            #expect(try await harness.deviceStore.load() == TestData.ownToken)
+            let actual1 = try await harness.deviceStore.load()
+            #expect(actual1 == TestData.ownToken)
             #expect(await harness.notebook.record().signedOutHere == false)
-            #expect(try await harness.keyStore.load() == TestData.newKey)
+            let actual2 = try await harness.keyStore.load()
+            #expect(actual2 == TestData.newKey)
             #expect(harness.log.actions == ["auth_login", "auth_enrol_key_create"])
             // The key is asked for with the NEW own token, not anything shared.
             #expect(harness.log.last(of: "auth_enrol_key_create")?.authorization == "Bearer " + TestData.ownToken)
@@ -87,7 +89,8 @@ struct SessionControllerDeviceSignOutTests {
             try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
             try await harness.controller.signIn(username: "jane", password: "pw")
             #expect(await harness.controller.state == .signedIn(token: TestData.ownToken))
-            #expect(try await harness.keyStore.load() == nil)
+            let actual3 = try await harness.keyStore.load()
+            #expect(actual3 == nil)
         }
     }
 
@@ -107,9 +110,11 @@ struct SessionControllerDeviceSignOutTests {
             #expect(harness.log.actions == ["auth_logout"])
             #expect(harness.log.last(of: "auth_logout")?.authorization == "Bearer " + TestData.ownToken)
             #expect(await harness.controller.state == .signedOut)
-            #expect(try await harness.deviceStore.load() == nil)
+            let actual4 = try await harness.deviceStore.load()
+            #expect(actual4 == nil)
             #expect(await harness.notebook.record().signedOutHere)
-            #expect(try await harness.keyStore.load() == nil)
+            let actual5 = try await harness.keyStore.load()
+            #expect(actual5 == nil)
 
             // And the next launch stays signed out although a shared sign-in is still in iCloud.
             harness.log.reset()
@@ -136,7 +141,8 @@ struct SessionControllerDeviceSignOutTests {
             #expect(harness.log.actions.isEmpty)
             #expect(await harness.controller.state == .signedOut)
             #expect(await harness.notebook.record().signedOutHere)
-            #expect(try await harness.keyStore.load() == TestData.key) // the key is not touched
+            let actual6 = try await harness.keyStore.load()
+            #expect(actual6 == TestData.key) // the key is not touched
             #expect(await harness.controller.usingLegacyToken == false)
         }
     }
@@ -152,8 +158,10 @@ struct SessionControllerDeviceSignOutTests {
             await #expect(throws: APIError.self) { try await harness.controller.signOut() }
 
             #expect(await harness.controller.state == .signedIn(token: TestData.ownToken))
-            #expect(try await harness.deviceStore.load() == TestData.ownToken)
-            #expect(try await harness.keyStore.load() == TestData.key)
+            let actual7 = try await harness.deviceStore.load()
+            #expect(actual7 == TestData.ownToken)
+            let actual8 = try await harness.keyStore.load()
+            #expect(actual8 == TestData.key)
             #expect(await harness.notebook.record().signedOutHere == false)
         }
     }
@@ -174,9 +182,11 @@ struct SessionControllerDeviceSignOutTests {
 
             #expect(result?.tokensRevoked == 3)
             #expect(await harness.controller.state == .signedOut)
-            #expect(try await harness.deviceStore.load() == nil)
+            let actual9 = try await harness.deviceStore.load()
+            #expect(actual9 == nil)
             #expect(await harness.notebook.record().signedOutHere)
-            #expect(try await harness.keyStore.load() == nil)
+            let actual10 = try await harness.keyStore.load()
+            #expect(actual10 == nil)
         }
     }
 
@@ -190,7 +200,8 @@ struct SessionControllerDeviceSignOutTests {
 
             await #expect(throws: APIError.self) { _ = try await harness.controller.signOutEverywhere() }
             #expect(await harness.controller.state == .signedIn(token: TestData.ownToken))
-            #expect(try await harness.keyStore.load() == TestData.key)
+            let actual11 = try await harness.keyStore.load()
+            #expect(actual11 == TestData.key)
 
             TestData.route(harness.log) { _ in (401, Data()) }
             let result = try await harness.controller.signOutEverywhere()
@@ -223,8 +234,10 @@ struct SessionControllerDeviceSignOutTests {
             try await harness.controller.deleteAccount(reauth: .password("pw"))
 
             #expect(await harness.controller.state == .signedOut)
-            #expect(try await harness.deviceStore.load() == nil)
-            #expect(try await harness.keyStore.load() == nil)
+            let actual12 = try await harness.deviceStore.load()
+            #expect(actual12 == nil)
+            let actual13 = try await harness.keyStore.load()
+            #expect(actual13 == nil)
             #expect(await harness.notebook.record().signedOutHere)
         }
     }
@@ -248,12 +261,14 @@ struct SessionControllerDeviceSignOutTests {
             #expect(await harness.controller.deviceSignInStatus().keyHeld)
 
             try await harness.controller.setAutomaticSignIn(enabled: false)
-            #expect(try await harness.keyStore.load() == nil)
+            let actual14 = try await harness.keyStore.load()
+            #expect(actual14 == nil)
             #expect(await harness.notebook.record().automaticSignInOff)
             #expect(await harness.controller.deviceSignInStatus().keyHeld == false)
 
             try await harness.controller.setAutomaticSignIn(enabled: true)
-            #expect(try await harness.keyStore.load() == TestData.newKey)
+            let actual15 = try await harness.keyStore.load()
+            #expect(actual15 == TestData.newKey)
             #expect(await harness.notebook.record().automaticSignInOff == false)
         }
     }
@@ -268,7 +283,8 @@ struct SessionControllerDeviceSignOutTests {
 
             await #expect(throws: APIError.self) { try await harness.controller.setAutomaticSignIn(enabled: false) }
 
-            #expect(try await harness.keyStore.load() == TestData.key)
+            let actual16 = try await harness.keyStore.load()
+            #expect(actual16 == TestData.key)
             #expect(await harness.notebook.record().automaticSignInOff == false)
         }
     }

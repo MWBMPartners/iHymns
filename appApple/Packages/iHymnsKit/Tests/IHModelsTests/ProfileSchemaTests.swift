@@ -33,9 +33,12 @@ struct ProfileSchemaTests {
     @Test("Device-scoped and web-only entries are not for Apple")
     func appleFlag() throws {
         let schema = try ProfileSchema.bundled()
-        #expect(try #require(schema.entry(id: "appearance.fontSize")).isForApple == false)
-        #expect(try #require(schema.entry(id: "device.midiPedal")).isForApple == false)
-        #expect(try #require(schema.entry(id: "appearance.reduceMotion")).isForApple) // platform "all"
+        let fontSize = try #require(schema.entry(id: "appearance.fontSize"))
+        #expect(fontSize.isForApple == false)
+        let midiPedal = try #require(schema.entry(id: "device.midiPedal"))
+        #expect(midiPedal.isForApple == false)
+        let reduceMotion = try #require(schema.entry(id: "appearance.reduceMotion"))
+        #expect(reduceMotion.isForApple) // platform "all"
     }
 
     @Test("An enum accepts only its allowed words (and the none word is not allowed for colour vision)")
@@ -53,7 +56,8 @@ struct ProfileSchemaTests {
 
     @Test("A float accepts a whole or fractional number inside its range and nothing else")
     func floatValidation() throws {
-        let scale = try #require(try ProfileSchema.bundled().entry(id: "reading.textScale"))
+        let bundled = try ProfileSchema.bundled()
+        let scale = try #require(bundled.entry(id: "reading.textScale"))
         #expect(scale.validate(.double(1.25)))
         #expect(scale.validate(.int(1)))
         #expect(scale.validate(.double(0.5)))
@@ -66,7 +70,8 @@ struct ProfileSchemaTests {
 
     @Test("A bool accepts only a bool")
     func boolValidation() throws {
-        let chords = try #require(try ProfileSchema.bundled().entry(id: "reading.showChords"))
+        let bundled = try ProfileSchema.bundled()
+        let chords = try #require(bundled.entry(id: "reading.showChords"))
         #expect(chords.validate(.bool(false)))
         #expect(!chords.validate(.int(1)))
         #expect(!chords.validate(.string("true")))
@@ -74,7 +79,8 @@ struct ProfileSchemaTests {
 
     @Test("An int honours its range and step")
     func intValidation() throws {
-        let size = try #require(try ProfileSchema.bundled().entry(id: "appearance.fontSize"))
+        let bundled = try ProfileSchema.bundled()
+        let size = try #require(bundled.entry(id: "appearance.fontSize"))
         #expect(size.validate(.int(14)))
         #expect(size.validate(.int(18)))
         #expect(!size.validate(.int(15)))   // off the step of 2

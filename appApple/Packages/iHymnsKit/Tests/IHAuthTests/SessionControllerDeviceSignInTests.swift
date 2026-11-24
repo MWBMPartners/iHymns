@@ -48,7 +48,8 @@ struct SessionControllerDeviceSignInTests {
 
             try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
             #expect(await harness.controller.state == .signedOut)
-            #expect(try await harness.deviceStore.load() == nil)
+            let actual1 = try await harness.deviceStore.load()
+            #expect(actual1 == nil)
             #expect(await harness.notebook.record().signedOutHere)
 
             // The key and the shared sign-in are still there, yet the next launch must not use them.
@@ -69,7 +70,8 @@ struct SessionControllerDeviceSignInTests {
             try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
 
             #expect(await harness.controller.state == .signedIn(token: TestData.ownToken))
-            #expect(try await harness.deviceStore.load() == TestData.ownToken)
+            let actual2 = try await harness.deviceStore.load()
+            #expect(actual2 == TestData.ownToken)
         }
     }
 
@@ -102,10 +104,12 @@ struct SessionControllerDeviceSignInTests {
             try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
 
             #expect(await harness.controller.state == .signedIn(token: TestData.newToken))
-            #expect(try await harness.deviceStore.load() == TestData.newToken)
+            let actual3 = try await harness.deviceStore.load()
+            #expect(actual3 == TestData.newToken)
             #expect(harness.log.last(of: "auth_enrol_key_redeem")?.authorization == nil)
             // The key itself stays put: it keeps working for the person's other devices.
-            #expect(try await harness.keyStore.load() == TestData.key)
+            let actual4 = try await harness.keyStore.load()
+            #expect(actual4 == TestData.key)
         }
     }
 
@@ -152,10 +156,12 @@ struct SessionControllerDeviceSignInTests {
             try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
 
             #expect(await harness.controller.state == .signedIn(token: TestData.newToken))
-            #expect(try await harness.deviceStore.load() == TestData.newToken)
+            let actual5 = try await harness.deviceStore.load()
+            #expect(actual5 == TestData.newToken)
             #expect(harness.log.last(of: "auth_device_enrol")?.authorization == "Bearer " + TestData.legacyToken)
             #expect(await harness.notebook.isLegacySwapped(hash: TokenFingerprint.sha256Hex(TestData.legacyToken)))
-            #expect(try await harness.keyStore.load() == TestData.newKey)
+            let actual6 = try await harness.keyStore.load()
+            #expect(actual6 == TestData.newKey)
         }
     }
 
@@ -170,7 +176,8 @@ struct SessionControllerDeviceSignInTests {
 
             try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
 
-            #expect(try await harness.keyStore.load() == TestData.newKey)
+            let actual7 = try await harness.keyStore.load()
+            #expect(actual7 == TestData.newKey)
         }
     }
 
@@ -184,7 +191,8 @@ struct SessionControllerDeviceSignInTests {
             try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
 
             #expect(await harness.controller.state == .signedIn(token: TestData.legacyToken))
-            #expect(try await harness.deviceStore.load() == nil)
+            let actual8 = try await harness.deviceStore.load()
+            #expect(actual8 == nil)
             #expect(await harness.controller.usingLegacyToken)
             // Not recorded as swapped, so the next launch tries again.
             #expect(await harness.notebook.isLegacySwapped(hash: TokenFingerprint.sha256Hex(TestData.legacyToken)) == false)
@@ -201,7 +209,8 @@ struct SessionControllerDeviceSignInTests {
             try await harness.controller.restoreFromStorage(deviceSignInEnabled: true)
 
             #expect(await harness.controller.state == .signedIn(token: TestData.legacyToken))
-            #expect(try await harness.deviceStore.load() == nil)
+            let actual9 = try await harness.deviceStore.load()
+            #expect(actual9 == nil)
         }
     }
 
@@ -261,7 +270,8 @@ struct SessionControllerDeviceSignInTests {
 
             #expect(await harness.controller.state == .signedIn(token: TestData.legacyToken))
             #expect(harness.log.count(of: "auth_device_enrol") == 0)
-            #expect(try await harness.deviceStore.load() == nil)
+            let actual10 = try await harness.deviceStore.load()
+            #expect(actual10 == nil)
         }
     }
 

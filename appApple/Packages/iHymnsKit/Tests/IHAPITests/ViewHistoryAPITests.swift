@@ -25,7 +25,9 @@ struct ViewHistoryEndpointTests {
         #expect(endpoint.action == "song_view")
         #expect(endpoint.httpMethod == "POST")
         #expect(endpoint.requiresAuth == true)
-        let json = try #require(JSONSerialization.jsonObject(with: try #require(endpoint.httpBody)) as? [String: Any])
+        let jsonBody = try #require(endpoint.httpBody)
+        let jsonObject = try JSONSerialization.jsonObject(with: jsonBody)
+        let json = try #require(jsonObject as? [String: Any])
         #expect(json["song_id"] as? String == "MP-1008")
         #expect(json["platform"] as? String == "apple")
     }

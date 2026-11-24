@@ -33,7 +33,8 @@ struct SessionControllerDeviceFailureTests {
 
             #expect(await harness.controller.state == .signedIn(token: TestData.legacyToken))
             #expect(await harness.controller.usingLegacyToken)
-            #expect(try await harness.deviceStore.load() == nil)
+            let actual1 = try await harness.deviceStore.load()
+            #expect(actual1 == nil)
             // Not recorded as swapped, so the next launch tries the swap again.
             #expect(await harness.notebook.isLegacySwapped(hash: TokenFingerprint.sha256Hex(TestData.legacyToken)) == false)
         }
@@ -103,14 +104,16 @@ struct SessionControllerDeviceFailureTests {
 
             await #expect(throws: SessionControllerError.couldNotRecordSignOut) { try await harness.controller.signOut() }
             #expect(await harness.controller.state == .signedIn(token: TestData.ownToken))
-            #expect(try await harness.deviceStore.load() == TestData.ownToken)
+            let actual2 = try await harness.deviceStore.load()
+            #expect(actual2 == TestData.ownToken)
 
             // Second try: the server now says 401 (already ended), which counts as done.
             await harness.notebookStore.setFailing(saves: false)
             TestData.route(harness.log) { _ in (401, Data()) }
             try await harness.controller.signOut()
             #expect(await harness.controller.state == .signedOut)
-            #expect(try await harness.deviceStore.load() == nil)
+            let actual3 = try await harness.deviceStore.load()
+            #expect(actual3 == nil)
             #expect(await harness.notebook.record().signedOutHere)
         }
     }
@@ -128,7 +131,8 @@ struct SessionControllerDeviceFailureTests {
 
             #expect(await harness.controller.state == .signedOut)
             #expect(await harness.notebook.record().signedOutHere)
-            #expect(try await harness.keyStore.load() == nil) // the rest of the clean-up still ran
+            let actual4 = try await harness.keyStore.load()
+            #expect(actual4 == nil) // the rest of the clean-up still ran
         }
     }
 
@@ -164,8 +168,10 @@ struct SessionControllerDeviceFailureTests {
             await #expect(throws: SessionControllerError.couldNotRecordSignOut) { _ = try await harness.controller.signOutEverywhere() }
 
             #expect(await harness.controller.state == .signedIn(token: TestData.ownToken))
-            #expect(try await harness.deviceStore.load() == TestData.ownToken)
-            #expect(try await harness.keyStore.load() == TestData.key)
+            let actual5 = try await harness.deviceStore.load()
+            #expect(actual5 == TestData.ownToken)
+            let actual6 = try await harness.keyStore.load()
+            #expect(actual6 == TestData.key)
         }
     }
 
@@ -187,9 +193,11 @@ struct SessionControllerDeviceFailureTests {
             #expect(harness.log.actions == ["auth_enrol_key_redeem", "auth_device_enrol"])
             #expect(await harness.notebook.isKeyDead(hash: TokenFingerprint.sha256Hex(TestData.key)))
             #expect(await harness.controller.state == .signedIn(token: TestData.newToken))
-            #expect(try await harness.deviceStore.load() == TestData.newToken)
+            let actual7 = try await harness.deviceStore.load()
+            #expect(actual7 == TestData.newToken)
             // The swap asked for a new key, because the held one is dead.
-            #expect(try await harness.keyStore.load() == TestData.newKey)
+            let actual8 = try await harness.keyStore.load()
+            #expect(actual8 == TestData.newKey)
         }
     }
 }

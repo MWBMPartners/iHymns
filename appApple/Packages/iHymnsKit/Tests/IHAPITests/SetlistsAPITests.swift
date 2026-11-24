@@ -61,20 +61,26 @@ struct SetlistsEndpointTests {
         let withBoth = try Endpoint.setlistsSync(
             mode: .replace, setlists: [], since: "2026-11-24 09:30:00", deleted: ["slist-gone1", "slist-gone2"]
         )
-        let bothJson = try #require(JSONSerialization.jsonObject(with: try #require(withBoth.httpBody)) as? [String: Any])
+        let bothJsonBody = try #require(withBoth.httpBody)
+        let bothJsonObject = try JSONSerialization.jsonObject(with: bothJsonBody)
+        let bothJson = try #require(bothJsonObject as? [String: Any])
         #expect(bothJson["since"] as? String == "2026-11-24 09:30:00")
         #expect(bothJson["deleted"] as? [String] == ["slist-gone1", "slist-gone2"])
 
         // An EMPTY deleted list must still be present: the key's mere presence marks protocol 2.
         let emptyDeleted = try Endpoint.setlistsSync(mode: .replace, setlists: [], since: nil, deleted: [])
-        let emptyJson = try #require(JSONSerialization.jsonObject(with: try #require(emptyDeleted.httpBody)) as? [String: Any])
+        let emptyJsonBody = try #require(emptyDeleted.httpBody)
+        let emptyJsonObject = try JSONSerialization.jsonObject(with: emptyJsonBody)
+        let emptyJson = try #require(emptyJsonObject as? [String: Any])
         #expect((emptyJson["deleted"] as? [Any])?.isEmpty == true)
         // No watermark yet: the key is left OUT, never sent as null.
         #expect(emptyJson.keys.contains("since") == false)
 
         // The old request (neither given) leaves both keys out.
         let legacy = try Endpoint.setlistsSync(mode: .merge, setlists: [])
-        let legacyJson = try #require(JSONSerialization.jsonObject(with: try #require(legacy.httpBody)) as? [String: Any])
+        let legacyJsonBody = try #require(legacy.httpBody)
+        let legacyJsonObject = try JSONSerialization.jsonObject(with: legacyJsonBody)
+        let legacyJson = try #require(legacyJsonObject as? [String: Any])
         #expect(legacyJson.keys.contains("deleted") == false)
         #expect(legacyJson.keys.contains("since") == false)
     }

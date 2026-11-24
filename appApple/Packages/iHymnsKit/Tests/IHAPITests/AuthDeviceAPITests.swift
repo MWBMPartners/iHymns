@@ -310,8 +310,10 @@ struct AuthDeviceNetworkedTests {
             defer { MockURLProtocol.requestHandler = nil }
 
             let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession(), bearerToken: "t")
-            #expect(try await client.authSignOutEverywhere().tokensRevoked == 2)
-            #expect(try await client.authEnrolKeysRevoke() == 1)
+            let everywhere = try await client.authSignOutEverywhere()
+            let revoked = try await client.authEnrolKeysRevoke()
+            #expect(everywhere.tokensRevoked == 2)
+            #expect(revoked == 1)
         }
     }
 }

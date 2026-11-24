@@ -28,7 +28,8 @@ struct DeviceCustodyTests {
         let second = try await identity.installId()
 
         #expect(first == second)
-        #expect(try await store.load() == first)
+        let actual1 = try await store.load()
+        #expect(actual1 == first)
         // 36 characters of letters, digits and dashes: inside the server's 8...64 rule.
         #expect(DeviceIdentity.isUsable(first))
     }
@@ -190,7 +191,8 @@ struct DeviceCustodyTests {
             return all
         }
         #expect(Set(ids).count == 1)
-        #expect(try await store.load() == ids.first)
+        let actual2 = try await store.load()
+        #expect(actual2 == ids.first)
     }
 
     @Test("A failed first save is not remembered: the next ask tries again and then keeps one id")
@@ -201,7 +203,9 @@ struct DeviceCustodyTests {
         await #expect(throws: InMemoryTokenStore.Failure.self) { _ = try await identity.installId() }
         await store.setFailing(saves: false)
         let id = try await identity.installId()
-        #expect(try await store.load() == id)
-        #expect(try await identity.installId() == id)
+        let actual3 = try await store.load()
+        #expect(actual3 == id)
+        let actual4 = try await identity.installId()
+        #expect(actual4 == id)
     }
 }
