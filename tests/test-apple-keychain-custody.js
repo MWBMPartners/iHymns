@@ -31,13 +31,19 @@
  *   4. The store's `init` has no default service (a caller must name the item), refuses synced plus
  *      this-device-only together, and `save` uses `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
  *      on its this-device-only branch (and the plain constant on the other).
+ *      On macOS the query must also set `kSecUseDataProtectionKeychain` to true inside `#if os(macOS)`:
+ *      without it macOS silently ignores "this device only" (the item lands in the old file keychain).
+ *      `save()` must update in place (`SecItemUpdate`) and add only when nothing exists, never delete first
+ *      (a failed add after a delete would lose the item, which for the notebook means forgetting a sign-out).
  *   5. No other file makes a Keychain item synced: every `kSecAttrSynchronizable` outside the store is `false`.
  *   6. Self-tests: each rule is run on a deliberately broken in-memory copy of the real source and must
  *      report a problem.
  *
  * Mutations tried when this was written (each turned it red, then was restored): flipping the device-token
  * store to `synchronizable: true`; adding a `delete()` to the reader; removing `thisDeviceOnly: true` from
- * the device-token store; naming `app.ihymns.token` in a second file; removing the ThisDeviceOnly constant.
+ * the device-token store; naming `app.ihymns.token` in a second file; removing the ThisDeviceOnly constant;
+ * (second pass) removing the data-protection flag, moving it outside `#if os(macOS)`, and putting a
+ * `delete()` back at the top of `save()`.
  *
  * Usage: node tests/test-apple-keychain-custody.js
  */
@@ -162,6 +168,11 @@ function judge(map) {
         })();
         if (!/if\s+thisDeviceOnly\s*\{[^}]*kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly/.test(saveBody)) problems.push('save() must use kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly on its this-device-only branch');
         if (!/else\s*\{[^}]*kSecAttrAccessibleAfterFirstUnlock\b(?!ThisDeviceOnly)/.test(saveBody)) problems.push('save() must keep the plain accessibility on its other branch');
+        // macOS only honours "this device only" in the data-protection keychain.
+        if (!/#if\s+os\(macOS\)[^#]*kSecUseDataProtectionKeychain\s+as\s+String\s*\]\s*=\s*true[^#]*#endif/.test(code)) problems.push('the store query must set kSecUseDataProtectionKeychain = true inside `#if os(macOS)`');
+        // save() replaces in place: update first, add only when missing, and never delete first.
+        if (!/SecItemUpdate\s*\([\s\S]*SecItemAdd\s*\(/.test(saveBody)) problems.push('save() must call SecItemUpdate first and SecItemAdd only as the fallback');
+        if (/\bdelete\s*\(|SecItemDelete/.test(saveBody)) problems.push('save() must not delete the existing item first (a failed add would lose it)');
     }
 
     // ---- rule 5: nothing else makes an item synced ----
@@ -202,6 +213,12 @@ check('self-test: removing the ThisDeviceOnly constant is caught',
     mutate('IHAuth/KeychainTokenStore.swift', (c) => c.replace('kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly', 'kSecAttrAccessibleAfterFirstUnlock')).length > 0);
 check('self-test: a default service name on the store init is caught',
     mutate('IHAuth/KeychainTokenStore.swift', (c) => c.replace('init(service: String,', 'init(service: String = "x",')).length > 0);
+check('self-test: removing the macOS data-protection flag is caught',
+    mutate('IHAuth/KeychainTokenStore.swift', (c) => c.replace('query[kSecUseDataProtectionKeychain as String] = true', '')).length > 0);
+check('self-test: the flag moved outside #if os(macOS) is caught',
+    mutate('IHAuth/KeychainTokenStore.swift', (c) => c.replace('#if os(macOS)', '#if os(iOS)')).length > 0);
+check('self-test: a delete() put back at the top of save() is caught',
+    mutate('IHAuth/KeychainTokenStore.swift', (c) => c.replace('let accessible: CFString', 'try await delete()\n        let accessible: CFString')).length > 0);
 check('self-test: another file making an item synced is caught',
     mutate('IHAuth/AuthStorage.swift', (c) => c + '\nlet q = [kSecAttrSynchronizable as String: true]\n').length > 0);
 check('self-test: a comment mentioning the shared name does not trip rule 1', (() => {

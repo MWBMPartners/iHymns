@@ -96,20 +96,35 @@ public actor KeychainTokenStore: TokenStoring {
     }
 
     public func save(_ token: String) async throws {
-        try await delete() // Replace-semantics: clear any existing item first.
-
-        var query = baseQuery()
-        query[kSecValueData as String] = Data(token.utf8)
         // Why two branches: this-device-only items must not ride along in a backup or a phone-to-phone transfer.
+        let accessible: CFString
         if thisDeviceOnly {
-            query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            accessible = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         } else {
-            query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+            accessible = kSecAttrAccessibleAfterFirstUnlock
         }
+        let attributes: [String: Any] = [
+            kSecValueData as String: Data(token.utf8),
+            kSecAttrAccessible as String: accessible
+        ]
 
-        let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw KeychainError(status: status)
+        // Update in place first, add only when nothing is there yet. The older
+        // "delete, then add" lost the existing item if the add then failed, and
+        // for the "signed out here" notebook that would forget the sign-out.
+        // There is deliberately no `await` in here, so two saves cannot interleave.
+        let updateStatus = SecItemUpdate(baseQuery() as CFDictionary, attributes as CFDictionary)
+        switch updateStatus {
+        case errSecSuccess:
+            return
+        case errSecItemNotFound:
+            var query = baseQuery()
+            query.merge(attributes) { _, new in new }
+            let addStatus = SecItemAdd(query as CFDictionary, nil)
+            guard addStatus == errSecSuccess else {
+                throw KeychainError(status: addStatus)
+            }
+        default:
+            throw KeychainError(status: updateStatus)
         }
     }
 
@@ -156,6 +171,14 @@ public actor KeychainTokenStore: TokenStoring {
         if let accessGroup {
             query[kSecAttrAccessGroup as String] = accessGroup
         }
+        // On macOS, "this device only" (and the rest of the modern Keychain rules)
+        // is honoured only by the data-protection keychain; without this flag the
+        // item goes into the older file-based keychain, which ignores
+        // `...ThisDeviceOnly`. iOS, tvOS and watchOS only have the modern one.
+        // https://developer.apple.com/documentation/security/ksecusedataprotectionkeychain
+        #if os(macOS)
+        query[kSecUseDataProtectionKeychain as String] = true
+        #endif
         return query
     }
 }
