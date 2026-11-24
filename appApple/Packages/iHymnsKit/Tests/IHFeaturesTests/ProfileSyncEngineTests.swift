@@ -34,15 +34,17 @@ final class FakeProfileServer: @unchecked Sendable {
     var transport: ProfileSyncTransport {
         ProfileSyncTransport(
             read: { [self] cursor in
-                lock.lock(); defer { lock.unlock() }
-                readLog.append(cursor)
-                return readQueue.isEmpty ? ProfileSyncReply(cursor: cursor) : readQueue.removeFirst()
+                // `withLock` is the version of locking Swift allows inside async code.
+                lock.withLock {
+                    readLog.append(cursor)
+                    return readQueue.isEmpty ? ProfileSyncReply(cursor: cursor) : readQueue.removeFirst()
+                }
             },
             send: { [self] request in
-                lock.lock()
-                sendLog.append(request)
-                let handler = sendHandler
-                lock.unlock()
+                let handler = lock.withLock { () -> @Sendable (ProfileSyncRequest) throws -> ProfileSyncReply in
+                    sendLog.append(request)
+                    return sendHandler
+                }
                 return try handler(request)
             }
         )
