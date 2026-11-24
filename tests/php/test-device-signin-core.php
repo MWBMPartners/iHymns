@@ -596,6 +596,36 @@ $lo = strpos($api, "case 'auth_logout':"); $dso = strpos($api, "case 'device_sig
 chk('auth_logout and device_signout both end sign-ins only through apiTokenSignOutHashes()',
     $lo !== false && $dso !== false && str_contains(substr($api, $lo, 3500), 'apiTokenSignOutHashes(') && str_contains(substr($api, $dso, 6000), 'apiTokenSignOutHashes('));
 
+/* ====================================================================== part 6 (security review, finding 5) */
+echo "part 6: two sign-ins for the same person on the same install take turns\n";
+define('IHYMNS_TEST_MINT_LOCK_WAIT', 1);   /* the wait for the turn, shortened for the test */
+$db->query('DELETE FROM tblApiTokens');
+$db2 = new mysqli($hh, $us, $pw, $name, $pt);   /* a second connection stands in for "the other sign-in that is in the middle of its work" */
+$lockOf = fn(int $u, string $install) => 'ihymns_mint:' . md5($u . '|' . $install);
+$held = $db2->query("SELECT GET_LOCK('" . $lockOf(1, 'install-RACE-00001') . "', 1)")->fetch_row()[0];
+chk('(set-up) the other connection holds the turn for person 1 on install RACE-00001', (int)$held === 1);
+$t0 = microtime(true);
+$raceTok = apiTokenMint($db, 1, ['deviceInstallId' => 'install-RACE-00001', 'platform' => 'apple'], 'password');
+$waited = microtime(true) - $t0;
+chk('a sign-in for the same person and install WAITS for the other one to finish (it did not just go ahead)', $waited >= 0.8, sprintf('%.2fs', $waited));
+chk('...and then still signs in (the wait is best-effort and never fails a sign-in): exactly one row for that install', (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE UserId = 1 AND DeviceInstallId = 'install-RACE-00001'")->fetch_row()[0] === 1);
+$t0 = microtime(true);
+apiTokenMint($db, 1, ['deviceInstallId' => 'install-RACE-00002', 'platform' => 'apple'], 'password');
+apiTokenMint($db, 2, ['deviceInstallId' => 'install-RACE-00001', 'platform' => 'apple'], 'password');
+apiTokenMint($db, 1, null, 'password');
+chk('a different install, a different person, and a sign-in with no install id do NOT wait', microtime(true) - $t0 < 0.7, sprintf('%.2fs', microtime(true) - $t0));
+chk('the turn was given back after the sign-in (another connection can take it at once)', (int)$db2->query("SELECT IS_FREE_LOCK('" . $lockOf(1, 'install-RACE-00002') . "')")->fetch_row()[0] === 1);
+$db2->query("SELECT RELEASE_LOCK('" . $lockOf(1, 'install-RACE-00001') . "')");
+$mintSrc = phpSourceUnits(code($web . '/includes/api_tokens.php'))['apiTokenMint']['code'] ?? '';
+$pAcq = strpos($mintSrc, 'apiTokenMintLockAcquire('); $pIns = strpos($mintSrc, '->prepare(');   /* (the unit text has its strings removed; the first prepare in the maker is the insert's) */ $pRep = strpos($mintSrc, 'apiTokenReplaceSameInstall('); $pRel = strpos($mintSrc, 'apiTokenMintLockRelease(');
+chk('in the maker the turn is taken BEFORE the insert (its first prepare), the replacement is inside it, and it is given back in a finally block (so a failure cannot leave it held)',
+    $pAcq !== false && $pIns !== false && $pAcq < $pIns && $pIns < $pRep && $pRep < $pRel && preg_match('/finally\s*\{\s*if\s*\(\$lockName\s*!==\s*null\)\s*\{\s*apiTokenMintLockRelease\(/', $mintSrc) === 1);
+/* the outcome the lock protects: two quick sign-ins on one install leave exactly one live row, the newer */
+$db->query('DELETE FROM tblApiTokens');
+$q1 = apiTokenMint($db, 1, ['deviceInstallId' => 'install-RACE-00003'], 'password');
+$q2 = apiTokenMint($db, 1, ['deviceInstallId' => 'install-RACE-00003'], 'password');
+chk('two sign-ins in a row on one install leave exactly one row, the newer one', $rowOf($q1) === null && $rowOf($q2) !== null && (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE DeviceInstallId = 'install-RACE-00003'")->fetch_row()[0] === 1);
+
 $db->query("DROP DATABASE IF EXISTS `{$name}`");
 echo $fail === 0 ? "\nALL PASS\n" : "\n$fail FAILED\n";
 exit($fail === 0 ? 0 : 1);

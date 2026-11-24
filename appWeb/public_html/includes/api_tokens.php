@@ -189,6 +189,61 @@ function apiTokenCleanInstallId(mixed $raw): ?string
 }
 
 /**
+ * How long a second sign-in for the same install waits for the first to finish, in seconds. The turn-taking is
+ * best-effort: a sign-in must never fail because of it, so after this wait it carries on without the lock.
+ * A test may set IHYMNS_TEST_MINT_LOCK_WAIT to a smaller number.
+ */
+function apiTokenMintLockWait(): int
+{
+    return defined('IHYMNS_TEST_MINT_LOCK_WAIT') ? max(0, (int)IHYMNS_TEST_MINT_LOCK_WAIT) : 5;
+}
+
+/**
+ * Take the turn for "make a sign-in for this person on this install" (PR 3a security review, finding 5).
+ *
+ * ELI5: if an app taps "sign in" twice, or two routes answer at once, both sign-ins would be written and each
+ * would then delete the other as "the old one", leaving nothing. A named lock makes the second wait until the
+ * first has written its sign-in and removed the older ones. The lock name is a short fingerprint of the person and
+ * install; it is held on this database connection until released (it works inside or outside a transaction, and
+ * the caller's transaction is not touched). Returns the lock name to hand back to apiTokenMintLockRelease(), or
+ * null when the lock could not be had (the sign-in then carries on, as it did before this lock existed).
+ *
+ * @link https://dev.mysql.com/doc/refman/8.0/en/locking-functions.html#function_get-lock
+ */
+function apiTokenMintLockAcquire(\mysqli $db, int $userId, string $installId): ?string
+{
+    $name = 'ihymns_mint:' . md5($userId . '|' . $installId);
+    try {
+        $wait = apiTokenMintLockWait();
+        $st = $db->prepare('SELECT GET_LOCK(?, ?)');
+        $st->bind_param('si', $name, $wait);
+        $st->execute();
+        $got = (int)($st->get_result()->fetch_row()[0] ?? 0);
+        $st->close();
+        return $got === 1 ? $name : null;
+    } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }   /* an error that ended the caller's transaction must reach it */
+        error_log('[api_tokens/mintLock] ' . $e->getMessage());
+        return null;
+    }
+}
+
+/** Give the turn back. Never throws (a failed release only means the lock goes when the connection closes). */
+function apiTokenMintLockRelease(\mysqli $db, string $lockName): void
+{
+    try {
+        $st = $db->prepare('SELECT RELEASE_LOCK(?)');
+        $st->bind_param('s', $lockName);
+        $st->execute();
+        $st->get_result()?->free();
+        $st->close();
+    } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }
+        error_log('[api_tokens/mintLock] release: ' . $e->getMessage());
+    }
+}
+
+/**
  * Make ONE sign-in token. THE only place that inserts into tblApiTokens.
  *
  * @param \mysqli     $db
@@ -209,25 +264,38 @@ function apiTokenMint(\mysqli $db, int $uid, ?array $meta, string $issuedVia, ?i
     $expiresAtTs = time() + API_TOKEN_LIFETIME_SECONDS;
     $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
 
-    if (apiTokensFoundationColumnsExist($db)) {
-        $via = in_array($issuedVia, API_TOKEN_ISSUED_VIA, true) ? $issuedVia : null;
-        if ($via === null) {
-            error_log('[api_tokens/mint] unknown issuedVia "' . $issuedVia . '" stored as NULL');
+    $lockName = null;
+    try {
+        if (apiTokensFoundationColumnsExist($db)) {
+            $via = in_array($issuedVia, API_TOKEN_ISSUED_VIA, true) ? $issuedVia : null;
+            if ($via === null) {
+                error_log('[api_tokens/mint] unknown issuedVia "' . $issuedVia . '" stored as NULL');
+            }
+            /* H1: an explicit install id wins; both go through the same cleaner, so a bad one is dropped, never a failed sign-in. */
+            $installId = apiTokenCleanInstallId($installId ?? ($meta['deviceInstallId'] ?? null));
+            /* Security review finding 5: two sign-ins for the SAME person on the SAME install must take turns.
+               Without this, both could insert, then each read "the other one" and delete it, leaving the device
+               with no sign-in at all. The turn is a named lock that covers the insert AND the replacement. */
+            if ($installId !== null) {
+                $lockName = apiTokenMintLockAcquire($db, $uid, $installId);
+            }
+            $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt, IssuedVia, DeviceInstallId) VALUES (?, ?, ?, ?, ?)');
+            $stmt->bind_param('sisss', $tokenHash, $uid, $expiresAt, $via, $installId);
+        } else {
+            $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
+            $stmt->bind_param('sis', $tokenHash, $uid, $expiresAt);
         }
-        /* H1: an explicit install id wins; both go through the same cleaner, so a bad one is dropped, never a failed sign-in. */
-        $installId = apiTokenCleanInstallId($installId ?? ($meta['deviceInstallId'] ?? null));
-        $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt, IssuedVia, DeviceInstallId) VALUES (?, ?, ?, ?, ?)');
-        $stmt->bind_param('sisss', $tokenHash, $uid, $expiresAt, $via, $installId);
-    } else {
-        $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
-        $stmt->bind_param('sis', $tokenHash, $uid, $expiresAt);
-    }
-    $stmt->execute();
-    $stmt->close();
+        $stmt->execute();
+        $stmt->close();
 
-    /* H1: one device keeps one row. Only when the install id was recorded (so only when the columns exist). */
-    if (isset($installId) && $installId !== null) {
-        apiTokenReplaceSameInstall($db, $uid, $installId, $tokenHash);
+        /* H1: one device keeps one row. Only when the install id was recorded (so only when the columns exist). */
+        if (isset($installId) && $installId !== null) {
+            apiTokenReplaceSameInstall($db, $uid, $installId, $tokenHash);
+        }
+    } finally {
+        if ($lockName !== null) {
+            apiTokenMintLockRelease($db, $lockName);
+        }
     }
 
     if ($meta !== null) {
