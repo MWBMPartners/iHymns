@@ -127,6 +127,7 @@ final class MintDb extends \mysqli
 {
     public array $writes = [];
     public function __construct(public bool $foundation) {}
+    #[\ReturnTypeWillChange]
     public function prepare(string $q): mixed { return new MintStmt($this, $q); }
 }
 $withCols = new MintDb(true);
