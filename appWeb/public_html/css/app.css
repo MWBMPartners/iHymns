@@ -3946,9 +3946,18 @@ body.reduce-motion .offline-banner {
  * OFFLINE SONGBOOK LIST — Settings page grid layout (#356, #357)
  * ========================================================================= */
 
+/* #2203 — each row holds SIX things (badge, name, size, status, download,
+   and the remove button that only appears once something is saved). The old
+   grid had five columns, so when the remove button appeared it dropped onto
+   a line of its own at every width. Named areas give each thing a fixed
+   place: badge on the left, name above size + status, and the two buttons
+   side by side on the right, whether or not the remove button is showing. */
 .offline-songbook-row {
     display: grid;
-    grid-template-columns: 52px 1fr auto auto 36px;
+    grid-template-columns: 44px minmax(0, 1fr) auto auto auto;
+    grid-template-areas:
+        "badge info info dl ev"
+        "badge size status dl ev";
     align-items: center;
     gap: 0.375rem;
     padding: 0.4rem 0;
@@ -3956,12 +3965,14 @@ body.reduce-motion .offline-banner {
 }
 
 .offline-songbook-row .songbook-badge {
+    grid-area: badge;
     justify-self: center;
     min-width: 40px;
     text-align: center;
 }
 
 .offline-songbook-info {
+    grid-area: info;
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
@@ -3971,13 +3982,33 @@ body.reduce-motion .offline-banner {
 }
 
 .offline-songbook-size {
+    grid-area: size;
     white-space: nowrap;
 }
 
 .offline-songbook-status {
+    grid-area: status;
     white-space: nowrap;
     min-width: 50px;
     text-align: right;
+}
+
+.offline-songbook-row .btn-download-songbook {
+    grid-area: dl;
+}
+
+.offline-songbook-row .btn-evict-songbook {
+    grid-area: ev;
+}
+
+/* #2203 — the four theme buttons (Light / Dark / High contrast / System)
+   wrapped 2-1-1 on a phone. Below 576px they become a tidy two-by-two grid
+   of equal buttons. */
+@media (max-width: 575.98px) {
+    .theme-option-group {
+        display: grid !important;
+        grid-template-columns: 1fr 1fr;
+    }
 }
 
 /* =========================================================================

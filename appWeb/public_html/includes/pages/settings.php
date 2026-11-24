@@ -646,7 +646,7 @@ declare(strict_types=1);
                          (broken group-position + selection semantics, arrow-key nav expected
                          but absent). role="group" is the valid ARIA pattern for a set of
                          aria-pressed buttons — no change to the JS state-syncing below. */ ?>
-                <div class="d-flex flex-wrap gap-2" role="group" aria-label="Theme selection">
+                <div class="d-flex flex-wrap gap-2 theme-option-group" role="group" aria-label="Theme selection">
                     <button type="button" class="btn btn-theme-option" data-setting-theme="light" aria-pressed="false">
                         <i class="fa-solid fa-sun me-1" aria-hidden="true"></i> Light
                     </button>
