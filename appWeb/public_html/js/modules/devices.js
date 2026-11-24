@@ -63,6 +63,13 @@ import { EVT_AUTH_CHANGED } from '../constants.js';
 const LIST_ENDPOINT    = '/api?action=devices_list';
 const SIGNOUT_ENDPOINT = '/api?action=device_signout';
 const RENAME_ENDPOINT  = '/api?action=device_rename';
+const KEYS_OFF_ENDPOINT = '/api?action=auth_enrol_keys_revoke';
+
+/** The button words, kept here ONCE. The privacy page names these buttons, and tests/php/test-privacy-page-promises.php
+ *  reads these two constants and the settings page so a promise can never point at a button that is called something else
+ *  (PR 3 H7, rule #35). */
+export const SIGN_OUT_EVERYWHERE_LABEL = 'Sign out everywhere';
+export const TURN_OFF_AUTO_SIGN_IN_LABEL = 'Turn off';
 
 /** The server's DeviceName column is VARCHAR(120); the client cleaner caps to
  *  the same width so a name that survives here also survives the server's own
@@ -298,12 +305,85 @@ export function renameMessageForStatus(status, serverMessage = '') {
     }
 }
 
+/**
+ * PR 3 H6: a short plain-English note about HOW a device's sign-in was made, or ''. PURE.
+ *
+ * The three notes only appear where device sign-in is switched on for the site (`deviceSigninOn`), because before
+ * that the claims in them are not yet true. A paired TV is true either way.
+ *  - a TV paired with a code: "Paired TV"
+ *  - made by the app for itself without the person typing anything: "Added automatically"
+ *  - the older sign-in an Apple app made before each device had its own (no install id; browsers and the admin
+ *    pages are never described this way): "Older app version, may be shared by several of your Apple devices"
+ *
+ * @param {{issuedVia?:string|null, boundToDevice?:boolean, platform?:string|null}} device a row from `devices_list`
+ * @param {boolean} deviceSigninOn whether this site has device sign-in switched on
+ * @returns {string}
+ */
+export function deviceKindNote(device, deviceSigninOn) {
+    const via = typeof device?.issuedVia === 'string' ? device.issuedVia : '';
+    if (via === 'device_code') return 'Paired TV';
+    if (deviceSigninOn !== true) return '';
+    if (via === 'enrol') return 'Added automatically';
+    const platform = typeof device?.platform === 'string' ? device.platform.trim() : '';
+    if (device?.boundToDevice === false && via !== 'cross_surface' && platform !== 'web' && (platform === 'apple' || platform === '')) {
+        return 'Older app version, may be shared by several of your Apple devices';
+    }
+    return '';
+}
+
+/**
+ * What to tell the person when "Sign out everywhere" did NOT happen, chosen BY HTTP STATUS (rule #35). PURE.
+ * A status of 0 means the server could not be reached at all. Whatever the reason, the person is still signed in here
+ * and the other devices were NOT signed out; the message always says so, because that is the part that matters.
+ *
+ * @param {number} status
+ * @returns {string}
+ */
+export function signOutEverywhereFailureMessage(status) {
+    const tail = ' You are still signed in, and your other devices were not signed out.';
+    switch (status) {
+        case 403:
+            return 'That change couldn\'t be made from this page. Reload the page and try again.' + tail;
+        case 429:
+            return 'Too many attempts. Please wait a while and try again.' + tail;
+        case 0:
+            return 'Could not reach the server. Check your connection and try again.' + tail;
+        default:
+            return 'Could not sign out everywhere. Please try again.' + tail;
+    }
+}
+
+/** What to tell the person when "Turn off" (automatic sign-in) did not work, by HTTP STATUS (rule #35). PURE. */
+export function keysOffFailureMessage(status) {
+    switch (status) {
+        case 401: return 'You are no longer signed in. Sign in again, then retry.';
+        case 403: return 'That change couldn\'t be made from this page. Reload the page and try again.';
+        case 429: return 'Too many attempts. Please wait a while and try again.';
+        case 0:   return 'Could not reach the server. Check your connection and try again.';
+        default:  return 'Could not turn off automatic sign-in. Please try again.';
+    }
+}
+
+/**
+ * Should the "Sign out everywhere" button and the automatic sign-in row be on the page? PURE: only where the site has
+ * switched device sign-in on (`config.deviceSignin.enabled`, the admin switch plus the database objects). Off = the
+ * card is exactly what it was.
+ *
+ * @param {{deviceSignin?:{enabled?:boolean}}|null|undefined} config
+ * @returns {boolean}
+ */
+export function deviceSigninShown(config) {
+    return config?.deviceSignin?.enabled === true;
+}
+
 /* =========================================================================
  * DOM WIRING
  * ========================================================================= */
 
 /** Cached so a re-render after a sign-out does not need a second round trip. */
 let devices = [];
+/** The person's live automatic sign-in keys (platform and dates only), from `devices_list`. */
+let enrolKeys = [];
 /** The id of the row currently in inline-rename mode, or null. Exactly one row
  *  can be edited at a time; re-rendering keys off this. */
 let editingId = null;
@@ -339,6 +419,8 @@ export function bootDevicesCard() {
         card.querySelector('#devices-refresh-btn')?.addEventListener('click', () => {
             loadDevices({ announceResult: true });
         });
+        card.querySelector('#devices-everywhere-btn')?.addEventListener('click', (e) => { onSignOutEverywhereClick(e.currentTarget); });
+        card.querySelector('#devices-keys-off-btn')?.addEventListener('click', (e) => { onKeysOffClick(e.currentTarget); });
         /* One delegated handler on the container rather than one per row, so a
            re-render cannot leak listeners (the bug pattern setlist.js works
            around by cloning nodes). Bound to the card, which the router replaces
@@ -428,6 +510,7 @@ async function loadDevices({ announceResult = false } = {}) {
             /* Token expired while the page sat open. Not an error to shout
                about — the Account card above is already telling the truth. */
             devices = [];
+            enrolKeys = [];
             renderDevices();
             return;
         }
@@ -437,6 +520,7 @@ async function loadDevices({ announceResult = false } = {}) {
         }
         const data = await res.json();
         devices = Array.isArray(data?.devices) ? data.devices : [];
+        enrolKeys = Array.isArray(data?.enrolKeys) ? data.enrolKeys : [];
         clearMessage();
         renderDevices();
         if (announceResult) {
@@ -458,6 +542,7 @@ async function loadDevices({ announceResult = false } = {}) {
 
 /** Paint the current `devices` array into #devices-list. */
 function renderDevices() {
+    renderExtras();
     const list = document.getElementById('devices-list');
     if (!list) return;
 
@@ -489,6 +574,7 @@ function renderDevices() {
 function renderRow(device, now) {
     const label     = deviceLabel(device);
     const secondary = deviceSecondaryLine(device, now);
+    const note      = deviceKindNote(device, deviceSigninShown(window.iHymnsApp?.config));
     const isCurrent = device?.isCurrent === true;
     const id        = typeof device?.id === 'string' ? device.id : '';
 
@@ -550,6 +636,7 @@ function renderRow(device, now) {
          + (secondary !== ''
              ? '<small class="text-muted d-block">' + escapeHtml(secondary) + '</small>'
              : '')
+         + (note !== '' ? '<small class="text-muted d-block fst-italic">' + escapeHtml(note) + '</small>' : '')
          + '</div>'
          + renameBtn
          + signOutBtn
@@ -618,6 +705,68 @@ async function onSignOutClick(btn) {
         const text = 'Could not reach the server. Check your connection and try again.';
         showMessage(text, 'danger');
         announce(text);
+        btn.disabled = false;
+    }
+}
+
+/**
+ * PR 3 H6: show or hide the "Sign out everywhere" area and the automatic sign-in row. Both appear only where the site
+ * has device sign-in switched on; the row also needs at least one live key to talk about.
+ */
+function renderExtras() {
+    const box = document.getElementById('devices-everywhere');
+    if (!box) return;
+    const on = deviceSigninShown(window.iHymnsApp?.config);
+    box.classList.toggle('d-none', !on);
+    const row = document.getElementById('devices-keys-row');
+    if (row) row.classList.toggle('d-none', !(on && enrolKeys.length > 0));
+}
+
+/** "Sign out everywhere": confirm, then the unsent-changes question and the server call live in UserAuth.logout(). */
+async function onSignOutEverywhereClick(btn) {
+    const auth = window.iHymnsApp?.userAuth;
+    if (!auth || typeof auth.logout !== 'function') return;
+    if (!window.confirm('Sign out everywhere? Every device signed in to your account, including this one, will need to sign in again.')) return;
+    btn.disabled = true;
+    try {
+        const r = await auth.logout({ everywhere: true });
+        if (r.failed) {
+            const text = signOutEverywhereFailureMessage(r.status ?? 0);
+            showMessage(text, 'danger');
+            announce(text);
+            return;
+        }
+        if (!r.signedOut) return;   /* the person closed the unsent-changes question: nothing was changed */
+        announce('Signed out everywhere.');
+        window.iHymnsApp?.showToast?.('Signed out everywhere', 'info', 2500);
+        window.iHymnsApp?.settings?.refreshAccountSection?.();
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+/** "Turn off" (automatic sign-in for new Apple devices): cancel every key. Devices already signed in stay signed in. */
+async function onKeysOffClick(btn) {
+    if (!window.confirm('Turn off automatic sign-in? New Apple devices will need you to sign in by hand. Devices already signed in stay signed in.')) return;
+    btn.disabled = true;
+    try {
+        const res = await apiFetch(KEYS_OFF_ENDPOINT, { method: 'POST', auth: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+        if (!res.ok) {
+            const text = keysOffFailureMessage(res.status);
+            showMessage(text, 'danger');
+            announce(text);
+            return;
+        }
+        enrolKeys = [];
+        renderExtras();
+        clearMessage();
+        announce('Automatic sign-in is off.');
+        window.iHymnsApp?.showToast?.('Automatic sign-in turned off', 'success', 2500);
+    } catch (_e) {
+        const text = keysOffFailureMessage(0);
+        showMessage(text, 'danger');
+        announce(text);
+    } finally {
         btn.disabled = false;
     }
 }
