@@ -98,7 +98,13 @@ extension AppRootViewModel {
     ///   leaves the session (and therefore the local favourites cache)
     ///   UNTOUCHED, matching that method's own "never clear local state the
     ///   server hasn't confirmed" contract.
-    public func signOut() async throws {
+    ///
+    /// PR 3b (I5): with the account sync on, unsent changes are sent first and, if any remain,
+    /// this throws `SignOutBlockedByUnsentChanges` and clears nothing (see
+    /// `AppRootViewModel+SignOutCheck.swift`). `discardUnsent: true` is the person's explicit
+    /// "Sign out anyway". With the account sync off this is exactly the older sign-out.
+    public func signOut(discardUnsent: Bool = false) async throws {
+        try await ensureNothingUnsent(discardUnsent: discardUnsent)
         try await sessionController.signOut()
         await resetLocalUserState()
     }

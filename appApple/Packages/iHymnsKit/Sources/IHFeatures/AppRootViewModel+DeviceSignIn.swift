@@ -37,7 +37,11 @@ extension AppRootViewModel {
     ///   failure (offline, maintenance, ...) leaves this device signed in and
     ///   its data untouched, so the screen can say "your other devices were
     ///   not signed out" and offer a retry.
-    public func signOutEverywhere() async throws {
+    ///
+    /// Like `signOut(discardUnsent:)` (PR 3b, I5): with the account sync on, unsent changes are sent
+    /// first, and if any remain this throws `SignOutBlockedByUnsentChanges` before anything is done.
+    public func signOutEverywhere(discardUnsent: Bool = false) async throws {
+        try await ensureNothingUnsent(discardUnsent: discardUnsent)
         try await sessionController.signOutEverywhere()
         await resetLocalUserState()
     }

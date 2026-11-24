@@ -33,6 +33,13 @@
 // what `AppRootViewModel.deviceSignInStatus()` says, never assumed. A failed
 // sign-out-everywhere says plainly that the OTHER devices were not signed out
 // and leaves this one signed in, mirroring the web Devices card.
+//
+// PR 3b (I5, #2180) UPDATE — when the site has the new account sync on, signing
+// out (either kind) first sends anything still waiting; if some changes could
+// not be sent, the view model throws `SignOutBlockedByUnsentChanges` and this
+// view ASKS: "Try again" (up to three times), "Sign out anyway" (an explicit
+// `discardUnsent: true`), or Cancel, which stays signed in. The view cannot
+// skip the question by accident: only that explicit flag does.
 import IHAPI
 import IHAuth
 import IHModels
@@ -51,6 +58,15 @@ public struct AccountView: View {
     @State private var isConfirmingSignOutEverywhere = false
     @State private var isSigningOutEverywhere = false
     @State private var isChangingAutomaticSignIn = false
+    @State private var unsentPrompt: UnsentPrompt?
+    @State private var unsentRetries = 0
+
+    /// What the "some changes have not reached your account" question is about.
+    private struct UnsentPrompt: Identifiable {
+        let id = UUID()
+        let everywhere: Bool
+        let unsent: UnsentChanges
+    }
 
     public init(rootViewModel: AppRootViewModel) {
         self.rootViewModel = rootViewModel
@@ -125,6 +141,25 @@ public struct AccountView: View {
             } header: {
                 Text("Danger Zone")
             }
+        }
+        .confirmationDialog(
+            "Some changes have not reached your account",
+            isPresented: Binding(get: { unsentPrompt != nil }, set: { if !$0 { unsentPrompt = nil } }),
+            titleVisibility: .visible,
+            presenting: unsentPrompt
+        ) { prompt in
+            if unsentRetries < 3 {
+                Button("Try again") {
+                    unsentRetries += 1
+                    Task { await signOutAgain(prompt, discardUnsent: false) }
+                }
+            }
+            Button("Sign Out Anyway", role: .destructive) {
+                Task { await signOutAgain(prompt, discardUnsent: true) }
+            }
+            Button("Cancel", role: .cancel) { unsentRetries = 0 }
+        } message: { prompt in
+            Text("\(prompt.unsent.total) change(s) could not be sent. Signing out now would lose them on this device.")
         }
     }
 
@@ -215,13 +250,16 @@ public struct AccountView: View {
     }
 
     /// Signs every device out. A failure leaves THIS device signed in and says
-    /// so: the other devices were not signed out, and the person can retry.
-    private func signOutEverywhere() async {
+    /// so: the other devices were not signed out, and the person can retry. Unsent
+    /// changes (account sync on) are asked about first, see this file's I5 note.
+    private func signOutEverywhere(discardUnsent: Bool = false) async {
         errorMessage = nil
         isSigningOutEverywhere = true
         defer { isSigningOutEverywhere = false }
         do {
-            try await rootViewModel.signOutEverywhere()
+            try await rootViewModel.signOutEverywhere(discardUnsent: discardUnsent)
+        } catch let blocked as SignOutBlockedByUnsentChanges {
+            unsentPrompt = UnsentPrompt(everywhere: true, unsent: blocked.unsent)
         } catch {
             errorMessage = "Your other devices were not signed out. Check your connection and try again."
         }
@@ -241,16 +279,27 @@ public struct AccountView: View {
         deviceStatus = await rootViewModel.deviceSignInStatus()
     }
 
-    private func signOut() async {
+    private func signOut(discardUnsent: Bool = false) async {
         errorMessage = nil
         isSigningOut = true
         defer { isSigningOut = false }
         do {
-            try await rootViewModel.signOut()
+            try await rootViewModel.signOut(discardUnsent: discardUnsent)
+        } catch let blocked as SignOutBlockedByUnsentChanges {
+            unsentPrompt = UnsentPrompt(everywhere: false, unsent: blocked.unsent)
         } catch let error as APIError {
             errorMessage = error.userFacingMessage
         } catch {
             errorMessage = "Something went wrong signing out. Please try again."
+        }
+    }
+
+    /// The person answered the unsent-changes question: try again, or sign out anyway.
+    private func signOutAgain(_ prompt: UnsentPrompt, discardUnsent: Bool) async {
+        if prompt.everywhere {
+            await signOutEverywhere(discardUnsent: discardUnsent)
+        } else {
+            await signOut(discardUnsent: discardUnsent)
         }
     }
 }

@@ -81,6 +81,12 @@ public final class ProfileSyncCoordinator {
         }
     }
 
+    /// How many changes are waiting to be sent for `userId`. Zero once switched off (they can never be
+    /// sent here, so counting them would block a sign-out for nothing).
+    func pendingCount(userId: Int) -> Int {
+        switchedOff ? 0 : stateStore.load(userId: userId).outbox.count
+    }
+
     /// Forgets the "switched off" memory and `userId`'s notebook (sign-out).
     func forget(userId: Int?) {
         debounce?.cancel()

@@ -14,8 +14,10 @@
  * Detailed (rule #34, #35)
  * ------------------------
  * Files are found from the tree, comments removed, call sites found by balanced-paren parsing. The checks:
- *   1. every call to the screen's own `signOutEverywhere()` sits inside the `.confirmationDialog(` call
- *      (its arguments and its trailing closure), never in a plain button action;
+ *   1. every call to the screen's own `signOutEverywhere(` sits inside the "Sign out everywhere?"
+ *      `.confirmationDialog(` call (its arguments and its trailing closures) or inside `signOutAgain`, the one
+ *      function the unsent-changes dialog (PR 3b, I5) retries through, which is itself only started from inside
+ *      that dialog; never in a plain button action;
  *   2. `devicesSection` is only used under `deviceStatus?.switchedOn == true`, and the automatic sign-in
  *      `Toggle` only under `canOfferAutomaticSignIn`;
  *   3. a failed sign-out-everywhere tells the person the OTHER devices were not signed out (it must say so);
@@ -47,30 +49,46 @@ const find = (suffix) => files.find((f) => f.endsWith(suffix));
 function judge(view, vm, controller) {
     const problems = [];
 
-    // 1. the destructive call only inside the confirmation dialog
+    // 1. the destructive call only inside the confirmation dialog (or its "sign out anyway" second step)
     const dialogs = callArguments(view, '.confirmationDialog');
-    if (dialogs.length !== 1) problems.push('expected exactly one .confirmationDialog, found ' + dialogs.length);
-    let region = null;
-    if (dialogs.length === 1) {
-        const argsStart = dialogs[0].index;
-        const afterArgs = view.indexOf('{', argsStart + dialogs[0].args.length);
+    const regionOf = (d) => {
+        const argsStart = d.index;
+        const afterArgs = view.indexOf('{', argsStart + d.args.length);
         const trailing = afterArgs >= 0 ? braceBlock(view, afterArgs) : null;
         // the message closure follows the action closure: include a second trailing closure when present
-        let end = trailing ? trailing.end : argsStart + dialogs[0].args.length;
+        let end = trailing ? trailing.end : argsStart + d.args.length;
         const next = view.slice(end + 1).match(/^\s*message\s*:\s*\{/);
         if (next) {
             const open = end + 1 + next[0].length - 1;
             const second = braceBlock(view, open);
             if (second) end = second.end;
         }
-        region = { start: argsStart, end };
-    }
-    const own = [...view.matchAll(/(^|[^.A-Za-z0-9_])signOutEverywhere\s*\(\s*\)/g)]
+        return { start: argsStart, end };
+    };
+    const everywhereDialogs = dialogs.filter((d) => /Sign out everywhere\?/.test(d.args));
+    const unsentDialogs = dialogs.filter((d) => /have not reached your account/.test(d.args));
+    if (everywhereDialogs.length !== 1) problems.push('expected exactly one "Sign out everywhere?" confirmation dialog, found ' + everywhereDialogs.length);
+    if (unsentDialogs.length !== 1) problems.push('expected exactly one unsent-changes dialog, found ' + unsentDialogs.length);
+    const everywhereRegion = everywhereDialogs.length === 1 ? regionOf(everywhereDialogs[0]) : null;
+    const unsentRegion = unsentDialogs.length === 1 ? regionOf(unsentDialogs[0]) : null;
+    // `signOutAgain` is the one function the unsent dialog uses to retry; its body is the second allowed place
+    const againAt = view.search(/func\s+signOutAgain\s*\(/);
+    const againOpen = againAt >= 0 ? view.indexOf('{', againAt) : -1;
+    const againBlock = againOpen >= 0 ? braceBlock(view, againOpen) : null;
+    const inRegion = (r, at) => r && at >= r.start && at <= r.end;
+    const own = [...view.matchAll(/(^|[^.A-Za-z0-9_])signOutEverywhere\s*\(/g)]
         .filter((m) => !/\bfunc\s+$/.test(view.slice(Math.max(0, m.index - 12), m.index + m[1].length)));
     if (own.length === 0) problems.push('the screen never calls its own signOutEverywhere()');
     for (const m of own) {
         const at = m.index + m[1].length;
-        if (!region || at < region.start || at > region.end) problems.push('signOutEverywhere() is called outside the confirmation dialog');
+        const allowed = inRegion(everywhereRegion, at) || (againBlock && at > againBlock.start && at < againBlock.end);
+        if (!allowed) problems.push('signOutEverywhere() is called outside the confirmation dialog');
+    }
+    // and signOutAgain itself may only be started from inside the unsent-changes dialog
+    for (const m of view.matchAll(/(^|[^.A-Za-z0-9_])signOutAgain\s*\(/g)) {
+        const at = m.index + m[1].length;
+        if (/\bfunc\s+$/.test(view.slice(Math.max(0, m.index - 12), m.index + m[1].length))) continue;
+        if (!inRegion(unsentRegion, at)) problems.push('signOutAgain() is called outside the unsent-changes dialog');
     }
 
     // 2. gates
@@ -115,6 +133,8 @@ check('the account screen keeps its three promises', real.length === 0, real.joi
 const mutate = (src, from, to) => { const out = src.replace(from, to); if (out === src) throw new Error('self-test mutation changed nothing: ' + from); return out; };
 check('self-test: a direct call from a plain button is caught',
     judge(mutate(view, /isConfirmingSignOutEverywhere = true/, 'Task { await signOutEverywhere() }'), vm, controller).length > 0);
+check('self-test: starting the retry from a plain button (skipping the unsent-changes question) is caught',
+    judge(mutate(view, /isConfirmingSignOutEverywhere = true/, 'Task { await signOutAgain(UnsentPrompt(everywhere: true, unsent: .none), discardUnsent: true) }'), vm, controller).length > 0);
 check('self-test: drawing the section without the switch check is caught',
     judge(mutate(view, /if deviceStatus\?\.switchedOn == true \{/, 'if true {'), vm, controller).length > 0);
 check('self-test: an ungated Toggle is caught',
