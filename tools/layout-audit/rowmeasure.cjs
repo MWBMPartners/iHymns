@@ -13,11 +13,11 @@ await c.addCookies([{name:'ihymns_auth',value:'a'.repeat(64),url:'http://localho
 await c.route(/cdn\.jsdelivr|gravatar|cdnjs|google/,r=>{const u=r.request().url();const N=(process.env.LAYOUT_AUDIT_NPM||S+'/npm');let f=null;if(/bootstrap@5.*min.css/.test(u))f=N+'/x_bootstrap-5.3.6.tgz/package/dist/css/bootstrap.min.css';else if(/bundle/.test(u))f=N+'/x_bootstrap-5.3.6.tgz/package/dist/js/bootstrap.bundle.min.js';else if(/icons.*css/.test(u))f=N+'/x_bootstrap-icons-1.11.3.tgz/package/font/bootstrap-icons.min.css';if(f)r.fulfill({path:f});else r.abort()});
 if(process.env.LAYOUT_AUDIT_THEME)await c.addInitScript(t=>{try{localStorage.setItem('ihymns_theme',t)}catch(e){}},process.env.LAYOUT_AUDIT_THEME);
 const p=await c.newPage();
-for(const pg of pages){await p.goto('http://localhost:8000'+pg);await p.waitForTimeout(200);
-const o=await p.evaluate(()=>{const sel='input:not([type=hidden]):not([type=checkbox]):not([type=radio]),select,textarea,.btn,summary,.form-check';const out=[];
+for(const pg of pages){await p.goto('http://localhost:8000'+pg);await p.waitForTimeout(200);if(process.env.LAYOUT_AUDIT_OPEN_SLUG)await p.evaluate(()=>document.querySelectorAll('details.slug-advanced').forEach(d=>{d.open=true}));
+const o=await p.evaluate(OPEN=>{const sel='input:not([type=hidden]):not([type=checkbox]):not([type=radio]),select,textarea,.btn,'+(OPEN?'':'summary,')+'.form-check';const out=[];
 for(const row of document.querySelectorAll('.row')){const items=[];for(const col of row.children){const cr=col.getBoundingClientRect();if(!cr.height)continue;const ctl=col.querySelector(sel);if(!ctl||!ctl.getBoundingClientRect().width)continue;items.push({colTop:cr.top,colBot:cr.bottom,top:ctl.getBoundingClientRect().top,n:ctl.id||ctl.name||ctl.tagName.toLowerCase()+'.'+(ctl.className.split(' ')[0]||'')})}
  // same visual line = column boxes overlap vertically
  const lines=[];for(const it of items){const L=lines.find(l=>l.some(x=>!(x.colBot<=it.colTop||it.colBot<=x.colTop)));L?L.push(it):lines.push([it])}
  for(const L of lines){if(L.length<2)continue;const ts=L.map(x=>x.top);const dy=Math.max(...ts)-Math.min(...ts);if(dy>3)out.push('['+getComputedStyle(row).alignItems+'] '+L.map(x=>x.n+'@'+Math.round(x.top)).join(' ').slice(0,140)+' dy='+Math.round(dy))}}
-return out});o.forEach(l=>console.log(pg,l))}
+return out},!!process.env.LAYOUT_AUDIT_OPEN_SLUG);o.forEach(l=>console.log(pg,l))}
 await b.close()})()

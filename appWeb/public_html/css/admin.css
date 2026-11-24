@@ -1461,8 +1461,15 @@ body:has(.navbar-admin) .modal-content.bg-dark {
 .slug-advanced {
     margin-top: 0.25rem;
 }
-.slug-advanced[open] summary {
+.slug-advanced:not(.slug-advanced-inrow)[open] summary {
     margin-bottom: 0.25rem;
+}
+/* #2203 — a slug field placed in a form row beside labelled boxes takes the
+   row's label look (the partial's 'rowLabelClass' option), so it needs no
+   extra gap above and no extra gap under its summary: opened, its input
+   then sits level with its neighbours' inputs. */
+.slug-advanced.slug-advanced-inrow {
+    margin-top: 0;
 }
 
 /* ==========================================================================
@@ -1486,6 +1493,15 @@ body:has(.navbar-admin) .modal-content.bg-dark {
 }
 .admin-label-spacer::before {
     content: "\00a0";
+}
+/* A tick box that sits in a row beside small (-sm) inputs: a line as tall as
+   such an input, tick box centred in it, so it lines up with its neighbours
+   rather than hugging the top. */
+.admin-form-check-line {
+    display: flex;
+    align-items: center;
+    font-size: 0.875rem;
+    min-height: calc(1.5em + 0.5rem + 2px);
 }
 
 /* ==========================================================================

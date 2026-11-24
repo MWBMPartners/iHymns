@@ -1040,6 +1040,7 @@ if ($hasSchema) {
                 </div>
                 <div class="col-sm-3">
                     <?= ihymns_slug_advanced_field([
+                        'rowLabelClass' => 'form-label small',
                         'id'          => 'create-slug',
                         'value'       => '',
                         'maxlength'   => 80,
@@ -1206,6 +1207,7 @@ if ($hasSchema) {
                                 </div>
                                 <div class="col-md-3">
                                     <?= ihymns_slug_advanced_field([
+                                        'rowLabelClass' => 'form-label',
                                         'id'        => 'edit-work-slug',
                                         'value'     => '',
                                         'maxlength' => 80,

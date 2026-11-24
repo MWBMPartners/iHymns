@@ -468,6 +468,7 @@ if ($hasSchema) {
                 </div>
                 <div class="col-sm-3">
                     <?= ihymns_slug_advanced_field([
+                        'rowLabelClass' => 'form-label small',
                         'value'       => '',
                         'maxlength'   => 120,
                         'pattern'     => '[a-z0-9-]+',
@@ -503,10 +504,13 @@ if ($hasSchema) {
                     <label class="form-label small" for="create-publisher-isni">ISNI <small class="text-muted">(optional)</small></label>
                     <input type="text" name="isni" id="create-publisher-isni" class="form-control form-control-sm" maxlength="20">
                 </div>
-                <div class="col-sm-6 d-flex align-items-end">
-                    <div class="form-check">
-                        <input type="checkbox" name="is_active" id="create-publisher-active" class="form-check-input" value="1" checked>
-                        <label class="form-check-label small" for="create-publisher-active">Active (shown in pickers)</label>
+                <div class="col-sm-6">
+                    <span class="form-label small admin-label-spacer" aria-hidden="true"></span>
+                    <div class="admin-form-check-line">
+                        <div class="form-check">
+                            <input type="checkbox" name="is_active" id="create-publisher-active" class="form-check-input" value="1" checked>
+                            <label class="form-check-label small" for="create-publisher-active">Active (shown in pickers)</label>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -545,6 +549,7 @@ if ($hasSchema) {
                                 </div>
                                 <div class="col-md-3">
                                     <?= ihymns_slug_advanced_field([
+                                        'rowLabelClass' => 'form-label',
                                         'id'        => 'edit-publisher-slug',
                                         'value'     => '',
                                         'maxlength' => 120,

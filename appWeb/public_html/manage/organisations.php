@@ -939,6 +939,7 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
                     </div>
                     <div class="col-sm-3">
                         <?= ihymns_slug_advanced_field([
+                            'rowLabelClass' => 'form-label small',
                             'value'       => '',
                             'maxlength'   => 100,
                             'placeholder' => 'auto',
@@ -991,10 +992,13 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
                         <input type="text" name="licence_number" id="create-org-licence-number" class="form-control form-control-sm" maxlength="100"
                                <?= $canEditOrgLicences ? '' : 'disabled' ?>>
                     </div>
-                    <div class="col-sm-4 d-flex align-items-end">
-                        <div class="form-check">
-                            <input class="form-check-input" type="checkbox" name="is_active" id="new-is-active" value="1" checked>
-                            <label class="form-check-label" for="new-is-active">Active</label>
+                    <div class="col-sm-4">
+                        <span class="form-label small admin-label-spacer" aria-hidden="true"></span>
+                        <div class="admin-form-check-line">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="is_active" id="new-is-active" value="1" checked>
+                                <label class="form-check-label" for="new-is-active">Active</label>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1032,6 +1036,7 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
                                  client-side claim, rule #35's spirit. No other slug
                                  input in this partial's callers carries `required`. */ ?>
                         <?= ihymns_slug_advanced_field([
+                            'rowLabelClass' => 'form-label small',
                             'value'     => $editOrg['Slug'],
                             'maxlength' => 100,
                             'small'     => true,
@@ -1716,15 +1721,16 @@ $wizardLicenceTableReady = orgLicenceTableExists($db);
                    scanner and false-positives as a duplicate the moment a
                    second row is added. */
                 row.innerHTML = `<div class="card-body py-2">
-                    <div class="row g-2 align-items-center">
+                    <div class="row g-2 admin-form-row">
                       <div class="col-md-4"><label class="form-label small mb-0" for="orgwiz-lic-type-${seq}">Type</label>
                         <select class="form-select form-select-sm" data-wiz-lic-type id="orgwiz-lic-type-${seq}">${licenceTypeOptionsHtml('')}</select></div>
                       <div class="col-md-3"><label class="form-label small mb-0" for="orgwiz-lic-number-${seq}">Number</label>
                         <input type="text" class="form-control form-control-sm" data-wiz-lic-number id="orgwiz-lic-number-${seq}" maxlength="100" placeholder="Licence number"></div>
                       <div class="col-md-3"><label class="form-label small mb-0" for="orgwiz-lic-expires-${seq}">Expires</label>
                         <input type="date" class="form-control form-control-sm" data-wiz-lic-expires id="orgwiz-lic-expires-${seq}"></div>
-                      <div class="col-md-2 d-flex align-items-center gap-1 mt-3">
-                        <div class="form-check small mb-0"><input class="form-check-input" type="checkbox" data-wiz-lic-active id="orgwiz-lic-active-${seq}" checked><label class="form-check-label" for="orgwiz-lic-active-${seq}">Active</label></div>
+                      <div class="col-md-2">
+                        <span class="form-label small mb-0 admin-label-spacer" aria-hidden="true"></span>
+                        <div class="admin-form-check-line gap-1"><div class="form-check small mb-0"><input class="form-check-input" type="checkbox" data-wiz-lic-active id="orgwiz-lic-active-${seq}" checked><label class="form-check-label" for="orgwiz-lic-active-${seq}">Active</label></div></div>
                       </div>
                     </div>
                     <div class="row g-2 mt-1">

@@ -567,6 +567,7 @@ if ($hasSchema) {
                 </div>
                 <div class="col-sm-3">
                     <?= ihymns_slug_advanced_field([
+                        'rowLabelClass' => 'form-label small',
                         'value'       => '',
                         'maxlength'   => 140,
                         'pattern'     => '[a-z0-9-]+',
@@ -657,6 +658,7 @@ if ($hasSchema) {
                                 </div>
                                 <div class="col-md-3">
                                     <?= ihymns_slug_advanced_field([
+                                        'rowLabelClass' => 'form-label',
                                         'id'        => 'edit-tune-slug',
                                         'value'     => '',
                                         'maxlength' => 140,

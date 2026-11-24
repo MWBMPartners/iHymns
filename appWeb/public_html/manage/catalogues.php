@@ -479,6 +479,7 @@ if ($hasSchema && !empty($catalogues)) {
                 </div>
                 <div class="col-md-3">
                     <?= ihymns_slug_advanced_field([
+                        'rowLabelClass' => 'form-label small mb-0',
                         'value'       => '',
                         'maxlength'   => 255,
                         'placeholder' => 'christmas-advent',
