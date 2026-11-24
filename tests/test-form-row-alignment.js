@@ -62,7 +62,7 @@ function strip(src) {
             return '<details class="slug-advanced" data-rowlabel="' + rl + '"></details>' + m.replace(/[^\n]/g, '');
         })
         .replace(/<\?php[\s\S]*?(\?>|$)/g, (m) => m.replace(/[^\n]/g, ' '))
-        .replace(/<\?=[\s\S]*?\?>/g, (m) => 'X' + m.replace(/[^\n]/g, ' ').slice(1))
+        .replace(/<\?=[\s\S]*?\?>/g, (m) => ' X' + m.replace(/[^\n]/g, ' ').slice(2))
         .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, ' '));
 }
 
