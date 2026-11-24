@@ -24,6 +24,19 @@
 // file — a library target hard-coding a team ID would silently break the
 // moment the entitlement changes. See Apple's Keychain Services guide:
 // https://developer.apple.com/documentation/security/keychain_services.
+//
+// PR 3b (I2a, #2180) UPDATE — one sign-in per device. This store no longer
+// has a default service name: every caller must say which Keychain item it
+// means, because there are now four with different rules and the old default
+// (`app.ihymns.token`, the older apps' SHARED, iCloud-synced sign-in) is
+// something new code must only ever READ, never write or delete — see
+// `LegacySharedTokenReader`. The new `thisDeviceOnly` switch exists because
+// `synchronizable: false` alone is not enough: an item saved with plain
+// `kSecAttrAccessibleAfterFirstUnlock` is still copied by an encrypted backup
+// and by phone-to-phone transfer, so a "non-synced" token would turn up on a
+// restored phone (two devices, one sign-in). The `...ThisDeviceOnly`
+// accessibility value stops that.
+// https://developer.apple.com/documentation/security/ksecattraccessibleafterfirstunlockthisdeviceonly
 import Foundation
 #if canImport(Security)
 import Security
@@ -58,10 +71,28 @@ public actor KeychainTokenStore: TokenStoring {
     /// (no iCloud Keychain there — device-code pairing is used instead).
     private let synchronizable: Bool
 
-    public init(service: String = "app.ihymns.token", accessGroup: String? = nil, synchronizable: Bool = true) {
+    /// Whether this item must stay on THIS device only: not copied by an
+    /// encrypted backup, not carried to a new phone by device transfer.
+    /// Required for the per-device sign-in, its install id and its notes.
+    /// Never combined with `synchronizable` (the two contradict each other).
+    private let thisDeviceOnly: Bool
+
+    /// - Parameters:
+    ///   - service: Which Keychain item (`kSecAttrService`). NO default on
+    ///     purpose (see this file's PR 3b note): the caller must name it.
+    ///   - accessGroup: See `accessGroup` above.
+    ///   - synchronizable: Whether iCloud Keychain carries it to the person's
+    ///     other devices. Defaults to `true` (only the automatic sign-in key
+    ///     wants that now).
+    ///   - thisDeviceOnly: Save with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`
+    ///     so backups and device transfers leave it behind. Defaults to `false`.
+    public init(service: String, accessGroup: String? = nil, synchronizable: Bool = true, thisDeviceOnly: Bool = false) {
+        // A synced item and a this-device-only item are opposites; asking for both is a coding mistake.
+        precondition(!(synchronizable && thisDeviceOnly), "A Keychain item cannot be both synchronizable and this-device-only.")
         self.service = service
         self.accessGroup = accessGroup
         self.synchronizable = synchronizable
+        self.thisDeviceOnly = thisDeviceOnly
     }
 
     public func save(_ token: String) async throws {
@@ -69,7 +100,12 @@ public actor KeychainTokenStore: TokenStoring {
 
         var query = baseQuery()
         query[kSecValueData as String] = Data(token.utf8)
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        // Why two branches: this-device-only items must not ride along in a backup or a phone-to-phone transfer.
+        if thisDeviceOnly {
+            query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        } else {
+            query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        }
 
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else {
