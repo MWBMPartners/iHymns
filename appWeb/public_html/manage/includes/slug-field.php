@@ -73,6 +73,16 @@ declare(strict_types=1);
  *                          contains a <code> tag — hence pre-escaped rather
  *                          than htmlspecialchars()'d here, which would
  *                          mangle that markup). Omit/null to skip the hint.
+ *   rowLabelClass?: ?string, Only for a slug field that sits in a form ROW beside
+ *                          labelled columns (#2203). Pass the SAME classes
+ *                          those columns' labels use (e.g. 'form-label small'):
+ *                          the closed summary then takes that look and height,
+ *                          so when opened the input sits level with its
+ *                          neighbours' inputs. The inner "Slug" label becomes
+ *                          visually hidden (it still names the input for a
+ *                          screen reader). Omit/null = the old output,
+ *                          byte for byte. tests/test-form-row-alignment.js
+ *                          checks every in-row caller passes it.
  * } $o
  * @return string  The rendered <details class="slug-advanced">…</details> HTML.
  *
@@ -117,6 +127,11 @@ function ihymns_slug_advanced_field(array $o): string
     $placeholder = isset($o['placeholder']) ? (string)$o['placeholder'] : null;
     $small       = (bool)($o['small'] ?? false);
     $help        = isset($o['help']) ? (string)$o['help'] : null; // pre-escaped by design — see doc-block above
+    // ELI5: set only when this field sits in a row beside labelled boxes (#2203).
+    // Detailed: a class list, so it is checked against a strict allow-pattern
+    // before it reaches the markup — a stray quote can never break out of the attribute.
+    $rowLabelClass = isset($o['rowLabelClass']) && preg_match('/^[A-Za-z0-9_ -]+$/', (string)$o['rowLabelClass'])
+        ? trim((string)$o['rowLabelClass']) : null;
 
     $idAttr          = $id !== null ? ' id="' . htmlspecialchars($id, ENT_QUOTES) . '"' : '';
     $forAttr         = $id !== null ? ' for="' . htmlspecialchars($id, ENT_QUOTES) . '"' : '';
@@ -124,10 +139,19 @@ function ihymns_slug_advanced_field(array $o): string
     $placeholderAttr = $placeholder !== null ? ' placeholder="' . htmlspecialchars($placeholder, ENT_QUOTES) . '"' : '';
     $sizeClass       = $small ? ' form-control-sm' : '';
 
-    $html  = '<details class="slug-advanced">';
-    $html .= '<summary class="small text-muted">Edit slug (advanced)</summary>';
-    $html .= '<div class="mt-1">';
-    $html .= '<label class="form-label small mb-0"' . $forAttr . '>Slug</label>';
+    if ($rowLabelClass !== null) {
+        // In-row variant (#2203): the summary IS the visible label line, the
+        // wrapper has no top gap, and the real <label> stays for screen readers.
+        $html  = '<details class="slug-advanced slug-advanced-inrow">';
+        $html .= '<summary class="' . $rowLabelClass . ' text-muted">Edit slug (advanced)</summary>';
+        $html .= '<div>';
+        $html .= '<label class="visually-hidden"' . $forAttr . '>Slug</label>';
+    } else {
+        $html  = '<details class="slug-advanced">';
+        $html .= '<summary class="small text-muted">Edit slug (advanced)</summary>';
+        $html .= '<div class="mt-1">';
+        $html .= '<label class="form-label small mb-0"' . $forAttr . '>Slug</label>';
+    }
     $html .= '<input type="text" name="slug"' . $idAttr
            . ' class="form-control' . $sizeClass . '"'
            . ' maxlength="' . $maxlength . '"'

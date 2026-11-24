@@ -600,7 +600,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                      stored encrypted at rest (secretSettingKeys(), #1466) and
                      never leaves the server; the public half is handed to every
                      browser as `applicationServerKey` and is not a secret. -->
-                <form method="post" class="row g-2 align-items-end">
+                <form method="post" class="row g-2 admin-form-row">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="push_generate_keys">
                     <div class="col-md-6">
@@ -614,6 +614,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         </div>
                     </div>
                     <div class="col-md-6">
+                        <span class="form-label small admin-label-spacer" aria-hidden="true"></span>
                         <button type="submit" class="btn btn-sm btn-primary">
                             <i aria-hidden="true" class="bi bi-key me-1"></i>Generate VAPID keypair
                         </button>
@@ -756,7 +757,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
          FEED TABLE
          =========================== -->
     <div class="card bg-body-tertiary border-secondary">
-        <div class="card-header d-flex justify-content-between align-items-center">
+        <div class="card-header d-flex justify-content-between align-items-center admin-card-header">
             <span class="small text-secondary">
                 <?= number_format($totalRows) ?> notification<?= $totalRows === 1 ? '' : 's' ?>
                 — page <?= $page ?> of <?= $totalPages ?>

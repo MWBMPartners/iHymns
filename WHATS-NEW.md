@@ -12,6 +12,11 @@ with none of the behind-the-scenes technical detail.
 
 ## 1.4.0 — 28 September 2026
 
+- **Tidier Settings on a phone** — The four theme buttons now sit in a neat
+  two-by-two grid, and each songbook in your offline list keeps its download
+  and remove buttons side by side instead of the remove button dropping onto a
+  line of its own.
+
 - **Shared computers keep your songs private** — If someone else signs in on
   the same computer after you, your saved songs, set lists and history are no
   longer mixed into their account. They are put safely aside and come back if

@@ -511,7 +511,7 @@ $csrf = csrfToken();
                         <option value="licence_type">Licence type</option>
                     </select>
                 </div>
-                <div class="col-sm-5" data-picker-group-for="#rx-target-id" role="group" aria-labelledby="rx-target-label">
+                <div class="col-sm-4" data-picker-group-for="#rx-target-id" role="group" aria-labelledby="rx-target-label">
                     <label class="form-label small" id="rx-target-label">Target</label>
 
                     <!-- platform picker: hard-coded select -->
@@ -568,7 +568,7 @@ $csrf = csrfToken();
                     <input type="number" name="priority" id="rx-priority" class="form-control form-control-sm"
                            min="0" max="1000" value="100">
                 </div>
-                <div class="col-sm-2">
+                <div class="col-sm-3">
                     <label class="form-label small" for="rx-reason">Reason (shown to user)</label>
                     <input type="text" name="reason" id="rx-reason" class="form-control form-control-sm" maxlength="255"
                            placeholder="e.g. Subscription required">

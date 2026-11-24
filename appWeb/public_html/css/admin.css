@@ -136,6 +136,11 @@ a.btn:active {
     margin-right: auto;
     padding-left: 1.5rem;
     padding-right: 1.5rem;
+    /* #2203 — break a single very long word (e.g. "iOS/iPadOS/macOS/tvOS/…" on
+       the help page, which browsers will not split at a slash) rather than let
+       it push the page wider than the screen. Only a word that would otherwise
+       stick out is broken; normal text and tables are not affected. */
+    overflow-wrap: break-word;
 }
 
 /* ==========================================================================
@@ -1461,8 +1466,81 @@ body:has(.navbar-admin) .modal-content.bg-dark {
 .slug-advanced {
     margin-top: 0.25rem;
 }
-.slug-advanced[open] summary {
+.slug-advanced:not(.slug-advanced-inrow)[open] summary {
     margin-bottom: 0.25rem;
+}
+/* #2203 — a slug field placed in a form row beside labelled boxes takes the
+   row's label look (the partial's 'rowLabelClass' option), so it needs no
+   extra gap above and no extra gap under its summary: opened, its input
+   then sits level with its neighbours' inputs. */
+.slug-advanced.slug-advanced-inrow {
+    margin-top: 0;
+}
+
+/* ==========================================================================
+   FORM ROWS WITH HELP TEXT (#2203) — "align-items-end" lines a row's columns
+   up along their BOTTOM edge. When one column has help text under its box
+   and the next has none, the boxes then end up at different heights (the
+   IntAppsAPI, CAPTCHA and Web Push cards were 21–64px out). The fix is to
+   line the columns up along the TOP instead (.admin-form-row), and to give
+   a column that has no label (a Save button, say) an invisible label-sized
+   line (.admin-label-spacer) so its control still starts on the same line
+   as its neighbours. The spacer carries the SAME classes as the row's real
+   labels (e.g. "form-label small") so it is exactly as tall as one; the
+   guard tests/test-form-row-alignment.js checks that.
+============================================================================= */
+.admin-form-row {
+    align-items: flex-start;
+}
+.admin-label-spacer {
+    display: block;
+    visibility: hidden;
+}
+.admin-label-spacer::before {
+    content: "\00a0";
+}
+/* A tick box that sits in a row beside small (-sm) inputs: a line as tall as
+   such an input, tick box centred in it, so it lines up with its neighbours
+   rather than hugging the top. */
+.admin-form-check-line {
+    display: flex;
+    align-items: center;
+    font-size: 0.875rem;
+    min-height: calc(1.5em + 0.5rem + 2px);
+}
+
+/* ==========================================================================
+   CARD HEADERS THAT HOLD A TITLE PLUS BUTTONS/BADGES (#2203) — a header that
+   is a one-line flex row pushes the whole page sideways on a phone when its
+   status badge is long (configuration was 406px wide at 360px; one badge
+   reads "Team ID not set (AASA uses placeholder)"). Letting the header, and
+   the group of buttons/badges inside it, wrap onto a second line fixes it.
+   At wide sizes everything still fits on one line, so nothing changes there.
+   Add the class to any new "card-header d-flex" (guard:
+   tests/test-admin-narrow-layout.js).
+============================================================================= */
+.admin-card-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+.admin-card-header > .d-flex {
+    flex-wrap: wrap;
+}
+
+/* ==========================================================================
+   ACCORDION HEADERS WITH SEVERAL PIECES (#2203) — missing-numbers shows, on
+   one line per songbook: a code badge, the songbook name, a count, a status
+   badge and Bootstrap's arrow. A name with one long word ("Miscellaneous")
+   cannot shrink, so on a phone the line ran 39px past the screen. Below
+   576px let the pieces wrap onto a second line. Add the class to any
+   accordion-button with three or more pieces (guard:
+   tests/test-admin-narrow-layout.js).
+============================================================================= */
+@media (max-width: 575.98px) {
+    .admin-accordion-summary {
+        flex-wrap: wrap;
+        row-gap: 0.25rem;
+    }
 }
 
 /* ==========================================================================

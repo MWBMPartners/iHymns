@@ -479,6 +479,7 @@ if ($hasSchema && !empty($catalogues)) {
                 </div>
                 <div class="col-md-3">
                     <?= ihymns_slug_advanced_field([
+                        'rowLabelClass' => 'form-label small mb-0',
                         'value'       => '',
                         'maxlength'   => 255,
                         'placeholder' => 'christmas-advent',
@@ -536,7 +537,7 @@ if ($hasSchema && !empty($catalogues)) {
         <!-- #1765 Feature 5 — create a Collection from an uploaded MARCXML file. -->
         <div class="card-admin p-3 mb-3">
             <h2 class="h6 mb-2"><i class="bi bi-upload me-1" aria-hidden="true"></i>Import from MARCXML</h2>
-            <form method="POST" class="row g-2 align-items-end small" enctype="multipart/form-data">
+            <form method="POST" class="row g-2 admin-form-row small" enctype="multipart/form-data">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action" value="marcxml_import">
                 <div class="col-md-8">
@@ -546,6 +547,7 @@ if ($hasSchema && !empty($catalogues)) {
                     <div class="form-text small">Reads the title (245 $a) + ARK / OpenLibrary identifiers; imported hidden for review.</div>
                 </div>
                 <div class="col-md-4">
+                    <span class="form-label small mb-0 admin-label-spacer" aria-hidden="true"></span>
                     <button type="submit" class="btn btn-sm btn-info w-100">
                         <i class="bi bi-upload me-1" aria-hidden="true"></i>Import Collection
                     </button>

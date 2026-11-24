@@ -270,6 +270,7 @@ $csrf = csrfToken();
             <!-- List of groups -->
             <div class="card-admin p-3 mb-4">
                 <h2 class="h6 mb-3">All groups</h2>
+                <div class="table-responsive">
                 <table class="table table-sm mb-0 align-middle cp-sortable admin-table-responsive">
                     <thead>
                         <tr class="text-muted small">
@@ -319,6 +320,7 @@ $csrf = csrfToken();
                         <?php endif; ?>
                     </tbody>
                 </table>
+                </div>
             </div>
 
             <!-- Create -->

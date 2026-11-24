@@ -594,15 +594,16 @@ if ($hasSchema) {
             <input type="hidden" name="action" value="create">
             <h2 class="h6 mb-3"><i aria-hidden="true" class="bi bi-plus-circle me-2"></i>Add a series</h2>
             <div class="row g-2">
-                <div class="col-sm-4">
+                <div class="col-sm-3 col-lg-4">
                     <label class="form-label small" for="create-name">Name</label>
                     <input type="text" name="name" id="create-name"
                            class="form-control form-control-sm"
                            maxlength="120" required
                            placeholder="e.g. Songs of Fellowship">
                 </div>
-                <div class="col-sm-2">
+                <div class="col-sm-3 col-lg-2">
                     <?= ihymns_slug_advanced_field([
+                        'rowLabelClass' => 'form-label small',
                         'id'          => 'create-slug',
                         'value'       => '',
                         'maxlength'   => 120,
@@ -695,6 +696,7 @@ if ($hasSchema) {
                                 </div>
                                 <div class="col-sm-5">
                                     <?= ihymns_slug_advanced_field([
+                                        'rowLabelClass' => 'form-label',
                                         'id'        => 'edit-slug',
                                         'value'     => '',
                                         'maxlength' => 120,
@@ -742,6 +744,7 @@ if ($hasSchema) {
                                 in volumes later).
                             </p>
 
+                            <div class="table-responsive">
                             <table class="table table-sm align-middle mb-2" id="edit-members-table">
                                 <thead>
                                     <tr class="text-muted small">
@@ -762,6 +765,7 @@ if ($hasSchema) {
                                     </tr>
                                 </tfoot>
                             </table>
+                            </div>
 
                             <div class="d-flex gap-2 align-items-end">
                                 <div class="flex-grow-1">

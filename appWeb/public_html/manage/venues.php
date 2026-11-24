@@ -416,7 +416,7 @@ function venuesUrl(array $overrides = []): string
         <?php if ($selectedOrgId > 0): ?>
         <!-- ============================ VENUES ============================ -->
         <div class="card mb-4">
-            <div class="card-header d-flex justify-content-between align-items-center">
+            <div class="card-header d-flex justify-content-between align-items-center admin-card-header">
                 <span class="fw-semibold"><i aria-hidden="true" class="bi bi-building me-1"></i>Venues</span>
                 <a class="btn btn-sm btn-amber-solid" href="<?= htmlspecialchars(venuesUrl(['edit_venue' => 'new', 'venue' => null])) ?>#venue-form">
                     <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add venue
@@ -603,7 +603,7 @@ function venuesUrl(array $overrides = []): string
         <!-- ===================== SCHEDULES (selected venue) ===================== -->
         <?php if ($selectedVenueRow !== null): ?>
             <div class="card mb-4" id="schedules">
-                <div class="card-header d-flex justify-content-between align-items-center">
+                <div class="card-header d-flex justify-content-between align-items-center admin-card-header">
                     <span class="fw-semibold"><i aria-hidden="true" class="bi bi-calendar-week me-1"></i>Service times — <?= htmlspecialchars($selectedVenueRow['Name']) ?></span>
                     <a class="btn btn-sm btn-amber-solid" href="<?= htmlspecialchars(venuesUrl(['edit_schedule' => 'new'])) ?>#schedule-form">
                         <i aria-hidden="true" class="bi bi-plus-lg me-1"></i>Add service time

@@ -3075,7 +3075,7 @@ if ($hasCredentials && defined('DB_HOST')) {
             <?php if (!empty($_appliedRenderable)): ?>
                 <div class="col-12">
                     <details class="card bg-body-tertiary border-secondary applied-migrations-details">
-                        <summary class="card-header d-flex align-items-center gap-2 text-secondary small" style="cursor: pointer;">
+                        <summary class="card-header d-flex align-items-center gap-2 text-secondary small admin-card-header" style="cursor: pointer;">
                             <i class="bi bi-check2-circle text-success" aria-hidden="true"></i>
                             <span>
                                 <strong><?= count($_appliedRenderable) ?></strong>

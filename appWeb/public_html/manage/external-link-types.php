@@ -491,6 +491,7 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                         </div>
                         <div class="col-md-3">
                             <?= ihymns_slug_advanced_field([
+                                'rowLabelClass' => 'form-label small mb-1',
                                 'id'          => 'mc-slug',
                                 'value'       => '',
                                 'maxlength'   => 60,
@@ -589,7 +590,7 @@ $adminWizardVer   = is_file($_adminWizardPath) ? (string)filemtime($_adminWizard
                 <div class="vstack gap-3">
                     <?php foreach ($typesByCategory[$catKey] as $t): ?>
                         <details class="card bg-body-tertiary border-secondary">
-                            <summary class="card-header d-flex align-items-center gap-2 user-select-none" style="cursor:pointer; list-style-position: outside;">
+                            <summary class="card-header d-flex align-items-center gap-2 user-select-none admin-card-header" style="cursor:pointer; list-style-position: outside;">
                                 <?php if (!empty($t['iconClass'])): ?>
                                     <i class="<?= htmlspecialchars($t['iconClass']) ?>" aria-hidden="true"></i>
                                 <?php endif; ?>

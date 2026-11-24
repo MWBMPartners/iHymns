@@ -375,7 +375,7 @@ if (!empty($registryByName)) {
 
         <!-- Filters -->
         <form method="GET" class="card-admin p-3 mb-3">
-            <div class="row g-2 align-items-end">
+            <div class="row g-2 admin-form-row">
                 <div class="col-sm-4">
                     <label class="form-label small" for="mbp-filter-q">Search candidate name</label>
                     <input type="search" name="q" id="mbp-filter-q" value="<?= htmlspecialchars($searchQ) ?>"
@@ -395,6 +395,7 @@ if (!empty($registryByName)) {
                            class="form-control form-control-sm">
                 </div>
                 <div class="col-sm-2">
+                    <span class="form-label small admin-label-spacer" aria-hidden="true"></span>
                     <button type="submit" class="btn btn-secondary btn-sm w-100">
                         <i aria-hidden="true" class="bi bi-funnel me-1"></i>Apply
                     </button>
