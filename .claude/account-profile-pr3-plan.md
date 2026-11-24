@@ -368,3 +368,30 @@ password store still signs in once.
 | 8 | Revoked keys | Deleted 30 days after revocation or expiry |
 | 9 | D10 (shared web cookie) | Its own PR after PR 3 |
 | 10 | Rate limits | As in section 2 |
+
+## Progress (PR 3a, the server side, branch `claude/account-pr3a`)
+
+| Step | Commit | Status |
+|---|---|---|
+| Plan and reusable design | 0a43110b | done |
+| H1 install id with every sign-in, one device one row | 5c0c81e5 | done, needs Opus review |
+| H3 automatic sign-in key core | 0258d092 | done, needs Opus review |
+| H2 device sign-in switch, one answer for push per sign-in | c93e8ba3 | done |
+| H4 one door to end every sign-in | 14f52347 | done, needs Opus review |
+| H5 the five actions, the sweep that keeps a device's "signed out" note | 2ac494bb | done, needs Opus review |
+| H6 web Devices card: Sign out everywhere, Turn off | eedcf9db | done |
+| H7 privacy page and its promise checks | a05ec47e | done |
+| Docs (design file, rule #55, wiki, `.OpenAI/`, `CHANGELOG.md`; no `WHATS-NEW.md` bullets) | the commit that adds this table | done |
+| Phase I (Apple app) | not started | not in this PR |
+
+Deviations from the plan (PR 3a):
+- Owner decision B ("a device whose sign-in ran out must not sign itself back in with the key") is enforced on the SERVER, which the plan had left to the app. H4's ended sign-in rows (a device's own sign-in is ended, not deleted, and its name is blanked) are the "signed out" note; `apiTokenInstallSignInEnded()` reads them; redeem answers the same 401 `enrol_key_invalid` and enrol answers 403 `install_signed_out`. This needed no new column.
+- The housekeeping sweep (planned for H7) moved into H5, because without it the note is deleted the moment the row expires and the key would work again. `apiTokenSweepExpired()` keeps a device's row for 180 days after it ends and `accountEnrolKeysSweep()` deletes keys ended over 30 days ago; the standalone cleanup script (which cannot load includes, rule #41) mirrors both, and a test checks the numbers agree. The one-door guard allows that single named DELETE in `cleanup.php`.
+- `test-single-token-mint.php` now finds the callers from the tree (it listed two files by hand and did not see the new file that mints, rule #34).
+- `devices_list` gained `issuedVia`, `boundToDevice` and `enrolKeys` (as planned); `auth_signout_everywhere` also clears the browser cookie unless `keepCurrent` is true.
+- H6: the controls and the notes ("Added automatically", "Older app version...") show only where `config.deviceSignin.enabled` is true; "Paired TV" shows always.
+- H7: the privacy sentences are tied to the code (the button words are exported from `devices.js`; 30 and 180 are compared to the real constants).
+- The owner's decision A (key on by default for Apple when the switch is on) is the server default: enrol makes a key unless the request says `createEnrolKey: false`.
+
+Follow-ups (NOT done): the whole Apple phase (I1 to I6); the Opus review of H1, H3, H4, H5; the live two-device checks in section 5; the owner steps in section 6 (tick `device_signin_channels` per channel; production before the first TestFlight upload); the `WHATS-NEW.md` bullets once production is ticked.
+

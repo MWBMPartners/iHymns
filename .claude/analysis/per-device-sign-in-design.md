@@ -46,13 +46,22 @@ one out without touching the others. At the same time, someone who keeps their p
      an app token.
 
 5. **Signing out.**
-   - It revokes only that device's token and that device's push registrations.
+   - It ends only that device's token and that device's push registrations.
    - The device remembers "signed out here" in the same kind of storage as the token. Only a manual
      sign-in clears that mark.
    - A token the server rejects also sets the mark. So a lost device, a device signed out from the web, and
-     a device whose 30 days ran out all stay signed out until a person signs in again. (A device must not
-     sign itself back in with an enrol key after a rejection: the server cannot tell "ran out" from "signed
-     out remotely", so allowing one allows both.)
+     a device whose 30 days ran out all stay signed out until a person signs in again.
+   - **The server enforces it too, so a client bug cannot undo it.** A token tied to an install id is not
+     deleted when it ends: its expiry is set to the past and its name, version and last-seen are blanked. The
+     row stays as a small "this install was signed out" note. The key-swap action looks for that note and, if
+     the install has one and no live sign-in since, gives the same single refusal as for any unusable key.
+     A manual sign-in on the install replaces the note. (Why not guess from timestamps? Without the note the
+     server cannot tell "ran out" from "signed out remotely", so allowing one would allow both. The note costs
+     no new column: the rows already carry the install id.)
+   - **The housekeeping sweep must know about the note.** Expired rows used to be deleted at once. Rows tied to
+     an install id are now kept for as long as the key can live (180 days after they end); rows tied to no
+     install are deleted when they expire, as before. Forget this and the note disappears after the first
+     sweep and the key works again.
 
 6. **Leaving an old shared token.**
    - Before this design, all devices shared one token in the synced store. Each device now swaps that token
@@ -78,7 +87,7 @@ one out without touching the others. At the same time, someone who keeps their p
 |---|---|
 | Swap or key action when the switch is off, or the database is not ready | 409 |
 | Missing `Authorization` header, or a malformed install id or platform | 400 |
-| Token dead, or any enrol key that cannot be used (unknown, expired, revoked, wrong platform, switched-off account, device signed out) | 401 with one single answer |
+| Token dead, or any enrol key that cannot be used (unknown, expired, revoked, wrong platform, switched-off account, device signed out or run out) | 401 with one single answer |
 | Same-origin check failed, token tied to a different install, wrong kind of sign-in | 403 |
 | Too many tries | 429 |
 
@@ -86,6 +95,26 @@ Clients tell failures apart by status code, never by matching the server's sente
 
 ## Questions each project must answer for itself
 
-- Is the enrol key on by default? (iHymns: on for Apple devices, with a switch to turn it off.)
-- May a device whose sign-in ran out sign itself back in with the key? (iHymns: no.)
+- Is the enrol key on by default? (iHymns, owner decision 2026-11-23: on by default for Apple devices once
+  the site switch is on; the app may turn it off, and so may the person on the web.)
+- May a device whose sign-in ran out sign itself back in with the key? (iHymns, owner decision: no. The
+  server refuses it, with the "ended note" in rule 5, and the app also stays signed out.)
 - Does your platform sync its secure store at all? (Apple TV may not, so give TV no key.)
+
+## Where it lives in iHymns, for the people who copy it
+
+Server: one function makes tokens, one function ends them (both in the token helper file); the key rules sit
+in their own file; the five actions (swap, make a key, redeem a key, turn keys off, sign out everywhere) sit
+in one more file that returns a status and a body so tests can call it without the web entry point. The
+guards are a real-database test of every row of the status table, a tree-scanning test that bans any other
+bulk token delete, and a promise-check test that ties the privacy page's sentences to the code that makes
+them true. Each was shown red by a deliberate break before it was trusted.
+
+## Mistakes this design already caught once (so you do not repeat them)
+
+- A browser cookie must not be able to mint an app token: the swap actions read the `Authorization` header
+  only, and a test asserts they answer 400 before they look at any cookie sign-in.
+- "Revoke everything" had four hand-written copies, and none knew about the key. One door, plus a guard.
+- A sweep that deleted rows the moment they expired would have thrown away the very note rule 5 depends on.
+- A test that listed the files to scan by hand missed the new file that makes tokens. Derive the list from
+  the tree.

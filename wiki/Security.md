@@ -46,6 +46,7 @@ Uncaught browser errors surface one generic toast to the user and are beaconed �
 - Stored in `tblApiTokens` table
 - Deleted on logout and password reset
 - **Device metadata + management (#1409 / #1975):** each token row carries an optional `DeviceName` / `Platform` / `AppVersion` / `LastSeenAt`. A web sign-in is auto-named server-side from the request `User-Agent` (e.g. "Chrome on Windows") at token-issue time, so the Settings → Signed-in devices list is legible rather than a wall of "Unnamed device". Users can remotely sign a device out (`device_signout`) or rename it (`device_rename`) — both are own-only (`WHERE UserId = ?`), same-origin-CSRF-gated (`validateCsrfRequest()`) and per-user rate-limited. The client is only ever handed a truncated hash **prefix** as the device id, never the raw token nor the full stored hash.
+- **One sign-in per device (PR 3a):** a sign-in tied to an install id is *ended*, not deleted, when it is signed out (its expiry goes to the past and its name is blanked), and kept for 180 days as a "signed out" note so the device can not sign itself back in with its automatic sign-in key. One function (`apiTokenRevokeAllForUser()`) ends everything and also cancels the keys and the Apple push rows; a test bans any other bulk delete. See *User Accounts & Roles*.
 
 ### Password Reset Tokens
 

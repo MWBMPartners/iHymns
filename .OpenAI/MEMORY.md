@@ -5,6 +5,13 @@ Short, lasting facts. Newest first within each section. Where this file and the 
 
 _Last updated: 2026-11-23._
 
+## Added 2026-11-24 (account rewrite part 3a: one sign-in per device, server side)
+
+- **Part 3a is built on branch `claude/account-pr3a`** (not merged when this was written): the server side only; no Apple code yet. Rule #55 in `.claude/CLAUDE.md` has the shape; the plan and its progress table are in `.claude/account-profile-pr3-plan.md`; the reusable design (for SIGNula.id and ClearList) is `.claude/analysis/per-device-sign-in-design.md`.
+- **Owner decisions:** the automatic sign-in key is on by default for Apple devices when the switch is on, and can be turned off; a device whose sign-in was signed out or ran out must NOT sign itself back in (enforced on the server with the "ended note" rows, not left to the app); everything sits behind `device_signin_channels` (default none).
+- **Trap:** the expiry sweep must keep an install-bound ended row for 180 days (`apiTokenSweepExpired()`; `appWeb/.sql/cleanup.php` mirrors it). A sweep that deletes the row when it expires turns the key back on.
+- **No `WHATS-NEW.md` bullets yet**; they are added when production is ticked. The Apple phase (I1 to I6) is not started.
+
 ## Added 2026-11-23 (account rewrite part 2c)
 
 - **Part 2c is built on branch `claude/account-pr2c`** (not merged when this was written): download-my-data (`account_export`), delete-my-account on the web, sign-out that clears the browser after asking, and the privacy-page update. Rule #54 in `.claude/CLAUDE.md` has the shape.

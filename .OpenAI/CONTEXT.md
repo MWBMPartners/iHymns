@@ -41,7 +41,7 @@ PHP 8.4 and 8.5 are supported; 8.6 is prepared and checked as advisory in CI (ru
 
 Version 1.4.1. Cross-site settings sync was rebuilt and is off by default (rule #52). PHP 8.6 is
 prepared with an advisory CI check (rule #53). The account and profile rewrite (epic #2180) has part 1
-and part 2a (#2197, dormant) and part 2b (#2201) merged; part 2c (export, web delete, sign-out clearing, privacy page; branch `claude/account-pr2c`) is built and awaiting review; part 3 is next. The handoff has the details and the owner's decisions.
+and part 2a (#2197, dormant) and part 2b (#2201) merged; part 2c (export, web delete, sign-out clearing, privacy page; branch `claude/account-pr2c`) is built and awaiting review; part 3a (one sign-in per device, server side only; branch `claude/account-pr3a`, rule #55) is built and awaiting review; the Apple phase of part 3 is next. The handoff has the details and the owner's decisions.
 
 ## The channels
 
