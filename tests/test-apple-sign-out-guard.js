@@ -22,10 +22,16 @@
  *   3. the view model's `signOut(` and `signOutEverywhere(` both call `ensureNothingUnsent(` BEFORE the session
  *      controller, and `ensureNothingUnsent` skips only for an explicit `discardUnsent` flag;
  *   4. no screen calls the session controller's sign-out directly: only the view model does;
+ *      A queue that cannot be READ is "unknown", never "zero": no queue count may use `try?` (which turns a
+ *      failure into 0), `prepareSignOut()` must record `couldNotCount`, and `ensureNothingUnsent` must ask
+ *      whenever `needsAsking` (something waiting OR unknown), not only when the total is above zero.
  *   5. every offline-store `clear...()` for personal data (favourites, set lists) that `resetLocalUserState`
  *      calls is one of the stores whose queue is counted, and the shared-settings notebook is forgotten there;
  *   6. self-tests: an uncounted queue, a missing early return, a check placed after the sign-out, and a screen
  *      that bypasses the view model are each reported.
+ *
+ * (Review fix: an unreadable offline store used to count as 0, so a sign-out could wipe unsent changes it never
+ * counted. The count-with-`try?`, the missing `couldNotCount` and the total-only check are now each caught.)
  *
  * Mutations tried when this was written (each turned it red, then was restored): removing the setlist count
  * from `prepareSignOut`; moving `ensureNothingUnsent` after the controller call in `signOut`; removing the
@@ -78,6 +84,11 @@ function judge(src) {
     const firstCount = Math.min(...queues.map((q) => { const i = prepare.search(new RegExp('\\b' + q + '\\s*\\(')); return i < 0 ? Infinity : i; }));
     if (flushes.length < queues.length + 1) problems.push('prepareSignOut() must flush every queue and sync the shared settings (found ' + flushes.length + ' flush/sync calls)');
     if (flushes.some((m) => m.index > firstCount)) problems.push('prepareSignOut() flushes after it has started counting');
+    // 2b. a queue that cannot be read is unknown, never zero
+    for (const q of queues) {
+        if (new RegExp('try\\?\\s*await\\s+offlineStore\\.' + q + '\\b').test(prepare)) problems.push('prepareSignOut() counts "' + q + '" with try?, which turns an unreadable queue into 0');
+    }
+    if ([...prepare.matchAll(/\bcouldNotCount\s*=\s*true\b/g)].length < queues.length) problems.push('prepareSignOut() must set couldNotCount for EVERY queue that cannot be read');
     // 3. the view model's sign-outs go through the check, before the controller
     for (const [name, controllerCall] of [['signOut', 'sessionController.signOut'], ['signOutEverywhere', 'sessionController.signOutEverywhere']]) {
         const body = funcBody(src.vmAll, name);
@@ -87,6 +98,8 @@ function judge(src) {
         if (checkAt < 0 || ctlAt < 0 || checkAt > ctlAt) problems.push(name + '() must call ensureNothingUnsent( before ' + controllerCall + '(');
     }
     const ensure = funcBody(src.check, 'ensureNothingUnsent');
+    if (ensure === null || !/unsent\.needsAsking/.test(ensure)) problems.push('ensureNothingUnsent must ask whenever unsent.needsAsking (waiting or unknown), not only when total > 0');
+    if (!/var\s+needsAsking\s*:\s*Bool\s*\{\s*total\s*>\s*0\s*\|\|\s*couldNotCount\s*\}/.test(src.check)) problems.push('UnsentChanges.needsAsking must be `total > 0 || couldNotCount`');
     if (ensure === null || !/guard\s+!discardUnsent\s+else\s*\{\s*return\s*\}/.test(ensure)) problems.push('ensureNothingUnsent must skip the check only for an explicit discardUnsent');
     // 4. no screen signs out directly
     for (const [f, c] of src.all) {
@@ -130,7 +143,10 @@ check('the sign-out check holds on the real source', real.length === 0, real.joi
 /* ---- self-tests ---- */
 const mut = (src, from, to) => { const out = src.replace(from, to); if (out === src) throw new Error('self-test mutation changed nothing: ' + from); return out; };
 const with_ = (key, fn) => ({ ...sources, [key]: fn(sources[key]) });
-check('self-test: an uncounted queue is caught', judge(with_('check', (c) => mut(c, /\(try\? await offlineStore\.pendingSetlistOps\(\)\.count\) \?\? 0/, '0'))).length > 0);
+check('self-test: an uncounted queue is caught', judge(with_('check', (c) => mut(c, /do \{ setlists = try await offlineStore\.pendingSetlistOps\(\)\.count \} catch \{ setlists = 0; couldNotCount = true \}/, 'let setlists = 0'))).length > 0);
+check('self-test: counting a queue with try? (unreadable = 0) is caught', judge(with_('check', (c) => mut(c, /do \{ favourites = try await offlineStore\.pendingFavoriteOps\(\)\.count \} catch \{ favourites = 0; couldNotCount = true \}/, 'favourites = (try? await offlineStore.pendingFavoriteOps().count) ?? 0'))).length > 0);
+check('self-test: an unreadable queue that does not set couldNotCount is caught', judge(with_('check', (c) => mut(c, /catch \{ setlists = 0; couldNotCount = true \}/, 'catch { setlists = 0 }'))).length > 0);
+check('self-test: asking only when the total is above zero is caught', judge(with_('check', (c) => mut(c, /if unsent\.needsAsking \{/, 'if unsent.total > 0 {'))).length > 0);
 check('self-test: a missing early return is caught', judge(with_('check', (c) => mut(c, /guard appStatus\?\.profileSync == true[^\n]*\n/, '\n'))).length > 0);
 check('self-test: a check placed after the controller call is caught', judge(with_('vmAll', (c) =>
     mut(mut(c, /try await ensureNothingUnsent\(discardUnsent: discardUnsent\)(\s*)do \{(\s*)try await sessionController\.signOut\(\)/, 'do {$2try await sessionController.signOut()'),

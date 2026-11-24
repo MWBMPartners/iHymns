@@ -30,14 +30,21 @@ public struct UnsentChanges: Sendable, Equatable {
     public let favourites: Int
     public let setlists: Int
     public let settings: Int
+    /// True when a queue could not be read (the offline store failed), so the real number is UNKNOWN.
+    /// An unknown count is treated as "ask the person", never as "nothing waiting".
+    public let couldNotCount: Bool
 
-    public init(favourites: Int, setlists: Int, settings: Int) {
+    public init(favourites: Int, setlists: Int, settings: Int, couldNotCount: Bool = false) {
         self.favourites = favourites
         self.setlists = setlists
         self.settings = settings
+        self.couldNotCount = couldNotCount
     }
 
     public var total: Int { favourites + setlists + settings }
+
+    /// Should sign-out stop and ask? Yes when something is waiting, or when we cannot tell.
+    public var needsAsking: Bool { total > 0 || couldNotCount }
 
     public static let none = UnsentChanges(favourites: 0, setlists: 0, settings: 0)
 }
@@ -51,7 +58,7 @@ public struct SignOutBlockedByUnsentChanges: Error, Equatable {
 }
 
 extension AppRootViewModel {
-    /// Sends what is waiting, then counts what is still unsent. `.none` when the account sync is
+    /// Sends what is waiting, then counts what is still unsent (a queue that cannot be read sets `couldNotCount`). `.none` when the account sync is
     /// off here (the older sign-out then runs unchanged) or when signed out.
     ///
     /// ELI5: "Try to save everything first. What could not be saved?"
@@ -60,16 +67,20 @@ extension AppRootViewModel {
         await flushPendingFavoriteOps()
         await flushPendingSetlistOps()
         await syncProfileSettings()
-        let favourites = (try? await offlineStore.pendingFavoriteOps().count) ?? 0
-        let setlists = (try? await offlineStore.pendingSetlistOps().count) ?? 0
+        // A queue that cannot be read is "unknown", not "zero": zero would let a sign-out wipe changes we never counted.
+        var couldNotCount = false
+        let favourites: Int
+        do { favourites = try await offlineStore.pendingFavoriteOps().count } catch { favourites = 0; couldNotCount = true }
+        let setlists: Int
+        do { setlists = try await offlineStore.pendingSetlistOps().count } catch { setlists = 0; couldNotCount = true }
         let settings = currentUser.map { profileSync.pendingCount(userId: $0.id) } ?? 0
-        return UnsentChanges(favourites: favourites, setlists: setlists, settings: settings)
+        return UnsentChanges(favourites: favourites, setlists: setlists, settings: settings, couldNotCount: couldNotCount)
     }
 
     /// Throws `SignOutBlockedByUnsentChanges` when there is unsent data and the caller did not say to discard it.
     func ensureNothingUnsent(discardUnsent: Bool) async throws {
         guard !discardUnsent else { return }
         let unsent = await prepareSignOut()
-        if unsent.total > 0 { throw SignOutBlockedByUnsentChanges(unsent: unsent) }
+        if unsent.needsAsking { throw SignOutBlockedByUnsentChanges(unsent: unsent) }
     }
 }

@@ -174,4 +174,13 @@ struct AppRootViewModelSignOutGuardTests {
             #expect(await viewModel.prepareSignOut() == .none)
         }
     }
+
+    @Test("An unreadable queue counts as unknown: it asks, where a count of zero would not")
+    func unknownCountMeansAsk() {
+        #expect(UnsentChanges.none.needsAsking == false)
+        #expect(UnsentChanges(favourites: 0, setlists: 0, settings: 0, couldNotCount: true).needsAsking)
+        #expect(UnsentChanges(favourites: 0, setlists: 1, settings: 0).needsAsking)
+        // A count with the flag unset is unchanged from before (the older equality used in the other tests).
+        #expect(UnsentChanges(favourites: 0, setlists: 1, settings: 0) == UnsentChanges(favourites: 0, setlists: 1, settings: 0, couldNotCount: false))
+    }
 }
