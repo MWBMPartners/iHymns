@@ -114,6 +114,29 @@ extension OfflineStore {
         }
     }
 
+    /// The ids of every setlist this person deleted that the server has not
+    /// yet been told about — the list the sync sends as `deleted` (set-list
+    /// sync protocol 2, #1661).
+    ///
+    /// ELI5: "Which setlists did I delete that the server still has to hear
+    /// about?"
+    ///
+    /// DETAILED: Read straight from the pending queue's `delete` rows. Under
+    /// protocol 2 a deletion is only ever a stated deletion (a setlist that is
+    /// merely missing from a sync means nothing), so this queue is now the
+    /// ONLY thing that can make the server delete a setlist. Oldest first, so
+    /// the order is stable for tests.
+    public func pendingDeletedSetlistIds() async throws -> [String] {
+        let deleteWord = PendingSetlistOperationKind.delete.rawValue
+        let rows = try await dbQueue.read { database in
+            try PendingSetlistOp
+                .filter(Column("operation") == deleteWord)
+                .order(Column("queuedAt"))
+                .fetchAll(database)
+        }
+        return rows.map(\.setlistId)
+    }
+
     /// Removes one queued change once it has been successfully replayed.
     public func dequeuePendingSetlistOp(setlistId: String) async throws {
         _ = try await dbQueue.write { database in

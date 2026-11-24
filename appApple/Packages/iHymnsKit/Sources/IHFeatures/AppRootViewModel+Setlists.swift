@@ -18,13 +18,14 @@
 // per-song `favorites_sync` (merge) / `favorites_remove` endpoint pair, so
 // `toggleFavorite` can sync ONE song's change in isolation. Setlists have NO
 // such per-item endpoint — the real API (`user_setlists_sync`) only accepts
-// a BULK array, and only its `.replace` mode can express a deletion (an
-// absent setlist IS the deletion signal — `Endpoint.setlistsSync`'s own
-// header). So EVERY mutation below funnels through the shared
+// a BULK array. A deletion is stated in that same request: since set-list
+// sync protocol 2 (#1661) the request carries a `deleted` list of ids, and a
+// setlist that is merely missing from the array no longer means "deleted".
+// So EVERY mutation below funnels through the shared
 // `pushCurrentSetlistsToServer()`/`persistAndSync(touchedSetlistId:operation:)`
 // pair: apply the optimistic local edit to `setlists`, persist it, then
 // attempt to push the device's WHOLE current `setlists` array (which already
-// reflects every applied local edit, queued or not) under `mode: .replace` —
+// reflects every applied local edit, queued or not) plus the queued deletes —
 // on success that one call satisfies every previously-queued change too, not
 // just this one, so the ENTIRE pending queue clears in one shot rather than
 // row-by-row (see `CachedSetlist.swift`'s `PendingSetlistOp` header for the
@@ -202,6 +203,16 @@ extension AppRootViewModel {
     ///
     /// ELI5: "I just changed this setlist locally — save that, then tell the
     /// server everything about all my setlists (or remember to, later)."
+    ///
+    /// DETAILED (set-list sync protocol 2, #1661): a DELETE is now queued
+    /// BEFORE the push, not only after a failure. Under protocol 2 the server
+    /// deletes a setlist only when its id is named in the request's `deleted`
+    /// list, and that list is read from this queue
+    /// (`OfflineStore.pendingDeletedSetlistIds()`), so the row has to exist
+    /// when the push builds its request. A successful push clears the whole
+    /// queue again, so the end state is the same as before; only the order
+    /// changed. An upsert needs no such thing (the setlist is in the payload),
+    /// so it is still queued only when the push fails.
     private func persistAndSync(touchedSetlistId: String, operation: PendingSetlistOperationKind) async {
         let snapshot = setlists.first { $0.id == touchedSetlistId }
         if operation == .upsert, let snapshot {
@@ -210,30 +221,65 @@ extension AppRootViewModel {
             try? await offlineStore.deleteSetlistLocally(touchedSetlistId)
         }
 
+        let pendingOp = PendingSetlistOp(setlistId: touchedSetlistId, operation: operation, snapshot: snapshot)
+        if operation == .delete {
+            try? await offlineStore.enqueuePendingSetlistOp(pendingOp)
+        }
+
         let succeeded = await pushCurrentSetlistsToServer()
-        if !succeeded {
-            let pendingOp = PendingSetlistOp(setlistId: touchedSetlistId, operation: operation, snapshot: snapshot)
+        if !succeeded && operation != .delete {
             try? await offlineStore.enqueuePendingSetlistOp(pendingOp)
         }
     }
 
     /// Attempts to push the device's CURRENT full `setlists` array to the
-    /// server under `mode: .replace` (the client's list IS authoritative —
-    /// see `Endpoint.setlistsSync`'s header on why `.replace`, not `.merge`,
-    /// is the only mode that can express a deletion). On success, reconciles
-    /// the local cache to the server's own returned list AND clears the
-    /// ENTIRE pending queue (this one call satisfies every row in it, per
-    /// this file's header). A no-op (returns `false`) while signed out.
+    /// server under `mode: .replace`, speaking set-list sync protocol 2
+    /// (#1661, #1675): it names the setlists deleted on purpose (`deleted`,
+    /// always sent, even when empty) and quotes the server's last `syncedAt`
+    /// reading (`since`). On success it absorbs the whole answer (see
+    /// `absorbSetlistSyncResult(_:userId:)`) and clears the ENTIRE pending
+    /// queue (this one call satisfies every row in it, per this file's
+    /// header). A no-op (returns `false`) while signed out.
     ///
     /// - Returns: Whether the push succeeded.
     @discardableResult
     private func pushCurrentSetlistsToServer() async -> Bool {
         guard await isSignedInNow() else { return false }
-        guard let authoritative = try? await apiClient.syncSetlists(setlists, mode: .replace) else { return false }
-        try? await offlineStore.replaceSetlists(with: authoritative)
-        setlists = (try? await offlineStore.allSetlists()) ?? authoritative
-        try? await offlineStore.clearAllPendingSetlistOps()
+        let userId = currentUser?.id
+        let since = userId.flatMap { setlistSyncStateStore.syncedAt(forUser: $0) }
+        let deleted = (try? await offlineStore.pendingDeletedSetlistIds()) ?? []
+        guard let result = try? await apiClient.syncSetlists(setlists, mode: .replace, since: since, deleted: deleted) else {
+            return false
+        }
+        await absorbSetlistSyncResult(result, userId: userId)
         return true
+    }
+
+    /// Takes in everything a successful sync answered with.
+    ///
+    /// ELI5: "The server answered — match our notebook to its list, forget
+    /// what was deleted elsewhere, note anything it refused, remember the time
+    /// stamp for next time, and clear the to-do queue."
+    ///
+    /// DETAILED: The server's `setlists` are authoritative, so the local cache
+    /// is replaced by them first. Each tombstoned id is then deleted locally
+    /// too; with a wholesale replace that is normally a no-op, but it keeps a
+    /// tombstoned setlist gone even if the replace ever stops being total.
+    /// `syncedAt` is stored only when the server gave one: a paused site
+    /// answers read-only with none, and the reading we already hold must
+    /// survive that. Conflicts are published for the screens; the refused
+    /// edit is already undone because the server's copy is in `setlists`.
+    private func absorbSetlistSyncResult(_ result: SetlistSyncResult, userId: Int?) async {
+        try? await offlineStore.replaceSetlists(with: result.setlists)
+        for tombstone in result.tombstones {
+            try? await offlineStore.deleteSetlistLocally(tombstone.id)
+        }
+        setlists = (try? await offlineStore.allSetlists()) ?? result.setlists
+        setlistConflicts = result.conflicts
+        if let userId, let syncedAt = result.syncedAt {
+            setlistSyncStateStore.record(syncedAt, forUser: userId)
+        }
+        try? await offlineStore.clearAllPendingSetlistOps()
     }
 }
 

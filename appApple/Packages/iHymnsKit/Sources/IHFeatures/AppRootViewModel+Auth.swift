@@ -143,6 +143,11 @@ extension AppRootViewModel {
     /// re-reads the now-empty cache rather than silently no-op'ing on its
     /// stale "already loaded" guard.
     private func resetLocalUserState() async {
+        // Set-list sync protocol 2 (#1661): forget this person's "last synced"
+        // reading BEFORE `currentUser` is cleared (it is the key), so the next
+        // account that signs in starts from a clean first sync.
+        if let userId = currentUser?.id { setlistSyncStateStore.clear(forUser: userId) }
+        setlistConflicts = []
         currentUser = nil
         favorites = []
         hasLoadedFavoritesFromCache = false
