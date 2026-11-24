@@ -382,6 +382,7 @@ password store still signs in once.
 | H6 web Devices card: Sign out everywhere, Turn off | eedcf9db | done |
 | H7 privacy page and its promise checks | a05ec47e | done |
 | Docs (design file, rule #55, wiki, `.OpenAI/`, `CHANGELOG.md`; no `WHATS-NEW.md` bullets) | the commit that adds this table | done |
+| Security review fixes (Opus review of the whole PR 3a branch) | see the table below | done |
 | Phase I (Apple app) | not started | not in this PR |
 
 Deviations from the plan (PR 3a):
@@ -392,6 +393,25 @@ Deviations from the plan (PR 3a):
 - H6: the controls and the notes ("Added automatically", "Older app version...") show only where `config.deviceSignin.enabled` is true; "Paired TV" shows always.
 - H7: the privacy sentences are tied to the code (the button words are exported from `devices.js`; 30 and 180 are compared to the real constants).
 - The owner's decision A (key on by default for Apple when the switch is on) is the server default: enrol makes a key unless the request says `createEnrolKey: false`.
+
+### Security review fixes (2026-11-24)
+
+| # | Finding | Commit | Result |
+|---|---|---|---|
+| 1 | A browser sign-in could pass as the shared older-app sign-in | bcffc5e4 | fixed: the website sends `platform: 'web'` everywhere it signs in (guard derives the call sites from the tree); enrol and key-create also refuse requests carrying browser-only headers (`browser_request`); the Devices note no longer calls a browser an older Apple app; docs corrected |
+| 2 | A renewal racing a sign-out brought an ended row back | 14419453 | fixed in both places (`api.php`, `manage/includes/auth.php`); test runs the real statements |
+| 3+4 | A key outlived a single device's sign-out; the sweep could outlive a note | abf5bed6 | fixed (owner decision: cancel the keys): ending a device's own sign-in cancels the person's keys; wording on the Devices card, privacy page and docs, each checked against the code |
+| 5 | Two sign-ins for one install could delete each other | 8b9e8efd | fixed with a named lock around insert plus replacement (not the suggested user-row lock, which would nest inside callers' transactions) |
+| 6 | The one-door guard let "select all hashes, delete by list" through | ae497f9a | fixed: the sign-out function refuses more than 20 hashes; the guard bans list writes elsewhere and any function that reads every hash and calls it |
+| 7 | Password change kept the shared token; untied push rows survived | 508db537 | cheap part done (untied push rows go on a password change); the shared-token half is a documented limit, see follow-ups |
+| 8 | 401 bodies had no reason; docs said Android 400 | ab1b4f09 | fixed; a check compares every reason word in code and docs |
+
+The review's own premise for finding 1 was partly wrong: the server already stores `platform = 'web'` for a browser it recognises (the #1975 User-Agent fallback), so a recognised browser never had a NULL platform. The gap was real for browsers the server cannot name (an unusual in-app browser) and is now closed from both sides.
+
+Follow-ups from the review (NOT done):
+- A device whose sign-in only RAN OUT (30 days unused) leaves no sign-out to cancel keys; the 180-day note is its only protection, and a key kept alive by other devices can outlive that note. Fix when needed: keep the note while the person has a live key made before it ended.
+- A password change made FROM the shared older-app sign-in keeps that sign-in for every Apple device that holds it, and those can enrol again. Needs the phase I app to stop using the shared token.
+- Finding 3's rule for a key made AFTER a device was signed out: the lost phone could receive it through iCloud Keychain, and a fresh install id bypasses the note anyway. The help text already says to remove a lost device from the iCloud account.
 
 Follow-ups (NOT done): the whole Apple phase (I1 to I6); the Opus review of H1, H3, H4, H5; the live two-device checks in section 5; the owner steps in section 6 (tick `device_signin_channels` per channel; production before the first TestFlight upload); the `WHATS-NEW.md` bullets once production is ticked.
 
