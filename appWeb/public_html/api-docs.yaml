@@ -5997,7 +5997,7 @@ paths:
           description: "`bearer_required`, `invalid_install_id` or `invalid_platform`"
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "401":
-          description: Not authenticated (the sign-in is dead)
+          description: "`not_authenticated` (no live sign-in at all) or `token_dead` (the bearer sign-in is not live)"
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "403":
           description: "`csrf`, `browser_request` (the request carries browser-only headers), `install_mismatch` (the sign-in belongs to another install), `not_a_shared_app_sign_in` (a browser or admin-page sign-in), or `install_signed_out` (this install was signed out and must sign in by hand)"
@@ -6006,8 +6006,8 @@ paths:
           description: "`device_signin_disabled`, `device_signin_not_ready` or `already_enrolled`"
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "429":
-          description: Rate limited
-          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+          description: "Rate limited. The status is the contract: the shared limiter's body carries only `error`, no `reason`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   /api.php?action=auth_enrol_key_create:
     post:
@@ -6043,7 +6043,7 @@ paths:
           description: "`bearer_required`"
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "401":
-          description: Not authenticated
+          description: "`not_authenticated` (no live sign-in), or `token_dead` (the bearer sign-in is not live)"
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "403":
           description: "`csrf`, `browser_request`, `device_token_required` or `enrol_key_platform_unsupported`"
@@ -6052,8 +6052,8 @@ paths:
           description: "`device_signin_disabled` or `device_signin_not_ready`"
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "429":
-          description: Rate limited
-          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+          description: "Rate limited. The status is the contract: the shared limiter's body carries only `error`, no `reason`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   /api.php?action=auth_enrol_key_redeem:
     post:
@@ -6091,7 +6091,7 @@ paths:
               properties:
                 enrolKey:        { type: string, description: "`ihek1_` followed by 64 hex characters." }
                 deviceInstallId: { type: string }
-                platform:        { type: string, enum: [apple, android] }
+                platform:        { type: string, enum: [apple, android], description: "Only `apple` can hold a key today. `android` passes the request check (it is a real app platform) but no key can exist for it, so it is answered `401 enrol_key_invalid`, not `400 invalid_platform`. `web` is refused `400 invalid_platform`." }
                 deviceName:      { type: string }
                 appVersion:      { type: string }
       responses:
@@ -6119,7 +6119,7 @@ paths:
           description: "`device_signin_disabled` or `device_signin_not_ready`"
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "429":
-          description: Rate limited
+          description: "Rate limited: per address (body has only `error`) or per person once the key named one (body adds the reason `rate_limited`). The status is the contract."
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
 
   /api.php?action=auth_enrol_keys_revoke:
@@ -6149,14 +6149,14 @@ paths:
                 properties:
                   revoked: { type: integer }
         "401":
-          description: Not authenticated
+          description: "`not_authenticated` (no live sign-in), or `token_dead` (the bearer sign-in is not live)"
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "403":
           description: "`csrf`"
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "429":
-          description: Rate limited
-          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+          description: "Rate limited. The status is the contract: the shared limiter's body carries only `error`, no `reason`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   /api.php?action=auth_signout_everywhere:
     post:
@@ -6201,14 +6201,14 @@ paths:
                   enrolKeysRevoked: { type: integer }
                   keptCurrent:      { type: boolean }
         "401":
-          description: Not authenticated (a client treats this as already signed out)
+          description: "`not_authenticated` (a client treats this as already signed out)"
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "403":
           description: "`csrf`"
           content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
         "429":
-          description: Rate limited
-          content: { application/json: { schema: { $ref: "#/components/schemas/ReasonError" } } }
+          description: "Rate limited. The status is the contract: the shared limiter's body carries only `error`, no `reason`."
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   /api.php?action=device_rename:
     post:

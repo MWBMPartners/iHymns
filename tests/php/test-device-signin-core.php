@@ -59,6 +59,55 @@ chk('the emailed-link route passes the install id through completeEmailLogin int
 chk('the TV pairing route passes the install id (and only that) to the mint',
     preg_match("/apiTokenMint\(\\\$db, \(int\)\\\$userId, null, 'device_code', \\\$expiresAtTs, apiTokenCleanInstallId\(/", $api) === 1);
 
+echo "part 1b (review finding 8): the reason words the five actions can answer are exactly the ones api-docs.yaml lists\n";
+/* Both sides are READ from the tree, not typed (rule #34/#35). Code side: every `reason` word in the device sign-in core, the switch's own two words,
+   and the five api.php cases. Docs side: every snake_case word in backticks (and `csrf`) inside the five path items. */
+$dsSrc = code($web . '/includes/device_signin.php');
+$gateSrc = code($web . '/includes/device_signin_gate.php');
+$codeReasons = [];
+foreach ([$dsSrc] as $src) {
+    if (preg_match_all("/deviceSigninRefusal\(\s*\d+\s*,\s*'([a-z_]+)'/", $src, $m1)) { $codeReasons = array_merge($codeReasons, $m1[1]); }
+    if (preg_match_all("/'reason'\s*=>\s*'([a-z_]+)'/", $src, $m2)) { $codeReasons = array_merge($codeReasons, $m2[1]); }
+}
+if (preg_match_all("/const DEVICE_SIGNIN_(?:DISABLED|NOT_READY)_REASON\s*=\s*'([a-z_]+)'/", $gateSrc, $m3)) { $codeReasons = array_merge($codeReasons, $m3[1]); }
+$acts = ['auth_device_enrol', 'auth_enrol_key_create', 'auth_enrol_key_redeem', 'auth_enrol_keys_revoke', 'auth_signout_everywhere'];
+$apiBlocks = '';
+foreach ($acts as $act) {
+    $from = strpos($api, "case '$act': {");
+    $to = $from === false ? false : strpos($api, "\n        }\n", $from);
+    $blk = ($from === false || $to === false) ? '' : substr($api, $from, $to - $from);
+    chk("found the api.php case for $act", $blk !== '');
+    if (preg_match_all("/'reason'\s*=>\s*'([a-z_]+)'/", $blk, $m4)) { $codeReasons = array_merge($codeReasons, $m4[1]); }
+    /* every 401 this action sends says why */
+    preg_match_all("/sendJson\(\[([^\]]*)\],\s*401\)/", $blk, $m401);
+    $noReason = array_filter($m401[1], fn($inner) => !str_contains($inner, "'reason'"));
+    chk("$act: every 401 it sends carries a reason word (" . count($m401[1]) . ' found)', $noReason === [], implode(' | ', $noReason));
+    $apiBlocks .= $blk;
+}
+$codeReasons = array_values(array_unique($codeReasons));
+$yamlAll = code($web . '/api-docs.yaml');
+$docsReasons = [];
+foreach ($acts as $act) {
+    $from = strpos($yamlAll, "  /api.php?action=$act:");
+    $to = $from === false ? false : strpos($yamlAll, "\n  /api.php?action=", $from + 10);
+    $blk = $from === false ? '' : substr($yamlAll, $from, ($to === false ? 4000 : $to - $from));
+    chk("api-docs.yaml has a path item for $act", $blk !== '');
+    $words = [];
+    if (preg_match_all('/`([a-z]+(?:_[a-z]+)+)`/', $blk, $mw)) { $words = array_merge($words, $mw[1]); }
+    if (str_contains($blk, '`csrf`')) { $words[] = 'csrf'; }
+    /* not reasons: action names, the switch's name, the how-made word and the request fields */
+    $words = array_values(array_unique(array_filter($words, fn($w) => !str_starts_with($w, 'auth_') && !in_array($w, ['device_signin_channels'], true))));
+    $docsReasons[$act] = $words;
+}
+$allDocs = array_values(array_unique(array_merge(...array_values($docsReasons))));
+$undocumented = array_values(array_diff($codeReasons, $allDocs));
+$unreal = array_values(array_diff($allDocs, $codeReasons));
+chk('every reason word the code can answer is listed in api-docs.yaml (missing: ' . implode(', ', $undocumented) . ')', $undocumented === [] && count($codeReasons) >= 14, implode(',', $codeReasons));
+chk('every reason word api-docs.yaml lists for these actions is one the code really answers (not real: ' . implode(', ', $unreal) . ')', $unreal === []);
+chk('the redeem docs say Android is answered 401 enrol_key_invalid (a key can only exist for Apple), as the code does',
+    stripos(preg_replace('/\s+/', ' ', $yamlAll), 'answered `401 enrol_key_invalid`, not `400 invalid_platform`') !== false && ACCOUNT_ENROL_KEY_PLATFORMS === ['apple']
+    && deviceSigninParseDevice(['deviceInstallId' => 'install-ANDR-00001', 'platform' => 'android'])['ok'] === true);
+
 $dsn = getenv('IHYMNS_TEST_DSN') ?: '';
 $hh = '127.0.0.1'; $pt = 3306; $us = 'root'; $pw = '';
 foreach (explode(';', $dsn) as $kv) {

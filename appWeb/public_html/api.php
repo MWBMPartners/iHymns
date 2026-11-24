@@ -6242,7 +6242,7 @@ if ($action !== null) {
             /* Security review finding 1: a request stamped by a browser can never be a native app asking for its own sign-in. */
             if (deviceSigninRequestLooksLikeBrowser($_SERVER)) { $bx = deviceSigninBrowserRefusal(); sendJson($bx['body'], $bx['status']); break; }
             $authUser = getAuthenticatedUser();
-            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.', 'reason' => 'not_authenticated'], 401); break; }
             $userId = (int)$authUser['Id'];
             $db = getDbMysqli();
             if (!deviceSigninEnabledHere()) { sendJson(deviceSigninDisabledBody(), 409); break; }
@@ -6278,7 +6278,7 @@ if ($action !== null) {
             /* Security review finding 1: a request stamped by a browser can never be a native app asking for its own sign-in. */
             if (deviceSigninRequestLooksLikeBrowser($_SERVER)) { $bx = deviceSigninBrowserRefusal(); sendJson($bx['body'], $bx['status']); break; }
             $authUser = getAuthenticatedUser();
-            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.', 'reason' => 'not_authenticated'], 401); break; }
             $userId = (int)$authUser['Id'];
             $db = getDbMysqli();
             if (!deviceSigninEnabledHere()) { sendJson(deviceSigninDisabledBody(), 409); break; }
@@ -6333,7 +6333,7 @@ if ($action !== null) {
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_signin.php';
             if (!validateCsrfRequest(null)) { sendJson(['error' => 'Cross-origin request rejected.', 'reason' => 'csrf'], 403); break; }
             $authUser = getAuthenticatedUser();
-            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.', 'reason' => 'not_authenticated'], 401); break; }
             $userId = (int)$authUser['Id'];
             checkRateLimit('auth_enrol_keys_revoke', '', 10, 3600, true, $userId);
             recordRateLimitHit('auth_enrol_keys_revoke', rateLimitKey('', $userId));
@@ -6353,7 +6353,7 @@ if ($action !== null) {
             if (!is_array($body)) { $body = []; }
             if (!validateCsrfRequest(null)) { sendJson(['error' => 'Cross-origin request rejected.', 'reason' => 'csrf'], 403); break; }
             $authUser = getAuthenticatedUser();
-            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.', 'reason' => 'not_authenticated'], 401); break; }
             $userId = (int)$authUser['Id'];
             checkRateLimit('auth_signout_everywhere', '', 10, 3600, true, $userId);
             recordRateLimitHit('auth_signout_everywhere', rateLimitKey('', $userId));
