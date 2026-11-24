@@ -81,7 +81,9 @@ class FakeDb extends \mysqli
     public bool $throwOnQuery = false;
     public array $userAudit = [];   /* user id => audit rows still holding personal details */
     public function __construct(public array $tables, public array $cols, public int $search, public int $audit) {}
+    #[\ReturnTypeWillChange]
     public function prepare(string $q): mixed { $this->log[] = ['prepare', $q]; return new FakeStmt($this, $q); }
+    #[\ReturnTypeWillChange]
     public function query(string $q, int $m = 0): mixed {
         $this->log[] = ['query', $q];
         if (str_starts_with($q, 'SELECT COUNT(*) FROM tblSearchQueries')) { return new FakeRes([[$this->search]]); }

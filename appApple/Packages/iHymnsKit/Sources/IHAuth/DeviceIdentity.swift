@@ -15,7 +15,8 @@
 // phone restored from a backup comes back with NO install id, makes a new one,
 // and gets its own sign-in rather than cloning the old phone's. It identifies
 // an install, not a person: it is random, holds nothing personal, and is sent
-// only to the iHymns server with a sign-in. The server accepts 8 to 64 letters,
+// only to the iHymns server: with a sign-in, and (since 2026-11-24) as the
+// anonymous song-view report's per-device limit key. The server accepts 8 to 64 letters,
 // digits and dashes (`apiTokenCleanInstallId()` in `includes/api_tokens.php`);
 // a lowercase UUID string (36 characters) fits that.
 import Foundation

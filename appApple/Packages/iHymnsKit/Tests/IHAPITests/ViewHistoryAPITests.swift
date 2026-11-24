@@ -18,18 +18,45 @@ import IHAPITestSupport
 @Suite("View history endpoints and decoding")
 struct ViewHistoryEndpointTests {
 
-    @Test("song_view is a signed-in POST carrying song_id and platform apple")
+    @Test("song_view is an optional-sign-in POST carrying song_id and platform apple, and no device_id when none is given")
     func buildsSongView() throws {
         let songId = try #require(SongID(rawValue: "MP-1008"))
         let endpoint = try Endpoint.songView(songId: songId)
         #expect(endpoint.action == "song_view")
         #expect(endpoint.httpMethod == "POST")
-        #expect(endpoint.requiresAuth == true)
+        #expect(endpoint.requiresAuth == false)
+        #expect(endpoint.optionalAuth == true)
         let jsonBody = try #require(endpoint.httpBody)
         let jsonObject = try JSONSerialization.jsonObject(with: jsonBody)
         let json = try #require(jsonObject as? [String: Any])
         #expect(json["song_id"] as? String == "MP-1008")
         #expect(json["platform"] as? String == "apple")
+        #expect(json["device_id"] == nil)
+    }
+
+    @Test("song_view carries the install id as device_id when one is given (anonymous)")
+    func buildsAnonymousSongView() throws {
+        let songId = try #require(SongID(rawValue: "MP-1008"))
+        let endpoint = try Endpoint.songView(songId: songId, deviceId: "install-1234-abcd")
+        let jsonBody = try #require(endpoint.httpBody)
+        let jsonObject = try JSONSerialization.jsonObject(with: jsonBody)
+        let json = try #require(jsonObject as? [String: Any])
+        #expect(json["device_id"] as? String == "install-1234-abcd")
+        #expect(json["song_id"] as? String == "MP-1008")
+    }
+
+    @Test("optionalAuth sends the bearer when there is one and builds without one; requiresAuth stays strict")
+    func optionalAuthRequestShape() throws {
+        let songId = try #require(SongID(rawValue: "MP-1008"))
+        let endpoint = try Endpoint.songView(songId: songId)
+        let withToken = APIClient.makeURLRequest(for: endpoint, in: .dev, bearerToken: "t")
+        #expect(withToken.value(forHTTPHeaderField: "Authorization") == "Bearer t")
+        let anonymous = APIClient.makeURLRequest(for: endpoint, in: .dev)
+        #expect(anonymous.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(anonymous.httpMethod == "POST")
+        let plain = Endpoint(action: "songs_index")
+        #expect(plain.optionalAuth == false)
+        #expect(APIClient.makeURLRequest(for: plain, in: .dev, bearerToken: "t").value(forHTTPHeaderField: "Authorization") == nil)
     }
 
     @Test("song_history and my_most_viewed are signed-in GETs; the period is sent only when asked for")
@@ -87,6 +114,28 @@ struct ViewHistoryNetworkedTests {
     private static func response(for request: URLRequest, status: Int) -> HTTPURLResponse {
         // swiftlint:disable:next force_unwrapping
         HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+    }
+
+    @Test("songView works with no sign-in: no Authorization header, still a POST, and a 429 is thrown for the caller to ignore")
+    func songViewAnonymous() async throws {
+        try await MockTransportLock.shared.withLock {
+            let seen = LockedBox<URLRequest>()
+            MockURLProtocol.requestHandler = { request in
+                seen.set(request)
+                return (Self.response(for: request, status: 200), Data(#"{"ok":true,"data":{"ok":true}}"#.utf8))
+            }
+            defer { MockURLProtocol.requestHandler = nil }
+            let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
+            let songId = try #require(SongID(rawValue: "MP-1008"))
+
+            try await client.songView(songId: songId, deviceId: "install-1234-abcd")
+            #expect(seen.current?.url?.query?.contains("action=song_view") == true)
+            #expect(seen.current?.httpMethod == "POST")
+            #expect(seen.current?.value(forHTTPHeaderField: "Authorization") == nil)
+
+            MockURLProtocol.requestHandler = { request in (Self.response(for: request, status: 429), Data()) }
+            await #expect(throws: APIError.self) { try await client.songView(songId: songId, deviceId: "install-1234-abcd") }
+        }
     }
 
     @Test("songView POSTs signed in and a 429 surfaces as .rateLimited for the caller to ignore")

@@ -2332,7 +2332,15 @@ if ($action !== '') {
                             $singleConn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, (int)DB_PORT);
                             $singleConn->set_charset('utf8mb4');
                         } catch (\Throwable) { $singleConn = null; }
-                        if (_migVerify_stillPending($singleConn, $singleProbe) === true) {
+                        /* A "report only" (dry-run) run of a dryRunnable manual migration changes
+                           nothing on purpose, so its card is SUPPOSED to stay pending. Calling that
+                           an error (the red "Error" badge) made a correct dry run look broken.
+                           Only a run that was meant to APPLY (confirm=1, or a migration with no dry
+                           mode) is checked. */
+                        $singleWasDryRun = !empty($migrationDryRunnable[$action]) && (($_GET['confirm'] ?? '') !== '1');
+                        if ($singleWasDryRun) {
+                            echo "\nDry run only: nothing was changed, so this card stays pending. Run it again with &confirm=1 to apply.\n";
+                        } elseif (_migVerify_stillPending($singleConn, $singleProbe) === true) {
                             $actionSuccess = false;
                             echo "\n⚠ This migration ran but is STILL PENDING — its objects were not created"
                                . " (the script caught an internal error above). Nothing was applied; see the"

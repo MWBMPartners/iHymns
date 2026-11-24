@@ -48,11 +48,11 @@ if (is_file($path)) {
 
 $summary = [];
 foreach ($ours as [$file, $line, $msg]) {
-    echo "::error file={$file},line={$line}::PHP deprecation in our code: {$msg}\n";
+    echo "::error file={$file},line={$line}::PHP deprecation in our code ({$file}:{$line}): {$msg}\n";
     $summary[] = "- **our code** `{$file}:{$line}` — {$msg}";
 }
 foreach ($theirs as [$file, $line, $msg]) {
-    echo "::warning file={$file},line={$line}::PHP deprecation in third-party code (not failing): {$msg}\n";
+    echo "::warning file={$file},line={$line}::PHP deprecation in third-party code (not failing) ({$file}:{$line}): {$msg}\n";
     $summary[] = "- third-party `{$file}:{$line}` — {$msg}";
 }
 echo count($ours) . " deprecation(s) in our code, " . count($theirs) . " in third-party code.\n";

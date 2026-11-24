@@ -81,13 +81,23 @@ public struct Endpoint: Sendable, Equatable {
     /// word, never the server's sentence (rule #35).
     public let capturesRefusalReason: Bool
 
+    /// "Send the sign-in if there is one, and carry on without it if there is not"
+    /// (the song-view report, 2026-11-24 owner decision). Defaults to `false`, so
+    /// every existing endpoint is byte-identical. It differs from `requiresAuth`
+    /// in one way only: `requiresAuth` refuses to build the request without a
+    /// token, this attaches the `Authorization` header when a token is held and
+    /// sends the request anonymously when it is not. An endpoint that needs a
+    /// person keeps using `requiresAuth`; the two are never both set.
+    public let optionalAuth: Bool
+
     public init(
         action: String,
         queryItems: [(name: String, value: String)] = [],
         requiresAuth: Bool = false,
         httpMethod: String = "GET",
         httpBody: Data? = nil,
-        capturesRefusalReason: Bool = false
+        capturesRefusalReason: Bool = false,
+        optionalAuth: Bool = false
     ) {
         self.action = action
         self.queryItems = queryItems
@@ -95,6 +105,7 @@ public struct Endpoint: Sendable, Equatable {
         self.httpMethod = httpMethod
         self.httpBody = httpBody
         self.capturesRefusalReason = capturesRefusalReason
+        self.optionalAuth = optionalAuth
     }
 
     /// `Equatable` is hand-written (rather than synthesized) only because
@@ -106,6 +117,7 @@ public struct Endpoint: Sendable, Equatable {
             && lhs.httpMethod == rhs.httpMethod
             && lhs.httpBody == rhs.httpBody
             && lhs.capturesRefusalReason == rhs.capturesRefusalReason
+            && lhs.optionalAuth == rhs.optionalAuth
             && lhs.queryItems.elementsEqual(rhs.queryItems, by: { $0.name == $1.name && $0.value == $1.value })
     }
 }

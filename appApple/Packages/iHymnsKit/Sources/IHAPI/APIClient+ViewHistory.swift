@@ -20,8 +20,8 @@ extension APIClient {
     ///
     /// - Throws: `.rateLimited` (callers ignore it), `.offline`, `.maintenance`,
     ///   `.unauthorized`, ...: every failure is the caller's to swallow.
-    public func songView(songId: SongID) async throws {
-        _ = try await performOnce(try Endpoint.songView(songId: songId))
+    public func songView(songId: SongID, deviceId: String? = nil) async throws {
+        _ = try await performOnce(try Endpoint.songView(songId: songId, deviceId: deviceId))
     }
 
     /// The person's recently viewed songs, newest first.

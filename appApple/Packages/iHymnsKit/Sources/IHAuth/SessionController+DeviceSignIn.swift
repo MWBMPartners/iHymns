@@ -53,6 +53,15 @@ extension SessionController {
         return DeviceSignInDetails.current(installId: installId)
     }
 
+    /// This install's random id, or `nil` in plain mode (no device sign-in support) or if it cannot be read.
+    ///
+    /// ELI5: "What is this device's name-tag, if it has one?" Used for the anonymous song-view
+    /// report's per-device limit; never throws.
+    public func installIdIfAvailable() async -> String? {
+        guard let support = deviceSignIn else { return nil }
+        return try? await support.deviceIdentity.installId()
+    }
+
     /// After a person signs in by hand: clear "signed out here", and (site
     /// switch on, automatic sign-in not turned off, no usable key yet) make a
     /// key for the person's other devices. Best effort: a sign-in never fails over a key.

@@ -724,20 +724,21 @@ jobs:
   # alpha; adding '8.6' to this matrix only ADDS a new check called "PHP 8.6"
   # and leaves those two names untouched.
   #
-  # PHP 8.6 — ADVISORY BY DEFAULT, ONE SWITCH TO ENFORCE (rule #53,
+  # PHP 8.6 — ENFORCED BY DEFAULT, ONE SWITCH TO RELAX (rule #53,
   # .claude/php86-readiness-plan.md section C)
   # -----------------------------------------------------------------------
-  # The 8.6 run can never turn the check red while the repository Actions
-  # variable PHP86_ENFORCE is unset (or anything other than the text "true").
-  # Every step that could fail carries
-  #     continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE != 'true' }}
+  # PHP 8.6 has been released (owner, 2026-11-24), so the 8.6 run now fails the
+  # check like 8.4 and 8.5 do. The old advisory mode is kept as an easy escape
+  # hatch: set the repository Actions variable PHP86_ENFORCE to the text "false"
+  # and the 8.6 steps stop turning the check red (delete the variable to enforce
+  # again). Every step that could fail carries
+  #     continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE == 'false' }}
   # (on the STEPS, not the job — a job-level continue-on-error still shows the
-  # check red, which would block merges once it is required). Set
-  # PHP86_ENFORCE to true and the same steps fail the check; delete the variable
-  # and it is advisory again. "Required" itself lives only in the branch ruleset
-  # (Settings > Rules > alpha > Require status checks); a workflow cannot make
-  # itself required. Advisory is never silent: the last step of the 8.6 run
-  # prints a ::warning:: naming every step that failed.
+  # check red, which would block merges once it is required). "Required" itself
+  # lives only in the branch ruleset (Settings > Rules > alpha > Require status
+  # checks); a workflow cannot make itself required, so "PHP 8.6" still has to be
+  # added there by the owner. Relaxed mode is never silent: the last step of the
+  # 8.6 run prints a ::warning:: naming every step that failed.
   # Extra 8.6-only steps: the deprecation trap (tools/ci/deprecation-trap.php,
   # loaded for every php process through auto_prepend_file) + report
   # (tools/ci/deprecation-report.php) + a compile-time deprecation lint.
@@ -802,7 +803,7 @@ jobs:
       - name: Setup PHP ${{ matrix.php }}
         id: setup
         uses: shivammathur/setup-php@v2
-        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE != 'true' }}
+        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE == 'false' }}
         with:
           php-version: ${{ matrix.php }}
           coverage: none
@@ -815,7 +816,7 @@ jobs:
       - name: Setup Node.js
         id: node
         if: steps.setup.outcome == 'success'
-        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE != 'true' }}
+        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE == 'false' }}
         uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -824,7 +825,7 @@ jobs:
       - name: Install npm dependencies
         id: npm
         if: steps.setup.outcome == 'success'
-        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE != 'true' }}
+        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE == 'false' }}
         run: npm ci
 
       # Same embedded-PHP-tag guard as the lint job — re-run per interpreter so
@@ -832,7 +833,7 @@ jobs:
       - name: Detect embedded PHP open tags in HTML comments / backticks
         id: embedded
         if: steps.setup.outcome == 'success'
-        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE != 'true' }}
+        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE == 'false' }}
         run: |
           echo "Scanning .php files for literal '<?' inside backticks or HTML comments..."
           MATCHES=$(grep -rnP '`[^`]*<\?|<!--[^>]*<\?' appWeb --include='*.php' || true)
@@ -846,7 +847,7 @@ jobs:
       - name: Lint PHP (php -l) on PHP ${{ matrix.php }}
         id: lint
         if: steps.setup.outcome == 'success'
-        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE != 'true' }}
+        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE == 'false' }}
         run: |
           echo "Running php -l on all appWeb PHP under $(php -r 'echo PHP_VERSION;')..."
           ERRORS=0
@@ -872,7 +873,7 @@ jobs:
       - name: All PHP test suites (PHP ${{ matrix.php }})
         id: tests
         if: steps.setup.outcome == 'success'
-        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE != 'true' }}
+        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE == 'false' }}
         env:
           IHYMNS_DEPRECATION_LOG: ${{ runner.temp }}/php86-deprecations.jsonl
         run: |
@@ -886,7 +887,7 @@ jobs:
       - name: PHP 8.6 compile-time deprecations (php -l)
         id: deprlint
         if: matrix.php == '8.6' && steps.setup.outcome == 'success'
-        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE != 'true' }}
+        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE == 'false' }}
         run: |
           BAD=0
           while IFS= read -r file; do
@@ -904,17 +905,17 @@ jobs:
       - name: PHP 8.6 deprecation report
         id: deprreport
         if: always() && matrix.php == '8.6' && steps.setup.outcome == 'success'
-        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE != 'true' }}
+        continue-on-error: ${{ matrix.php == '8.6' && vars.PHP86_ENFORCE == 'false' }}
         env:
           IHYMNS_DEPRECATION_LOG: ${{ runner.temp }}/php86-deprecations.jsonl
         run: php tools/ci/deprecation-report.php "$IHYMNS_DEPRECATION_LOG"
 
-      # Advisory must never mean silent: name every step that failed.
-      - name: PHP 8.6 advisory summary
+      # Relaxed mode must never mean silent: name every step that failed.
+      - name: PHP 8.6 summary
         if: always() && matrix.php == '8.6'
         env:
           STEPS_JSON: ${{ toJSON(steps) }}
-          ENFORCED: ${{ vars.PHP86_ENFORCE == 'true' }}
+          ENFORCED: ${{ vars.PHP86_ENFORCE != 'false' }}
         run: |
           FAILED=$(echo "$STEPS_JSON" | jq -r 'to_entries[] | select(.value.outcome == "failure") | .key' | paste -sd, -)
           if [ -z "$FAILED" ]; then
@@ -923,8 +924,8 @@ jobs:
             echo "::error::PHP 8.6 (enforced): failing steps: $FAILED"
             echo "PHP 8.6 (enforced) failing steps: $FAILED" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::warning::PHP 8.6 is advisory (PHP86_ENFORCE is not true) but these steps failed: $FAILED"
-            echo "PHP 8.6 advisory — failing steps: $FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::PHP 8.6 is relaxed (PHP86_ENFORCE is false) but these steps failed: $FAILED"
+            echo "PHP 8.6 relaxed — failing steps: $FAILED" >> "$GITHUB_STEP_SUMMARY"
           fi
 
   # ===========================================================================

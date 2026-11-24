@@ -719,9 +719,11 @@ function webPushEncrypt(
     }
     /* openssl_pkey_derive returns the X coordinate of the shared point — the
        32-byte "Z" of SEC 1 ECDH, which is exactly what RFC 8291 calls
-       ecdh_secret. Requesting 32 bytes explicitly rather than taking the
-       default keeps the length independent of the OpenSSL build. */
-    $ecdhSecret = @openssl_pkey_derive($uaKey, $asKey, 32);
+       ecdh_secret. The third argument (a length) is deprecated from PHP 8.6
+       ("either ignored or truncates the key"), so it is left out: for a P-256
+       key the default length IS 32 bytes, and the strlen() check just below
+       still refuses anything else. */
+    $ecdhSecret = @openssl_pkey_derive($uaKey, $asKey);
     if (!is_string($ecdhSecret) || strlen($ecdhSecret) !== 32) {
         return null;
     }
