@@ -499,6 +499,48 @@ chk('the standalone cleanup script uses the same keep windows and the same rule 
     && str_contains($cleanup, 'time() - 30 * 86400') && str_contains(code($web . '/includes/account_enrol_keys.php'), 'time() - 30 * 86400'));
 chk('the admin sweep action in api.php goes through the shared sweep, not a bare delete', str_contains($api, 'apiTokenSweepExpired($db)') && !preg_match('/DELETE FROM tblApiTokens WHERE ExpiresAt/', $api));
 
+/* ====================================================================== part 4 (security review, finding 2) */
+echo "part 4: a renewal that races a sign-out cannot bring an ended sign-in back to life\n";
+/* The two places that push a sign-in's expiry forward are READ OUT OF THE SOURCE and their real SQL is run
+   against real rows (rule #34: not a retyped copy of the statement). */
+$slideSql = [];
+foreach ([['api.php', $api, 'function slideAuthTokenExpiry'], ['manage/includes/auth.php', $auth, 'function adoptApiTokenSession']] as [$label, $src, $fn]) {
+    $at = strpos($src, $fn);
+    $region = $at === false ? '' : substr($src, $at, 9000);
+    preg_match_all("/'(UPDATE tblApiTokens SET ExpiresAt = \\?[^']*)'/", $region, $mm);
+    $slideSql[$label] = $mm[1];
+    chk("$label: found the renewal statement(s) in the source", count($mm[1]) >= 1);
+    foreach ($mm[1] as $q) {
+        chk("$label: every renewal statement also requires the sign-in to be live (ExpiresAt > ?)", str_contains($q, 'ExpiresAt > ?'), $q);
+    }
+}
+$run = function (string $sql, string $site, string $hash) use ($db): int {
+    $new = gmdate('Y-m-d H:i:s', time() + 30 * 86400); $thr = gmdate('Y-m-d H:i:s', time() + 29 * 86400); $now = gmdate('Y-m-d H:i:s');
+    $st = $db->prepare($sql);
+    if ($site === 'api.php') { $st->bind_param('ssss', $new, $hash, $thr, $now); } else { $st->bind_param('ssss', $new, $hash, $new, $now); }
+    $st->execute(); $n = $st->affected_rows; $st->close();
+    return $n;
+};
+foreach ($slideSql as $site => $list) {
+    foreach ($list as $q) {
+        $db->query('DELETE FROM tblApiTokens');
+        $tl = apiTokenMint($db, 1, ['deviceInstallId' => 'install-SLIDE-0001', 'platform' => 'apple'], 'password'); $th = hash('sha256', $tl);
+        $db->query("UPDATE tblApiTokens SET ExpiresAt = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 DAY) WHERE Token = '$th'");
+        chk("$site: a live sign-in that is due is still renewed (positive control)", $run($q, $site, $th) === 1
+            && (int)$db->query("SELECT ExpiresAt > DATE_ADD(UTC_TIMESTAMP(), INTERVAL 28 DAY) FROM tblApiTokens WHERE Token = '$th'")->fetch_row()[0] === 1);
+        /* the race: the request read the row while live, then the person signed out, then the renewal ran */
+        $db->query("UPDATE tblApiTokens SET ExpiresAt = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 DAY) WHERE Token = '$th'");
+        apiTokenSignOutHashes($db, 1, [$th]);
+        chk("$site: after the sign-out the renewal changes nothing", $run($q, $site, $th) === 0
+            && (int)$db->query("SELECT ExpiresAt > UTC_TIMESTAMP() FROM tblApiTokens WHERE Token = '$th'")->fetch_row()[0] === 0);
+        /* same for "sign out everywhere" ending a row with no install id (deleted) and one with (ended) */
+        $db->query("UPDATE tblApiTokens SET ExpiresAt = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 DAY) WHERE Token = '$th'");
+        apiTokenRevokeAllForUser($db, 1, null, 'signout_everywhere');
+        chk("$site: after sign out everywhere the renewal changes nothing", $run($q, $site, $th) === 0
+            && (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE Token = '$th' AND ExpiresAt > UTC_TIMESTAMP()")->fetch_row()[0] === 0);
+    }
+}
+
 $db->query("DROP DATABASE IF EXISTS `{$name}`");
 echo $fail === 0 ? "\nALL PASS\n" : "\n$fail FAILED\n";
 exit($fail === 0 ? 0 : 1);

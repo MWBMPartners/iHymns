@@ -29140,11 +29140,16 @@ function slideAuthTokenExpiry(string $rawToken): void
            getAuthenticatedUser() itself once the extra per-request query is
            judged worth it — deliberately NOT done here. */
         $hasDeviceMetaCols = function_exists('apiTokensDeviceMetaColumnsExist') && apiTokensDeviceMetaColumnsExist($db);
+        /* Security review finding 2: only a sign-in that is STILL live may be renewed (`ExpiresAt > now`,
+           inside the same UPDATE so there is no gap). A sign-out sets the expiry to a second ago; without
+           this, a renewal that was already in flight would write a fresh 30 days over that ended row and
+           bring the sign-in back to life. */
+        $nowStr = gmdate('Y-m-d H:i:s');
         $sql = $hasDeviceMetaCols
-            ? 'UPDATE tblApiTokens SET ExpiresAt = ?, LastSeenAt = UTC_TIMESTAMP() WHERE Token = ? AND ExpiresAt < ?'
-            : 'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ?';
+            ? 'UPDATE tblApiTokens SET ExpiresAt = ?, LastSeenAt = UTC_TIMESTAMP() WHERE Token = ? AND ExpiresAt < ? AND ExpiresAt > ?'
+            : 'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ? AND ExpiresAt > ?';
         $stmt = $db->prepare($sql);
-        $stmt->bind_param('sss', $newExpiresAt, $hashedToken, $threshold);
+        $stmt->bind_param('ssss', $newExpiresAt, $hashedToken, $threshold, $nowStr);
         $stmt->execute();
         $bumped = $stmt->affected_rows > 0;
         $stmt->close();

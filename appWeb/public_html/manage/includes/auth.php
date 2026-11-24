@@ -313,11 +313,17 @@ function adoptApiTokenSession(): bool
             $nowTs    = time();
             $newCapTs = $nowTs + 30 * 86400;
             if ($capTs && ($newCapTs - $capTs) >= 86400) {
+                /* Security review finding 2: only a sign-in that is STILL live may be renewed. Without
+                   `ExpiresAt > now`, a renewal that was already under way when the person signed out
+                   (a sign-out sets the expiry to a second ago) would write a fresh 30 days over the
+                   ended row and bring the sign-in back to life. The check is part of the same UPDATE,
+                   so there is no gap between "is it live?" and "renew it". */
                 $stmt = $db->prepare(
-                    'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ?'
+                    'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ? AND ExpiresAt > ?'
                 );
                 $newCap = gmdate('Y-m-d H:i:s', $newCapTs);
-                $stmt->bind_param('sss', $newCap, $hashedToken, $newCap);
+                $nowStr = gmdate('Y-m-d H:i:s', $nowTs);
+                $stmt->bind_param('ssss', $newCap, $hashedToken, $newCap, $nowStr);
                 $stmt->execute();
                 $stmt->close();
             }
