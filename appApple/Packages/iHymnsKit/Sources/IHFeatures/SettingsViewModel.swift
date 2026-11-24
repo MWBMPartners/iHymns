@@ -25,6 +25,7 @@
 // properties (https://developer.apple.com/documentation/observation), so
 // this is the same "listen for changes, persist as a side effect" idiom any
 // other `didSet` would be, just on an `@Observable` type.
+import Foundation
 import IHAPI
 import IHDesign
 import Observation
