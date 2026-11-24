@@ -542,10 +542,16 @@ function apiTokenInstallSignInEnded(\mysqli $db, int $userId, string $installId)
  *
  * @param ?string $keepHash sha256 of the one sign-in to keep (the caller's own), or null for none
  * @param string  $why      a short word saying why (e.g. 'password_change'); kept for callers' own audit lines
+ * @param bool    $dropUntiedPush when a sign-in is kept, ALSO remove the Apple push registrations that are tied to
+ *                                no sign-in (PR 3a review, finding 7). A password change passes true on a site where
+ *                                push is tied to a sign-in: such a row predates the tie and may belong to a device the
+ *                                person just wanted gone. The kept device's own row is tied (it registers under its own
+ *                                sign-in) or is made again the next time the app opens. Ignored when nothing is kept
+ *                                (everything of the person's already goes).
  * @return array{tokens:int, enrolKeys:int, push:int} how many of each were ended/cancelled/removed
  * @throws \Throwable the transaction is rolled back and the error passed on
  */
-function apiTokenRevokeAllForUser(\mysqli $db, int $userId, ?string $keepHash, string $why): array
+function apiTokenRevokeAllForUser(\mysqli $db, int $userId, ?string $keepHash, string $why, bool $dropUntiedPush = false): array
 {
     $keep = ($keepHash !== null && preg_match('/^[a-f0-9]{64}$/', $keepHash) === 1) ? $keepHash : '';
     $out = ['tokens' => 0, 'enrolKeys' => 0, 'push' => 0];
@@ -594,7 +600,9 @@ function apiTokenRevokeAllForUser(\mysqli $db, int $userId, ?string $keepHash, s
                 $out['push'] = max(0, $pd->affected_rows);
                 $pd->close();
             } elseif (apnsTokenHashReady($db)) {
-                $pd = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ? AND ApiTokenHash IS NOT NULL AND ApiTokenHash <> ?');
+                $pd = $db->prepare($dropUntiedPush
+                    ? 'DELETE FROM tblApnsTokens WHERE UserId = ? AND (ApiTokenHash IS NULL OR ApiTokenHash <> ?)'
+                    : 'DELETE FROM tblApnsTokens WHERE UserId = ? AND ApiTokenHash IS NOT NULL AND ApiTokenHash <> ?');
                 $pd->bind_param('is', $userId, $keep);
                 $pd->execute();
                 $out['push'] = max(0, $pd->affected_rows);

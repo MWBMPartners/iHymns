@@ -199,6 +199,23 @@ chk('signing out hashes: an install-bound one is ended and remembered, a shared 
     apiTokenSignOutHashes($db, 1, [$devC, $legacy2, $bobTok, 'not-a-hash']) === 2
     && apiTokenInstallSignInEnded($db, 1, 'install-CCCC-3333') && (int)$db->query("SELECT COUNT(*) FROM tblApiTokens WHERE Token = '$legacy2'")->fetch_row()[0] === 0 && $live(2) === 1);
 
+/* Security review finding 7: a password change also removes push rows tied to no sign-in (when asked), and never the kept device's own. */
+$db->query('DELETE FROM tblApnsTokens WHERE UserId = 2'); $db->query('DELETE FROM tblApiTokens WHERE UserId = 2');
+$keepTok = hash('sha256', apiTokenMint($db, 2, ['deviceInstallId' => 'install-KEEP-7777', 'platform' => 'apple'], 'password'));
+$otherTok = hash('sha256', apiTokenMint($db, 2, ['deviceInstallId' => 'install-OTHR-7777', 'platform' => 'apple'], 'password'));
+$db->query("INSERT INTO tblApnsTokens (UserId, PushToken, ApiTokenHash) VALUES (2, 'keep-own', '$keepTok'), (2, 'other-own', '$otherTok'), (2, 'untied-old', NULL)");
+apiTokenRevokeAllForUser($db, 2, $keepTok, 'password_change');
+chk('without the flag the old behaviour stands: the other device\'s row goes, the kept and the untied rows stay', $push(2) === ['keep-own', 'untied-old'], json_encode($push(2)));
+$db->query("INSERT INTO tblApnsTokens (UserId, PushToken, ApiTokenHash) VALUES (2, 'other-own', '$otherTok')");
+apiTokenRevokeAllForUser($db, 2, $keepTok, 'password_change', true);
+chk('with the flag (a password change) the untied row goes too, and the kept device\'s own row stays', $push(2) === ['keep-own'], json_encode($push(2)));
+$db->query("INSERT INTO tblApnsTokens (UserId, PushToken, ApiTokenHash) VALUES (1, 'ann-untied', NULL)");
+apiTokenRevokeAllForUser($db, 2, $keepTok, 'password_change', true);
+chk('...and another person\'s untied row is never touched', in_array('ann-untied', $push(1), true));
+$apiSrcAll = (string)file_get_contents($web . '/api.php');
+$cp = strpos($apiSrcAll, "case 'auth_change_password':");
+chk('auth_change_password asks for it, only where push is tied to a sign-in', $cp !== false && preg_match("/apiTokenRevokeAllForUser\(\\\$db, \\\$authUserId, \\\$currentTokenHash, 'password_change', apnsPerSessionHere\(\)\)/", substr($apiSrcAll, $cp, 4000)) === 1);
+
 /* Security review finding 6: a long list is refused, a normal one is not. */
 $many = [];
 for ($i = 0; $i < API_TOKEN_SIGNOUT_MAX_HASHES + 1; $i++) { $many[] = hash('sha256', 'cap-' . $i); }

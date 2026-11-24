@@ -9029,7 +9029,10 @@ if ($action !== null) {
             /* PR 3 H4: the ONE door. It keeps this sign-in, but ALWAYS cancels the automatic sign-in keys
                (a key left alive would sign the other devices straight back in) and removes the push
                registrations tied to the other sign-ins. */
-            apiTokenRevokeAllForUser($db, $authUserId, $currentTokenHash, 'password_change');
+            /* Review finding 7: where push is tied to a sign-in, also remove the registrations tied to none (they predate the
+               tie and may belong to a device the person wanted gone); the app re-registers on its next open. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+            apiTokenRevokeAllForUser($db, $authUserId, $currentTokenHash, 'password_change', apnsPerSessionHere());
 
             sendJson(['ok' => true, 'message' => 'Password changed successfully.']);
             break;

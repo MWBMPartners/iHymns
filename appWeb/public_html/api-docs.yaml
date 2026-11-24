@@ -5168,6 +5168,11 @@ paths:
         no other device can sign itself back in. (A password reset, an admin
         password change and switching an account off do the same, ending every
         sign-in.)
+
+        Known limit: the current sign-in is kept, so if the caller is the SHARED older-app sign-in (no install
+        id), every Apple device still holding that shared sign-in stays signed in, and could enrol again. Where
+        push is tied to a sign-in, push registrations tied to no sign-in are also removed (they predate the tie);
+        the app registers again the next time it opens.
       security:
         - bearerAuth: []
       parameters:
