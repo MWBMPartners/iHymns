@@ -1,5 +1,7 @@
 ## [unreleased] — alpha
 
+## [1.5.0] — 2026-11-24
+
 - fix(sync): **a set-list sync that does not mention `expiresAt` now keeps the stored expiry instead of clearing it (#2207)** — present (even `null`) is the truth, absent means "no opinion", the same rule `plan` follows; the Apple app never sends it, so its syncs used to wipe an expiry set on the web. Web behaviour unchanged; the no-op compare treats an absent key as no opinion. Guard `tests/php/test-setlist-expiry-preserve.php` (real database, mutation-proven). No Swift change needed.
 - fix(layout): **one shared fix per layout problem found by the audit (#2203, #2209)** — form rows that sat crooked when one column had help text (`.admin-form-row`, `.admin-label-spacer`), card headers that now wrap, wide tables wrapped in `.table-responsive`, sideways scroll on narrow screens, and the Settings page at 360px. New guards `tests/test-form-row-alignment.js` and `tests/test-admin-narrow-layout.js`; the measuring scripts are kept in `tools/layout-audit/`.
 - fix(admin): **the Sign in with Apple fields on the configuration page line up along the top (#2202, #2208).**
