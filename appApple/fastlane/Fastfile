@@ -64,6 +64,24 @@ KIT_DIR         = File.join(APP_APPLE_DIR, "Packages", "iHymnsKit")
 SYNC_VERSION_SH = File.join(APP_APPLE_DIR, "Scripts", "sync-version.sh")
 BUILDS_DIR      = File.join(APP_APPLE_DIR, "fastlane", "builds")
 
+# LOCAL MODE (the owner's own Mac, plan `.claude/apple-local-builds-plan.md` section 3).
+#
+# ELI5: when the owner runs a release from their own Mac, `Scripts/check.sh
+# release` sets this switch. It tells the recipe "the signing certificate is
+# already in my login keychain, and the App Store Connect key is a file on
+# disk, so do not build a throw-away keychain and do not make a temporary
+# copy of the key".
+#
+# DETAILED: `import_distribution_certificate` makes a throw-away keychain the
+# DEFAULT keychain and later deletes it. That is fine on a GitHub machine that
+# is thrown away after the job, and harmful on a personal Mac (the login
+# keychain would stop being the default and the owner's own certificates would
+# seem to vanish). So with this switch on: no throw-away keychain, no
+# certificate import, the `.p8` is read in place from `ASC_KEY_PATH` and is
+# never copied or deleted by the clean-up hooks. With the switch OFF (every CI
+# run: nothing sets it) every line below behaves exactly as it did before.
+LOCAL_SIGNING = ENV["IHYMNS_LOCAL_SIGNING"] == "1"
+
 # Ephemeral keychain for THIS CI run only — never the developer's own login
 # keychain, never persisted between runs. The `-db` suffix mirrors the real
 # on-disk filename `security`/Keychain Access give a keychain named this way
@@ -137,9 +155,24 @@ end
 # ELI5: makes one secret little file holding the App-Store password-key,
 # remembers exactly where it put it, and never makes a second copy.
 def asc_key_file_path
+  return local_asc_key_path if LOCAL_SIGNING   # local mode: use the owner's own file in place
+
   @asc_key_file ||= File.join(Dir.tmpdir, "ihymns-asc-#{SecureRandom.hex(4)}.p8").tap do |path|
     File.write(path, ENV.fetch("ASC_API_KEY"))
   end
+end
+
+# Local mode only: where the owner's App Store Connect key file lives. The
+# script `Scripts/check.sh` exports `ASC_KEY_PATH` (it never prints it). The
+# path is deliberately NOT stored in `@asc_key_file`, because the clean-up
+# hooks at the bottom delete that file, and the owner's real key must never
+# be deleted.
+#
+# ELI5: points at the owner's real key file and promises never to delete it.
+def local_asc_key_path
+  path = File.expand_path(ENV.fetch("ASC_KEY_PATH"))
+  UI.user_error!("The App Store Connect key file is not there (ASC_KEY_PATH).") unless File.file?(path)
+  path
 end
 
 # Fault-2 fix (#1579): `-allowProvisioningUpdates` alone makes xcodebuild
@@ -224,6 +257,10 @@ end
 # on its own — see `asc_key_file_path`/`signing_xcargs` above), so there is
 # nothing for THIS lane to do with the identity string directly.
 private_lane :import_distribution_certificate do
+  # Local mode: the certificate is already in the owner's login keychain, and
+  # a throw-away default keychain would do harm on a personal Mac (see LOCAL_SIGNING).
+  next if LOCAL_SIGNING
+
   create_keychain(
     name: CI_KEYCHAIN_NAME,
     password: CI_KEYCHAIN_PASSWORD,
@@ -258,6 +295,16 @@ end
 # owner's secret instead holds a base64-wrapped key, flip that one flag —
 # nothing else about this lane changes.
 private_lane :asc_api_key do
+  # Local mode: hand fastlane the key FILE (read in place, never copied).
+  if LOCAL_SIGNING
+    next app_store_connect_api_key(
+      key_id: ENV.fetch("ASC_KEY_ID"),
+      issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+      key_filepath: local_asc_key_path,
+      in_house: false
+    )
+  end
+
   app_store_connect_api_key(
     key_id: ENV.fetch("ASC_KEY_ID"),
     issuer_id: ENV.fetch("ASC_ISSUER_ID"),
@@ -366,11 +413,11 @@ end
 # fails before archiving starts.
 # ---------------------------------------------------------------------------
 after_all do |_lane|
-  delete_keychain(name: CI_KEYCHAIN_NAME) if File.exist?(CI_KEYCHAIN_PATH)
+  delete_keychain(name: CI_KEYCHAIN_NAME) if !LOCAL_SIGNING && File.exist?(CI_KEYCHAIN_PATH)
   FileUtils.rm_f(@asc_key_file) if @asc_key_file
 end
 
 error do |_lane, _exception|
-  delete_keychain(name: CI_KEYCHAIN_NAME) if File.exist?(CI_KEYCHAIN_PATH)
+  delete_keychain(name: CI_KEYCHAIN_NAME) if !LOCAL_SIGNING && File.exist?(CI_KEYCHAIN_PATH)
   FileUtils.rm_f(@asc_key_file) if @asc_key_file
 end
