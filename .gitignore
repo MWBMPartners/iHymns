@@ -326,6 +326,10 @@ appWeb/.auth/*
 *.pem
 *.key
 *.p12
+# App Store Connect API key files (Apple's AuthKey_<KEYID>.p8) and the owner's local release settings
+# (appApple/Scripts/check.sh reads them from outside the repo; this stops one being added by mistake)
+*.p8
+apple-release*.env
 *.pfx
 credentials.json
 secrets.json

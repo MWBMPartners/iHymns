@@ -1,5 +1,7 @@
 ## [unreleased] — alpha
 
+- feat(apple): **one command to check, build, test on a device and release the Apple app from the owner's own Mac (`appApple/Scripts/check.sh`, plan `.claude/apple-local-builds-plan.md`)** — `doctor`, `lint`, `test`, `build`, `all` (prints one line for the pull request), `device <name>` and `release alpha|beta|appstore`. The Fastfile gains a local mode (`IHYMNS_LOCAL_SIGNING=1`: no throw-away keychain, the key file read in place and never deleted; unchanged when unset). Release refuses unless HEAD is on `origin/<branch>` with a clean tree and mode-600 settings, puts the stamped version file back, and logs one line in `appApple/dev-docs/release-log.md` (no tags). `*.p8` and `apple-release*.env` are now ignored. Guard `tests/test-apple-local-check.js`. Never run on a Mac yet; guide in `appApple/dev-docs/Local-Builds.md`.
+
 ## [1.5.0] — 2026-11-24
 
 - fix(sync): **a set-list sync that does not mention `expiresAt` now keeps the stored expiry instead of clearing it (#2207)** — present (even `null`) is the truth, absent means "no opinion", the same rule `plan` follows; the Apple app never sends it, so its syncs used to wipe an expiry set on the web. Web behaviour unchanged; the no-op compare treats an absent key as no opinion. Guard `tests/php/test-setlist-expiry-preserve.php` (real database, mutation-proven). No Swift change needed.
